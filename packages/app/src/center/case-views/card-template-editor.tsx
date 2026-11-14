@@ -20,6 +20,8 @@ import {
   成定义,
   新表单,
   校验表单,
+  是单值槽,
+  槽默认角色,
   预览已过期,
   type 表单,
 } from "./card-template-form"
@@ -27,6 +29,13 @@ import {
 /** 下拉里的「无 / 默认」哨兵：字段名是 ASCII、角色名是中文，两个哨兵都不会撞上真实值。 */
 const 无选项 = "__无__"
 const 默认选项 = "__默认__"
+
+/**
+ * 事件类型下拉的空选项哨兵（I1）：`current` 落到 `undefined` 会让 Kobalte 转非受控，
+ * 用户点了「不可选」项后触发器会显示它、表单却仍是空。给一个恒定的空值保持受控；
+ * `值: ""` 被 Kobalte 的 `Select.Value` 当作空选择（`select-value.tsx:88-93`），仍显示占位符。
+ */
+const 空事件项 = { 值: "", 可选: true }
 
 export interface CardTemplateEditorProps {
   readonly projectId: string
@@ -40,13 +49,6 @@ export interface CardTemplateEditorProps {
   readonly 材料们: readonly 材料视图[]
   readonly onClose: () => void
   readonly onSaved: () => void
-}
-
-function 默认角色(词表: 模板词表, 槽名: 模板槽名): string | undefined {
-  if (槽名 === "谁") return 词表.默认角色.谁
-  if (槽名 === "和谁") return 词表.默认角色.和谁
-  if (槽名 === "何地") return 词表.默认角色.何地
-  return undefined
 }
 
 /** 一个槽的控件：单行（谁/何时/何时止/多少钱）或多行（和谁/何地/其他）。 */
@@ -73,7 +75,7 @@ function 槽选区(props: {
     props.换(props.条们.map((旧, 索引) => (索引 === 序 ? 填 : 旧)))
   }
   const 新行 = (): 槽填法 => {
-    const 角色 = 默认角色(props.词表, props.槽名)
+    const 角色 = 槽默认角色(props.词表, props.槽名)
     return 角色 === undefined ? { 字段: "" } : { 字段: "", 角色 }
   }
 
@@ -105,7 +107,7 @@ function 槽选区(props: {
                   current={填.角色 ?? 默认选项}
                   placeholder="角色"
                   label={(值) =>
-                    值 === 默认选项 ? `默认（${默认角色(props.词表, props.槽名) ?? "无"}）` : 值
+                    值 === 默认选项 ? `默认（${槽默认角色(props.词表, props.槽名) ?? "无"}）` : 值
                   }
                   disabled={props.只读}
                   onSelect={(值) =>
@@ -181,6 +183,8 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
   const [预览错误, 设预览错误] = createSignal<string>()
   const [预览中, 设预览中] = createSignal(false)
   const [预览时, 设预览时] = createSignal<string>()
+  /** 预览成功时用的材料 id：换材料后旧结果同样过期（I4）。 */
+  const [预览材料, 设预览材料] = createSignal("")
   const [关确认, 设关确认] = createSignal(false)
 
   // 代次守卫：关掉抽屉后回来的响应一律丢弃（同 `governance/template-lib.tsx` 的写法）。
@@ -226,7 +230,10 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
     const 词 = 词表()
     return 形 === undefined || 词 === undefined ? [] : 校验表单(形, 词)
   })
-  const 预览过期 = createMemo(() => 预览已过期(预览时(), 当前JSON()))
+  const 预览过期 = createMemo(() => {
+    if (预览() === undefined) return false
+    return 预览已过期(预览时(), 当前JSON()) || 预览材料() !== 材料id()
+  })
 
   async function 跑预览() {
     const 形 = 表单()
@@ -253,6 +260,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
     }
     设预览(回.value)
     设预览时(JSON.stringify(定义))
+    设预览材料(选材料)
   }
 
   async function 保存() {
@@ -284,7 +292,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
   const 标题 = () => (props.只读 === true ? "查看内置模板" : props.行 === undefined ? "新建模板" : "修改模板")
 
   return (
-    <Kobalte open={开()} onOpenChange={(值) => { if (!值) props.onClose() }}>
+    <Kobalte open={开()} onOpenChange={(值) => { if (!值) 请求关闭() }}>
       <Kobalte.Portal>
         <Kobalte.Overlay class="fixed inset-0 z-40 bg-v2-overlay-simple-overlay-scrim" />
         <Kobalte.Content
@@ -330,7 +338,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                       {/* `data-slot` 挂在包住输入框的 `<label>` 上：`TextInputV2` 在 `{...inputProps}`
                           之后写死自己的 `data-slot="text-input-v2-input"`，调用方传的名字会被静默覆盖
                           （同 `file-tree.tsx` 的搜索框、`#005-22`）。 */}
-                      <label data-slot="card-template-name" class="flex flex-col gap-1">
+                      <label data-slot="card-template-name-field" class="flex flex-col gap-1">
                         <span class="text-[12px] text-v2-text-text-muted">名称（必填）</span>
                         <TextInputV2
                           appearance="large"
@@ -342,13 +350,12 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                         />
                       </label>
 
-                      <label class="flex flex-col gap-1">
+                      <label data-slot="card-template-event-field" class="flex flex-col gap-1">
                         <span class="text-[12px] text-v2-text-text-muted">事件类型（必填）</span>
                         <SelectV2
-                          data-slot="card-template-event"
                           appearance="large"
                           options={[...词().事件类型们]}
-                          current={词().事件类型们.find((项) => 项.值 === 形().eventType)}
+                          current={词().事件类型们.find((项) => 项.值 === 形().eventType) ?? 空事件项}
                           value={(项) => 项.值}
                           label={(项) => (项.可选 ? 项.值 : `${项.值}（不可选）`)}
                           placeholder="请选择事件类型"
@@ -375,8 +382,8 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                             词表={词()}
                             条们={形().槽表[槽名]}
                             只读={props.只读 === true}
-                            多行={槽名 === "和谁" || 槽名 === "何地" || 槽名 === "其他"}
-                            含无={槽名 !== "谁"}
+                            多行={!是单值槽(槽名)}
+                            含无={槽名 !== 词().必填恒含}
                             换={(条们) =>
                               设表单((当前) => (当前 === undefined ? 当前 : { ...当前, 槽表: { ...当前.槽表, [槽名]: 条们 } }))
                             }

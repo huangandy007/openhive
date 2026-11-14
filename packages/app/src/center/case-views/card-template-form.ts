@@ -20,22 +20,42 @@ export interface 表单 {
 /**
  * 单值槽：与内核 `单值槽` 同一集合（`case-card-template.ts`）。
  * **「何地」不在其中**——内核允许多条，见设计 §5.3 的计划期更正 R1。
+ *
+ * 这是**唯一一份分类**：`成定义` 按它决定写对象还是数组，编辑器按它决定单行 / 多行，
+ * seed 也按它补行（`#002-06`：同一前提只留一处出处）。
  */
 const 单值槽们: readonly 模板槽名[] = ["谁", "何时", "何时止", "多少钱"]
+
+/** 该槽是否单值（对象形态、只能有一行）。 */
+export function 是单值槽(槽名: 模板槽名): boolean {
+  return 单值槽们.includes(槽名)
+}
+
+/** 该槽的默认角色；没有默认角色的槽返回 `undefined`（`成定义` 不写空角色）。 */
+export function 槽默认角色(词表: 模板词表, 槽名: 模板槽名): string | undefined {
+  if (槽名 === "谁") return 词表.默认角色.谁
+  if (槽名 === "和谁") return 词表.默认角色.和谁
+  if (槽名 === "何地") return 词表.默认角色.何地
+  return undefined
+}
 
 /** 全空槽表：TS 会检查七个键一个不缺（少写一个键 = 编译红，不是运行时 undefined）。 */
 function 空槽表(): 槽表 {
   return { 谁: [], 和谁: [], 何时: [], 何时止: [], 何地: [], 多少钱: [], 其他: [] }
 }
 
+/** 单值槽的空行：单值槽必须有一行可填，否则编辑器画不出下拉、也加不了行（C1）。 */
+function 空填法(词表: 模板词表, 槽名: 模板槽名): 槽填法 {
+  const 角色 = 槽默认角色(词表, 槽名)
+  return 角色 === undefined ? { 字段: "" } : { 字段: "", 角色 }
+}
+
 export function 新表单(词表: 模板词表): 表单 {
-  const 角色 = 词表.默认角色.谁
-  return {
-    name: "",
-    eventType: "",
-    槽表: { ...空槽表(), 谁: [{ 字段: "", 角色 }] },
-    required: [词表.必填恒含],
+  const 槽表 = 空槽表()
+  for (const 槽名 of 模板槽名们) {
+    if (是单值槽(槽名)) 槽表[槽名] = [空填法(词表, 槽名)]
   }
+  return { name: "", eventType: "", 槽表, required: [词表.必填恒含] }
 }
 
 /** 库里单值槽是对象、多值槽是数组；两种都归一成行数组。 */
@@ -52,8 +72,11 @@ function 读槽(值: 模板行["slots"][模板槽名]): readonly 槽填法[] {
 
 export function 从行(行: 模板行, 词表: 模板词表): 表单 {
   const 槽表 = 空槽表()
-  for (const 槽名 of 模板槽名们) 槽表[槽名] = 读槽(行.slots[槽名])
-  if (槽表.谁.length === 0) 槽表.谁 = [{ 字段: "", 角色: 词表.默认角色.谁 }]
+  for (const 槽名 of 模板槽名们) {
+    const 读到的 = 读槽(行.slots[槽名])
+    // 单值槽没有行时补一条空行：库里可能只存了部分槽，编辑器不能因此画不出下拉（C1）。
+    槽表[槽名] = 读到的.length === 0 && 是单值槽(槽名) ? [空填法(词表, 槽名)] : 读到的
+  }
   return { name: 行.name, eventType: 行.event_type, 槽表, required: 行.required }
 }
 
@@ -70,7 +93,7 @@ export function 成定义(表单值: 表单): 模板定义输入 {
         return 项
       })
     if (条们.length === 0) continue
-    slots[槽名] = 单值槽们.includes(槽名) ? 条们[0] : 条们
+    slots[槽名] = 是单值槽(槽名) ? 条们[0] : 条们
   }
   return {
     name: 表单值.name.trim(),
@@ -89,7 +112,8 @@ export function 校验表单(表单值: 表单, 词表: 模板词表): string[] 
   const 错: string[] = []
   if (表单值.name.trim() === "") 错.push("请填写模板名称")
   if (表单值.eventType === "") 错.push("请选择事件类型")
-  if ((表单值.槽表.谁[0]?.字段 ?? "") === "") 错.push("「谁」必须选一个字段")
+  const 恒含 = 词表.必填恒含
+  if ((表单值.槽表[恒含][0]?.字段 ?? "") === "") 错.push(`「${恒含}」必须选一个字段`)
   for (const 槽名 of 模板槽名们) {
     for (const 填 of 表单值.槽表[槽名]) {
       if (填.字段 === "") continue

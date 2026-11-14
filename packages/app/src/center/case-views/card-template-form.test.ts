@@ -42,6 +42,35 @@ describe("表单模型", () => {
     for (const 槽名 of ["和谁", "何地", "其他"] as const) expect(形.槽表[槽名]).toEqual([])
   })
 
+  test("单值槽都有一行可填：新表单的何时 / 何时止 / 多少钱各一行空填法", () => {
+    const 形 = 新表单(词表)
+    expect(形.槽表.何时).toEqual([{ 字段: "" }])
+    expect(形.槽表.何时止).toEqual([{ 字段: "" }])
+    expect(形.槽表.多少钱).toEqual([{ 字段: "" }])
+  })
+
+  test("从行：缺单值槽时补一行，缺多值槽保持空（C1：单值槽不能没有可填的行）", () => {
+    const 行: 模板行 = {
+      id: "用户:1",
+      name: "通话",
+      event_type: "通话",
+      slots: { 谁: { 字段: "caller", 角色: "主叫" } },
+      required: ["谁"],
+      version: 1,
+      verified_at: null,
+      hit_count: 0,
+      disabled_at: null,
+    }
+    const 形 = 从行(行, 词表)
+    expect(形.槽表.谁).toEqual([{ 字段: "caller", 角色: "主叫" }])
+    expect(形.槽表.何时).toEqual([{ 字段: "" }])
+    expect(形.槽表.何时止).toEqual([{ 字段: "" }])
+    expect(形.槽表.多少钱).toEqual([{ 字段: "" }])
+    expect(形.槽表.和谁).toEqual([])
+    expect(形.槽表.何地).toEqual([])
+    expect(形.槽表.其他).toEqual([])
+  })
+
   test("成定义：单值槽写对象、多值槽写数组、空槽不写、角色/实体类型为空不写", () => {
     const 形: 表单 = {
       name: "  通话  ",

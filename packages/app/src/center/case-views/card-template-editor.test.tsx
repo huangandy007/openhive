@@ -26,6 +26,32 @@ async function 等(条件: () => boolean) {
 /** 浮层内容在 Kobalte Portal 里 ⇒ 查 `document.body`，不是 mount 的 host（见 Task 5 的坑表）。 */
 const 找 = (槽名: string) => document.body.querySelector<HTMLElement>(`[data-slot='${槽名}']`)
 
+/** 打开 `SelectV2`：Kobalte Trigger 只在 `pointerdown`（主键、非 touch）时开（`#006-37`）。 */
+function 开下拉(触发器: HTMLElement) {
+  触发器.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }))
+}
+
+/** 菜单项在 Kobalte Portal 里（`document.body`）；Select 的选中走 `click` 分支（审查实测配方）。 */
+const 菜单项们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-slot='menu-v2-item-content']")]
+
+async function 点选项(文字: string) {
+  await 等(() => 菜单项们().some((项) => (项.textContent ?? "").includes(文字)))
+  const 项 = 菜单项们().find((项) => (项.textContent ?? "").includes(文字))
+  if (项 === undefined) throw new Error(`没找到菜单项：${文字}`)
+  项.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+}
+
+const 事件触发器 = () =>
+  找("card-template-event-field")!.querySelector<HTMLElement>("[data-component='select-v2']")!
+
+const 谁字段触发器 = () =>
+  document.body.querySelector<HTMLElement>(
+    "[data-slot='card-template-slot'][data-slot-name='谁'] [data-component='select-v2']",
+  )!
+
+const 材料触发器 = () =>
+  找("card-template-preview-panel")!.querySelector<HTMLElement>("[data-component='select-v2']")!
+
 const 词表: 模板词表 = {
   槽们: ["谁", "和谁", "何时", "何时止", "何地", "多少钱", "其他"],
   事件类型们: [
@@ -86,7 +112,7 @@ function 假api(over: Partial<CaseTemplateApi> = {}): CaseTemplateApi {
 describe("抽屉编辑器", () => {
   test("新建空态：保存置灰 + 三条即时校验；「谁」勾死不可取消；不可选类型带原因", async () => {
     mount(() => <CardTemplateEditor projectId="p-1" api={假api()} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
-    await 等(() => 找("card-template-name") !== null)
+    await 等(() => 找("card-template-name-field") !== null)
 
     expect((找("card-template-save") as HTMLButtonElement).disabled).toBe(true)
     const 校验 = 找("card-template-editor-validation")!
@@ -100,6 +126,18 @@ describe("抽屉编辑器", () => {
     expect(谁框.checked).toBe(true)
     expect(谁框.disabled).toBe(true)
     expect(找("card-template-event-hint")!.textContent).toContain("不能建用户模板")
+  })
+
+  test("单值槽可填：何时 / 何时止 / 多少钱各有一个下拉（C1）", async () => {
+    mount(() => <CardTemplateEditor projectId="p-1" api={假api()} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
+    await 等(() => 找("card-template-name-field") !== null)
+    for (const 槽名 of ["何时", "何时止", "多少钱"]) {
+      const 槽 = document.body.querySelector<HTMLElement>(
+        `[data-slot='card-template-slot'][data-slot-name='${槽名}']`,
+      )!
+      expect(槽.querySelectorAll("[data-slot='card-template-slot-row']").length).toBe(1)
+      expect(槽.querySelector("[data-component='select-v2']")).not.toBeNull()
+    }
   })
 
   test("修改已验证模板：常驻「回到未验证」；保存走 update，收到定义体", async () => {
@@ -127,9 +165,15 @@ describe("抽屉编辑器", () => {
     expect(找("card-template-verified-warning")!.textContent).toContain("回到未验证")
     ;(找("card-template-save") as HTMLButtonElement).click()
     await 等(() => 收到.length === 1)
-    expect(收到[0]?.id).toBe("用户:1")
-    expect(收到[0]?.eventType).toBe("通话")
-    expect(收到[0]?.required).toEqual(["谁"])
+    expect(收到[0]).toEqual({
+      projectId: "p-1",
+      id: "用户:1",
+      name: "通话",
+      eventType: "通话",
+      slots: { 谁: { 字段: "caller", 角色: "主叫" } },
+      required: ["谁"],
+    })
+    expect("expectedVersion" in (收到[0] ?? {})).toBe(false)
     await 等(() => 已保存)
   })
 
@@ -145,7 +189,7 @@ describe("抽屉编辑器", () => {
         onSaved={() => {}}
       />
     ))
-    await 等(() => 找("card-template-name") !== null)
+    await 等(() => 找("card-template-name-field") !== null)
     expect(找("card-template-save")).toBeNull()
     expect(找("card-template-preview-button")).toBeNull()
   })
@@ -219,6 +263,144 @@ describe("抽屉编辑器", () => {
     expect(找("card-template-preview-summary")!.textContent).toContain("缺少「谁」 2")
   })
 
+  test("不可选事件类型：空态点了也不落地（触发器仍占位、校验仍拦、保存仍灰）", async () => {
+    mount(() => (
+      <CardTemplateEditor
+        projectId="p-1"
+        api={假api()}
+        行={{ ...有效行, event_type: "" }}
+        材料们={[]}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />
+    ))
+    await 等(() => 找("card-template-event-field") !== null)
+    expect(事件触发器().textContent).toContain("请选择事件类型")
+    开下拉(事件触发器())
+    await 点选项("资金交易")
+    // I1：`current` 若落回 undefined，Kobalte 会转非受控，这里会变成「资金交易（不可选）」。
+    expect(事件触发器().textContent).toContain("请选择事件类型")
+    expect(事件触发器().textContent).not.toContain("资金交易")
+    expect(找("card-template-editor-validation")!.textContent).toContain("请选择事件类型")
+    expect((找("card-template-save") as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  test("不可选事件类型：已有值不被替换，保存载荷保持原值", async () => {
+    const 收到: Array<Record<string, unknown>> = []
+    const api = 假api({
+      update: async (input) => {
+        收到.push(input as unknown as Record<string, unknown>)
+        return { kind: "ok", value: 有效行 }
+      },
+    })
+    mount(() => (
+      <CardTemplateEditor projectId="p-1" api={api} 行={有效行} 材料们={[]} onClose={() => {}} onSaved={() => {}} />
+    ))
+    await 等(() => 找("card-template-event-field") !== null)
+    expect(事件触发器().textContent).toContain("通话")
+    开下拉(事件触发器())
+    await 点选项("资金交易")
+    expect(事件触发器().textContent).toContain("通话")
+    expect(事件触发器().textContent).not.toContain("资金交易")
+    ;(找("card-template-save") as HTMLButtonElement).click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]?.eventType).toBe("通话")
+  })
+
+  test("脏态点 X：先二次确认，不直接调 onClose（I2）", async () => {
+    let 关了 = false
+    mount(() => (
+      <CardTemplateEditor
+        projectId="p-1"
+        api={假api()}
+        行={有效行}
+        材料们={[]}
+        onClose={() => {
+          关了 = true
+        }}
+        onSaved={() => {}}
+      />
+    ))
+    await 等(() => 找("card-template-name-field") !== null)
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    名称框.value = "通话（改）"
+    名称框.dispatchEvent(new Event("input", { bubbles: true }))
+    ;(找("card-template-close") as HTMLButtonElement).click()
+    expect(关了).toBe(false)
+    await 等(() => 找("card-template-discard-hint") !== null)
+  })
+
+  test("换预览材料：旧结果过期并提示重新预览（I4）", async () => {
+    const 第二份: 材料视图 = { ...已解析材料, id: "m-2", path: "材料/第二份.xlsx" }
+    const api = 假api({
+      preview: async () => ({
+        kind: "ok",
+        value: { 卡片数: 1, 跳过: {}, 工作表们: [{ sheet: "Sheet1", 卡片数: 1, 跳过: {} }], 卡片们: [] },
+      }),
+    })
+    mount(() => (
+      <CardTemplateEditor
+        projectId="p-1"
+        api={api}
+        行={有效行}
+        材料们={[已解析材料, 第二份]}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />
+    ))
+    await 等(() => 找("card-template-preview-button") !== null)
+    ;(找("card-template-preview-button") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-preview") !== null)
+    expect(找("card-template-preview-expired")).toBeNull()
+    开下拉(材料触发器())
+    await 点选项("材料/第二份.xlsx")
+    await 等(() => 找("card-template-preview-expired") !== null)
+    expect(找("card-template-preview-expired")!.textContent).toContain("需重新预览")
+  })
+
+  test("多行槽：和谁可以加一行、删一行（I5）", async () => {
+    mount(() => <CardTemplateEditor projectId="p-1" api={假api()} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
+    await 等(() => 找("card-template-name-field") !== null)
+    const 和谁 = () =>
+      document.body.querySelector<HTMLElement>("[data-slot='card-template-slot'][data-slot-name='和谁']")!
+    expect(和谁().querySelectorAll("[data-slot='card-template-slot-row']").length).toBe(0)
+    ;(和谁().querySelector("[data-slot='card-template-slot-add']") as HTMLButtonElement).click()
+    await 等(() => 和谁().querySelectorAll("[data-slot='card-template-slot-row']").length === 1)
+    ;(和谁().querySelector("[data-slot='card-template-slot-remove']") as HTMLButtonElement).click()
+    await 等(() => 和谁().querySelectorAll("[data-slot='card-template-slot-row']").length === 0)
+  })
+
+  test("新建保存：无 行 时走 create，载荷含名称 / 事件类型 / 槽（I5）", async () => {
+    const 收到: Array<Record<string, unknown>> = []
+    const api = 假api({
+      create: async (input) => {
+        收到.push(input as unknown as Record<string, unknown>)
+        return { kind: "ok", value: 有效行 }
+      },
+    })
+    mount(() => <CardTemplateEditor projectId="p-1" api={api} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
+    await 等(() => 找("card-template-name-field") !== null)
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    名称框.value = "话单模板"
+    名称框.dispatchEvent(new Event("input", { bubbles: true }))
+    开下拉(事件触发器())
+    await 点选项("通话")
+    开下拉(谁字段触发器())
+    await 点选项("主叫号码")
+    const 保存 = 找("card-template-save") as HTMLButtonElement
+    await 等(() => !保存.disabled)
+    保存.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]).toEqual({
+      projectId: "p-1",
+      name: "话单模板",
+      eventType: "通话",
+      slots: { 谁: { 字段: "caller", 角色: "主体" } },
+      required: ["谁"],
+    })
+    expect("expectedVersion" in (收到[0] ?? {})).toBe(false)
+  })
+
   test("预览后改名称：结果区置灰并提示重新预览；保存仍可用（预览不是保存前置）", async () => {
     const api = 假api({
       preview: async () => ({
@@ -247,7 +429,7 @@ describe("抽屉编辑器", () => {
     expect(找("card-template-preview-expired")).toBeNull()
 
     // `data-slot` 挂在包住输入框的 `<label>` 上（`TextInputV2` 会覆写内层 `data-slot`），往 input 里填。
-    const 名称框 = 找("card-template-name")!.querySelector<HTMLInputElement>("input")!
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
     名称框.value = "通话（改）"
     名称框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(() => 找("card-template-preview-expired") !== null)
@@ -261,6 +443,6 @@ describe("抽屉编辑器", () => {
     mount(() => <CardTemplateEditor projectId="p-1" api={api} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
     await 等(() => 找("card-template-vocab-error") !== null)
     expect(找("card-template-vocab-error")!.textContent).toContain("词表读取失败")
-    expect(找("card-template-name")).toBeNull()
+    expect(找("card-template-name-field")).toBeNull()
   })
 })
