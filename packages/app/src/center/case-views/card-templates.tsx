@@ -1,4 +1,4 @@
-import { createSignal, For, onMount, Show, type JSX } from "solid-js"
+import { createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { SelectV2 } from "@opencode-ai/ui/v2/select-v2"
@@ -35,6 +35,19 @@ const 状态类 = (态: 模板状态): string =>
 const 确认标题 = (类: 确认类): string => (类 === "转正" ? "转正这个模板？" : 类 === "停用" ? "停用这个模板？" : "恢复这个模板？")
 const 确认按钮 = (类: 确认类): string => (类 === "转正" ? "确认转正" : 类 === "停用" ? "确认停用" : "确认恢复")
 
+/** 材料下拉的空哨兵：`current` 落 `undefined` 会让 Kobalte 转非受控（同 Task 5 I1 的坑）。 */
+const 空材料项: 材料视图 = {
+  id: "",
+  path: "",
+  kind: "",
+  status: "已解析",
+  detail: null,
+  queueAhead: 0,
+  factCount: 0,
+  numberCount: 0,
+  parseable: false,
+}
+
 /**
  * 卡片模板列表（设计 §2 / §6）。分组：我的（启用中）/ 内置（只读）/ 已停用（折叠）。
  *
@@ -57,10 +70,19 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
   const [材料们, 设材料们] = createSignal<readonly 材料视图[]>([])
   const [材料错误, 设材料错误] = createSignal<string>()
 
+  /** 代次守卫：两次重拉乱序时，旧响应不得覆盖新列表（`#010-05`）。 */
+  let 读代次 = 0
+  onCleanup(() => {
+    读代次 += 1
+  })
+
   async function 读() {
+    const 本次 = ++读代次
     设载入(true)
     设错误(undefined)
-    const 回 = await props.api.list(props.projectId)
+    // 必须带 `含停用: true`：服务端默认只回启用中的行，不带就永远拿不到「已停用」分组（C1）。
+    const 回 = await props.api.list(props.projectId, true)
+    if (本次 !== 读代次) return
     设载入(false)
     if (回.kind === "error") {
       设错误(回.message)
@@ -82,18 +104,21 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
     })()
   })
 
-  const 我的们 = () => (行们() ?? []).filter((行) => 是用户模板id(行.id) && 行.disabled_at === null)
-  const 内置们 = () => (行们() ?? []).filter((行) => !是用户模板id(行.id))
-  const 停用们 = () => (行们() ?? []).filter((行) => 是用户模板id(行.id) && 行.disabled_at !== null)
+  // 分组一律由 `状态(行)` 派生（`#002-06`）：不在分组谓词里重写第二份分类判据。
+  const 我的们 = () => (行们() ?? []).filter((行) => 状态(行) !== "内置" && 状态(行) !== "已停用")
+  const 内置们 = () => (行们() ?? []).filter((行) => 状态(行) === "内置")
+  const 停用们 = () => (行们() ?? []).filter((行) => 状态(行) === "已停用")
   const 本次复核 = () => (复核材料() !== "" ? 复核材料() : (材料们()[0]?.id ?? ""))
 
   function 打开确认(类: 确认类, 行: 模板行) {
+    设确认中(false)
     设确认错误(undefined)
     设确认跳过(undefined)
     设待确认({ 类, 行 })
   }
 
   function 关确认框() {
+    设确认中(false)
     设待确认(undefined)
     设确认错误(undefined)
     设确认跳过(undefined)
@@ -102,6 +127,8 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
   async function 执行确认() {
     const 目标 = 待确认()
     if (目标 === undefined) return
+    // 响应回来时确认框可能已取消 / 换了目标：只认同一个对象引用，旧响应的错误与成功一律丢弃（`#010-05`）。
+    const 仍是当前 = () => 待确认() === 目标
     设确认中(true)
     if (目标.类 === "转正") {
       const 材料 = 本次复核()
@@ -111,6 +138,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
         return
       }
       const 回 = await props.api.verify({ projectId: props.projectId, id: 目标.行.id, materialId: 材料 })
+      if (!仍是当前()) return
       设确认中(false)
       if (回.kind === "error") {
         设确认错误(回.message)
@@ -126,6 +154,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
       目标.类 === "停用"
         ? await props.api.disable({ projectId: props.projectId, id: 目标.行.id })
         : await props.api.restore({ projectId: props.projectId, id: 目标.行.id })
+    if (!仍是当前()) return
     设确认中(false)
     if (回.kind === "error") {
       设确认错误(回.message)
@@ -354,8 +383,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               材料们={材料们()}
               onClose={() => 设抽屉(undefined)}
               onSaved={() => {
+                // 先取值再关抽屉：`<Show>` 的条件变假后再读 `状()` 会抛 `Stale read from <Show>.`（C2）。
+                const 是编辑 = 状().mode === "edit"
                 设抽屉(undefined)
-                设提示(状().mode === "edit" ? "已保存" : "已新建")
+                设提示(是编辑 ? "已保存" : "已新建")
                 void 读()
               }}
             />
@@ -386,15 +417,20 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
                         data-slot="card-template-confirm-material"
                         appearance="large"
                         options={[...材料们()]}
-                        current={材料们().find((项) => 项.id === 本次复核())}
+                        current={材料们().find((项) => 项.id === 本次复核()) ?? 空材料项}
                         value={(项) => 项.id}
                         label={(项) => 项.path}
                         placeholder="选择材料"
                         onSelect={(项) => {
-                          if (项 !== null) 设复核材料(项.id)
+                          if (项 !== null && 项.id !== "") 设复核材料(项.id)
                         }}
                       />
                     </label>
+                    <Show when={材料们().length === 0}>
+                      <p data-slot="card-template-confirm-nomaterial" class="text-[12px] text-v2-text-text-muted">
+                        先导入并解析材料，才能转正
+                      </p>
+                    </Show>
                   </Show>
                   <Show when={目标().类 === "停用"}>
                     <p>停用后：该模板不再参与自动选模板；已产出的卡片保留可追溯。可随时恢复。</p>
