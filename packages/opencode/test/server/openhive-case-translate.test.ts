@@ -303,3 +303,61 @@ describe("卡片 id（Q13：去版本）", () => {
     expect(r.卡片们[0]?.id).toBe(卡片id("p1", "m1", "Sheet1", 2, "资金"))
   })
 })
+
+describe("备注事实：商户 / 对象 / 摘要（P4 二期）", () => {
+  function 备注行(备注: string | null, over: Partial<FactRowInput> = {}): FactRowInput {
+    return {
+      projectId: "p1",
+      materialId: "m1",
+      sheet: "Sheet1",
+      rowNo: 2,
+      startedAt: 1731117303,
+      startedRaw: "2024-11-09 09:15:03",
+      precision: "到秒",
+      amount: "12.00",
+      balance: "100.00",
+      direction: "付",
+      counterparty: "6222021234567890123",
+      counterpartyName: "李四",
+      ownerAccount: "6217001234567896514",
+      currency: "CNY",
+      extras: { 备注: 备注 ?? "", 交易类型: "支付账户消费" },
+      ...over,
+    }
+  }
+
+  test("消费行：前两位不动，第三位是商户（ordinal 2、组织实体）", () => {
+    const r = 跑([备注行("备注：午餐##子商户名称：一号饭店")])
+    const 卡 = r.卡片们[0]!
+    expect(卡.participants.map((p) => p.角色)).toEqual(["付款方", "收款方", "商户"])
+    expect(卡.participants[2]).toMatchObject({
+      规范值: "一号饭店",
+      角色: "商户",
+      提及: "一号饭店",
+      ordinal: 2,
+      实体: true,
+      实体类型: "组织",
+    })
+    expect(卡.摘要).toBe("午餐")
+  })
+
+  test("对象按「商户 → 车辆 → 号码」追加，ordinal 递增", () => {
+    const r = 跑([备注行("停车缴费-湘A12345##子商户名称：一号停车场##电话13800138000")])
+    const 卡 = r.卡片们[0]!
+    expect(卡.participants.map((p) => p.角色)).toEqual(["付款方", "收款方", "商户", "车辆", "号码"])
+    expect(卡.participants.map((p) => p.ordinal)).toEqual([0, 1, 2, 3, 4])
+    expect(卡.participants[3]).toMatchObject({ 规范值: "湘A12345", 实体类型: "车辆" })
+    expect(卡.participants[4]).toMatchObject({ 规范值: "13800138000", 实体类型: "号码" })
+  })
+
+  test("转账行不抽商户（用途闸），摘要回退到收款方名", () => {
+    const r = 跑([
+      备注行("备注：微信转账;微信转账", {
+        extras: { 备注: "备注：微信转账;微信转账", 交易类型: "转账" },
+      }),
+    ])
+    const 卡 = r.卡片们[0]!
+    expect(卡.participants.map((p) => p.角色)).toEqual(["付款方", "收款方"])
+    expect(卡.摘要).toBe("李四")
+  })
+})

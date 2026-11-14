@@ -5,6 +5,7 @@ import { 归一化值, 是账户形状 } from "./case-field-registry"
 import { 解析属性列, type 属性归属 } from "./case-attribute-registry"
 import { 资金交易, type 事件类型 } from "./case-event-types"
 import { 判定用途, type 用途 } from "./case-purpose"
+import { 抽取备注事实, type 备注事实 } from "./case-remark-facts"
 import type { FactRowInput } from "./case-store"
 
 /**
@@ -29,20 +30,19 @@ export const 跳过原因们 = [
 ] as const
 export type 跳过原因 = (typeof 跳过原因们)[number]
 
+export type 实体类型 = "账户" | "组织" | "车辆" | "号码"
+
 export interface 卡片参与者 {
-  /** 归一化后的账号（`去横线` + 全角转半角）。 */
+  /** 归一化后的账号 / 商户名 / 车牌 / 手机号。 */
   规范值: string
-  角色: "付款方" | "收款方"
-  /**
-   * 参与者账号在**明细行**里的原文（设计 `01:800`「该格的原文」）。
-   * 取自 `FactRowInput.ownerAccountRaw / counterpartyRaw`（`toFactRows` 归一化前的值）；
-   * 掩码不匹配归一化，因此掩码原样保留（§4.0.5 坑 1）。
-   */
+  角色: "付款方" | "收款方" | "商户" | "车辆" | "号码"
+  /** 明细行里的原文；商户用解码后的值（`UTF8#` 编码串不给人看）。 */
   提及: string
-  /** 0 固定为主体（本方账户），1 为对手（§3.3）。 */
-  ordinal: 0 | 1
-  /** false = 源文件自带掩码或位数不足，不建账户实体（§4.0.5 坑 1）。 */
+  /** 0/1 恒为付款方/收款方；②层事实从 2 起递增。 */
+  ordinal: number
+  /** false = 源文件自带掩码或位数不足，不建实体（§4.0.5 坑 1）。 */
   实体: boolean
+  实体类型: 实体类型
 }
 
 export interface 卡片草稿 {
@@ -56,7 +56,9 @@ export interface 卡片草稿 {
   currency: string
   /** 只放不参与过滤的属性（余额）。 */
   attrs: Record<string, unknown>
-  participants: [卡片参与者, 卡片参与者]
+  participants: [卡片参与者, 卡片参与者, ...卡片参与者[]]
+  /** 备注事实摘要（17：给人看的一行字；回退链保证非空）。 */
+  摘要: string | null
   sheet: string
   rowNo: number
   /**
@@ -116,14 +118,18 @@ export function 卡片id(projectId: string, materialId: string, sheet: string, r
 }
 
 /**
- * 实体缓存键：`账户\u0000<规范值>`。
+ * 实体缓存键：`<类型>\u0000<规范值>`。
  *
- * 三处要用（写入器建 Map、关系重建取 id、属性按实体分组）——**只此一份**（`#002-06`）。
- * 各写一遍字面量，改了键格式却漏改一处，表现是「实体建了但关系/属性静默丢失」，
- * 而且测试各自只覆盖自己那条路径，谁也发现不了。
+ * 写入器建 Map、关系重建取 id、属性按实体分组三处共用——**只此一份**（`#002-06`）。
+ * 各写一遍字面量，改了键格式却漏改一处，表现是「实体建了但关系/属性静默丢失」。
  */
+export function 实体键(类型: 实体类型, 规范值: string): string {
+  return `${类型}\u0000${规范值}`
+}
+
+/** 账户专用薄别名：属性分组只挂账户，调用点不必重复写类型字面量。 */
 export function 账户键(规范值: string): string {
-  return `账户\u0000${规范值}`
+  return 实体键("账户", 规范值)
 }
 
 /**
@@ -178,6 +184,18 @@ function 备注文本(row: FactRowInput): string | null {
 function 交易类型文本(row: FactRowInput): string | null {
   const v = row.extras?.["交易类型"]
   return typeof v === "string" ? v : null
+}
+
+/** ②层事实 → 追加参与者。前两位恒为付款方/收款方（属性分组按位置取值）；顺序：商户→车辆→号码。 */
+function 备注事实参与者(事实: 备注事实): 卡片参与者[] {
+  const 出: 卡片参与者[] = []
+  const 加 = (规范值: string, 角色: "商户" | "车辆" | "号码", 实体类型: "组织" | "车辆" | "号码") => {
+    出.push({ 规范值, 角色, 提及: 规范值, ordinal: 2 + 出.length, 实体: true, 实体类型 })
+  }
+  if (事实.商户 !== null) 加(事实.商户, "商户", "组织")
+  for (const 牌 of 事实.车辆) 加(牌, "车辆", "车辆")
+  for (const 号 of 事实.号码) 加(号, "号码", "号码")
+  return 出
 }
 
 export function 翻译资金(input: 翻译资金输入): 翻译结果 {
@@ -249,6 +267,13 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
     // Number 的安全整数范围；去负号还能原样保留两位小数。
     const 金额 = row.amount.replace(/^-/, "")
 
+    const 用途 = 判定用途({ 备注: 备注文本(row), 交易类型: 交易类型文本(row), 方向: row.direction })
+    const 备注事实 = 抽取备注事实({
+      备注: 备注文本(row),
+      用途,
+      对手名: row.counterpartyName ?? row.counterparty ?? null,
+    })
+
     卡片们.push({
       id: 卡片id(input.projectId, input.materialId, row.sheet, row.rowNo, "资金"),
       type: 资金交易,
@@ -259,12 +284,14 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       currency: row.currency ?? "CNY",
       attrs,
       participants: [
-        { 规范值: 本方, 角色: 主体角色, 提及: 本方提及, ordinal: 0, 实体: 本方可建 },
-        { 规范值: 对方, 角色: 对手角色, 提及: 对方提及, ordinal: 1, 实体: 对方可建 },
+        { 规范值: 本方, 角色: 主体角色, 提及: 本方提及, ordinal: 0, 实体: 本方可建, 实体类型: "账户" },
+        { 规范值: 对方, 角色: 对手角色, 提及: 对方提及, ordinal: 1, 实体: 对方可建, 实体类型: "账户" },
+        ...备注事实参与者(备注事实),
       ],
       sheet: row.sheet,
       rowNo: row.rowNo,
-      用途: 判定用途({ 备注: 备注文本(row), 交易类型: 交易类型文本(row), 方向: row.direction }),
+      用途,
+      摘要: 备注事实.摘要,
     })
 
     const 本户 = 户名字段(row)
