@@ -160,6 +160,79 @@ describe("数据源档案 DAO", () => {
     ).rejects.toMatchObject({ code: "sheet_not_found" })
   })
 
+  // Critical 4：覆盖分支的 UPDATE 必须按 RETURNING 判 rowcount。
+  // 窗口构造：`建数据源档案` 先读活跃候选，随后才 UPDATE；用测试专用 BEFORE UPDATE 触发器
+  // 只让目标档案那一行「命中 0 行」，模拟「读取候选后、UPDATE 前档案被并发撤销」。
+  // （真 PG / PGlite 上都可稳定构造，不依赖时序与 sleep。）
+  test("覆盖时 UPDATE 命中 0 行 ⇒ conflict（不把并发撤销谎报成成功）", async () => {
+    const 项目 = "p-覆盖窗口"
+    await 种格式({ projectId: 项目, materialId: "m-覆盖窗口1", fingerprint: "fp-覆盖窗口1" })
+    const 一 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-覆盖窗口1" })
+    await db().execute(sql`
+      update auth.case_source_profile set updated_at = 1
+       where project_id = ${项目} and id = ${一.id}
+    `)
+    await 种格式({
+      projectId: 项目,
+      materialId: "m-覆盖窗口2",
+      fingerprint: "fp-覆盖窗口2",
+      fileName: "流水二号.xlsx",
+      mapping: { "0": "startedAt", "1": "balance", "2": "counterpartyName" },
+    })
+
+    await db().execute(sql.raw(`
+      create function openhive_test_block_update() returns trigger language plpgsql as $fn$
+      begin
+        return null;
+      end
+      $fn$
+    `))
+    await db().execute(sql.raw(`
+      create trigger openhive_test_block_update
+        before update on auth.case_source_profile
+        for each row when (old.id = '${一.id}')
+        execute function openhive_test_block_update()
+    `))
+    try {
+      const 错误 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-覆盖窗口2", 覆盖: true }).catch(
+        (错误: unknown) => 错误,
+      )
+      // 错误码必须是 conflict（可重试语义），不是「成功」也不是泛化失败。
+      expect(错误).toMatchObject({ code: "conflict" })
+    } finally {
+      await db().execute(sql`drop trigger if exists openhive_test_block_update on auth.case_source_profile`)
+      await db().execute(sql`drop function if exists openhive_test_block_update()`)
+    }
+
+    // 触发器撤掉后正常覆盖仍能 Update 到行：证明上面的红不是因为「覆盖永远失败」。
+    const 覆盖 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-覆盖窗口2", 覆盖: true })
+    expect(覆盖.id).toBe(一.id)
+    expect(覆盖.created).toBe(false)
+    const 列表 = await 列出数据源档案(db(), { projectId: 项目 })
+    expect(列表[0]?.mapping).toEqual({
+      交易时间: "startedAt",
+      交易金额: "balance",
+      对方户名: "counterpartyName",
+    })
+  })
+
+  // 已撤销的档案不参与候选 ⇒ 不会被「覆盖」回活跃态，而是新建一行；旧行保持撤销。
+  test("已撤销的档案不会再被覆盖：同格式再建档新建一行，旧行保持撤销", async () => {
+    const 项目 = "p-撤后覆盖"
+    await 种格式({ projectId: 项目, materialId: "m-撤后覆盖", fingerprint: "fp-撤后覆盖" })
+    const 一 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-撤后覆盖" })
+    expect(await 撤销数据源档案(db(), { projectId: 项目, id: 一.id })).toBe(true)
+
+    const 二 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-撤后覆盖", 覆盖: true })
+    expect(二.created).toBe(true)
+    expect(二.id).not.toBe(一.id)
+
+    const 全部 = await 列出数据源档案(db(), { projectId: 项目, 含撤销: true })
+    expect(全部).toHaveLength(2)
+    const 旧 = 全部.find((行) => 行.id === 一.id)
+    expect(旧?.revoked_at).not.toBeNull()
+  })
+
   test("撤销：第一次 true，第二次 false；默认列表隐藏，含撤销可见", async () => {
     await 种格式({ projectId: "p-撤", materialId: "m-撤", fingerprint: "fp-撤" })
     const { id } = await 建数据源档案(db(), { projectId: "p-撤", materialId: "m-撤" })

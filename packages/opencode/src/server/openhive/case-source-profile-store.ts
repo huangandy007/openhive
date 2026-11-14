@@ -284,12 +284,21 @@ export async function 建数据源档案(
       }
       // 覆盖只换映射；没显式给 name 就保留原名，别把用户改过的名字悄悄重置成默认值。
       const 覆盖后名 = (input.name ?? "").trim() || 最像.name
-      await tx.execute(sql`
-        update auth.case_source_profile
-           set name = ${覆盖后名}, header_set = ${JSON.stringify(headerSet)}::text::jsonb,
-               mapping = ${JSON.stringify(mapping)}::text::jsonb, updated_at = ${now}
-         where project_id = ${input.projectId} and id = ${最像.id} and revoked_at is null
-      `)
+      // 必须按 RETURNING 判 rowcount：候选是**之前**读到的，读取与 UPDATE 之间档案可能被并发
+      // 撤销（`where revoked_at is null` 命中 0 行）。此时报成功等于谎报——调用方会以为
+      // 映射已改写，实际旧行仍是撤销态（`#013-06`：改指即留痕，判据要取改指语句自己的返回）。
+      const 更新行们 = rowsOf(
+        await tx.execute(sql`
+          update auth.case_source_profile
+             set name = ${覆盖后名}, header_set = ${JSON.stringify(headerSet)}::text::jsonb,
+                 mapping = ${JSON.stringify(mapping)}::text::jsonb, updated_at = ${now}
+           where project_id = ${input.projectId} and id = ${最像.id} and revoked_at is null
+          returning id
+        `),
+      )
+      if (更新行们.length === 0) {
+        throw new 档案错误("conflict", "档案已被撤销，请重新建档")
+      }
       return { id: 最像.id, created: false }
     }
 
