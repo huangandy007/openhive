@@ -241,11 +241,11 @@ export async function 确保内置模板(db: Queryable, projectId: string): Prom
   return 资金模板id
 }
 
-/** 读回模板行（P4 编辑器与验收要用；本期只有测试用）。 */
+/** 读回模板行（P4 编辑器与验收要用；类型化读口是 store 的 `读模板行`）。 */
 export async function 读模板(db: Queryable, projectId: string, id: string) {
   const 行 = rowsOf(
     await db.execute(sql`
-      select id, name, event_type, slots, required, version, verified_at, hit_count
+      select id, name, event_type, slots, required, version, verified_at, hit_count, disabled_at
         from auth.case_card_template
        where project_id = ${projectId} and id = ${id}
     `),
