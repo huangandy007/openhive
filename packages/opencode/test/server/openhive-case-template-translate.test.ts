@@ -288,6 +288,31 @@ describe("模板翻译引擎（§8）", () => {
     expect(正常账?.participants[0]?.实体).toBe(true)
   })
 
+  test("掩码值不建实体：名称 / 地址类字段同样受值级掩码闸约束（§8.2）", () => {
+    const 户名模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "ownerName" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁"],
+    }
+    // 户名形状只要求非空：没有值级掩码闸时 `138****0001` 会通过形状闸建出含 `*` 的「人」实体。
+    const 掩码户名 = 跑(户名模板, [造行({ startedAt: 1, extras: { ownerName: "138****0001" } })]).卡片们[0]
+    expect(掩码户名?.participants[0]?.实体).toBe(false)
+    expect(掩码户名?.participants[0]?.规范值).toBe("138****0001")
+    // 同一字段的正常值不受影响。
+    const 正常户名 = 跑(户名模板, [造行({ startedAt: 1, extras: { ownerName: "张三" } })]).卡片们[0]
+    expect(正常户名?.participants[0]?.实体).toBe(true)
+
+    const 商户模板: 模板行 = {
+      ...通话模板,
+      event_type: "见面",
+      slots: { 谁: [{ 字段: "merchant" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁"],
+    }
+    // 全角星号与半角同判。
+    const 掩码商户 = 跑(商户模板, [造行({ startedAt: 1, extras: { merchant: "某某＊饭店" } })]).卡片们[0]
+    expect(掩码商户?.participants[0]?.实体).toBe(false)
+  })
+
   test("摘要超 200 字被截断并加省略号", () => {
     const 长 = "长".repeat(300)
     const 卡 = 跑(通话模板, [

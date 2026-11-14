@@ -212,6 +212,9 @@ export async function 转正模板(
   if (行 === undefined) {
     // UPDATE 0 行有两种成因：并发转正已经写成（再读一次 ⇒ 幂等 `already`），或版本被改
     // ⇒ `state_changed`。不重读就会把「另一个请求刚转正」误报成「你预览期间被改了」（§10.4）。
+    // 0 行本身就是权威信号（单语句 UPDATE + 独立 SELECT）：并发事务未提交时这里读不到新值，
+    // 最多误报 `state_changed`，客户端重试会在预读分支拿到 `already`。
+    // 注意：串行 PGlite 下第二个请求在预读分支就早退，此支不可达，无并发用例覆盖。
     const 最新 = await 读模板行(db, input.projectId, input.id)
     if (最新 !== undefined && 最新.verified_at !== null) {
       return { verified_at: 最新.verified_at, version: 最新.version, already: true }
