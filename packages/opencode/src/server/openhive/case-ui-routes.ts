@@ -17,7 +17,20 @@ import { 列出数据源档案, 建数据源档案, 撤销数据源档案, 档�
 import { 单位闸放行, 是识别字段 } from "./case-field-registry"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
-import type { Queryable } from "./case-store"
+import { getMaterial, 读材料事实行, type Queryable } from "./case-store"
+import {
+  列出模板,
+  读模板行,
+  建模板,
+  改模板,
+  停用模板,
+  转正模板,
+  草稿模板行,
+  模板错误,
+} from "./case-card-template-store"
+import { 检查模板定义, 是用户模板id, type 模板定义, type 模板行 } from "./case-card-template"
+import { 翻译模板 } from "./case-template-translate"
+import type { 卡片草稿 } from "./case-translate"
 
 /**
  * 案件视图的读取出口（计划 7）：实体清单 / 实体档案 / 材料事实 / 关系图 / 时间线 / 资金，
@@ -54,6 +67,12 @@ export const PATH = {
   sourceProfiles: `${PREFIX}/source-profiles`,
   sourceProfileBuild: `${PREFIX}/source-profile/build`,
   sourceProfileRevoke: `${PREFIX}/source-profile/revoke`,
+  cardTemplates: `${PREFIX}/card-templates`,
+  cardTemplateCreate: `${PREFIX}/card-template/create`,
+  cardTemplateUpdate: `${PREFIX}/card-template/update`,
+  cardTemplateDisable: `${PREFIX}/card-template/disable`,
+  cardTemplatePreview: `${PREFIX}/card-template/preview`,
+  cardTemplateVerify: `${PREFIX}/card-template/verify`,
 } as const
 
 interface Deps {
@@ -83,6 +102,12 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.sourceProfiles, (request) => handleSourceProfiles(request, deps))
     yield* router.add("POST", PATH.sourceProfileBuild, (request) => handleSourceProfileBuild(request, deps))
     yield* router.add("POST", PATH.sourceProfileRevoke, (request) => handleSourceProfileRevoke(request, deps))
+    yield* router.add("GET", PATH.cardTemplates, (request) => handleCardTemplates(request, deps))
+    yield* router.add("POST", PATH.cardTemplateCreate, (request) => handleCardTemplateCreate(request, deps))
+    yield* router.add("POST", PATH.cardTemplateUpdate, (request) => handleCardTemplateUpdate(request, deps))
+    yield* router.add("POST", PATH.cardTemplateDisable, (request) => handleCardTemplateDisable(request, deps))
+    yield* router.add("POST", PATH.cardTemplatePreview, (request) => handleCardTemplatePreview(request, deps))
+    yield* router.add("POST", PATH.cardTemplateVerify, (request) => handleCardTemplateVerify(request, deps))
   }),
 )
 
@@ -643,5 +668,313 @@ function handleSourceProfileRevoke(request: HttpServerRequest.HttpServerRequest,
 
     const 撤销 = yield* Effect.promise(() => 撤销数据源档案(deps.pg(), { projectId: projectId!, id }))
     return 撤销 ? ok({ ok: true }) : fail(404, "没有这个档案或已撤销", "not_found")
+  })
+}
+
+/**
+ * 卡片模板六口（P4 Task 5，§10）。
+ *
+ * 权限口径：列表与预览是**成员**（`过门` 非属主分支），建 / 改 / 停用 / 转正是**属主**。
+ * 写口次序沿用本文件口径（R51）：身份最先（未登录不因体坏先回 400）→ 读体 → 形状与词表校验
+ * → 门（`要属主`）→ DAO。判定全在 `case-card-template-store.ts`，这里只翻错误码。
+ *
+ * 预览是**只读口**：不落库、不调模型、不记 `hit_count`（§10.3）。`templateId` 与 `template`
+ * 二选一；给草稿时用 `草稿模板行` 造伪行（卡片 id 槽位固定「预览」）。
+ */
+function 读定义(
+  body: Record<string, unknown>,
+): { name: string; eventType: string; slots: unknown; required: unknown } | undefined {
+  const name = body["name"]
+  const eventType = body["eventType"]
+  const slots = body["slots"]
+  const required = body["required"]
+  // 形状闸：`检查模板定义` 对非字符串 name / eventType 会直接 `.trim()` 抛 TypeError ⇒ 500。
+  if (typeof name !== "string" || typeof eventType !== "string") return undefined
+  if (typeof slots !== "object" || slots === null || Array.isArray(slots)) return undefined
+  if (!Array.isArray(required) || required.some((项) => typeof 项 !== "string")) return undefined
+  return { name, eventType, slots, required }
+}
+
+function 翻模板错误(错误: 模板错误) {
+  if (错误.code === "not_found") return fail(404, 错误.message, "not_found")
+  if (错误.code === "state_changed") return fail(409, 错误.message, "state_changed")
+  return fail(错误.code === "bad_request" ? 400 : 409, 错误.message, 错误.code)
+}
+
+/** DAO 调用统一捕 `模板错误`，其余照抛（defect ⇒ 500+ref）。 */
+function 跑模板<T>(工作: () => Promise<T>) {
+  return Effect.promise(() =>
+    工作().then(
+      (值) => ({ 值 }),
+      (错误: unknown) => {
+        if (错误 instanceof 模板错误) return { 错误 }
+        throw 错误
+      },
+    ),
+  )
+}
+
+function handleCardTemplates(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 参数 = new URL(request.url, "http://localhost").searchParams
+    const 门 = yield* 过门(deps, 参数.get("projectId"))
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    const 含停用 = 参数.get("含停用")
+    if (含停用 !== null && 含停用 !== "true" && 含停用 !== "false") {
+      return fail(400, "含停用 只能是 true / false", "bad_request")
+    }
+    const list = yield* Effect.promise(() =>
+      列出模板(deps.pg(), { projectId: 参数.get("projectId")!, 含停用: 含停用 === "true" }),
+    )
+    return ok({ list })
+  })
+}
+
+function handleCardTemplateCreate(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const 定义 = 读定义(body)
+    if (定义 === undefined) return fail(400, "模板定义字段不全或类型不对", "bad_request")
+    const 检查 = 检查模板定义(定义)
+    if (检查.错.length > 0) return fail(400, 检查.错.join("；"), "bad_request")
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护卡片模板",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    const 结果 = yield* 跑模板(() => 建模板(deps.pg(), { projectId: projectId!, 定义: 检查.值! }))
+    if ("错误" in 结果) return 翻模板错误(结果.错误)
+    return ok(结果.值)
+  })
+}
+
+function handleCardTemplateUpdate(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const id = body["id"]
+    if (typeof id !== "string" || id === "") return fail(400, "id 必填", "bad_request")
+    const 定义 = 读定义(body)
+    if (定义 === undefined) return fail(400, "模板定义字段不全或类型不对", "bad_request")
+    const 检查 = 检查模板定义(定义)
+    if (检查.错.length > 0) return fail(400, 检查.错.join("；"), "bad_request")
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护卡片模板",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    const 结果 = yield* 跑模板(() => 改模板(deps.pg(), { projectId: projectId!, id, 定义: 检查.值! }))
+    if ("错误" in 结果) return 翻模板错误(结果.错误)
+    return ok(结果.值)
+  })
+}
+
+function handleCardTemplateDisable(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const id = body["id"]
+    if (typeof id !== "string" || id === "") return fail(400, "id 必填", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护卡片模板",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const 停 = yield* 跑模板(() => 停用模板(deps.pg(), { projectId: projectId!, id }))
+    if ("错误" in 停) return 翻模板错误(停.错误)
+    return 停.值 ? ok({ ok: true }) : fail(404, "没有这个模板或已停用", "not_found")
+  })
+}
+
+/** 预览输出（§10.3）：`卡片们` 只给编辑器要画的字段。 */
+interface 预览输出 {
+  卡片数: number
+  跳过: Record<string, number>
+  卡片们: ReturnType<typeof 预览卡>[]
+  工作表们: { sheet: string; 卡片数: number; 跳过: Record<string, number> }[]
+}
+
+/** 可判别联合：成功 / 失败各带自己的字段，调用处 `if (!结果.ok)` 一次分流（不用 `as`）。 */
+type 预览结果 = { ok: true; 预览: 预览输出 } | { ok: false; 状态: 404 | 409; code: string; error: string }
+
+async function 跑预览(
+  db: Queryable,
+  input: { projectId: string; materialId: string; 模板: 模板行 },
+): Promise<预览结果> {
+  const 材料 = await getMaterial(db, input.projectId, input.materialId)
+  if (材料 === undefined) return { ok: false, 状态: 404, code: "material_not_found", error: "找不到这份材料" }
+  const 表们 = 预览表们(材料.parseDetail)
+  if (材料.parseStatus !== "已解析" || 表们.length === 0 || 表们.some((表) => !表.有列)) {
+    return {
+      ok: false,
+      状态: 409,
+      code: "material_not_ready",
+      error: "这份材料还没有可预览的解析结果（旧材料需要重新解析）",
+    }
+  }
+  const 卡片们: ReturnType<typeof 预览卡>[] = []
+  const 跳过合计: Record<string, number> = {}
+  const 表回执们: { sheet: string; 卡片数: number; 跳过: Record<string, number> }[] = []
+  for (const 表 of 表们) {
+    const 行们 = await 读材料事实行(db, input.projectId, input.materialId, 表.sheet, 20)
+    const 翻译 = 翻译模板({
+      projectId: input.projectId,
+      materialId: input.materialId,
+      template: input.模板,
+      rows: 行们,
+    })
+    const 跳过: Record<string, number> = {}
+    for (const 条 of 翻译.跳过们) 跳过[条.原因] = (跳过[条.原因] ?? 0) + 1
+    for (const [原因, 数] of Object.entries(跳过)) 跳过合计[原因] = (跳过合计[原因] ?? 0) + 数
+    表回执们.push({ sheet: 表.sheet, 卡片数: 翻译.卡片们.length, 跳过 })
+    for (const 卡 of 翻译.卡片们) 卡片们.push(预览卡(卡))
+  }
+  return { ok: true, 预览: { 卡片数: 卡片们.length, 跳过: 跳过合计, 卡片们, 工作表们: 表回执们 } }
+}
+
+function 是记录值(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
+}
+
+/** parse_detail.mapping.工作表 的条目；`列` 是「这份材料可预览」的判据（§10.3）。 */
+function 预览表们(detail: unknown): { sheet: string; 有列: boolean }[] {
+  if (!是记录值(detail)) return []
+  const mapping = detail["mapping"]
+  if (!是记录值(mapping)) return []
+  const 表 = mapping["工作表"]
+  if (!是记录值(表)) return []
+  return Object.entries(表).flatMap(([sheet, 值]) => (是记录值(值) ? [{ sheet, 有列: 是记录值(值["列"]) }] : []))
+}
+
+/** 预览卡的响应形状（§10.3）：只给编辑器要画的字段，不暴露内部类型。 */
+function 预览卡(卡: 卡片草稿) {
+  return {
+    id: 卡.id,
+    type: 卡.type,
+    摘要: 卡.摘要,
+    occurredAt: 卡.occurredAt,
+    occurredRaw: 卡.occurredRaw,
+    precision: 卡.precision,
+    occurredEnd: 卡.occurredEnd ?? null,
+    amount: 卡.amount,
+    currency: 卡.currency,
+    attrs: 卡.attrs,
+    参与者们: 卡.participants.map((p) => ({
+      角色: p.角色,
+      提及: p.提及,
+      规范值: p.规范值,
+      实体: p.实体,
+      实体类型: p.实体类型,
+      ordinal: p.ordinal,
+    })),
+    出处: { sheet: 卡.sheet, rowNo: 卡.rowNo },
+    跳过: null,
+  }
+}
+
+function handleCardTemplatePreview(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : ""
+    const materialId = body["materialId"]
+    if (typeof materialId !== "string" || materialId === "") return fail(400, "materialId 必填", "bad_request")
+    const templateId = body["templateId"]
+    const template = body["template"]
+    if ((templateId === undefined) === (template === undefined)) {
+      return fail(400, "templateId 与 template 必须二选一", "bad_request")
+    }
+    let 草稿: 模板定义 | undefined
+    if (template !== undefined) {
+      const 定义 = isRecord(template) ? 读定义(template) : undefined
+      if (定义 === undefined) return fail(400, "template 字段不全或类型不对", "bad_request")
+      const 检查 = 检查模板定义(定义)
+      if (检查.值 === undefined) return fail(400, 检查.错.join("；"), "bad_request")
+      草稿 = 检查.值
+    }
+
+    // 预览是只读口：成员即可（不写库、不计命中）。
+    const 门 = yield* 过门(deps, projectId, { 已知身份: 用户.value })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    let 选中: 模板行 | undefined
+    if (草稿 !== undefined) {
+      选中 = 草稿模板行(草稿)
+    } else if (typeof templateId === "string" && templateId !== "") {
+      选中 = yield* Effect.promise(() => 读模板行(deps.pg(), projectId, templateId))
+      if (选中 === undefined || 选中.disabled_at !== null) return fail(404, "没有这个模板", "not_found")
+    }
+    if (选中 === undefined) return fail(400, "templateId 与 template 必须二选一", "bad_request")
+    const 模板 = 选中
+
+    const 结果 = yield* Effect.promise(() => 跑预览(deps.pg(), { projectId, materialId, 模板 }))
+    if (!结果.ok) return fail(结果.状态, 结果.error, 结果.code)
+    return ok(结果.预览)
+  })
+}
+
+function handleCardTemplateVerify(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : ""
+    const id = body["id"]
+    const materialId = body["materialId"]
+    if (typeof id !== "string" || id === "") return fail(400, "id 必填", "bad_request")
+    if (typeof materialId !== "string" || materialId === "") return fail(400, "materialId 必填", "bad_request")
+    const 期望版本 = body["expectedVersion"]
+    if (期望版本 !== undefined && (typeof 期望版本 !== "number" || !Number.isInteger(期望版本))) {
+      return fail(400, "expectedVersion 必须是整数", "bad_request")
+    }
+
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护卡片模板",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const 模板 = yield* Effect.promise(() => 读模板行(deps.pg(), projectId, id))
+    if (模板 === undefined || 模板.disabled_at !== null) return fail(404, "没有这个模板", "not_found")
+    if (!是用户模板id(模板.id)) return fail(409, "内置模板由代码规则维护，不能修改/停用/转正", "immutable")
+
+    const 预览 = yield* Effect.promise(() => 跑预览(deps.pg(), { projectId, materialId, 模板 }))
+    if (!预览.ok) return fail(预览.状态, 预览.error, 预览.code)
+    const { 卡片数, 跳过 } = 预览.预览
+    if (模板.verified_at !== null) {
+      return ok({ verified_at: 模板.verified_at, 卡片数, 跳过, already: true })
+    }
+    if (卡片数 === 0) return fail(400, "预览没有产出任何卡片：请检查必填槽与数据", "preview_failed")
+    // 没给 expectedVersion 就用刚才读到的版本：「有卡可看」这件事已经发生过，版本只在
+    // 预览与转正之间被改过时才有意义；DAO 的 `version = $expected` 是最终一致性闸。
+    const 结果 = yield* 跑模板(() =>
+      转正模板(deps.pg(), {
+        projectId,
+        id,
+        expectedVersion: typeof 期望版本 === "number" ? 期望版本 : 模板.version,
+      }),
+    )
+    if ("错误" in 结果) return 翻模板错误(结果.错误)
+    return ok({ verified_at: 结果.值.verified_at, 卡片数, 跳过 })
   })
 }
