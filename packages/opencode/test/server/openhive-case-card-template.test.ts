@@ -19,9 +19,14 @@ import {
   校验模板定义,
   检查模板定义,
   建议模板,
+  模板词表,
+  不能建用户模板原因,
+  九格们,
   type 模板行,
 } from "../../src/server/openhive/case-card-template"
-import { 字段显示名, 是识别字段, type 识别字段 } from "../../src/server/openhive/case-field-registry"
+import { 字段目录, 字段显示名, 是识别字段, type 识别字段 } from "../../src/server/openhive/case-field-registry"
+import { 事件类型们 } from "../../src/server/openhive/case-event-types"
+import { 实体类型们 } from "../../src/server/openhive/case-extract"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
@@ -503,5 +508,53 @@ describe("自动建议模板（§7.4）", () => {
   test("停用 / 内置不参与建议", () => {
     expect(建议模板([模板({ disabled_at: 1 })], 字段集("caller", "startedAt"))).toBeUndefined()
     expect(建议模板([模板({ id: 资金模板id })], 字段集("caller", "startedAt"))).toBeUndefined()
+  })
+})
+
+describe("模板词表（词表口的数据源）", () => {
+  test("同源双向：槽可选字段 ⟺ 校验槽位种类放行（17 字段 × 7 槽）", () => {
+    const 词表 = 模板词表()
+    const 字段们 = Object.keys(字段目录) as 识别字段[]
+    for (const 槽名 of 词表.槽们) {
+      for (const 字段 of 字段们) {
+        const 放行 = 校验槽位种类({ [槽名]: { 字段 } }).length === 0
+        expect(词表.槽可选字段们[槽名].includes(字段)).toBe(放行)
+      }
+    }
+  })
+
+  test("绝对值：其他拒收 金额/时间/方向；何地只收地点；谁不收金额；时长/余额放行", () => {
+    const 词表 = 模板词表()
+    expect([...词表.其他不可选种类]).toEqual(["金额", "时间", "方向"])
+    expect(词表.槽可选字段们.其他).not.toContain("amount")
+    expect(词表.槽可选字段们.其他).not.toContain("startedAt")
+    expect(词表.槽可选字段们.其他).not.toContain("direction")
+    expect(词表.槽可选字段们.其他).toContain("durationSec")
+    expect(词表.槽可选字段们.其他).toContain("balance")
+    expect(词表.槽可选字段们.何地).toEqual(["address"])
+    expect(词表.槽可选字段们.谁).toContain("caller")
+    expect(词表.槽可选字段们.谁).not.toContain("amount")
+    expect(词表.槽可选字段们.和谁).toContain("merchant")
+  })
+
+  test("事件类型九种全列；资金交易 / 住宿不可选且带同一句原因", () => {
+    const 词表 = 模板词表()
+    expect(词表.事件类型们.map((项) => 项.值)).toEqual([...事件类型们])
+    for (const 项 of 词表.事件类型们) {
+      expect(项.可选).toBe(!(项.值 === "资金交易" || 项.值 === "住宿"))
+      if (!项.可选) expect(项.原因).toBe(不能建用户模板原因)
+    }
+  })
+
+  test("角色 / 默认角色 / 实体类型 / 必填恒含 / 字段显示名都是常量原样", () => {
+    const 词表 = 模板词表()
+    expect(词表.槽们).toEqual(["谁", "和谁", "何时", "何时止", "何地", "多少钱", "其他"])
+    expect(词表.角色们.map((项) => 项.值)).toEqual([...角色们])
+    expect(词表.角色们.filter((项) => 项.地点类).map((项) => 项.值)).toEqual([...地点角色们])
+    expect(词表.默认角色).toEqual(默认角色)
+    expect(词表.实体类型们).toEqual([...实体类型们])
+    expect(词表.必填恒含).toBe("谁")
+    expect(词表.字段们.map((项) => 项.值)).toEqual(Object.keys(字段目录) as 识别字段[])
+    expect(词表.字段们.find((项) => 项.值 === "caller")?.显示名).toBe(字段显示名.caller)
   })
 })

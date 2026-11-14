@@ -28,7 +28,7 @@ import {
   草稿模板行,
   模板错误,
 } from "./case-card-template-store"
-import { 检查模板定义, 是用户模板id, type 模板定义, type 模板行 } from "./case-card-template"
+import { 检查模板定义, 模板词表, 是用户模板id, type 模板定义, type 模板行 } from "./case-card-template"
 import { 翻译模板 } from "./case-template-translate"
 import type { 卡片草稿 } from "./case-translate"
 
@@ -73,6 +73,8 @@ export const PATH = {
   cardTemplateDisable: `${PREFIX}/card-template/disable`,
   cardTemplatePreview: `${PREFIX}/card-template/preview`,
   cardTemplateVerify: `${PREFIX}/card-template/verify`,
+  cardTemplateVocab: `${PREFIX}/card-template/vocab`,
+  cardTemplateRestore: `${PREFIX}/card-template/restore`,
 } as const
 
 interface Deps {
@@ -108,6 +110,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.cardTemplateDisable, (request) => handleCardTemplateDisable(request, deps))
     yield* router.add("POST", PATH.cardTemplatePreview, (request) => handleCardTemplatePreview(request, deps))
     yield* router.add("POST", PATH.cardTemplateVerify, (request) => handleCardTemplateVerify(request, deps))
+    yield* router.add("GET", PATH.cardTemplateVocab, (request) => handleCardTemplateVocab(request))
   }),
 )
 
@@ -720,6 +723,18 @@ function 跑模板<T>(工作: () => Promise<T>) {
       },
     ),
   )
+}
+
+/**
+ * 词表口（设计 §3）：登录即可，不查项目。词表是代码常量，没有项目差异；
+ * 前端拿它渲染下拉，服务端保存时仍按同一份规则校验（词表只省一次往返，不是授权边界）。
+ */
+function handleCardTemplateVocab(_request: HttpServerRequest.HttpServerRequest) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+    return ok(模板词表())
+  })
 }
 
 function handleCardTemplates(request: HttpServerRequest.HttpServerRequest, deps: Deps) {

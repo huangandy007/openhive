@@ -621,4 +621,23 @@ describe("预览与转正（§10.3 / §10.4）", () => {
       expect((yield* 读回<{ code: string }>(响应)).code).toBe("material_not_ready")
     }),
   )
+
+  it("词表口：未登录 ⇒ 401；成员登录 ⇒ 200，键齐全（无 projectId 参数）", () =>
+    Effect.gen(function* () {
+      expect((yield* 发(null, "/openhive/case/card-template/vocab")).status).toBe(401)
+      const 响应 = yield* 发(成员, "/openhive/case/card-template/vocab")
+      expect(响应.status).toBe(200)
+      const 体 = yield* 读回<{
+        槽们: string[]
+        事件类型们: { 值: string; 可选: boolean }[]
+        槽可选字段们: Record<string, string[]>
+        必填恒含: string
+      }>(响应)
+      expect(体.槽们).toHaveLength(7)
+      expect(体.事件类型们).toHaveLength(9)
+      expect(体.事件类型们.filter((项) => !项.可选).map((项) => 项.值)).toEqual(["资金交易", "住宿"])
+      expect(体.槽可选字段们["其他"]).toContain("durationSec")
+      expect(体.必填恒含).toBe("谁")
+    }),
+  )
 })

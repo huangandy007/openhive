@@ -6,12 +6,13 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 文本数组 } from "./case-fact-store"
 import {
   字段目录,
+  字段显示名,
   是识别字段,
   type 字段种类,
   type 识别字段,
 } from "./case-field-registry"
 import { 实体类型们 } from "./case-extract"
-import { 资金交易, 是事件类型, type 事件类型 } from "./case-event-types"
+import { 资金交易, 事件类型们, 是事件类型, type 事件类型 } from "./case-event-types"
 import type { Queryable } from "./case-store"
 
 /**
@@ -150,6 +151,15 @@ const 槽允许种类: { readonly [K in 槽]: readonly 字段种类[] } = {
  */
 const 其他拒收种类: readonly 字段种类[] = ["金额", "时间", "方向"]
 
+/**
+ * 某槽是否收某字段。**校验与词表共用这一条**（`#002-06`）：词表口若自己再写一遍
+ * `槽允许种类` 的包含判断，下一次改词就是两处漂移的开始。
+ */
+function 槽收字段(槽名: 槽, 字段: 识别字段): boolean {
+  const 种类 = 字段目录[字段].种类
+  return 槽名 === "其他" ? !其他拒收种类.includes(种类) : 槽允许种类[槽名].includes(种类)
+}
+
 function 是记录(值: unknown): 值 is Record<string, unknown> {
   return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
 }
@@ -203,12 +213,11 @@ export function 校验槽位种类(槽位: unknown): string[] {
         错.push(`「${槽名}」的字段 ${String(字段)} 不在字段词表里`)
         continue
       }
-      const 种类 = 字段目录[字段].种类
-      if (槽名 === "其他") {
-        if (其他拒收种类.includes(种类)) 错.push(`「其他」不收 ${种类} 类字段（${字段}）`)
-        continue
+      if (!槽收字段(槽名, 字段)) {
+        const 种类 = 字段目录[字段].种类
+        if (槽名 === "其他") 错.push(`「其他」不收 ${种类} 类字段（${字段}）`)
+        else 错.push(`「${槽名}」不收 ${种类} 类字段（${字段}）`)
       }
-      if (!槽允许种类[槽名].includes(种类)) 错.push(`「${槽名}」不收 ${种类} 类字段（${字段}）`)
     }
   }
   return 错
@@ -400,6 +409,9 @@ function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): strin
 const 单值槽: ReadonlySet<string> = new Set(["谁", "何时", "何时止", "多少钱"])
 const 模板填法上限 = 100
 
+/** 不能由用户建模板的两类事件（§4.7.5）：算法负责，配置化就是批量静默错误的入口。 */
+export const 不能建用户模板原因 = "资金交易由方向算法负责、住宿由区间合并负责，不能建用户模板"
+
 /**
  * 模板定义的完整校验（§6.3 十条）。返回错误清单（空 = 通过）+ 规范化结果。
  *
@@ -414,7 +426,7 @@ export function 检查模板定义(定义: 模板定义输入): { 错: string[];
   const eventType = 定义.eventType.trim()
   if (!是事件类型(eventType)) 错.push(`未知的事件类型：${定义.eventType}`)
   else if (eventType === 资金交易 || eventType === "住宿") {
-    错.push("资金交易由方向算法负责、住宿由区间合并负责，不能建用户模板")
+    错.push(不能建用户模板原因)
   }
 
   const slots = 定义.slots
@@ -459,6 +471,46 @@ export function 检查模板定义(定义: 模板定义输入): { 错: string[];
 /** HTTP 层只看错误（§6.3）。 */
 export function 校验模板定义(定义: 模板定义输入): string[] {
   return 检查模板定义(定义).错
+}
+
+export interface 模板词表 {
+  readonly 槽们: readonly 槽[]
+  readonly 事件类型们: readonly { readonly 值: 事件类型; readonly 可选: boolean; readonly 原因?: string }[]
+  readonly 字段们: readonly { readonly 值: 识别字段; readonly 显示名: string; readonly 种类: 字段种类 }[]
+  readonly 槽可选字段们: { readonly [K in 槽]: readonly 识别字段[] }
+  readonly 其他不可选种类: readonly 字段种类[]
+  readonly 角色们: readonly { readonly 值: 角色; readonly 地点类: boolean }[]
+  readonly 默认角色: { readonly 谁: 角色; readonly 和谁: 角色; readonly 何地: 角色 }
+  readonly 实体类型们: readonly string[]
+  readonly 必填恒含: 槽
+}
+
+/**
+ * 编辑器词表（设计 §3）：**零新判据**，全部从现有常量派生。
+ *
+ * 前端拿数组直接渲染，不再自己判「哪个槽收哪类字段」——同一条规则两处各写一遍，
+ * 下一次加字段时必有一边忘改（`#002-06`）。改词表 = 改本文件的源常量，前端刷新即换代。
+ */
+export function 模板词表(): 模板词表 {
+  const 字段们 = Object.keys(字段目录) as 识别字段[]
+  const 槽可选 = Object.fromEntries(
+    九格们.map((槽名) => [槽名, 字段们.filter((字段) => 槽收字段(槽名, 字段))]),
+  ) as Record<槽, 识别字段[]>
+  return {
+    槽们: 九格们,
+    事件类型们: 事件类型们.map((值) =>
+      值 === 资金交易 || 值 === "住宿"
+        ? { 值, 可选: false, 原因: 不能建用户模板原因 }
+        : { 值, 可选: true },
+    ),
+    字段们: 字段们.map((值) => ({ 值, 显示名: 字段显示名[值], 种类: 字段目录[值].种类 })),
+    槽可选字段们: 槽可选,
+    其他不可选种类: 其他拒收种类,
+    角色们: 角色们.map((值) => ({ 值, 地点类: 地点角色集.has(值) })),
+    默认角色,
+    实体类型们: [...实体类型们],
+    必填恒含: "谁",
+  }
 }
 
 export interface 模板建议 {
