@@ -510,7 +510,7 @@ export function 建议模板(
  * 返回 `undefined` 表示不设条件。调用方**必须判空再 push**：把 `sql```（空片段）拼进
  * `where … and ${x}` 会产出 `and and` 语法错（`#002-06` 的反例）。
  *
- * `模板_id is null`（不存在这个模板行）⇒ `not exists` 为真 ⇒ 可见：历史卡片与内置卡照旧。
+ * `template_id is null`（不存在这个模板行）⇒ `not exists` 为真 ⇒ 可见：历史卡片与内置卡照旧。
  */
 export function 模板可见条件(含未验证: boolean | undefined): SQL | undefined {
   if (含未验证 === true) return undefined

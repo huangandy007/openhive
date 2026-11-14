@@ -263,7 +263,8 @@ const TOOLS: readonly Tool[] = [
     name: "find_crossings",
     description:
       "两个实体之间的交叉分析：共同关联（关系另一端的交集）＋共同时空（事件参与者同时含两人）。" +
-      "两侧各至多取 500 条关系后在服务端求交；覆盖不到的地方写进缺口。",
+      "两侧各至多取 500 条关系后在服务端求交；覆盖不到的地方写进缺口。" +
+      "共同时空默认不返回未验证模板产出的卡片（`含未验证=true` 才含）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -322,7 +323,8 @@ const TOOLS: readonly Tool[] = [
     name: "query_timeline",
     description:
       "某实体的事件时间线：按 occurred_at 升序、游标翻页，返回时间与精度、类型、参与者摘要、信任态与代表出处。" +
-      "按 `地点` 查尚未支持（返回「能力未就绪」，不返回空）。按人查会包含其唯一户名账户参与的流水事件。",
+      "按 `地点` 查尚未支持（返回「能力未就绪」，不返回空）。按人查会包含其唯一户名账户参与的流水事件。" +
+      "默认不返回未验证模板产出的卡片（`含未验证=true` 才含）。",
     inputSchema: {
       type: "object",
       properties: {

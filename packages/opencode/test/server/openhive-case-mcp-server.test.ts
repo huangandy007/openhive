@@ -39,6 +39,12 @@ const 身份甲 = { userId: "u-工具-甲", projectId: "p-工具-甲" }
 const 身份乙 = { userId: "u-工具-乙", projectId: "p-工具-乙" }
 /** 同一项目里的普通成员：读工具放行，写工具必须 forbidden（Critical 1 的判别身份）。 */
 const 身份丙 = { userId: "u-工具-丙", projectId: 身份甲.projectId }
+/**
+ * 白名单握手用例专用身份（独立项目）：三个工具都要真握手调一次 `含未验证: true`，
+ * 落到共享项目会改掉既有「实体清单只有 e-好」这类精确断言（`#005-34`）。
+ */
+const 身份丁 = { userId: "u-工具-丁", projectId: "p-工具-白名单" }
+const 白名单目录 = `${沙箱根}/u-工具-丁/p-工具-白名单`
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 客户端: ReturnType<typeof connect> | undefined
@@ -84,11 +90,34 @@ beforeAll(async () => {
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${身份乙.projectId}, ${身份乙.userId}, 'member', 0)
   `)
+  // 白名单握手用例：独立项目与两个实体（`find_crossings` 解析甲 / 乙，`query_timeline` 解析实体）。
+  await 客户端.execute(sql`
+    insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+    values (${身份丁.userId}, '970046', '服务器民警丁', 'w', 'w', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
+  `)
+  await 客户端.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${身份丁.projectId}, ${身份丁.userId}, 'member', 0)
+  `)
   await upsertEntity(库(), {
     id: "e-好",
     projectId: 身份甲.projectId,
     type: "人",
     canonicalValue: "王五",
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-白甲",
+    projectId: 身份丁.projectId,
+    type: "人",
+    canonicalValue: "白甲",
+    aliases: [],
+  })
+  await upsertEntity(库(), {
+    id: "e-白乙",
+    projectId: 身份丁.projectId,
+    type: "人",
+    canonicalValue: "白乙",
     aliases: [],
   })
 
@@ -262,6 +291,36 @@ test("query_events 带地点不再 bad_input：参数已进白名单，工具明
   })
   // 只钉协议层「不再是参数错误」；信封语义由工具层用例钉住——白名单单独保留时本用例恒绿，
   // 这正是变异预期的分工（notes：变异删工具分支，MCP 层用例不红）。
+  expect(结果.isError).not.toBe(true)
+})
+
+// 设计 §13.5：三个读工具的 schema 含 `含未验证`，分发表白名单也必须放行。
+// 删掉任一条白名单项，对应用例即回 bad_input（`收参数` 把未知键当坏参数）。
+const 白名单元 = {
+  "openhive/user": 身份丁.userId,
+  "openhive/directory": 白名单目录,
+}
+
+test("query_events 真握手可传 含未验证（schema 与白名单都认）", async () => {
+  const 结果 = await client.callTool({ name: "query_events", arguments: { 含未验证: true }, _meta: 白名单元 })
+  expect(结果.isError).not.toBe(true)
+})
+
+test("find_crossings 真握手可传 含未验证（schema 与白名单都认）", async () => {
+  const 结果 = await client.callTool({
+    name: "find_crossings",
+    arguments: { 甲: "白甲", 乙: "白乙", 含未验证: true },
+    _meta: 白名单元,
+  })
+  expect(结果.isError).not.toBe(true)
+})
+
+test("query_timeline 真握手可传 含未验证（schema 与白名单都认）", async () => {
+  const 结果 = await client.callTool({
+    name: "query_timeline",
+    arguments: { 实体: "白甲", 含未验证: true },
+    _meta: 白名单元,
+  })
   expect(结果.isError).not.toBe(true)
 })
 
