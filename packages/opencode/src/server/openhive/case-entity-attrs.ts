@@ -127,6 +127,7 @@ export function 属性观察表(
   for (const a of 属性们) {
     const 卡 = 按出处.get(a.出处.split("#").slice(1).join("#"))
     if (卡 === undefined) continue
+    // 归属按位置取：participants[0]/[1] 恒为本方/对手；②层事实（商户等）在 ≥2，不参与属性分组。
     const 参与 = a.归属 === "本方" ? 卡.participants[0] : 卡.participants[1]
     if (!参与.实体) continue
     const entityId = 实体缓存.get(账户键(参与.规范值))

@@ -14,7 +14,7 @@ import {
   删除本材料的事实,
 } from "./case-fact-store"
 import { INSERT_CHUNK, type CitationInput, type Queryable } from "./case-store"
-import { 账户键, type 翻译结果 } from "./case-translate"
+import { 账户键, 实体键, type 翻译结果 } from "./case-translate"
 import { 资金交易 } from "./case-event-types"
 import { 合并属性, 属性观察表, 剥离本材料出处, 读jsonb } from "./case-entity-attrs"
 import { 户名对齐 } from "./case-party"
@@ -141,17 +141,17 @@ export async function 写入翻译结果(
 ): Promise<{ 卡片数: number; 别名数: number; 属性实体数: number }> {
   const { projectId, materialId, templateId, 翻译 } = input
 
-  // ① 实体归并：内存 Map 缓存「账户\u0000规范值 → entityId」（§4.0.3c，硬要求）。
+  // ① 实体归并：内存 Map 缓存「<类型>\u0000规范值 → entityId」（§4.0.3c，硬要求）。
   const 实体缓存 = new Map<string, string>()
   for (const 卡 of 翻译.卡片们) {
     for (const p of 卡.participants) {
       if (!p.实体) continue
-      const 键 = 账户键(p.规范值)
+      const 键 = 实体键(p.实体类型, p.规范值)
       if (实体缓存.has(键)) continue
       const id = await upsertEntity(tx, {
         projectId,
-        id: 事实id(projectId, "账户", p.规范值),
-        type: "账户",
+        id: 事实id(projectId, p.实体类型, p.规范值),
+        type: p.实体类型,
         canonicalValue: p.规范值,
         aliases: [],
       })
@@ -171,7 +171,7 @@ export async function 写入翻译结果(
     // 原样落库：翻译层已保证是正数字符串（§3.5 / §4.0.5 坑 2），这里不做数值处理。
     amount: 卡.amount,
     participants: 卡.participants.map((p) => p.规范值),
-    summary: null,
+    summary: 卡.摘要,
     trustState: "自动抽取" as const,
     attrs: 卡.attrs,
     currency: 卡.currency,
@@ -228,7 +228,7 @@ export async function 写入翻译结果(
           projectId,
           id: 事实id(projectId, "participant", 卡.id, String(p.ordinal)),
           eventId: 卡.id,
-          entityId: p.实体 ? (实体缓存.get(账户键(p.规范值)) ?? null) : null,
+          entityId: p.实体 ? (实体缓存.get(实体键(p.实体类型, p.规范值)) ?? null) : null,
           role: p.角色,
           mentionText: p.提及,
           citationId: 引用按卡.get(卡.id) ?? null,
@@ -258,6 +258,7 @@ export async function 写入翻译结果(
   const 已见对 = new Set<string>()
   for (const 卡 of 翻译.卡片们) {
     if (卡.type !== 资金交易) continue
+    // 前两位恒为付款方/收款方；商户/车辆/号码在 ordinal ≥ 2，不参与关系端点。
     const [主体, 对手] = 卡.participants
     if (!主体.实体 || !对手.实体) continue
     const 主体id = 实体缓存.get(账户键(主体.规范值))

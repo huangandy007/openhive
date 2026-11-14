@@ -290,3 +290,84 @@ describe("materialId 形状前提（F8）", () => {
     }
   })
 })
+
+const 备注项目 = "prj-remark"
+
+function 备注行(over: Partial<FactRowInput> = {}): FactRowInput {
+  return {
+    ...行({ materialId: "rm1", extras: {} }),
+    projectId: 备注项目,
+    extras: {
+      备注: "备注：午餐##子商户名称：一号饭店##停车-湘A12345##电话13800138000",
+      交易类型: "支付账户消费",
+    },
+    ...over,
+  }
+}
+
+async function 写备注(materialId: string, rows: FactRowInput[]) {
+  const templateId = await 确保内置模板(db(), 备注项目)
+  const 翻译 = 翻译资金({ projectId: 备注项目, materialId, rows })
+  return 写入翻译结果(db(), { projectId: 备注项目, materialId, templateId, 翻译 })
+}
+
+describe("备注事实落库（组织 / 车辆 / 号码 / 摘要）", () => {
+  test("参与者按序落库、entity_id 指向各自实体、summary 落库", async () => {
+    await 写备注("rm1", [备注行()])
+
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select id, summary from auth.case_event
+         where project_id = ${备注项目} and type = '资金交易'
+      `),
+    )
+    expect(事件).toHaveLength(1)
+    expect(事件[0]?.summary).toBe("午餐")
+
+    const 参与 = rowsOf(
+      await db().execute(sql`
+        select role, ordinal, entity_id from auth.case_event_participant
+         where project_id = ${备注项目} order by ordinal
+      `),
+    )
+    expect(参与.map((p) => p.role)).toEqual(["付款方", "收款方", "商户", "车辆", "号码"])
+    expect(参与.map((p) => Number(p.ordinal))).toEqual([0, 1, 2, 3, 4])
+    expect(参与.every((p) => typeof p.entity_id === "string")).toBe(true)
+
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select type, canonical_value from auth.case_entity
+         where project_id = ${备注项目}
+      `),
+    )
+    // 排序放在 JS 里做：PG 的 text collation 不保证与 JS 一致，别让用例依赖库的排序。
+    expect(实体.map((e) => `${String(e.type)}:${String(e.canonical_value)}`).sort()).toEqual(
+      [
+        "号码:13800138000",
+        "组织:一号饭店",
+        "账户:6217001234567896514",
+        "账户:6222021234567890123",
+        "车辆:湘A12345",
+      ].sort(),
+    )
+  })
+
+  test("先清后写两次：参与者/实体不增、summary 不变", async () => {
+    await 清本材料翻译(db(), 备注项目, "rm1")
+    await 写备注("rm1", [备注行()])
+
+    const 数 = async () => {
+      const 参与 = rowsOf(
+        await db().execute(sql`select id from auth.case_event_participant where project_id = ${备注项目}`),
+      )
+      const 实体 = rowsOf(await db().execute(sql`select id from auth.case_entity where project_id = ${备注项目}`))
+      const 事件 = rowsOf(await db().execute(sql`select summary from auth.case_event where project_id = ${备注项目}`))
+      return [参与.length, 实体.length, 事件.length, 事件[0]?.summary]
+    }
+    const 一次 = await 数()
+    await 清本材料翻译(db(), 备注项目, "rm1")
+    await 写备注("rm1", [备注行()])
+    expect(await 数()).toEqual(一次)
+    expect(一次).toEqual([5, 5, 1, "午餐"])
+  })
+})
