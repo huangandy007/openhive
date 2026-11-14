@@ -221,7 +221,8 @@ const TOOLS: readonly Tool[] = [
     name: "query_events",
     description:
       "查询本项目的事件（签约 / 交款 / 同框等）。参与实体先按 id、再按规范值解析；" +
-      "时间按 occurred_at 闭区间；默认不返回「已排除」的事件。",
+      "时间按 occurred_at 闭区间；默认不返回「已排除」的事件。" +
+      "默认不返回未验证模板产出的卡片（`含未验证=true` 才含）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -238,6 +239,7 @@ const TOOLS: readonly Tool[] = [
           description: "用途类名（一级 12 类或消费二级 15 类之一），例如 停车 / 车辆加油；传不认识的类名会明确报错",
         },
         含已排除: { type: "boolean", description: "是否包含信任态为「已排除」的事件，默认否" },
+        含未验证: { type: "boolean", description: "是否包含未验证模板产出的卡片，默认否" },
         限制: { type: "integer", description: 限制说明 },
       },
     },
@@ -269,6 +271,7 @@ const TOOLS: readonly Tool[] = [
         乙: { type: "string", description: "第二个实体的 id 或规范值（必填，不能与甲相同）" },
         起: { type: "integer", description: `时间窗起点，${时间说明}` },
         止: { type: "integer", description: `时间窗终点，${时间说明}` },
+        含未验证: { type: "boolean", description: "是否包含未验证模板产出的卡片，默认否" },
       },
       required: ["甲", "乙"],
     },
@@ -335,6 +338,7 @@ const TOOLS: readonly Tool[] = [
           type: "string",
           description: "续页游标：只能取自上一页 `数据.下一页游标`，原样回传",
         },
+        含未验证: { type: "boolean", description: "是否包含未验证模板产出的卡片，默认否" },
         限制: { type: "integer", description: 限制说明 },
       },
     },
@@ -440,13 +444,16 @@ export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<st
         args,
         ["类型", "参与实体", "地点", "用途"],
         ["起", "止", "限制"],
-        ["含已排除"],
+        ["含已排除", "含未验证"],
       ),
     ),
   aggregate_money: (ctx, args) =>
     aggregate_money(ctx, 收参数<Parameters<typeof aggregate_money>[1]>(args, ["账户"], ["起", "止"], [])),
   find_crossings: (ctx, args) =>
-    find_crossings(ctx, 收参数<Parameters<typeof find_crossings>[1]>(args, ["甲", "乙"], ["起", "止"], [])),
+    find_crossings(
+      ctx,
+      收参数<Parameters<typeof find_crossings>[1]>(args, ["甲", "乙"], ["起", "止"], ["含未验证"]),
+    ),
   get_citation: (ctx, args) =>
     get_citation(ctx, 收参数<Parameters<typeof get_citation>[1]>(args, ["事实类型", "事实id"], [], [])),
   query_rows: (ctx, args) =>
@@ -462,7 +469,12 @@ export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<st
   query_timeline: (ctx, args) =>
     query_timeline(
       ctx,
-      收参数<Parameters<typeof query_timeline>[1]>(args, ["实体", "地点", "类型", "游标"], ["起", "止", "限制"], []),
+      收参数<Parameters<typeof query_timeline>[1]>(
+        args,
+        ["实体", "地点", "类型", "游标"],
+        ["起", "止", "限制"],
+        ["含未验证"],
+      ),
     ),
   explore_entity: (ctx, args) =>
     explore_entity(

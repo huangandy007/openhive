@@ -334,6 +334,38 @@ describe("openhive 案件视图出口（计划 7）", () => {
     }),
   )
 
+  it("时间线口包含未验证模板产出的卡片（人工确认前也能看到）", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        pg!.db.execute(sql`
+          insert into auth.case_card_template
+            (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+          values ('用户:t-时间线', ${项目}, '未验证时间线', '通话', '{}'::jsonb, ARRAY['谁'], 1, null, 0, 0)
+          on conflict (project_id, id) do nothing
+        `),
+      )
+      yield* Effect.promise(() =>
+        建事件(pg!.db, {
+          id: "ev-时间线未验证",
+          projectId: 项目,
+          type: "通话",
+          occurredAt: 1_700_000_100,
+          participants: ["路由张三"],
+          summary: "未验证模板卡",
+        }),
+      )
+      yield* Effect.promise(() =>
+        pg!.db.execute(sql`
+          update auth.case_event set template_id = '用户:t-时间线' where project_id = ${项目} and id = 'ev-时间线未验证'
+        `),
+      )
+      const 响应 = yield* 发(我, `/openhive/case/timeline?projectId=${项目}&id=e-路由张`)
+      expect(响应.status).toBe(200)
+      const 文本 = yield* Effect.promise(() => 响应.text())
+      expect(文本).toContain("ev-时间线未验证")
+    }),
+  )
+
   it("资金复用 aggregate_money：汇总出两笔入账", () =>
     Effect.gen(function* () {
       const 体 = yield* 读回<{ 数据: { 汇总: unknown[] } }>(

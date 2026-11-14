@@ -331,10 +331,12 @@ function handleTimeline(request: HttpServerRequest.HttpServerRequest, deps: Deps
     if (入参 === undefined) return fail(400, "id 不能为空，起 / 止 必须是整数秒", "bad_request")
     const 值 = yield* Effect.promise(() => 取规范值(deps.pg(), projectId!, 入参.id))
     if (值 === undefined) return fail(404, "找不到这个实体", "entity_not_found")
+    // 界面时间线是**人看**的：未验证模板卡也要显示（模板是用户自己配的，预览已让他确认过），
+    // 与 AI 出口的默认隐藏相反（§11.2）。
     const 结果 = yield* Effect.promise(() =>
       query_events(
         { db: deps.pg(), 身份: { userId: 门.user.id, projectId: projectId! } },
-        { 参与实体: 值, 起: 入参.起, 止: 入参.止 },
+        { 参与实体: 值, 起: 入参.起, 止: 入参.止, 含未验证: true },
       ).catch((错误: unknown) => {
         if (错误 instanceof 工具错误) return 错误
         throw 错误

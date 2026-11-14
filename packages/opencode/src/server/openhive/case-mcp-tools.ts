@@ -67,6 +67,7 @@ import {
   撤销数据源档案,
   档案错误,
 } from "./case-source-profile-store"
+import { 模板可见条件 } from "./case-card-template"
 
 /**
  * MCP 工具层的取数实现：只认 `{ db, 身份 }`，不认识 MCP、不认识 HTTP。
@@ -997,6 +998,7 @@ export async function query_events(
     地点?: string
     用途?: string
     含已排除?: boolean
+    含未验证?: boolean
     限制?: number
   },
 ): Promise<工具结果> {
@@ -1038,6 +1040,8 @@ export async function query_events(
   // 一级与二级同列判断：`purpose` 存最具体类、`purpose_l1` 存一级，两者取或即可同时支持。
   if (用途 !== undefined) 条件.push(sql`(purpose = ${用途} or purpose_l1 = ${用途})`)
   if (args.含已排除 !== true) 条件.push(sql`trust_state <> '已排除'`)
+  const 可见 = 模板可见条件(args.含未验证)
+  if (可见 !== undefined) 条件.push(可见)
   if (args.起 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
   if (args.止 !== undefined) 条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
   let 参与实体解析: 实体解析 | undefined
@@ -1100,6 +1104,7 @@ export async function query_events(
         select count(*)::int as n from auth.case_event
          where project_id = ${ctx.身份.projectId} and purpose is null
            and trust_state <> '已排除'
+           ${可见 === undefined ? sql`` : sql`and ${可见}`}
       `),
     )
     const 未判数 = Number(未判[0]?.n)
@@ -1134,7 +1139,7 @@ export async function query_events(
       "事件按类型与参与实体（先按 id、再按规范值解析成实体规范值；规范值跨类型可重名时取最新创建的一行，" +
       "同创建时间再按 type 升序、id 升序取第一条）过滤；参与实体按事件归属判定：参与者表命中本人、" +
       "正向对齐代表，或唯一户名对齐到本账户的人/组织；或 participants 文本回退命中归属值集（规范值 ∪ 别名）；" +
-      "时间按 occurred_at 闭区间；默认不含「已排除」的事件，" +
+      "时间按 occurred_at 闭区间；默认不含「已排除」的事件，默认不含未验证模板产出的卡片（含未验证=true 才含）；" +
       "participants 里「已排除」实体的规范值也一并剔除；时间以规范值（UTC+8）比较，按各自精度标注。" +
       "用途按 purpose（最具体类）或 purpose_l1（一级）匹配；均来自入库期判定，不参与文本扫描。" +
       身份口径,
@@ -1187,6 +1192,7 @@ export async function query_timeline(
     止?: number
     类型?: string
     游标?: string
+    含未验证?: boolean
     限制?: number
   },
 ): Promise<工具结果> {
@@ -1214,6 +1220,9 @@ export async function query_timeline(
   const 限制 = 归一化限制(args.限制)
   const 参与 = 事件参与者条件(ctx, 实体)
   const 类型条件 = args.类型 === undefined ? sql`` : sql`and type = ${args.类型}`
+  // 统计与列表一起过滤：只过滤列表会让「列表空、统计说有事件」⇒ 空原因说胡话。
+  const 可见 = 模板可见条件(args.含未验证)
+  const 可见片段 = 可见 === undefined ? sql`` : sql`and ${可见}`
 
   let 游标: { t: number; id: string } | undefined
   if (args.游标 !== undefined) {
@@ -1242,7 +1251,7 @@ export async function query_timeline(
              array_to_json(participants)::text as participants, summary, trust_state
         from auth.case_event
        where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-         and ${参与} ${类型条件}
+         and ${参与} ${类型条件} ${可见片段}
          and ${sql.join(窗, sql` and `)}
        order by occurred_at asc, id asc
        limit ${限制 + 1}
@@ -1263,7 +1272,7 @@ export async function query_timeline(
              count(*) filter (where occurred_at is not null)::int as 有时数
         from auth.case_event
        where project_id = ${ctx.身份.projectId} and trust_state <> '已排除'
-         and ${参与}
+         and ${参与} ${可见片段}
     `),
   )[0]
   const 总数 = Number(统计?.总数 ?? 0)
@@ -2339,7 +2348,7 @@ export async function money_flow(
  */
 export async function find_crossings(
   ctx: 工具上下文,
-  args: { 甲: string; 乙: string; 起?: number; 止?: number },
+  args: { 甲: string; 乙: string; 起?: number; 止?: number; 含未验证?: boolean },
 ): Promise<工具结果> {
   校验时间窗(args)
   const 甲 = await 解析实体(ctx, args.甲, "甲")
@@ -2422,6 +2431,8 @@ export async function find_crossings(
     事件参与者条件(ctx, 乙),
     sql`trust_state <> '已排除'`,
   ]
+  const 可见 = 模板可见条件(args.含未验证)
+  if (可见 !== undefined) 时空条件.push(可见)
   if (args.起 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
   if (args.止 !== undefined) 时空条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
   const 时空行们 = rowsOf(

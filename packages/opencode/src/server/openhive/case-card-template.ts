@@ -1,6 +1,6 @@
 export * as OpenhiveCaseCardTemplate from "./case-card-template"
 
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 文本数组 } from "./case-fact-store"
@@ -499,4 +499,24 @@ export function 建议模板(
   if (最高 === undefined || 最高.命中槽数 < 建议最低命中) return undefined
   if (候选.length > 1 && 候选[1]?.命中槽数 === 最高.命中槽数) return undefined
   return 最高
+}
+
+/**
+ * AI 出口的模板可见条件（§11.1）。
+ *
+ * 「未验证模板产出的卡片」默认对 AI 隐藏：模板是用户配的，预览没过就不该被当成事实回答。
+ * **只允许在 `from auth.case_event`（未起别名）的查询里用**——片段裸引 `case_event`。
+ *
+ * 返回 `undefined` 表示不设条件。调用方**必须判空再 push**：把 `sql```（空片段）拼进
+ * `where … and ${x}` 会产出 `and and` 语法错（`#002-06` 的反例）。
+ *
+ * `模板_id is null`（不存在这个模板行）⇒ `not exists` 为真 ⇒ 可见：历史卡片与内置卡照旧。
+ */
+export function 模板可见条件(含未验证: boolean | undefined): SQL | undefined {
+  if (含未验证 === true) return undefined
+  return sql`not exists (
+    select 1 from auth.case_card_template t
+     where t.project_id = case_event.project_id
+       and t.id = case_event.template_id
+       and t.verified_at is null)`
 }
