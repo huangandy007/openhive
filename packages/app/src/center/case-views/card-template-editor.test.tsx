@@ -128,8 +128,15 @@ describe("抽屉编辑器", () => {
     expect(找("card-template-event-hint")!.textContent).toContain("不能建用户模板")
   })
 
-  test("单值槽可填：何时 / 何时止 / 多少钱各有一个下拉（C1）", async () => {
-    mount(() => <CardTemplateEditor projectId="p-1" api={假api()} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
+  test("单值槽可填：何时 / 何时止 / 多少钱各有一个下拉，选中的字段进保存载荷（C1）", async () => {
+    const 收到: Array<Record<string, unknown>> = []
+    const api = 假api({
+      create: async (input) => {
+        收到.push(input as unknown as Record<string, unknown>)
+        return { kind: "ok", value: 有效行 }
+      },
+    })
+    mount(() => <CardTemplateEditor projectId="p-1" api={api} 材料们={[]} onClose={() => {}} onSaved={() => {}} />)
     await 等(() => 找("card-template-name-field") !== null)
     for (const 槽名 of ["何时", "何时止", "多少钱"]) {
       const 槽 = document.body.querySelector<HTMLElement>(
@@ -138,6 +145,33 @@ describe("抽屉编辑器", () => {
       expect(槽.querySelectorAll("[data-slot='card-template-slot-row']").length).toBe(1)
       expect(槽.querySelector("[data-component='select-v2']")).not.toBeNull()
     }
+
+    // 可操作性：真的在「何时」下拉里选「时间」，再补齐保存条件，载荷必须带 `何时`。
+    // （词表里「何地」的可选字段为空集，能选到 `startedAt` 的是「何时」。）
+    // 每次重新取：`写` 会换掉这一行的对象引用，`<For>` 因此重建行 DOM，旧触发器会变成游离节点。
+    const 何时触发器 = () =>
+      document.body.querySelector<HTMLElement>(
+        "[data-slot='card-template-slot'][data-slot-name='何时'] [data-component='select-v2']",
+      )!
+    开下拉(何时触发器())
+    await 点选项("时间")
+    await 等(() => (何时触发器().textContent ?? "").includes("时间"))
+
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    名称框.value = "话单模板"
+    名称框.dispatchEvent(new Event("input", { bubbles: true }))
+    开下拉(事件触发器())
+    await 点选项("通话")
+    开下拉(谁字段触发器())
+    await 点选项("主叫号码")
+    const 保存 = 找("card-template-save") as HTMLButtonElement
+    await 等(() => !保存.disabled)
+    保存.click()
+    await 等(() => 收到.length === 1)
+    expect(收到[0]?.slots).toEqual({
+      谁: { 字段: "caller", 角色: "主体" },
+      何时: { 字段: "startedAt" },
+    })
   })
 
   test("修改已验证模板：常驻「回到未验证」；保存走 update，收到定义体", async () => {
@@ -354,8 +388,11 @@ describe("抽屉编辑器", () => {
     expect(找("card-template-preview-expired")).toBeNull()
     开下拉(材料触发器())
     await 点选项("材料/第二份.xlsx")
-    await 等(() => 找("card-template-preview-expired") !== null)
-    expect(找("card-template-preview-expired")!.textContent).toContain("需重新预览")
+    await 等(() => (材料触发器().textContent ?? "").includes("材料/第二份.xlsx"))
+    // 过期是结果区自身的置灰态，不能只看提示文案：`data-expired` 必须落到结果区。
+    expect(找("card-template-preview-expired")).not.toBeNull()
+    expect(找("card-template-preview")!.hasAttribute("data-expired")).toBe(true)
+    expect(找("card-template-preview-expired")!.textContent).toContain("内容已变，需重新预览")
   })
 
   test("多行槽：和谁可以加一行、删一行（I5）", async () => {
@@ -433,7 +470,7 @@ describe("抽屉编辑器", () => {
     名称框.value = "通话（改）"
     名称框.dispatchEvent(new Event("input", { bubbles: true }))
     await 等(() => 找("card-template-preview-expired") !== null)
-    expect(找("card-template-preview-expired")!.textContent).toContain("需重新预览")
+    expect(找("card-template-preview-expired")!.textContent).toContain("内容已变，需重新预览")
     expect(找("card-template-preview")!.hasAttribute("data-expired")).toBe(true)
     expect((找("card-template-save") as HTMLButtonElement).disabled).toBe(false)
   })

@@ -92,7 +92,9 @@ describe("预览结果区", () => {
   test("过期：置灰并说「需重新预览」，不是悄悄用旧结果", () => {
     const host = mount(() => <CardTemplatePreview 结果={结果} 过期 />)
     expect(host.querySelector("[data-slot='card-template-preview']")!.getAttribute("data-expired")).toBe("")
-    expect(host.querySelector("[data-slot='card-template-preview-expired']")!.textContent).toContain("需重新预览")
+    expect(host.querySelector("[data-slot='card-template-preview-expired']")!.textContent).toContain(
+      "内容已变，需重新预览",
+    )
     // 置灰是独立于文案的视觉事实，整 token 匹配（审查 I-2）。
     expect(host.querySelector("[data-slot='card-template-preview']")!.classList.contains("opacity-50")).toBe(true)
   })

@@ -28,7 +28,7 @@ export function CardTemplatePreview(props: { readonly 结果: 预览输出; read
       </p>
       <Show when={props.过期 === true}>
         <p data-slot="card-template-preview-expired" class="text-[12px] text-v2-state-fg-danger">
-          模板已改，需重新预览
+          内容已变，需重新预览
         </p>
       </Show>
       <p data-slot="card-template-preview-sheets" class="text-[12px] text-v2-text-text-muted">
