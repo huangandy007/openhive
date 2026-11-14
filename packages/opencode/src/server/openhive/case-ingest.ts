@@ -17,6 +17,7 @@ import {
   formatFingerprint,
   是待确认原因,
   是识别来源,
+  解析缓存映射,
   type 待确认项,
   type 识别来源,
 } from "./case-mapping"
@@ -1099,20 +1100,12 @@ async function 读格式(
   const row = rows[0]
   if (!row) return undefined
 
-  const 原始映射 = 解析json(row.mapping)
-  if (原始映射 === null || typeof 原始映射 !== "object" || Array.isArray(原始映射)) return undefined
+  const columns = 解析缓存映射(解析json(row.mapping))
   const 原始结果 = 解析json(row.result)
   if (!是格式结果(原始结果)) return undefined
   const 原始表头 = 解析json(row.header)
   // 表头读不出来就校验不了待确认的列号：当未命中重算，而不是把待确认整片丢掉。
   if (!Array.isArray(原始表头)) return undefined
-
-  const columns: Record<number, 识别字段> = {}
-  for (const [k, v] of Object.entries(原始映射)) {
-    if (!/^\d+$/.test(k)) continue
-    if (!是识别字段(v)) continue
-    columns[Number(k)] = v
-  }
 
   // R34：过滤后一列都不剩 ⇒ 按**未命中**重算（与 R6 同口径，宁可多算一次）。
   // 否则这条缓存永远「命中」，而 `识别材料` 命中就跳过 `detectMapping` ⇒ 零列闸每次都

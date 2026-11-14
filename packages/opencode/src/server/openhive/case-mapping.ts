@@ -401,6 +401,23 @@ export function detectMapping(
   return { columns, method, 来源, 待确认, unknownColumns }
 }
 
+/**
+ * 缓存里的列映射 → `Record<列号, 字段>`。
+ *
+ * `读格式`（解析命中）与建档（从缓存读回）走**同一份**过滤：只收十进制数字键、
+ * 只收字段目录内的字段。两处各写一遍，就会出现「解析认了、建档不认」的漂移（`#002-06`）。
+ */
+export function 解析缓存映射(原始: unknown): Record<number, 识别字段> {
+  const columns: Record<number, 识别字段> = {}
+  if (原始 === null || typeof 原始 !== "object" || Array.isArray(原始)) return columns
+  for (const [k, v] of Object.entries(原始)) {
+    if (!/^\d+$/.test(k)) continue
+    if (!是识别字段(v)) continue
+    columns[Number(k)] = v
+  }
+  return columns
+}
+
 /** 列的数据形状，用于指纹。只取前 20 行做样本（够区分，也不怕大表）。 */
 function 列形状(values: (string | null)[][]): string[] {
   const sample = values.slice(0, 20)
