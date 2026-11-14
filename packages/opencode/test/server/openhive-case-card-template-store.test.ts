@@ -83,23 +83,22 @@ describe("模板 DAO（§7）", () => {
     expect((await 读模板行(db(), 项目, 乙.id))?.event_type).toBe("见面")
   })
 
-  test("列出模板：默认不含停用；含停用=true 才列；内置排在最前", async () => {
+  test("列出模板：默认不含停用；含停用=true 才列；启用在前，同状态按事件类型、id 升序", async () => {
     const 项目 = "p-dao-列表"
     const 甲 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
     const 乙 = await 建模板(db(), { projectId: 项目, 定义: 定义({ name: "住宿登记", eventType: "见面" }) })
-    // 内置行在用户行**之后**建 ⇒ created_at 更大；它还能排最前，只能靠 case-when。
-    // nowSeconds 是秒级：等过一秒再建，保证严格更大而不是同秒并列。
-    await new Promise((解决) => setTimeout(解决, 1100))
     await 确保内置模板(db(), 项目)
-    const 全 = (await 列出模板(db(), { projectId: 项目 })).map((t) => t.id)
-    // 内置恒在第一位；用户模板之间的次序由 created_at（同秒）+ id 决定，不钉具体顺序。
-    expect(全[0]).toBe(资金模板id)
-    expect(new Set(全.slice(1))).toEqual(new Set([甲.id, 乙.id]))
+    // 顺序与 created_at 无关：见面 < 资金交易 < 通话（C 排序即码点序），内置不再特殊置顶。
+    expect((await 列出模板(db(), { projectId: 项目 })).map((t) => t.id)).toEqual([乙.id, 资金模板id, 甲.id])
     await 停用模板(db(), { projectId: 项目, id: 乙.id })
+    // 默认不列停用行 ⇒ 只剩两个启用中的。
     expect((await 列出模板(db(), { projectId: 项目 })).map((t) => t.id)).toEqual([资金模板id, 甲.id])
-    const 含 = (await 列出模板(db(), { projectId: 项目, 含停用: true })).map((t) => t.id)
-    expect(含[0]).toBe(资金模板id)
-    expect(new Set(含.slice(1))).toEqual(new Set([甲.id, 乙.id]))
+    // 含停用：`disabled_at nulls first` ⇒ 停用的乙排在最后。
+    expect((await 列出模板(db(), { projectId: 项目, 含停用: true })).map((t) => t.id)).toEqual([
+      资金模板id,
+      甲.id,
+      乙.id,
+    ])
   })
 
   test("改模板：内容没变 ⇒ version 不动、verified_at 保留；变了 ⇒ version+1、verified_at 清空", async () => {
@@ -131,7 +130,7 @@ describe("模板 DAO（§7）", () => {
     expect(改内容.verified_at).toBeNull()
   })
 
-  test("改 / 停用 / 转正：内置 ⇒ immutable；不存在 ⇒ not_found；已停用 ⇒ not_found", async () => {
+  test("改 / 停用 / 转正：内置 ⇒ immutable；不存在 ⇒ not_found；已停用改 ⇒ not_found、转正 ⇒ conflict", async () => {
     const 项目 = "p-dao-错误"
     const 取错 = (p: Promise<unknown>) => p.catch((e: unknown) => e)
 
@@ -158,6 +157,9 @@ describe("模板 DAO（§7）", () => {
     expect(await 停用模板(db(), { projectId: 项目, id: 行.id })).toBe(false)
     const 改停用 = await 取错(改模板(db(), { projectId: 项目, id: 行.id, 定义: 定义({ name: "x" }) }))
     expect(改停用 instanceof 模板错误 && 改停用.code === "not_found").toBe(true)
+    // 停用是「行还在、状态不对」⇒ 转正报 conflict（409），不是 not_found（§7.3）。
+    const 转停用 = await 取错(转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 1 }))
+    expect(转停用 instanceof 模板错误 && 转停用.code === "conflict").toBe(true)
     expect((await 读模板行(db(), 项目, 行.id))?.disabled_at).not.toBeNull()
   })
 
@@ -188,6 +190,8 @@ describe("模板 DAO（§7）", () => {
     `)
     const 二 = await 转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 新.version })
     expect(二.verified_at).toBe(100)
+    // 同版本二次转正 ⇒ 幂等 `already`，不是 `state_changed`（并发下另一请求先写成也走这个分支）。
+    expect(二.already).toBe(true)
   })
 
   test("记模板命中：内置不记账、同 id 重复只加 1、跳过不存在", async () => {

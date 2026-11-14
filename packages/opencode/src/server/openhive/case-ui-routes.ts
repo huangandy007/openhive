@@ -257,7 +257,13 @@ function handleEntity(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
     const id = 参数.get("id")
     if (typeof id !== "string" || id === "") return fail(400, "id 不能为空", "bad_request")
     const 档 = yield* Effect.promise(() =>
-      实体档案(deps.pg(), { projectId: projectId!, id, includeExcluded: 参数.get("includeExcluded") === "true" }),
+      实体档案(deps.pg(), {
+        projectId: projectId!,
+        id,
+        includeExcluded: 参数.get("includeExcluded") === "true",
+        // 未验证模板的卡片对人是可见的，只对 AI 默认隐藏（§11.1）；人的档案页显式放行。
+        含未验证: true,
+      }),
     )
     if (档 === undefined) return fail(404, "找不到这个实体", "entity_not_found")
     return ok(档)
@@ -719,12 +725,13 @@ function 跑模板<T>(工作: () => Promise<T>) {
 function handleCardTemplates(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
     const 参数 = new URL(request.url, "http://localhost").searchParams
-    const 门 = yield* 过门(deps, 参数.get("projectId"))
-    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    // 纯字段校验先于项目门（§10.2 的校验顺序）：非成员传坏参数也该是 400，不是 403。
     const 含停用 = 参数.get("含停用")
     if (含停用 !== null && 含停用 !== "true" && 含停用 !== "false") {
       return fail(400, "含停用 只能是 true / false", "bad_request")
     }
+    const 门 = yield* 过门(deps, 参数.get("projectId"))
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
     const list = yield* Effect.promise(() =>
       列出模板(deps.pg(), { projectId: 参数.get("projectId")!, 含停用: 含停用 === "true" }),
     )
@@ -922,7 +929,12 @@ function handleCardTemplatePreview(request: HttpServerRequest.HttpServerRequest,
       选中 = 草稿模板行(草稿)
     } else if (typeof templateId === "string" && templateId !== "") {
       选中 = yield* Effect.promise(() => 读模板行(deps.pg(), projectId, templateId))
-      if (选中 === undefined || 选中.disabled_at !== null) return fail(404, "没有这个模板", "not_found")
+      if (选中 === undefined) return fail(404, "没有这个模板", "not_found")
+      // §10.3：`templateId` 须是用户模板；内置行由代码规则维护，不能作为可编辑预览的对象。
+      // 停用模板允许预览（只读、不写库）：民警常要先看一眼再决定恢复。
+      if (!是用户模板id(选中.id)) {
+        return fail(400, "内置模板不可编辑，请先另存为项目模板再预览", "bad_request")
+      }
     }
     if (选中 === undefined) return fail(400, "templateId 与 template 必须二选一", "bad_request")
     const 模板 = 选中
@@ -957,7 +969,9 @@ function handleCardTemplateVerify(request: HttpServerRequest.HttpServerRequest, 
     if (HttpServerResponse.isHttpServerResponse(门)) return 门
 
     const 模板 = yield* Effect.promise(() => 读模板行(deps.pg(), projectId, id))
-    if (模板 === undefined || 模板.disabled_at !== null) return fail(404, "没有这个模板", "not_found")
+    if (模板 === undefined) return fail(404, "没有这个模板", "not_found")
+    // §7.3：停用是「行还在、状态不对」，不是「不存在」——报 409 让前端能提示先恢复。
+    if (模板.disabled_at !== null) return fail(409, "模板已停用，需先恢复", "conflict")
     if (!是用户模板id(模板.id)) return fail(409, "内置模板由代码规则维护，不能修改/停用/转正", "immutable")
 
     const 预览 = yield* Effect.promise(() => 跑预览(deps.pg(), { projectId, materialId, 模板 }))
@@ -966,7 +980,13 @@ function handleCardTemplateVerify(request: HttpServerRequest.HttpServerRequest, 
     if (模板.verified_at !== null) {
       return ok({ verified_at: 模板.verified_at, 卡片数, 跳过, already: true })
     }
-    if (卡片数 === 0) return fail(400, "预览没有产出任何卡片：请检查必填槽与数据", "preview_failed")
+    // 失败响应也带 `跳过`：0 卡的原因全在跳过原因表里，前端不用再跑一次预览（§10.4）。
+    if (卡片数 === 0) {
+      return HttpServerResponse.jsonUnsafe(
+        { error: "预览没有产出任何卡片：请检查必填槽与数据", code: "preview_failed", 跳过 },
+        { status: 400 },
+      )
+    }
     // 没给 expectedVersion 就用刚才读到的版本：「有卡可看」这件事已经发生过，版本只在
     // 预览与转正之间被改过时才有意义；DAO 的 `version = $expected` 是最终一致性闸。
     const 结果 = yield* 跑模板(() =>
@@ -977,6 +997,11 @@ function handleCardTemplateVerify(request: HttpServerRequest.HttpServerRequest, 
       }),
     )
     if ("错误" in 结果) return 翻模板错误(结果.错误)
-    return ok({ verified_at: 结果.值.verified_at, 卡片数, 跳过 })
+    return ok({
+      verified_at: 结果.值.verified_at,
+      卡片数,
+      跳过,
+      ...(结果.值.already === true ? { already: true } : {}),
+    })
   })
 }

@@ -349,7 +349,8 @@ const TOOLS: readonly Tool[] = [
     name: "explore_entity",
     description:
       "一次看全一个实体：档案（类型 / 细类 / 规范值 / 别名 / 属性 / 信任态）、关系圈（按对方聚合，前 10）、" +
-      "最近 10 个事件与全量计数。跳数=2 时附一至两跳邻域图，截断写进缺口。",
+      "最近 10 个事件与全量计数。跳数=2 时附一至两跳邻域图，截断写进缺口。" +
+      "默认不返回未验证模板产出的卡片（含未验证=true 才含）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -357,6 +358,7 @@ const TOOLS: readonly Tool[] = [
         起: { type: "integer", description: `只作用于关系圈的时间窗起点，${时间说明}` },
         止: { type: "integer", description: `只作用于关系圈的时间窗终点，${时间说明}` },
         跳数: { type: "integer", enum: [1, 2], description: "1 = 只看一圈（默认），2 = 附两跳邻域" },
+        含未验证: { type: "boolean", description: "是否包含未验证模板产出的卡片，默认否" },
         限制: {
           type: "integer",
           description:
@@ -371,7 +373,8 @@ const TOOLS: readonly Tool[] = [
     description:
       "某账户的资金流：收支分列汇总、首末、对手排行前 20（笔数、金额、首末）、单笔最大前 10（带出处）、集中度与外币行数。" +
       "转账口径与 aggregate_money 完全一致（账户归属含唯一户名对齐）；起止同时作用于汇总、对手排行与单笔最大。" +
-      "方向作用于汇总、对手排行、单笔最大与集中度；对手作用于上述四项，并另外作用于首末。",
+      "方向作用于汇总、对手排行、单笔最大与集中度；对手作用于上述四项，并另外作用于首末。" +
+      "默认不返回未验证模板产出的卡片（含未验证=true 才含）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -380,6 +383,7 @@ const TOOLS: readonly Tool[] = [
         止: { type: "integer", description: `时间窗终点，${时间说明}` },
         方向: { type: "string", enum: ["收", "付", "全部"], description: "收 = 入账，付 = 出账；默认全部" },
         对手: { type: "string", description: "只看与该实体的往来（实体 id 或规范值）" },
+        含未验证: { type: "boolean", description: "是否包含未验证模板产出的卡片，默认否" },
       },
       required: ["账户"],
     },
@@ -481,10 +485,18 @@ export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<st
   explore_entity: (ctx, args) =>
     explore_entity(
       ctx,
-      收参数<Parameters<typeof explore_entity>[1]>(args, ["实体"], ["起", "止", "跳数", "限制"], []),
+      收参数<Parameters<typeof explore_entity>[1]>(
+        args,
+        ["实体"],
+        ["起", "止", "跳数", "限制"],
+        ["含未验证"],
+      ),
     ),
   money_flow: (ctx, args) =>
-    money_flow(ctx, 收参数<Parameters<typeof money_flow>[1]>(args, ["账户", "方向", "对手"], ["起", "止"], [])),
+    money_flow(
+      ctx,
+      收参数<Parameters<typeof money_flow>[1]>(args, ["账户", "方向", "对手"], ["起", "止"], ["含未验证"]),
+    ),
   list_source_profiles: (ctx, args) =>
     list_source_profiles(ctx, 收参数<Parameters<typeof list_source_profiles>[1]>(args, [], [], ["含撤销"])),
   build_source_profile: (ctx, args) =>

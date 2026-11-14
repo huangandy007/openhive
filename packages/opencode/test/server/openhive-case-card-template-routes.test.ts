@@ -12,7 +12,7 @@ import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
 import { applyParseAction, createMaterial, insertFactRows } from "../../src/server/openhive/case-store"
-import { 资金模板id } from "../../src/server/openhive/case-card-template"
+import { 确保内置模板, 资金模板id } from "../../src/server/openhive/case-card-template"
 import { testEffect } from "../lib/effect"
 
 /**
@@ -205,6 +205,8 @@ describe("卡片模板 HTTP 六口（§10）", () => {
   it("列表含停用：只有显式 true / false 合法；停用后默认不列、含停用=true 仍列", () =>
     Effect.gen(function* () {
       expect((yield* 发(成员, `/openhive/case/card-templates?projectId=${项目}&含停用=yes`)).status).toBe(400)
+      // 纯字段校验先于项目门：非成员传坏参数也是 400，不能报成 403（§10.2 校验顺序）。
+      expect((yield* 发(别人, `/openhive/case/card-templates?projectId=${项目}&含停用=yes`)).status).toBe(400)
       // 自建模板、独立事件类型：不从别的用例的列表里捞（`#005-34`，单点复跑也必须绿）。
       const 目标 = yield* 建模板口(我, 定义体({ name: "停用专用", eventType: "其他" }))
       expect(目标.id.startsWith("用户:")).toBe(true)
@@ -432,6 +434,80 @@ describe("预览与转正（§10.3 / §10.4）", () => {
     }),
   )
 
+  it("预览响应键名契约：中文键（§10.3 实现口径），多一个少一个都红", () =>
+    Effect.gen(function* () {
+      const 材料id = yield* Effect.promise(() => 种已解析材料("m-模板键名", "Sheet1", 1))
+      const 响应 = yield* 发JSON(成员, "/openhive/case/card-template/preview", {
+        projectId: 项目,
+        materialId: 材料id,
+        template: 定义体(),
+      })
+      expect(响应.status).toBe(200)
+      const 体 = yield* 读回<{
+        卡片数: number
+        跳过: unknown
+        卡片们: Record<string, unknown>[]
+        工作表们: Record<string, unknown>[]
+      }>(响应)
+      expect(Object.keys(体).sort()).toEqual(["卡片数", "卡片们", "工作表们", "跳过"].sort())
+      const 卡 = 体.卡片们[0]!
+      expect(Object.keys(卡).sort()).toEqual(
+        [
+          "id",
+          "type",
+          "摘要",
+          "occurredAt",
+          "occurredRaw",
+          "precision",
+          "occurredEnd",
+          "amount",
+          "currency",
+          "attrs",
+          "参与者们",
+          "出处",
+          "跳过",
+        ].sort(),
+      )
+      const 参与者 = (卡["参与者们"] as Record<string, unknown>[])[0]!
+      expect(Object.keys(参与者).sort()).toEqual(["ordinal", "角色", "提及", "实体", "实体类型", "规范值"].sort())
+      expect(Object.keys(卡["出处"] as Record<string, unknown>).sort()).toEqual(["rowNo", "sheet"].sort())
+      expect(Object.keys(体.工作表们[0]!).sort()).toEqual(["sheet", "卡片数", "跳过"].sort())
+    }),
+  )
+
+  it("预览准入：内置 ⇒ 400；停用模板仍可预览（只读）；停用后转正 ⇒ 409 conflict", () =>
+    Effect.gen(function* () {
+      const 材料id = yield* Effect.promise(() => 种已解析材料("m-模板准入", "Sheet1", 2))
+      // 内置行按项目懒建（生产入口），预览口必须按 §10.3 拒掉它。
+      yield* Effect.promise(() => 确保内置模板(pg!.db, 项目))
+      const 内置 = yield* 发JSON(成员, "/openhive/case/card-template/preview", {
+        projectId: 项目,
+        materialId: 材料id,
+        templateId: 资金模板id,
+      })
+      expect(内置.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(内置)).code).toBe("bad_request")
+
+      const 建 = yield* 建模板口(我, 定义体({ name: "停用预览", eventType: "其他" }))
+      expect((yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 项目, id: 建.id })).status).toBe(200)
+      // 停用只拦写（转正 / 改），预览是只读口，允许看一眼再决定恢复。
+      expect(
+        (yield* 发JSON(成员, "/openhive/case/card-template/preview", {
+          projectId: 项目,
+          materialId: 材料id,
+          templateId: 建.id,
+        })).status,
+      ).toBe(200)
+      const 转 = yield* 发JSON(我, "/openhive/case/card-template/verify", {
+        projectId: 项目,
+        id: 建.id,
+        materialId: 材料id,
+      })
+      expect(转.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(转)).code).toBe("conflict")
+    }),
+  )
+
   it("转正：预览 0 卡 ⇒ 400 preview_failed；补上必填后 ⇒ 200 记 verified_at；再调 ⇒ already", () =>
     Effect.gen(function* () {
       // 三行都为空 ⇒ 必填槽为空 ⇒ 预览 0 卡。
@@ -443,7 +519,10 @@ describe("预览与转正（§10.3 / §10.4）", () => {
         materialId: 材料id,
       })
       expect(失败.status).toBe(400)
-      expect((yield* 读回<{ code: string; 跳过: unknown }>(失败)).code).toBe("preview_failed")
+      const 失败体 = yield* 读回<{ code: string; 跳过: Record<string, number> }>(失败)
+      expect(失败体.code).toBe("preview_failed")
+      // 0 卡的原因要在失败响应里直接给，前端不必再跑一次预览才拿到 `跳过`（§10.4）。
+      expect(Object.keys(失败体.跳过).length).toBeGreaterThan(0)
 
       yield* Effect.promise(() =>
         补材料行(材料id, "Sheet1", 3, { caller: "13800000001", startedAt: 1_700_000_000 }),

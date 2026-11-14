@@ -3,12 +3,14 @@ import { sql } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import {
+  explore_entity,
   find_crossings,
+  money_flow,
   query_events,
   query_timeline,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
-import { 建实体 } from "./openhive-case-fact-fixture"
+import { 建实体, 建关系批 } from "./openhive-case-fact-fixture"
 
 /**
  * AI 出口的模板可见性（§11.1）：未验证模板产出的卡片默认对 AI 隐藏。
@@ -66,19 +68,26 @@ async function 种事件(input: {
   模板id: string | null
   participants: string[]
   purpose?: string | null
+  /** 默认「通话」；资金流用例要「资金交易」。 */
+  type?: string
+  /** 默认 1700000000；显式 `null` = 没有发生时间（计数缺口用）。 */
+  时间?: number | null
+  /** 默认 null；`money_flow` 的单笔最大要求 amount 非空。 */
+  金额?: string
 }): Promise<void> {
   await pg!.db.execute(sql`
     insert into auth.case_event
       (id, project_id, type, occurred_at, occurred_raw, precision, participants, summary,
-       trust_state, template_id, currency, purpose, created_at)
-    values (${input.id}, ${input.projectId}, '通话', 1700000000, '2023-11-14 22:13:20', '到秒',
+       trust_state, template_id, amount, currency, purpose, created_at)
+    values (${input.id}, ${input.projectId}, ${input.type ?? "通话"},
+            ${input.时间 === undefined ? 1700000000 : input.时间}, '2023-11-14 22:13:20', '到秒',
             array(select jsonb_array_elements_text(${JSON.stringify(input.participants)}::text::jsonb)),
-            ${input.id}, '自动抽取', ${input.模板id}, 'CNY', ${input.purpose ?? null}, 0)
+            ${input.id}, '自动抽取', ${input.模板id}, ${input.金额 ?? null}, 'CNY', ${input.purpose ?? null}, 0)
   `)
 }
 
-async function 种实体(projectId: string, id: string, value: string): Promise<void> {
-  await 建实体(pg!.db, { id, projectId, type: "号码", value })
+async function 种实体(projectId: string, id: string, value: string, type = "号码"): Promise<void> {
+  await 建实体(pg!.db, { id, projectId, type, value })
 }
 
 /** `工具结果.数据` 是 `unknown`（各工具形状不同），按事件数组收窄再取 id。 */
@@ -200,5 +209,84 @@ describe("AI 默认过滤未验证模板卡片（§11）", () => {
        where project_id = ${项目} and id = '用户:t-动态'
     `)
     expect(事件id们(await query_events(上下文(项目), {}))).toContain("ev-动态")
+  })
+
+  test("explore_entity：经实体档案读的事件默认不含未验证卡；含未验证=true 含", async () => {
+    const 项目 = "p-过滤-探索"
+    await 种实体(项目, "e-探", "13500000005")
+    await 种模板(项目, "用户:t-探已验", 100, 1)
+    await 种模板(项目, "用户:t-探未验", null)
+    await 种事件({ projectId: 项目, id: "ev-探-已验", 模板id: "用户:t-探已验", participants: ["13500000005"] })
+    await 种事件({ projectId: 项目, id: "ev-探-未验", 模板id: "用户:t-探未验", participants: ["13500000005"] })
+
+    const 默认 = await explore_entity(上下文(项目), { 实体: "13500000005" })
+    // 列表与总数必须一起过滤：只过滤列表时 `事件总数` 仍数到 2 条。
+    expect(JSON.stringify(默认)).not.toContain("ev-探-未验")
+    expect(JSON.stringify(默认)).toContain("ev-探-已验")
+    const 默认数据 = 默认.数据 as { 总数: { 事件总数: number } }
+    expect(默认数据.总数.事件总数).toBe(1)
+
+    const 显式 = await explore_entity(上下文(项目), { 实体: "13500000005", 含未验证: true })
+    expect(JSON.stringify(显式)).toContain("ev-探-未验")
+    expect((显式.数据 as { 总数: { 事件总数: number } }).总数.事件总数).toBe(2)
+  })
+
+  test("money_flow：默认金额与计数不含未验证卡；含未验证=true 含", async () => {
+    const 项目 = "p-过滤-资金流"
+    const 账户 = "6222021234567891"
+    await 种实体(项目, "e-资-账户", 账户, "账户")
+    await 种实体(项目, "e-资-对手", "6222021234567892", "账户")
+    // 关系要带时间：`money_flow` 的 `起` 作用于关系的 `coalesce(last_at, first_at, 0)`，
+    // 时间全 NULL 的关系会被时间窗排除 ⇒ 汇总为空，走不到单笔最大的断言。
+    await 建关系批(pg!.db, {
+      projectId: 项目,
+      fromId: "e-资-账户",
+      toId: "e-资-对手",
+      type: "转账",
+      sourceKind: "data",
+      数量: 1,
+      前缀: "r-资-",
+      首: 1_700_000_000,
+    })
+    await 种模板(项目, "用户:t-资已验", 100, 1)
+    await 种模板(项目, "用户:t-资未验", null)
+    await 种事件({
+      projectId: 项目,
+      id: "ev-资-已验",
+      模板id: "用户:t-资已验",
+      participants: [账户],
+      type: "资金交易",
+      金额: "300.00",
+    })
+    await 种事件({
+      projectId: 项目,
+      id: "ev-资-未验",
+      模板id: "用户:t-资未验",
+      participants: [账户],
+      type: "资金交易",
+      金额: "900.00",
+      时间: 1700000100,
+    })
+    // 没有发生时间的那张：默认不该出现在「无时间条数」的缺口里，含未验证=true 才数到。
+    await 种事件({
+      projectId: 项目,
+      id: "ev-资-未验-无时",
+      模板id: "用户:t-资未验",
+      participants: [账户],
+      type: "资金交易",
+      金额: "800.00",
+      时间: null,
+    })
+
+    // 起 必须给：否则 `无时间条数` 不统计（单笔窗口条件为空），这条用例对计数分支无咬合力。
+    const 默认 = await money_flow(上下文(项目), { 账户, 起: 1 })
+    const 默认数据 = 默认.数据 as { 单笔最大: { id: string; 金额: string }[] }
+    expect(默认数据.单笔最大.map((条) => 条.id)).toEqual(["ev-资-已验"])
+    expect(默认.缺口?.some((句) => 句.includes("没有发生时间")) ?? false).toBe(false)
+
+    const 显式 = await money_flow(上下文(项目), { 账户, 起: 1, 含未验证: true })
+    const 显式数据 = 显式.数据 as { 单笔最大: { id: string; 金额: string }[] }
+    expect(new Set(显式数据.单笔最大.map((条) => 条.id))).toEqual(new Set(["ev-资-已验", "ev-资-未验"]))
+    expect(显式.缺口?.some((句) => 句.includes("1 条资金交易事件没有发生时间")) ?? false).toBe(true)
   })
 })

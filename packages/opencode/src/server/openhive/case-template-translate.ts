@@ -2,7 +2,7 @@ export * as OpenhiveCaseTemplateTranslate from "./case-template-translate"
 
 import { 实体类型们, type 实体类型 } from "./case-extract"
 import { 默认角色, 是角色, 槽条目们, type 槽条目, type 角色, type 模板行 } from "./case-card-template"
-import { 归一化值, 字段目录, 字段显示名, 是标准列, type 识别字段 } from "./case-field-registry"
+import { 归一化值, 可建实体, 字段目录, 字段显示名, 是标准列, type 识别字段 } from "./case-field-registry"
 import { parseTime } from "./case-time"
 import { 判定用途 } from "./case-purpose"
 import {
@@ -103,7 +103,7 @@ function 造参与者(row: FactRowInput, 填: 槽条目, ordinal: number, 角色
     角色,
     提及: 原文,
     ordinal,
-    实体: 规范值 !== "",
+    实体: 可建实体(填.字段, 规范值),
     实体类型: 强制类型 ?? (是实体类型(填.实体类型) ? 填.实体类型 : 按种类推导(填.字段)),
   }
 }

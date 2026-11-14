@@ -2123,7 +2123,15 @@ const 单笔最大上限 = 10
  */
 export async function money_flow(
   ctx: 工具上下文,
-  args: { 账户: string; 起?: number; 止?: number; 方向?: string; 对手?: string },
+  args: {
+    账户: string
+    起?: number
+    止?: number
+    方向?: string
+    对手?: string
+    /** AI 出口的模板可见性（§11.1）：默认不含未验证模板产出的卡片。 */
+    含未验证?: boolean
+  },
 ): Promise<工具结果> {
   校验时间窗(args)
   const 方向 = args.方向 ?? "全部"
@@ -2202,12 +2210,16 @@ export async function money_flow(
   // 单笔最大的基础条件与汇总同源（时间窗 / 对手），方向另走共享谓词（C3）：
   // `事件角色条件` 的参与者侧用归属实体集，不是裸账户 id；没有参与者行的老事件 fail-closed
   // 排除，条数进缺口（不静默清空）。
+  // 未验证模板产出的卡片默认对 AI 隐藏（§11.1）：单笔最大与两处缺口计数共用这份基础条件，
+  // 挂在这里就一并生效；`from auth.case_event` 未起别名，片段可直接用（`模板可见条件`）。
+  const 模板可见 = 模板可见条件(args.含未验证)
   const 单笔基础条件: SQL[] = [
     sql`project_id = ${ctx.身份.projectId}`,
     sql`type = ${资金交易}`,
     sql`currency = 'CNY'`,
     sql`trust_state <> '已排除'`,
     sql`amount is not null`,
+    ...(模板可见 === undefined ? [] : [模板可见]),
     sql`${事件归属条件(ctx.身份.projectId, 账户.id)}`,
     // 对手与方向同源：基 1 的共享谓词（参与者表 ∈ 归属实体集 ∪ 文本回退 ∈ 归属值集），
     // 不再手抄 unnest(participants)（`#002-06`）。
@@ -2536,7 +2548,15 @@ async function 主体身份(ctx: 工具上下文, 实体: 实体解析): Promise
  */
 export async function explore_entity(
   ctx: 工具上下文,
-  args: { 实体: string; 起?: number; 止?: number; 跳数?: number; 限制?: number },
+  args: {
+    实体: string
+    起?: number
+    止?: number
+    跳数?: number
+    限制?: number
+    /** AI 出口的模板可见性（§11.1）：默认不含未验证模板产出的卡片。 */
+    含未验证?: boolean
+  },
 ): Promise<工具结果> {
   校验时间窗(args)
   const 跳数 = args.跳数 ?? 1
@@ -2565,7 +2585,12 @@ export async function explore_entity(
       口径: "实体按 id、规范值、未撤销的户名别名解析；解析不到就是本项目没有它。",
     })
   }
-  const 档案 = await 实体档案(ctx.db, { projectId: ctx.身份.projectId, id: 实体.id })
+  // 事件列表、事件总数与待确认计数都出自 `实体档案`，可见性也只在它一处（`#002-06`）。
+  const 档案 = await 实体档案(ctx.db, {
+    projectId: ctx.身份.projectId,
+    id: 实体.id,
+    含未验证: args.含未验证,
+  })
   if (档案 === undefined)
     return 探索空信封({
       主体: `实体「${实体.value}」已排除或不属于本项目`,

@@ -262,6 +262,32 @@ describe("模板翻译引擎（§8）", () => {
     expect(甲).not.toBe(跑({ ...通话模板, id: "用户:t-另一个" }, [行]).卡片们[0]?.id)
   })
 
+  test("掩码值不建实体（§8.2 / §13.1）：含 * 的号码 / 账号只留提及", () => {
+    const 号码模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "caller" }], 和谁: [{ 字段: "callee" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁", "何时"],
+    }
+    const 掩码号 = 跑(号码模板, [
+      造行({ caller: "138****0001", callee: "13900000002", startedAt: 1 }),
+    ]).卡片们[0]
+    // 源文件自带掩码：形状闸不过 ⇒ 不建实体，否则同尾号的人会被合并成一个（§8.2、§4.0.5 坑 1）。
+    expect(掩码号?.participants[0]?.实体).toBe(false)
+    expect(掩码号?.participants[0]?.规范值).toBe("138****0001")
+    // 同一张卡上的正常号码不受影响。
+    expect(掩码号?.participants[1]?.实体).toBe(true)
+
+    const 账户模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "ownerAccount" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁"],
+    }
+    const 掩码账 = 跑(账户模板, [造行({ ownerAccount: "6222****1234", startedAt: 1 })]).卡片们[0]
+    expect(掩码账?.participants[0]?.实体).toBe(false)
+    const 正常账 = 跑(账户模板, [造行({ ownerAccount: "6222021234567890", startedAt: 1 })]).卡片们[0]
+    expect(正常账?.participants[0]?.实体).toBe(true)
+  })
+
   test("摘要超 200 字被截断并加省略号", () => {
     const 长 = "长".repeat(300)
     const 卡 = 跑(通话模板, [

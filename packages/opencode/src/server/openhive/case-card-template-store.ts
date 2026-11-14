@@ -72,7 +72,7 @@ const 列 = sql`id, name, event_type, slots, required, version, verified_at, hit
 const 内置模板前缀 = "内置:"
 
 /**
- * 列表：内置恒在最前（前端把它当「不可编辑的参照」读），其后按创建时间。
+ * 列表：启用中的在前（`disabled_at nulls first`），同状态按事件类型、id 升序。
  * 停用行默认不列——「停用」在民警那边就是「没有了」（历史卡片不受影响）。
  */
 export async function 列出模板(
@@ -85,7 +85,7 @@ export async function 列出模板(
         from auth.case_card_template
        where project_id = ${input.projectId}
          and (${input.含停用 === true} or disabled_at is null)
-       order by case when id like ${`${内置模板前缀}%`} then 0 else 1 end, created_at asc, id asc
+       order by disabled_at nulls first, event_type asc, id asc
     `),
   )
   return 行们.map(映射模板行)
@@ -185,16 +185,19 @@ export async function 停用模板(db: Queryable, input: { projectId: string; id
 
 /**
  * 转正（§10.4）：`expectedVersion` 是预览时读到的版本 —— 预览与转正之间模板被改过 ⇒
- * `state_changed`，让用户重新预览。已转正的返回原时间（幂等，路由另有 `already` 标记）。
+ * `state_changed`，让用户重新预览。已转正的返回原时间（幂等，带 `already` 标记）。
+ *
+ * 停用是「行还在、状态不对」⇒ `conflict`（409），与「不存在」分开（§7.3）。
  */
 export async function 转正模板(
   db: Queryable,
   input: { projectId: string; id: string; expectedVersion: number },
-): Promise<{ verified_at: number; version: number }> {
+): Promise<{ verified_at: number; version: number; already?: true }> {
   要求用户模板(input.id, "转正")
   const 现有 = await 读模板行(db, input.projectId, input.id)
-  if (现有 === undefined || 现有.disabled_at !== null) throw new 模板错误("not_found", "没有这个模板")
-  if (现有.verified_at !== null) return { verified_at: 现有.verified_at, version: 现有.version }
+  if (现有 === undefined) throw new 模板错误("not_found", "没有这个模板")
+  if (现有.disabled_at !== null) throw new 模板错误("conflict", "模板已停用，需先恢复")
+  if (现有.verified_at !== null) return { verified_at: 现有.verified_at, version: 现有.version, already: true }
 
   const 行们 = rowsOf(
     await db.execute(sql`
@@ -206,7 +209,15 @@ export async function 转正模板(
     `),
   )
   const 行 = 行们[0]
-  if (行 === undefined) throw new 模板错误("state_changed", "模板在预览期间被修改，请重新预览")
+  if (行 === undefined) {
+    // UPDATE 0 行有两种成因：并发转正已经写成（再读一次 ⇒ 幂等 `already`），或版本被改
+    // ⇒ `state_changed`。不重读就会把「另一个请求刚转正」误报成「你预览期间被改了」（§10.4）。
+    const 最新 = await 读模板行(db, input.projectId, input.id)
+    if (最新 !== undefined && 最新.verified_at !== null) {
+      return { verified_at: 最新.verified_at, version: 最新.version, already: true }
+    }
+    throw new 模板错误("state_changed", "模板在预览期间被修改，请重新预览")
+  }
   return { verified_at: Number(行.verified_at), version: Number(行.version) }
 }
 

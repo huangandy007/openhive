@@ -17,6 +17,7 @@ import {
 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
+import { 模板可见条件 } from "./case-card-template"
 
 /**
  * 实体视图（计划 7 的左栏与中栏）：分组计数、清单、档案三个只读出口。
@@ -363,7 +364,16 @@ export function 是档案归属缺口(句: string): boolean {
 
 export async function 实体档案(
   db: Queryable,
-  input: { readonly projectId: string; readonly id: string; readonly includeExcluded?: boolean },
+  input: {
+    readonly projectId: string
+    readonly id: string
+    readonly includeExcluded?: boolean
+    /**
+     * AI 出口的模板可见性（§11.1）：默认不含未验证模板产出的卡片。
+     * 人的 HTTP 档案页显式传 `true`（卡片对人是可见的，只对 AI 默认隐藏）。
+     */
+    readonly 含未验证?: boolean
+  },
 ): Promise<实体档案 | undefined> {
   const 含排除 = input.includeExcluded === true
   const 实体行们 = rowsOf(
@@ -468,8 +478,12 @@ export async function 实体档案(
     sql`project_id = ${input.projectId}`,
     sql`${事件归属条件(input.projectId, String(实体.id))}`,
   ]
-  const 事件可见: SQL[] = [...事件触达, sql`trust_state <> '已排除'`]
-  const 事件条件 = 含排除 ? 事件触达 : 事件可见
+  // 模板可见性与「已排除」是两条正交的可见性：前者是 AI 口径（§11.1），后者是人的开关。
+  // 片段裸引 `case_event`，只能挂在未起别名的 `from auth.case_event` 查询上（`模板可见条件`）。
+  const 模板可见 = 模板可见条件(input.含未验证)
+  const 模板可见条 = 模板可见 === undefined ? [] : [模板可见]
+  const 事件可见: SQL[] = [...事件触达, sql`trust_state <> '已排除'`, ...模板可见条]
+  const 事件条件: SQL[] = 含排除 ? [...事件触达, ...模板可见条] : 事件可见
   const 事件行们 = rowsOf(
     await db.execute(sql`
       select id, type, occurred_at, occurred_raw, summary,
@@ -582,6 +596,7 @@ export async function 实体档案(
         from auth.case_event
        where project_id = ${input.projectId}
          and trust_state <> '已排除'
+         ${模板可见 === undefined ? sql`` : sql`and ${模板可见}`}
          and not ${事件归属条件(input.projectId, String(实体.id))}
          and ${事件文本归属条件(input.projectId, String(实体.id), true)}
     `),

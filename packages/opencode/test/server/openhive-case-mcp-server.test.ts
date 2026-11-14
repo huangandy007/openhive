@@ -120,6 +120,14 @@ beforeAll(async () => {
     canonicalValue: "白乙",
     aliases: [],
   })
+  // `money_flow` 真握手要解析账户：白名单放行必须发生在解析之前，给一个账户实体即可。
+  await upsertEntity(库(), {
+    id: "e-白账",
+    projectId: 身份丁.projectId,
+    type: "账户",
+    canonicalValue: "6222021234567899",
+    aliases: [],
+  })
 
   // 共享夹具也注入独立预算：模块级默认单例是**全进程共享**的隐藏配额，跑得越多越接近 12，
   // 第 12 次落在哪条用例上会变成执行顺序的副产物（`#005-34`）。生产仍走默认单例，这里只改测试。
@@ -319,6 +327,24 @@ test("query_timeline 真握手可传 含未验证（schema 与白名单都认）
   const 结果 = await client.callTool({
     name: "query_timeline",
     arguments: { 实体: "白甲", 含未验证: true },
+    _meta: 白名单元,
+  })
+  expect(结果.isError).not.toBe(true)
+})
+
+test("explore_entity 真握手可传 含未验证（schema 与白名单都认）", async () => {
+  const 结果 = await client.callTool({
+    name: "explore_entity",
+    arguments: { 实体: "白甲", 含未验证: true },
+    _meta: 白名单元,
+  })
+  expect(结果.isError).not.toBe(true)
+})
+
+test("money_flow 真握手可传 含未验证（schema 与白名单都认）", async () => {
+  const 结果 = await client.callTool({
+    name: "money_flow",
+    arguments: { 账户: "6222021234567899", 含未验证: true },
     _meta: 白名单元,
   })
   expect(结果.isError).not.toBe(true)

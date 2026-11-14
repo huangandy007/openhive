@@ -168,6 +168,19 @@ describe("ingest 自动选模板（§9）", () => {
     expect(Number(命中[0]?.hit_count)).toBe(1)
   })
 
+  test("套了模板但 0 张卡 ⇒ 不记 `卡片模板`（明细只记真产出事实的表，§9.3）", async () => {
+    const 项目 = "p-ingest-零卡"
+    await 建模板(db(), { projectId: 项目, 定义: 话单定义() })
+    // 只有表头、没有数据行：表头能认出模板（建议命中），但翻译一行都产不出卡。
+    const { job } = await 跑一份(项目, "只有表头.xlsx", 造多表工作簿([["Sheet1", [话单表[0]!]]]))
+    const 材料 = await getMaterial(db(), 项目, job.materialId)
+    const 明细 = 读对象(材料?.parseDetail, "parse_detail")
+    // 0 卡的表若也写进 `卡片模板`，回执会声称「这张表套了模板、产出了事实」。
+    expect("卡片模板" in 明细).toBe(false)
+    const 卡数 = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_event where project_id = ${项目}`))
+    expect(Number(卡数[0]?.n)).toBe(0)
+  })
+
   test("没有匹配模板 ⇒ 未翻译表原因；仍落明细行、不产卡片", async () => {
     const 项目 = "p-ingest-无模板"
     const { job } = await 跑一份(项目, "话单.xlsx", 造多表工作簿([["Sheet1", 话单表]]))
@@ -310,6 +323,28 @@ describe("ingest 自动选模板（§9）", () => {
       select hit_count from auth.case_card_template where project_id = ${项目} and id = ${行.id}
     `))
     expect(Number(命中[0]?.hit_count)).toBe(2)
+  })
+
+  test("掩码值不建实体（§8.2 / §13.1）：落库的规范值里没有 *", async () => {
+    const 项目 = "p-ingest-掩码"
+    await 建模板(db(), { projectId: 项目, 定义: 话单定义() })
+    const 掩码表 = [
+      ["主叫号码", "被叫号码", "通话时间", "通话时长"],
+      ["138****0001", "139****0002", "2023-11-14 22:13:20", "59"],
+      ["138****0003", "139****0004", "2023-11-14 22:20:00", "12"],
+    ]
+    const { job } = await 跑一份(项目, "掩码话单.xlsx", 造多表工作簿([["Sheet1", 掩码表]]))
+    const 材料 = await getMaterial(db(), 项目, job.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    // 先证明通路真的跑了：两行都产卡（否则「没有 * 实体」是空跑出来的假绿，`#005-18`）。
+    const 卡数 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_event where project_id = ${项目}`),
+    )
+    expect(Number(卡数[0]?.n)).toBe(2)
+    const 实体值们 = rowsOf(
+      await db().execute(sql`select canonical_value from auth.case_entity where project_id = ${项目}`),
+    )
+    expect(实体值们.filter((行) => String(行.canonical_value).includes("*"))).toEqual([])
   })
 })
 
