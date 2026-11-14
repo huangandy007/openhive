@@ -35,10 +35,12 @@ export interface 工作表识别 {
   列: Record<number, 识别字段>
   来源: Record<number, 识别来源>
   待确认: 待确认项[]
-  方法: "词典" | "特征" | "别名" | "模型"
+  方法: "词典" | "特征" | "别名" | "模型" | "档案"
   未知列: number
   /** 来自格式缓存（`true` ⇒ 本表没有跑四层、没有参与模型）。 */
   命中: boolean
+  /** 来自数据源档案（与缓存命中同语义：不跑四层、不参与模型）。 */
+  档案?: { id: string; name: string }
 }
 
 export interface 材料识别 {
@@ -52,6 +54,12 @@ export interface 识别输入 {
   别名: 别名上下文
   /** 与 `sheets` 等长；调用方已按指纹查过缓存。 */
   缓存: readonly (Readonly<{ columns: Record<number, 识别字段>; result: 格式结果 }> | undefined)[]
+  /**
+   * 与 `sheets` 等长。命中的表由调用方按表头集合匹配好；这里不碰库。
+   * 顺序在缓存**之前**：档案 > 缓存 > 四层 > 模型（`01` Q21）。
+   * 可选：不传 = 没有档案，既有调用方（识别单测）不用改。
+   */
+  档案?: readonly (Readonly<{ id: string; name: string; columns: Record<number, 识别字段> }> | undefined)[]
   /** 不注入 ⇒ 只走离线规则（dryRun 就是这种情况，见 R20）。 */
   识别器?: 表头识别器
 }
@@ -70,6 +78,20 @@ export async function 识别材料(输入: 识别输入): Promise<材料识别> 
   const 未命中行: (string | null)[][][] = []
 
   for (let i = 0; i < 输入.sheets.length; i++) {
+    const 档案 = 输入.档案?.[i]
+    if (档案 !== undefined) {
+      const 来源: Record<number, 识别来源> = {}
+      for (const 列号 of Object.keys(档案.columns)) 来源[Number(列号)] = "档案"
+      合并后.push({
+        columns: 档案.columns,
+        // `MappingResult.method` 没有「档案」；本对象只被 `classifyMaterialType` 读，不看方法。
+        method: "特征",
+        来源,
+        待确认: [],
+        unknownColumns: [],
+      })
+      continue
+    }
     const 缓存 = 输入.缓存[i]
     const 表头 = 表头们[i] ?? []
     const 行 = 行们[i] ?? []
@@ -142,6 +164,7 @@ export async function 识别材料(输入: 识别输入): Promise<材料识别> 
 
   const 工作表: 工作表识别[] = 合并后.map((结果, i) => {
     const 缓存 = 输入.缓存[i]
+    const 档案 = 输入.档案?.[i]
     const 用了模型 = Object.values(结果.来源).includes("模型")
     return {
       sheet: 输入.sheets[i]?.name ?? "",
@@ -150,9 +173,16 @@ export async function 识别材料(输入: 识别输入): Promise<材料识别> 
       来源: 结果.来源,
       待确认: 结果.待确认,
       // R19：按**表**判，不能把「模型调用过」当成「每张表都是模型产的」。
-      方法: 缓存 !== undefined ? 缓存.result.方法 : 用了模型 ? "模型" : 结果.method,
-      未知列: 缓存 !== undefined ? 缓存.result.未知列 : 结果.unknownColumns.length,
+      // 档案优先于缓存：调用方给档案命中的表传的缓存是 `undefined`，这里再兜一次顺序（`01` Q21）。
+      方法: 档案 !== undefined ? "档案" : 缓存 !== undefined ? 缓存.result.方法 : 用了模型 ? "模型" : 结果.method,
+      未知列:
+        档案 !== undefined
+          ? (表头们[i] ?? []).filter((h, j) => (h ?? "").trim() !== "" && 结果.columns[j] === undefined).length
+          : 缓存 !== undefined
+            ? 缓存.result.未知列
+            : 结果.unknownColumns.length,
       命中: 缓存 !== undefined,
+      ...(档案 === undefined ? {} : { 档案: { id: 档案.id, name: 档案.name } }),
     }
   })
 

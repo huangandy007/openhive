@@ -1984,3 +1984,163 @@ describe("format_fingerprints", () => {
     expect(实得).toEqual([{ 工作表: "Sheet1", 指纹: 期望 }])
   })
 })
+
+describe("数据源档案接入", () => {
+  const 原表头 = ["交易时间", "交易金额", "对方户名"]
+  const 乱序 = 造工作簿({
+    Sheet1: [
+      ["对方户名", "交易金额", "交易时间"],
+      ["张三", "100.00", "2026-02-01 10:00:00"],
+      ["李四", "200.00", "2026-02-01 11:00:00"],
+    ],
+  })
+
+  async function 种档案(projectId: string, header: string[], mapping: Record<string, string>) {
+    await db().execute(sql`
+      insert into auth.case_source_profile
+        (id, project_id, name, type, header_set, mapping, hit_count, created_at, updated_at)
+      values (${`sp-${projectId}`}, ${projectId}, '测试档案', '资金',
+              ${JSON.stringify(header)}::text::jsonb, ${JSON.stringify(mapping)}::text::jsonb, 0, 0, 0)
+    `)
+  }
+
+  const 读材料 = async (projectId: string) => {
+    const 行们 = rowsOf(
+      await db().execute(sql`
+        select parse_detail, format_fingerprints from auth.case_material
+         where project_id = ${projectId}
+         order by created_at desc, id desc limit 1
+      `),
+    )
+    return 行们[0]
+  }
+
+  test("列顺序打乱 ⇒ 档案命中：parse_detail.档案 有值、方法为档案、hit_count +1", async () => {
+    await 种档案("p-档案", 原表头, {
+      交易时间: "startedAt",
+      交易金额: "amount",
+      对方户名: "counterpartyName",
+    })
+    文件.set("p-档案/乱序.xlsx", 乱序)
+    await 入队("p-档案", "乱序.xlsx", Hash.sha256("p-档案-乱序"))
+    await 跑下一条()
+
+    const 行 = await 读材料("p-档案")
+    const detail = typeof 行?.parse_detail === "string" ? JSON.parse(行.parse_detail) : 行?.parse_detail
+    expect(是对象(detail)).toBe(true)
+    if (!是对象(detail)) return
+    const mapping = detail["mapping"]
+    expect(是对象(mapping)).toBe(true)
+    if (!是对象(mapping)) return
+    // 每表条目在 `mapping.工作表[sheet]` 下（`跑表格` 写 `parse_detail` 的既有形状）。
+    const 工作表 = mapping["工作表"]
+    expect(是对象(工作表)).toBe(true)
+    if (!是对象(工作表)) return
+    const 表 = 工作表["Sheet1"]
+    expect(是对象(表)).toBe(true)
+    if (!是对象(表)) return
+    expect(表["档案"]).toEqual({ id: "sp-p-档案", name: "测试档案" })
+    expect(表["方法"]).toBe("档案")
+
+    const 档案行 = rowsOf(
+      await db().execute(sql`select hit_count from auth.case_source_profile where project_id = 'p-档案'`),
+    )
+    expect(Number(档案行[0]?.hit_count)).toBe(1)
+
+    // 事件与「没建档案、走普通识别」的同一份表逐字段一致（设计 §8.1-2）。
+    文件.set("p-档案对照/乱序.xlsx", 乱序)
+    await 入队("p-档案对照", "乱序.xlsx", Hash.sha256("p-档案对照-乱序"))
+    await 跑下一条()
+    const 事实 = async (projectId: string) =>
+      rowsOf(
+        await db().execute(sql`
+          select type, occurred_at, summary from auth.case_event
+           where project_id = ${projectId}
+           order by id
+        `),
+      )
+    expect(await 事实("p-档案")).toEqual(await 事实("p-档案对照"))
+  })
+
+  test("缺一列 ⇒ 不命中，回落普通识别", async () => {
+    await 种档案("p-档案缺列", 原表头, {
+      交易时间: "startedAt",
+      交易金额: "amount",
+      对方户名: "counterpartyName",
+    })
+    文件.set("p-档案缺列/缺列.xlsx", 造工作簿({
+      Sheet1: [
+        ["交易金额", "交易时间"],
+        ["100.00", "2026-02-01 10:00:00"],
+      ],
+    }))
+    await 入队("p-档案缺列", "缺列.xlsx", Hash.sha256("p-档案缺列-内容"))
+    await 跑下一条()
+
+    const 行 = await 读材料("p-档案缺列")
+    const detail = typeof 行?.parse_detail === "string" ? JSON.parse(行.parse_detail) : 行?.parse_detail
+    if (
+      !是对象(detail) ||
+      !是对象(detail["mapping"]) ||
+      !是对象(detail["mapping"]["工作表"]) ||
+      !是对象(detail["mapping"]["工作表"]["Sheet1"])
+    ) {
+      throw new Error("parse_detail 形状不对")
+    }
+    expect(detail["mapping"]["工作表"]["Sheet1"]["档案"]).toBeUndefined()
+    const 档案行 = rowsOf(
+      await db().execute(sql`select hit_count from auth.case_source_profile where project_id = 'p-档案缺列'`),
+    )
+    expect(Number(档案行[0]?.hit_count)).toBe(0)
+  })
+
+  test("dryRun 不读不写档案：hit_count 不动", async () => {
+    await 种档案("p-档案干跑", 原表头, {
+      交易时间: "startedAt",
+      交易金额: "amount",
+      对方户名: "counterpartyName",
+    })
+    文件.set("p-档案干跑/乱序.xlsx", 乱序)
+    await 入队("p-档案干跑", "乱序.xlsx", Hash.sha256("p-档案干跑-乱序"))
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的")
+    const 收集: 材料识别[] = []
+    expect(await runJob(db(), deps, 作业, { dryRun: true, 收集: (r) => 收集.push(r) })).toBe("完成")
+    // 「不写 hit_count」由事务前的 early return 保证，单靠它区分不出「读了没记」；
+    // 「不读档案」要看识别结果里有没有档案命中（dryRun 的离线基线语义）。
+    expect(收集[0]?.工作表[0]?.档案).toBeUndefined()
+
+    const 档案行 = rowsOf(
+      await db().execute(sql`select hit_count from auth.case_source_profile where project_id = 'p-档案干跑'`),
+    )
+    expect(Number(档案行[0]?.hit_count)).toBe(0)
+    // 队列是全局的：dryRun 会把认领还回「排队中」（R33），不清掉会被下一条用例认领走。
+    await db().execute(sql`delete from auth.case_ingest_job where project_id = 'p-档案干跑'`)
+  })
+
+  test("档案撤销后同一材料不再命中", async () => {
+    await 种档案("p-档案撤销", 原表头, {
+      交易时间: "startedAt",
+      交易金额: "amount",
+      对方户名: "counterpartyName",
+    })
+    await db().execute(sql`
+      update auth.case_source_profile set revoked_at = 1 where project_id = 'p-档案撤销'
+    `)
+    文件.set("p-档案撤销/乱序.xlsx", 乱序)
+    await 入队("p-档案撤销", "乱序.xlsx", Hash.sha256("p-档案撤销-乱序"))
+    await 跑下一条()
+
+    const 行 = await 读材料("p-档案撤销")
+    const detail = typeof 行?.parse_detail === "string" ? JSON.parse(行.parse_detail) : 行?.parse_detail
+    if (
+      !是对象(detail) ||
+      !是对象(detail["mapping"]) ||
+      !是对象(detail["mapping"]["工作表"]) ||
+      !是对象(detail["mapping"]["工作表"]["Sheet1"])
+    ) {
+      throw new Error("parse_detail 形状不对")
+    }
+    expect(detail["mapping"]["工作表"]["Sheet1"]["档案"]).toBeUndefined()
+  })
+})

@@ -22,6 +22,8 @@ import {
 } from "./case-mapping"
 import { 候选字段集, 是无信息列, 是识别字段, type 识别字段 } from "./case-field-registry"
 import { 识别材料, type 材料识别 } from "./case-recognize"
+import { 匹配数据源档案, type 档案命中 } from "./case-source-profile"
+import { 记档案命中, 读活跃档案 } from "./case-source-profile-store"
 import { 读别名上下文, 记别名命中 } from "./case-field-alias"
 import type { 表头识别器 } from "./case-header-ai"
 import { toFactRows } from "./case-rows"
@@ -424,9 +426,27 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   )
   const 指纹们 = 表头们.map((header, i) => formatFingerprint(header, 样例们[i] ?? [], 别名.版本))
 
-  // 先查缓存再识别（R18）：命中的表不跑四层、不参与模型。
+  // 档案先于指纹缓存（设计 §6）。dryRun 是离线基线：不读档案，也不写 hit_count。
+  const 活跃档案 = 选项.dryRun === true ? [] : await 读活跃档案(db, job.projectId)
+
+  // 先查档案、再查缓存（R18）：命中任一层的表都不跑四层、不参与模型。
   const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
-  for (const 指纹 of 指纹们) 缓存们.push(await 读格式(db, job.projectId, 指纹))
+  const 档案们: (档案命中 | undefined)[] = []
+  const 命中档案id = new Set<string>()
+  for (let i = 0; i < sheets.length; i++) {
+    const 档案 =
+      选项.dryRun === true
+        ? undefined
+        : // `匹配数据源档案` 未命中给 `null`（纯函数口径）；本链路统一用 `undefined` 表示「没有档案」。
+          (匹配数据源档案({ 表头: 表头们[i] ?? [], 档案们: 活跃档案 }) ?? undefined)
+    档案们.push(档案)
+    if (档案 !== undefined) {
+      命中档案id.add(档案.id)
+      缓存们.push(undefined)
+      continue
+    }
+    缓存们.push(await 读格式(db, job.projectId, 指纹们[i]!))
+  }
 
   // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32/R57）。
   // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
@@ -435,7 +455,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 走 `Effect.die`（defect），放它出去会把整条表格作业打成「失败」——为了一个可选的
   // 兜底层丢掉能解析的结果，显然不划算（R32）。但**必须留痕**（R52）：下面把原因补进
   // `识别.模型.失败`，随 `parse_detail.mapping` 落库——裸 `catch {}` 是 `#006-28` 的盲区。
-  const 需要识别器 = 缓存们.some((缓存) => 缓存 === undefined)
+  const 需要识别器 = sheets.some((_, i) => 档案们[i] === undefined && 缓存们[i] === undefined)
   let 识别器: 表头识别器 | undefined
   let 构造失败: string | undefined
   if (选项.dryRun !== true && 需要识别器 && deps.建表头识别器 !== undefined) {
@@ -451,6 +471,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     sheets,
     别名,
     缓存: 缓存们,
+    档案: 档案们,
     ...(识别器 === undefined ? {} : { 识别器 }),
   })
   // 构造失败没有经历模型调用（`识别材料` 只会给出 `{调用:0}`），原因在这里补上；
@@ -498,7 +519,9 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     const header = 表.表头
     const 指纹 = 指纹们[i] ?? ""
 
-    if (表.命中) {
+    if (档案们[i] !== undefined) {
+      // 档案命中：不重写格式缓存（设计 §4）。hit_count 在成功事务里记。
+    } else if (表.命中) {
       // 命中的表只记账：不重跑四层、不参与模型、不重写格式。
       await db.execute(sql`
         update auth.case_table_format
@@ -506,6 +529,9 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
          where project_id = ${job.projectId} and fingerprint = ${指纹}
       `)
     } else {
+      // 「档案」不该走到这里（档案命中的表在上一个分支就跳过了）。收窄给 TS 看：
+      // 缓存表的 `method` 只有四值（`case_table_format_method` 的 CHECK 也不收「档案」）。
+      if (!是格式方法(表.方法)) throw new Error(`档案命中的表不该写格式缓存：${表.sheet}`)
       await 写格式(db, job.projectId, 指纹, header, 表.列, {
         来源: 表.来源,
         待确认: 表.待确认,
@@ -625,6 +651,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
                 方法: s.方法,
                 未认出: 未认出们[i]?.列们 ?? [],
                 候选字段: 未认出们[i]?.候选字段 ?? [],
+                ...(s.档案 === undefined ? {} : { 档案: s.档案 }),
               },
             ]),
           ),
@@ -645,6 +672,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
             }),
       },
     })
+    for (const id of 命中档案id) await 记档案命中(tx, job.projectId, id)
     await setMaterialFormatFingerprints(tx, {
       projectId: job.projectId,
       materialId: job.materialId,
