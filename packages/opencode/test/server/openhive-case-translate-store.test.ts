@@ -3,8 +3,10 @@ import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { 清本材料翻译, 写入翻译结果 } from "../../src/server/openhive/case-translate-store"
-import { 确保内置模板 } from "../../src/server/openhive/case-card-template"
+import { 确保内置模板, type 模板行 } from "../../src/server/openhive/case-card-template"
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
+import { 翻译模板 } from "../../src/server/openhive/case-template-translate"
+import { parseTime } from "../../src/server/openhive/case-time"
 import { toFactRows } from "../../src/server/openhive/case-rows"
 import { 文本数组 } from "../../src/server/openhive/case-fact-store"
 import type { RawRow, RawSheet } from "../../src/server/openhive/case-sheet"
@@ -266,6 +268,87 @@ describe("写入翻译结果", () => {
     expect(参与.map((p) => p.role)).toEqual(["付款方", "收款方"])
     // 出处：两条参与者都指向同一张卡片的引用行，且能回过 `case_citation`。
     expect(参与.every((p) => p.citation_id === 引用[0]?.id)).toBe(true)
+  })
+})
+
+const 模板项目 = "prj-tpl"
+
+const 模板: 模板行 = {
+  id: "用户:t-落库",
+  name: "见面",
+  event_type: "见面",
+  slots: {
+    谁: [{ 字段: "caller" }],
+    何时: [{ 字段: "startedAt" }],
+    何时止: [{ 字段: "deliveredAt" }],
+  },
+  required: ["谁", "何时"],
+  version: 1,
+  verified_at: null,
+  hit_count: 0,
+  disabled_at: null,
+}
+
+/** 一张模板卡的翻译结果（同一模板、按材料区分）。 */
+function 模板结果(materialId: string) {
+  const 明细: FactRowInput[] = [
+    {
+      projectId: 模板项目,
+      materialId,
+      sheet: "Sheet1",
+      rowNo: 2,
+      caller: "13800000001",
+      startedAt: 1_700_000_000,
+      startedRaw: "2023-11-14 22:13:20",
+      precision: "到秒",
+      currency: "CNY",
+      // UTC+8 下 2023-11-15 08:00 = 1700006400，晚于 startedAt（1_700_000_000）。
+      extras: { deliveredAt: "2023-11-15 08:00:00" },
+    },
+  ]
+  const 翻译 = 翻译模板({ projectId: 模板项目, materialId, template: 模板, rows: 明细 })
+  const 卡 = 翻译.卡片们[0]
+  if (卡 === undefined) throw new Error("模板没有产卡片")
+  return { 翻译, 卡 }
+}
+
+async function 事件行(materialId: string) {
+  const { 翻译, 卡 } = 模板结果(materialId)
+  await 写入翻译结果(db(), { projectId: 模板项目, materialId, 翻译 })
+  return rowsOf(
+    await db().execute(sql`
+      select template_id, occurred_end from auth.case_event
+       where project_id = ${模板项目} and id = ${卡.id}
+    `),
+  )
+}
+
+describe("模板卡落库（模板 id 优先级 / occurred_end）", () => {
+  test("卡上的模板 id 优先于入参 templateId", async () => {
+    const { 翻译, 卡 } = 模板结果("tm1")
+    await 写入翻译结果(db(), {
+      projectId: 模板项目,
+      materialId: "tm1",
+      // 入参给另一个 id：模板卡必须用卡上的 `模板id`（`卡.模板id ?? templateId`）。
+      templateId: "内置:不该用",
+      翻译,
+    })
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select template_id from auth.case_event
+         where project_id = ${模板项目} and id = ${卡.id}
+      `),
+    )
+    expect(事件).toHaveLength(1)
+    expect(事件[0]?.template_id).toBe("用户:t-落库")
+  })
+
+  test("occurred_end 落卡上的何时止", async () => {
+    const 何时止 = parseTime("2023-11-15 08:00:00")
+    if (何时止 === undefined) throw new Error("夹具时间解析失败")
+    const 事件 = await 事件行("tm2")
+    expect(事件).toHaveLength(1)
+    expect(Number(事件[0]?.occurred_end)).toBe(何时止.seconds)
   })
 })
 

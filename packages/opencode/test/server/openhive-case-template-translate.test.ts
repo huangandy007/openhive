@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { 模板行 } from "../../src/server/openhive/case-card-template"
 import { 翻译模板 } from "../../src/server/openhive/case-template-translate"
+import { parseTime } from "../../src/server/openhive/case-time"
 import type { FactRowInput } from "../../src/server/openhive/case-store"
 
 function 造行(部分: Partial<FactRowInput> = {}): FactRowInput {
@@ -86,6 +87,25 @@ describe("模板翻译引擎（§8）", () => {
     expect(卡?.摘要).toContain("通话时长 59")
   })
 
+  test("只给已解析时间、不给原文 ⇒ occurredRaw 为 null，摘要不写解析值", () => {
+    const 卡 = 跑(通话模板, [造行({ caller: "13800000001", callee: "13900000002", startedAt: 1_700_000_000 })])
+      .卡片们[0]
+    expect(卡?.occurredAt).toBe(1_700_000_000)
+    // `occurredRaw` 只存原文；把解析值当原文写会让人以为源文件长这样（01 §4.2）。
+    expect(卡?.occurredRaw).toBeNull()
+    expect(卡?.摘要 ?? "").not.toContain("1700000000")
+  })
+
+  test("角色写了词表外的东西 ⇒ 回落默认角色（`是角色` 是唯一判定）", () => {
+    const 模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "caller", 角色: "外星人" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁"],
+    }
+    const 卡 = 跑(模板, [造行({ caller: "13800000001", startedAt: 1 })]).卡片们[0]
+    expect(卡?.participants[0]?.角色).toBe("主体")
+  })
+
   test("角色没填 ⇒ 用默认角色（谁→主体、和谁→对方、何地→地点）", () => {
     const 无角色: 模板行 = {
       ...通话模板,
@@ -134,6 +154,26 @@ describe("模板翻译引擎（§8）", () => {
     }
   })
 
+  test("槽位写了实体类型 ⇒ 优先于按字段种类推导（姓名推导「人」，显式「物品」）", () => {
+    const 模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "personName", 实体类型: "物品" }], 何时: [{ 字段: "startedAt" }] },
+      required: ["谁"],
+    }
+    const 卡 = 跑(模板, [造行({ startedAt: 1, extras: { personName: "张三" } })]).卡片们[0]
+    expect(卡?.participants[0]?.实体类型).toBe("物品")
+  })
+
+  test("何地槽强制实体类型「地点」，压过字段种类推导（商户→组织）", () => {
+    const 模板: 模板行 = {
+      ...通话模板,
+      slots: { 谁: [{ 字段: "caller" }], 何时: [{ 字段: "startedAt" }], 何地: [{ 字段: "merchant" }] },
+      required: ["谁", "何时"],
+    }
+    const 卡 = 跑(模板, [造行({ caller: "13800000001", startedAt: 1, extras: { merchant: "某某饭店" } })]).卡片们[0]
+    expect(卡?.participants[1]?.实体类型).toBe("地点")
+  })
+
   test("必填槽为空 ⇒ 跳过「必填槽为空」", () => {
     const 结果 = 跑(通话模板, [造行({ caller: "13800000001", callee: "  ", startedAt: 1 })])
     expect(结果.卡片们).toEqual([])
@@ -141,7 +181,7 @@ describe("模板翻译引擎（§8）", () => {
   })
 
   test("时间原文有值但解析不出 ⇒ 跳过「时间无法解析」", () => {
-    // 必填检查看的是「原文有没有」——`startedRaw` 非空就算有，落到解析才失败。
+    // 必填检查看的是「这个槽有没有值」——原文或已解析值有其一就算有，落到解析才失败。
     const 结果 = 跑(通话模板, [
       造行({ caller: "13800000001", callee: "13900000002", startedRaw: "去年冬天", startedAt: null, precision: null }),
     ])
@@ -165,6 +205,27 @@ describe("模板翻译引擎（§8）", () => {
       }),
     ])
     expect(结果.跳过们[0]?.原因).toBe("时间区间倒置")
+  })
+
+  test("何时止晚于何时 ⇒ occurredEnd 落何时止的值，不判倒置", () => {
+    const 模板: 模板行 = {
+      ...通话模板,
+      event_type: "见面",
+      slots: { ...通话模板.slots, 何时: [{ 字段: "startedAt" }], 何时止: [{ 字段: "deliveredAt" }] },
+    }
+    const 结果 = 跑(模板, [
+      造行({
+        caller: "13800000001",
+        callee: "13900000002",
+        startedAt: 1_700_000_000,
+        startedRaw: "2023-11-14 22:13:20",
+        // UTC+8 下 2023-11-15 08:00 = 1700006400，晚于 startedAt（1_700_000_000）。
+        extras: { deliveredAt: "2023-11-15 08:00:00" },
+      }),
+    ])
+    expect(结果.跳过们).toEqual([])
+    expect(结果.卡片们[0]?.occurredAt).toBe(1_700_000_000)
+    expect(结果.卡片们[0]?.occurredEnd).toBe(parseTime("2023-11-15 08:00:00")?.seconds)
   })
 
   test("空行 / 小计行 / 合计行：复用资金通路的判据", () => {
