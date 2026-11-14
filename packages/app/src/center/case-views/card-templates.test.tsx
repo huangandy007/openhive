@@ -348,6 +348,67 @@ describe("卡片模板列表", () => {
     await 等(() => 列表次数 > 前)
   })
 
+  test("旧保存响应不关新抽屉：迟到的成功只提示+重拉，新输入保留（N-1）", async () => {
+    type 新建回包 = Awaited<ReturnType<CaseTemplateApi["create"]>>
+    const 创建等待: Array<(回: 新建回包) => void> = []
+    let 列表次数 = 0
+    const api = 假api({
+      list: async (_projectId, 含停用) => {
+        列表次数 += 1
+        return { kind: "ok", value: 按含停用(行们, 含停用) }
+      },
+      vocab: async () => ({ kind: "ok", value: 词表 }),
+      create: async () =>
+        new Promise<新建回包>((resolve) => {
+          创建等待.push(resolve)
+        }),
+    })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    ;(host.querySelector("[data-slot='card-templates-create']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-name-field") !== null)
+
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    名称框.value = "新模板"
+    名称框.dispatchEvent(new Event("input", { bubbles: true }))
+    const 事件触发器 = () => 找("card-template-event-field")!.querySelector<HTMLElement>("[data-component='select-v2']")!
+    开下拉(事件触发器())
+    await 点选项("通话")
+    await 等(() => (事件触发器().textContent ?? "").includes("通话"))
+    const 谁触发器 = () =>
+      document.body.querySelector<HTMLElement>(
+        "[data-slot='card-template-slot'][data-slot-name='谁'] [data-component='select-v2']",
+      )!
+    开下拉(谁触发器())
+    await 点选项("主叫号码")
+    await 等(() => !(找("card-template-save") as HTMLButtonElement).disabled)
+
+    const 前 = 列表次数
+    ;(找("card-template-save") as HTMLButtonElement).click()
+    await 等(() => (找("card-template-save") as HTMLButtonElement).textContent?.includes("保存中") === true)
+    ;(找("card-template-cancel") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-discard-ok") !== null)
+    ;(找("card-template-discard-ok") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-editor") === null)
+
+    // 旧响应还没回来，民警已经又开了**另一个**新建抽屉并输入。
+    ;(host.querySelector("[data-slot='card-templates-create']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-name-field") !== null)
+    const 第二个名称 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    第二个名称.value = "后来的模板"
+    第二个名称.dispatchEvent(new Event("input", { bubbles: true }))
+
+    // 迟到的成功响应：提示与重拉要照做（I-1），但绝不能关掉这个新抽屉（N-1）。
+    创建等待[0]!({ kind: "ok", value: 新行 })
+    await 等(() => host.querySelector("[data-slot='card-templates-notice']") !== null)
+    expect(host.querySelector("[data-slot='card-templates-notice']")!.textContent).toContain("已新建")
+    await 等(() => 列表次数 > 前)
+
+    // 旧写法在这里无条件 `设抽屉(undefined)` ⇒ 新抽屉已被关掉（下面两条红）。
+    expect(找("card-template-editor") === null).toBe(false)
+    expect((找("card-template-name-field")!.querySelector("input") as HTMLInputElement).value).toBe("后来的模板")
+  })
+
   test("已停用行「预览」：只读抽屉可预览、无保存按钮、提示先恢复（最终广审 I-2）", async () => {
     const api = 假api({
       vocab: async () => ({ kind: "ok", value: 词表 }),

@@ -73,6 +73,20 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
    * 那时读 `<Show>` 子作用域的 `状()` 会抛 `Stale read from <Show>.`，成功/失败都被吞掉（最终广审 I-1）。
    */
   const [抽屉模式, 设抽屉模式] = createSignal<"新建" | "修改">("新建")
+  /**
+   * 抽屉打开代次（N-1）：迟到的保存响应只能关掉**它自己那一次**打开的抽屉。
+   * 旧写法无条件 `设抽屉(undefined)`：在途保存 → 关抽屉 → 又开了新抽屉 → 旧响应回来
+   * 会把新抽屉关掉（绕过脏确认、丢输入，提示词还可能指错那一份）。
+   */
+  const [抽屉代次, 设抽屉代次] = createSignal(0)
+  let 打开次数 = 0
+  /** 唯一开抽屉入口：代次递增 + 模式落下 + 值落下，三者同一次写。 */
+  function 开抽屉(值: 抽屉) {
+    打开次数 += 1
+    设抽屉代次(打开次数)
+    设抽屉模式(值.mode === "create" ? "新建" : "修改")
+    设抽屉(值)
+  }
   const [待确认, 设待确认] = createSignal<{ 类: 确认类; 行: 模板行 }>()
   const [确认中, 设确认中] = createSignal(false)
   const [确认错误, 设确认错误] = createSignal<{ message: string; code?: string }>()
@@ -210,10 +224,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-view"
-              onClick={() => {
-                设抽屉模式("修改")
-                设抽屉({ mode: "edit", 行, 只读: true })
-              }}
+              onClick={() => 开抽屉({ mode: "edit", 行, 只读: true })}
             >
               查看
             </ButtonV2>
@@ -225,10 +236,9 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               size="small"
               data-slot="card-template-preview"
               onClick={() => {
-                设抽屉模式("修改")
                 // 停用模板内核拒改（`改模板` 对 `disabled_at !== null` 回 not_found）：
                 // 抽屉只读但可预览，要修改须先恢复（最终广审 I-2）。
-                设抽屉({ mode: "edit", 行, 只读: true, 可预览: true, 自动预览: true })
+                开抽屉({ mode: "edit", 行, 只读: true, 可预览: true, 自动预览: true })
               }}
             >
               预览
@@ -249,10 +259,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-edit"
-              onClick={() => {
-                设抽屉模式("修改")
-                设抽屉({ mode: "edit", 行 })
-              }}
+              onClick={() => 开抽屉({ mode: "edit", 行 })}
             >
               编辑
             </ButtonV2>
@@ -261,10 +268,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-preview"
-              onClick={() => {
-                设抽屉模式("修改")
-                设抽屉({ mode: "edit", 行, 自动预览: true })
-              }}
+              onClick={() => 开抽屉({ mode: "edit", 行, 自动预览: true })}
             >
               预览
             </ButtonV2>
@@ -308,10 +312,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
           size="small"
           class="ml-auto"
           data-slot="card-templates-create"
-          onClick={() => {
-            设抽屉模式("新建")
-            设抽屉({ mode: "create" })
-          }}
+          onClick={() => 开抽屉({ mode: "create" })}
         >
           新建模板
         </ButtonV2>
@@ -408,6 +409,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
             const 值 = 状()
             return 值.mode === "edit" ? 值 : undefined
           }
+          // 本实例挂载那一刻的代次与模式：保存响应回来时抽屉可能已卸载（I-1），
+          // 也可能用户已经开了**另一个**抽屉（N-1）——只有本代次仍当前才允许关抽屉。
+          const 本代 = 抽屉代次()
+          const 本模式 = 抽屉模式()
           return (
             <CardTemplateEditor
               projectId={props.projectId}
@@ -419,11 +424,15 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               材料们={材料们()}
               onClose={() => 设抽屉(undefined)}
               onSaved={() => {
-                // 读 `<Show>` **之外**的模式信号：保存请求在途时抽屉可能已被卸载，
-                // 此时读 `状()` 会抛 `Stale read from <Show>.`（最终广审 I-1）。
-                const 是编辑 = 抽屉模式() === "修改"
-                设抽屉(undefined)
+                // 读挂载时捕获的模式（`<Show>` 之外）：抽屉卸载后读 `状()` 会抛
+                // `Stale read from <Show>.`（最终广审 I-1）；读实时信号又会在新抽屉
+                // 打开后串成新抽屉的模式（N-1），提示词就指错了那一份。
+                const 是编辑 = 本模式 === "修改"
+                // 提示与重拉无论代次如何都要做（I-1 的成果，不许退回）。
                 设提示(是编辑 ? "已保存" : "已新建")
+                // 只有代次仍相等才关抽屉；否则关掉的会是用户后来打开的新抽屉
+                // （绕过脏确认、丢掉新输入）。
+                if (本代 === 抽屉代次()) 设抽屉(undefined)
                 void 读()
               }}
             />
