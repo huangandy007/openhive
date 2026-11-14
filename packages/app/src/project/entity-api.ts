@@ -66,28 +66,44 @@ export async function 默认发送(input: string, init?: RequestInit): Promise<R
   }
 }
 
-/** 同源 JSON 取数：非 2xx 收成 `{kind:"error"}`，**从不抛**（视图只管画，不管异常）。 */
-export async function 请求<T>(send: CaseFetch, url: string, init?: RequestInit): Promise<结果<T>> {
+/**
+ * 同 `请求<T>`，但错误分支额外带原始错误体（`错误体`）。
+ *
+ * 只有一个消费方：模板转正。它的 400 `preview_failed` 把 0 卡原因表放在错误体里
+ * （内核 `case-ui-routes.ts` 的 verify handler）——丢了这个字段，民警只看到「没有卡片」，
+ * 看不到卡在哪一列。**超时 / 网络 / 非 JSON 的分支仍只有这一份实现**（`#002-06`）。
+ */
+export async function 请求带错误体<T>(
+  send: CaseFetch,
+  url: string,
+  init?: RequestInit,
+): Promise<(结果<T> & { readonly 错误体?: unknown })> {
   try {
     const response = await send(url, init)
     if (!response.ok) {
       const 体 = (await response.json().catch(() => undefined)) as { error?: string; code?: string } | undefined
-      return { kind: "error", message: 体?.error ?? `服务端回了 ${response.status}`, code: 体?.code }
+      return { kind: "error", message: 体?.error ?? `服务端回了 ${response.status}`, code: 体?.code, 错误体: 体 }
     }
     try {
       return { kind: "ok", value: (await response.json()) as T }
     } catch {
-      // 2xx 却不是 JSON（真实应用里未挂上的路径会落进 UI 的 `/*` 兜底，回 200 ＋ `text/html`）：
-      // 说清是哪一种，不要把解析器的原话摔到界面上。
       return { kind: "error", message: `服务端回了非 JSON（${response.status}）` }
     }
   } catch (错误) {
-    // 本客户端里 abort **只有一个来源**：`默认发送` 到点（`TIMEOUT_MS`）那一记。所以按 `name` 认
-    // 就是「这次是超时」——`AbortError` 的 `message` 是浏览器内部话，一个字都不该往界面上放。
     if (错误 instanceof Error && 错误.name === "AbortError")
       return { kind: "error", message: 超时提示, code: "timeout" }
     return { kind: "error", message: 错误 instanceof Error ? 错误.message : String(错误) }
   }
+}
+
+/** 同源 JSON 取数：非 2xx 收成 `{kind:"error"}`，**从不抛**（视图只管画，不管异常）。 */
+export async function 请求<T>(send: CaseFetch, url: string, init?: RequestInit): Promise<结果<T>> {
+  const 回 = await 请求带错误体<T>(send, url, init)
+  // 收窄回原本的形状：`错误体` 不外溢，既有调用方与 `toEqual` 精确断言一个字都不变。
+  if (回.kind === "ok") return { kind: "ok", value: 回.value }
+  return 回.code === undefined
+    ? { kind: "error", message: 回.message }
+    : { kind: "error", message: 回.message, code: 回.code }
 }
 
 /**
