@@ -146,8 +146,8 @@ export function 复位词表缓存(): void {
 export function createCaseTemplateApi(send: CaseFetch = 默认发送): CaseTemplateApi {
   return {
     list: async (projectId, 含停用) => {
-      // projectId 用 `encodeURIComponent`（同 `entity-api.ts`）；`URLSearchParams` 会把空格编成
-      // `+`，与本客户端「参数一律 encodeURIComponent」的既有约定不一致。
+      // projectId 用 `encodeURIComponent`（同 `entity-api.ts` 的 groups、`case-materials-api`）；
+      // `URLSearchParams` 会把空格编成 `+`，与本文件用例约定的 `%20` 不符（服务端两种都解码等价）。
       const 查 = `projectId=${encodeURIComponent(projectId)}${含停用 === true ? "&含停用=true" : ""}`
       const 回 = await 请求<{ list: 模板行[] }>(send, `${PREFIX}/card-templates?${查}`)
       return 回.kind === "error" ? 回 : { kind: "ok", value: 回.value.list }

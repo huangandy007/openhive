@@ -87,9 +87,13 @@ export async function 请求带错误体<T>(
     try {
       return { kind: "ok", value: (await response.json()) as T }
     } catch {
+      // 2xx 却不是 JSON（真实应用里未挂上的路径会落进 UI 的 `/*` 兜底，回 200 ＋ `text/html`）：
+      // 说清是哪一种，不要把解析器的原话摔到界面上。
       return { kind: "error", message: `服务端回了非 JSON（${response.status}）` }
     }
   } catch (错误) {
+    // 本客户端里 abort **只有一个来源**：`默认发送` 到点（`TIMEOUT_MS`）那一记。所以按 `name` 认
+    // 就是「这次是超时」——`AbortError` 的 `message` 是浏览器内部话，一个字都不该往界面上放。
     if (错误 instanceof Error && 错误.name === "AbortError")
       return { kind: "error", message: 超时提示, code: "timeout" }
     return { kind: "error", message: 错误 instanceof Error ? 错误.message : String(错误) }
