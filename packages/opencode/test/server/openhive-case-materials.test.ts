@@ -11,6 +11,7 @@ import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { 材料视图 } from "../../src/server/openhive/case-materials"
+import { 建模板 } from "../../src/server/openhive/case-card-template-store"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -596,6 +597,69 @@ describe("POST /openhive/case/parse（入队 / 重新解析）", () => {
         action: "入队",
       })
       expect(非成员.status).toBe(403)
+    }))
+})
+
+describe("POST /openhive/case/parse（指定模板 templateId）", () => {
+  const 种模板 = (projectId: string, eventType: "通话" | "见面") =>
+    建模板(库(), {
+      projectId,
+      定义: {
+        name: `模板-${eventType}`,
+        event_type: eventType,
+        slots: { 何时: { 字段: "startedAt" } },
+        required: ["何时"],
+      },
+    })
+
+  it("形状非法（templateId 非字符串 / 空串）⇒ 400 bad_request，不落材料", () =>
+    Effect.gen(function* () {
+      for (const templateId of [123, "", "   "] as const) {
+        const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action: "入队", templateId })
+        expect(响应.status, String(templateId)).toBe(400)
+        expect((yield* 读错误(响应)).code, String(templateId)).toBe("bad_request")
+      }
+      expect(yield* Effect.promise(() => 材料行("资料/话单.xlsx"))).toBeUndefined()
+    }))
+
+  it("「取消 / 跳过」带 templateId ⇒ 400 bad_request，材料状态不变", () =>
+    Effect.gen(function* () {
+      const 模板 = yield* Effect.promise(() => 种模板(项目, "通话"))
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/话单.xlsx", status: "排队中" }))
+      yield* Effect.promise(() => 种作业({ materialId: 材料, queuedAt: 1 }))
+      for (const action of ["取消", "跳过"] as const) {
+        const 响应 = yield* 解析(我, { projectId: 项目, path: "资料/话单.xlsx", action, templateId: 模板.id })
+        expect(响应.status, action).toBe(400)
+        expect((yield* 读错误(响应)).code, action).toBe("bad_request")
+      }
+      expect((yield* Effect.promise(() => 材料行("资料/话单.xlsx")))?.parse_status).toBe("排队中")
+    }))
+
+  it("不存在的模板 id ⇒ 400 bad_request（不是 500），不落材料", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 解析(我, {
+        projectId: 项目,
+        path: "资料/话单.xlsx",
+        action: "入队",
+        templateId: "用户:00000000-0000-0000-0000-000000000000",
+      })
+      expect(响应.status).toBe(400)
+      expect((yield* 读错误(响应)).code).toBe("bad_request")
+      expect(yield* Effect.promise(() => 材料行("资料/话单.xlsx"))).toBeUndefined()
+    }))
+
+  it("别的项目的模板 id ⇒ 400 bad_request（不是 404，避免跨项目探测）", () =>
+    Effect.gen(function* () {
+      const 别人的模板 = yield* Effect.promise(() => 种模板(别人的项目, "通话"))
+      const 响应 = yield* 解析(我, {
+        projectId: 项目,
+        path: "资料/话单.xlsx",
+        action: "入队",
+        templateId: 别人的模板.id,
+      })
+      expect(响应.status).toBe(400)
+      expect((yield* 读错误(响应)).code).toBe("bad_request")
+      expect(yield* Effect.promise(() => 材料行("资料/话单.xlsx"))).toBeUndefined()
     }))
 })
 

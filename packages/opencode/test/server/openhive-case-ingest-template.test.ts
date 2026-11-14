@@ -6,7 +6,7 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
 import { 读材料事实行, getMaterial } from "../../src/server/openhive/case-store"
-import { 建模板 } from "../../src/server/openhive/case-card-template-store"
+import { 建模板, 停用模板 } from "../../src/server/openhive/case-card-template-store"
 import { 检查模板定义 } from "../../src/server/openhive/case-card-template"
 
 /** 夹具起法与 `openhive-case-ingest-translate.test.ts` 一致：事务独占一条连接（PG_POOL_MAX=1）。 */
@@ -143,7 +143,12 @@ describe("ingest 自动选模板（§9）", () => {
       { 工作表: "Sheet1", 方式: "自动", id: 行.id, name: "话单", 命中槽数: expect.any(Number) },
     ])
     const 表们 = 读对象(读对象(明细.mapping, "mapping").工作表, "mapping.工作表")
-    expect(读对象(表们["Sheet1"], "mapping.工作表.Sheet1").列).toBeTruthy()
+    const 列 = 读对象(读对象(表们["Sheet1"], "mapping.工作表.Sheet1").列, "列")
+    // 列号是表头下标（0 起），逐列钉具体识别字段——只断言「有值」测不出映射错位。
+    expect(列["0"]).toBe("caller")
+    expect(列["1"]).toBe("callee")
+    expect(列["2"]).toBe("startedAt")
+    expect(列["3"]).toBe("durationSec")
 
     const 卡们 = rowsOf(
       await db().execute(sql`
@@ -178,13 +183,80 @@ describe("ingest 自动选模板（§9）", () => {
   test("显式指定模板 ⇒ 只套指定那张，方式=指定；无视自动建议", async () => {
     const 项目 = "p-ingest-指定"
     const 指定 = await 建模板(db(), { projectId: 项目, 定义: 话单定义() })
-    // 再造一个同分候选会撞唯一索引，故只用一个模板；断言「方式=指定」与 id 一致。
+    // 第二张是**真能被自动建议命中**的候选（字段集与话单表重合、事件类型不同因而不撞唯一索引）。
+    // 若实现拿自动建议覆盖指定，选中的会是它——断言卡片类型/模板 id 才能咬住。
+    const 伪候选 = await 建模板(db(), {
+      projectId: 项目,
+      定义: {
+        name: "见面",
+        event_type: "见面",
+        slots: {
+          谁: { 字段: "caller" },
+          和谁: [{ 字段: "callee" }],
+          何时: { 字段: "startedAt" },
+        },
+        required: ["何时"],
+      },
+    })
+    expect(伪候选.id).not.toBe(指定.id)
+
     const { job } = await 跑一份(项目, "话单.xlsx", 造多表工作簿([["Sheet1", 话单表]]), 指定.id)
     const 材料 = await getMaterial(db(), 项目, job.materialId)
     const 明细 = 读对象(材料?.parseDetail, "parse_detail")
     expect(明细.卡片模板).toEqual([{ 工作表: "Sheet1", 方式: "指定", id: 指定.id, name: "话单" }])
     const 作业 = rowsOf(await db().execute(sql`select template_id from auth.case_ingest_job where id = ${job.jobId}`))
     expect(作业[0]?.template_id).toBe(指定.id)
+    const 卡们 = rowsOf(await db().execute(sql`
+      select type, template_id from auth.case_event where project_id = ${项目} order by occurred_at
+    `))
+    expect(卡们).toHaveLength(2)
+    expect(卡们.map((卡) => [String(卡.type), String(卡.template_id)])).toEqual([
+      ["通话", 指定.id],
+      ["通话", 指定.id],
+    ])
+  })
+
+  test("指定的模板在排队期间被停用 ⇒ 作业失败、材料有问题，且不静默回落自动建议", async () => {
+    const 项目 = "p-ingest-失效"
+    const 指定 = await 建模板(db(), { projectId: 项目, 定义: 话单定义() })
+    // 这张「会被自动建议命中」的模板是诱饵：静默回落的话它会产出卡片，断言 0 卡就红。
+    await 建模板(db(), {
+      projectId: 项目,
+      定义: {
+        name: "见面",
+        event_type: "见面",
+        slots: {
+          谁: { 字段: "caller" },
+          和谁: [{ 字段: "callee" }],
+          何时: { 字段: "startedAt" },
+        },
+        required: ["何时"],
+      },
+    })
+    文件.set(`${项目}/话单.xlsx`, 造多表工作簿([["Sheet1", 话单表]]))
+    await enqueueMaterial(db(), {
+      projectId: 项目,
+      path: "话单.xlsx",
+      sourcePath: `${项目}/话单.xlsx`,
+      fileName: "话单.xlsx",
+      fingerprint: "fp-失效-1",
+      force: true,
+      templateId: 指定.id,
+    })
+    const job = await claimNextJob(db())
+    if (!job) throw new Error("队列是空的")
+    expect(job.templateId).toBe(指定.id)
+
+    // 排队成功后模板被停用（§9.5 的第二道判定：作业里必须 fail-closed）。
+    expect(await 停用模板(db(), { projectId: 项目, id: 指定.id })).toBe(true)
+
+    const 结果 = await runJob(db(), deps, job)
+    expect(结果).toBe("失败")
+    const 材料 = await getMaterial(db(), 项目, job.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    expect(材料?.parseDetail).toMatchObject({ reason: `指定的卡片模板不存在或已停用：${指定.id}` })
+    const 卡数 = rowsOf(await db().execute(sql`select count(*)::int as n from auth.case_event where project_id = ${项目}`))
+    expect(Number(卡数[0]?.n)).toBe(0)
   })
 
   test("混合材料：资金表走资金通路、非资金表走模板，两边都产卡片", async () => {
@@ -215,12 +287,15 @@ describe("ingest 自动选模板（§9）", () => {
       ["流水", "代码规则"],
       ["见面", "自动"],
     ])
-    const 类型 = rowsOf(
-      await db().execute(sql`select type, count(*)::int as n from auth.case_event where project_id = ${项目} group by type`),
+    // 不排序、不依赖 locale：直接按类型名取值断言。
+    const 类型数 = new Map(
+      rowsOf(
+        await db().execute(sql`select type, count(*)::int as n from auth.case_event where project_id = ${项目} group by type`),
+      ).map((r) => [String(r.type), Number(r.n)]),
     )
-      .map((r) => [String(r.type), Number(r.n)] as const)
-      .sort((甲, 乙) => 甲[0].localeCompare(乙[0]))
-    expect(类型).toEqual([["见面", 2], ["资金交易", 1]])
+    expect(类型数.size).toBe(2)
+    expect(类型数.get("见面")).toBe(2)
+    expect(类型数.get("资金交易")).toBe(1)
   })
 
   test("重放幂等：同一份材料解析两次，卡片数与模板命中计数按次累加但不重复建卡", async () => {
@@ -239,7 +314,7 @@ describe("ingest 自动选模板（§9）", () => {
 })
 
 describe("读材料事实行（预览用只读口）", () => {
-  test("按 sheet 顺序返回、金额余额为字符串、extras 解析成对象、上限生效", async () => {
+  test("同一 sheet 内按 row_no 升序、金额余额为字符串、extras 解析成对象、上限生效", async () => {
     const 项目 = "p-读行"
     await db().execute(sql`
       insert into auth.case_fact_row
