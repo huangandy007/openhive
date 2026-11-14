@@ -2051,15 +2051,25 @@ describe("数据源档案接入", () => {
     文件.set("p-档案对照/乱序.xlsx", 乱序)
     await 入队("p-档案对照", "乱序.xlsx", Hash.sha256("p-档案对照-乱序"))
     await 跑下一条()
-    const 事实 = async (projectId: string) =>
+    // 表格路径的事实落在 `auth.case_fact_row`；`case_event` 只有文本路径写，
+    // 拿它比等于空对空（两侧都是 `[]`），证不了「档案命中与普通识别等价」。
+    const 明细 = async (projectId: string) =>
       rowsOf(
         await db().execute(sql`
-          select type, occurred_at, summary from auth.case_event
+          select sheet, row_no, caller, callee, started_at, started_raw, precision,
+                 time_type, amount, balance, counterparty, extras
+            from auth.case_fact_row
            where project_id = ${projectId}
-           order by id
+           order by sheet, row_no
         `),
       )
-    expect(await 事实("p-档案")).toEqual(await 事实("p-档案对照"))
+    const 档案侧 = await 明细("p-档案")
+    const 对照侧 = await 明细("p-档案对照")
+    // 先证不是空对空：对照项目 `p-档案对照` 没有建档案（本用例从没给它种过），
+    // 它必须走普通识别并真的产出明细行。
+    expect(档案侧.length).toBeGreaterThan(0)
+    expect(对照侧.length).toBeGreaterThan(0)
+    expect(档案侧).toEqual(对照侧)
   })
 
   test("缺一列 ⇒ 不命中，回落普通识别", async () => {
