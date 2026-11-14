@@ -47,7 +47,7 @@ const 行们: 模板行[] = [
   { id: "用户:1", name: "通话模板", event_type: "通话", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 12, disabled_at: null },
   { id: "用户:2", name: "订餐模板", event_type: "消费", slots: {}, required: ["谁"], version: 1, verified_at: null, hit_count: 0, disabled_at: null },
   { id: "内置:资金/v1", name: "资金（内置）", event_type: "资金交易", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 3, disabled_at: null },
-  // 停用行故意给非空 `verified_at`：只读抽屉不得出现「修改后回到未验证」（I-2 / M-1）。
+  // 停用行故意给非空 `verified_at`：只读抽屉不得出现「回到未验证」提示（I-2 / M-1）。
   { id: "用户:3", name: "旧模板", event_type: "见面", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 0, disabled_at: 200 },
 ]
 
@@ -431,7 +431,7 @@ describe("卡片模板列表", () => {
     const 预览按钮 = 找("card-template-preview-button") as HTMLButtonElement
     await 等(() => !预览按钮.disabled)
     expect(找("card-template-disabled-hint")!.textContent).toContain("模板已停用：先恢复才能修改")
-    // 「修改后模板回到未验证」只对可编辑模板成立：只读抽屉不得出现。
+    // 「回到未验证」提示只对可编辑模板成立：只读抽屉不得出现。
     expect(找("card-template-verified-warning") === null).toBe(true)
     expect(找("card-template-editor")!.textContent).toContain("查看已停用的模板")
   })
@@ -446,7 +446,7 @@ describe("卡片模板列表", () => {
     expect(找("card-template-preview-panel") === null).toBe(true)
     expect(找("card-template-preview-button") === null).toBe(true)
     expect(找("card-template-disabled-hint") === null).toBe(true)
-    // 内置模板 seed 时带 `verified_at`：只读抽屉仍不该承诺「修改后回到未验证」。
+    // 内置模板 seed 时带 `verified_at`：只读抽屉仍不该承诺「回到未验证」。
     expect(找("card-template-verified-warning") === null).toBe(true)
     expect(找("card-template-editor")!.textContent).toContain("查看内置模板")
   })
