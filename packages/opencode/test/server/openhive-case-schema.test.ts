@@ -39,6 +39,7 @@ const 期望表 = [
   "case_ingest_job",
   "case_material",
   "case_relation",
+  "case_source_profile",
   "case_table_format",
 ]
 
@@ -77,7 +78,7 @@ async function 被拒(query: PromiseLike<unknown>): Promise<boolean> {
 }
 
 describe("0031/0032/0033 迁移 · 表与分区", () => {
-  test("16 张表 ＋ 16 个分区全部建出来", async () => {
+  test("17 张表 ＋ 16 个分区全部建出来", async () => {
     const names = rowsOf(
       await db().execute(sql`
         select table_name from information_schema.tables

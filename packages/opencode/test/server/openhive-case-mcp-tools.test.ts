@@ -6,15 +6,18 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   aggregate_money,
+  build_source_profile,
   explore_entity,
   find_crossings,
   get_citation,
+  list_source_profiles,
   money_flow,
   query_entities,
   query_events,
   query_relations,
   query_rows,
   query_timeline,
+  revoke_source_profile,
   search_materials,
   归一化限制,
   校验成员,
@@ -1725,6 +1728,41 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
 // `toEqual([])`——失败时一眼看出是谁指向了什么。
 test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
   const 已注册 = new Set(工具名 as readonly string[])
+  // P4 三个数据源档案工具也要进入守卫（覆盖集合从 `工具名` 派生，不能手写名单绕过）。
+  // 独立项目：写档案 / 撤销不会改掉别的用例的档案列表断言（`#005-34`）。
+  const 身份档案 = { userId: "u-工具-甲", projectId: "p-工具-守卫-档案" }
+  const 身份档案空 = { userId: "u-工具-甲", projectId: "p-工具-守卫-档案空" }
+  await createMaterial(库(), {
+    id: "m-守卫-档案",
+    projectId: 身份档案.projectId,
+    fileName: "守卫档案.xlsx",
+    kind: "资金",
+    fingerprint: "fp-守卫-档案",
+    path: "守卫档案.xlsx",
+  })
+  await 库().execute(sql`
+    update auth.case_material
+       set format_fingerprints = ${JSON.stringify([{ 工作表: "Sheet1", 指纹: "fp-守卫-档案" }])}::text::jsonb
+     where project_id = ${身份档案.projectId} and id = 'm-守卫-档案'
+  `)
+  await 库().execute(sql`
+    insert into auth.case_table_format
+      (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+    values (${身份档案.projectId}, 'fp-守卫-档案',
+            ${JSON.stringify(["交易时间", "交易金额", "对方户名"])}::text::jsonb,
+            ${JSON.stringify({ "0": "startedAt", "1": "amount", "2": "counterpartyName" })}::text::jsonb,
+            '词典', 0,
+            ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 0 })}::text::jsonb,
+            0, 0, 0)
+  `)
+  const 档案列表 = await list_source_profiles(ctx(身份档案空), {})
+  const 建档案 = await build_source_profile(ctx(身份档案), { 材料: "m-守卫-档案", 名称: "守卫档案" })
+  // 用类型守卫取 id（不写 `as` 断言：本仓 oxlint 会把新断言记成一条新告警）。
+  const 建数据 = 建档案.数据
+  if (typeof 建数据 !== "object" || 建数据 === null || !("id" in 建数据)) {
+    throw new Error("建档返回里没有 id")
+  }
+  const 撤销档案 = await revoke_source_profile(ctx(身份档案), { 档案: String(建数据.id) })
   // 每条都带工具名：既检查违规，也检查「有没有哪个工具漏了真实返回」（见末尾防漏断言）。
   const 结果们: { 工具: 工具名; 结果: 工具结果 }[] = [
     { 工具: "search_materials", 结果: await search_materials(ctx(身份甲), { 关键词: "张三" }) },
@@ -1772,6 +1810,10 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
         实体: "查无此实体",
       }),
     },
+    // P4：三个数据源档案工具各一条真实返回（list 空项目 / build / revoke）。
+    { 工具: "list_source_profiles", 结果: 档案列表 },
+    { 工具: "build_source_profile", 结果: 建档案 },
+    { 工具: "revoke_source_profile", 结果: 撤销档案 },
   ]
   const 违规: string[] = []
   let 检查条数 = 0
@@ -1789,6 +1831,14 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
   expect(违规).toEqual([])
   // 防空转：一条都没检查时「没有违规」没有意义。
   expect(检查条数).toBeGreaterThan(0)
+  // 三个档案工具的真实返回也要满足信封七字段（只进覆盖集合不算「有真实调用」）。
+  const 信封七字段 = ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const
+  for (const 结果 of [档案列表, 建档案, 撤销档案]) {
+    for (const 键 of 信封七字段) expect(键 in 结果).toBe(true)
+  }
+  // 非空分支也真的走过：build 建出档案、revoke 成功（否则上面三条只是空转）。
+  expect(建档案.数据).toMatchObject({ created: true })
+  expect(撤销档案.数据).toEqual({ ok: true })
   // 防漏：期望覆盖集合从 `工具名` 注册表派生（不手写名单），每个注册工具都必须有真实
   // 返回进入本守卫。删掉 explore_entity 的三条（或将来新增工具忘了加）时，这条会指出
   // 漏了谁，而不是让违规检查空转通过。
