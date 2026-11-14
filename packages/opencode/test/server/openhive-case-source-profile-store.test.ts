@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
-import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { createMaterial } from "../../src/server/openhive/case-store"
 import {
@@ -40,16 +40,18 @@ async function 种格式(input: {
   header?: string[]
   mapping?: Record<string, string>
   sheet?: string
+  fileName?: string
 }) {
   const header = input.header ?? 表头
   const mapping = input.mapping ?? { "0": "startedAt", "1": "amount", "2": "counterpartyName" }
+  const fileName = input.fileName ?? "流水.xlsx"
   await createMaterial(db(), {
     id: input.materialId,
     projectId: input.projectId,
-    fileName: "流水.xlsx",
+    fileName,
     kind: "资金",
     fingerprint: input.fingerprint,
-    path: "流水.xlsx",
+    path: fileName,
   })
   await db().execute(sql`
     update auth.case_material
@@ -106,6 +108,7 @@ describe("数据源档案 DAO", () => {
       projectId: "p-冲突",
       materialId: "m-冲突2",
       fingerprint: "fp-冲突2",
+      fileName: "流水二号.xlsx",
       mapping: { "0": "startedAt", "1": "balance", "2": "counterpartyName" },
     })
 
@@ -118,6 +121,8 @@ describe("数据源档案 DAO", () => {
     expect(覆盖.created).toBe(false)
     const 列表 = await 列出数据源档案(db(), { projectId: "p-冲突" })
     expect(列表).toHaveLength(1)
+    // 覆盖时没给 name ⇒ 保留第一次建档的默认名，而不是用第二份材料的文件名重算。
+    expect(列表[0]?.name).toBe("流水.xlsx · Sheet1")
     expect(列表[0]?.mapping).toEqual({ 交易时间: "startedAt", 交易金额: "balance", 对方户名: "counterpartyName" })
     expect(Number(列表[0]?.updated_at)).toBeGreaterThan(1)
   })
