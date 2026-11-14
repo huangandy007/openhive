@@ -69,7 +69,9 @@ beforeAll(async () => {
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${项目}, ${我.id}, 'owner', 0),
            (${项目}, ${成员.id}, 'member', 0),
-           (${别人的项目}, ${别人.id}, 'owner', 0)
+           (${别人的项目}, ${别人.id}, 'owner', 0),
+           -- 外项目里也给 成员 一个普通成员位：让「非属主（member）403」与「非成员 403」分得开。
+           (${别人的项目}, ${成员.id}, 'member', 0)
   `)
 })
 
@@ -167,6 +169,14 @@ describe("卡片模板 HTTP 六口（§10）", () => {
       const 型 = yield* 发JSON(我, "/openhive/case/card-template/create", 定义体({ eventType: {} }))
       expect(型.status).toBe(400)
       expect((yield* 读回<{ code: string }>(型)).code).toBe("bad_request")
+
+      // update 走同一个 `读定义`：单独删 update 侧的形状闸也必须被抓到。
+      const 改名 = yield* 发JSON(我, "/openhive/case/card-template/update", {
+        id: "用户:形状闸",
+        ...定义体({ name: 123 }),
+      })
+      expect(改名.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(改名)).code).toBe("bad_request")
     }),
   )
 
@@ -195,10 +205,9 @@ describe("卡片模板 HTTP 六口（§10）", () => {
   it("列表含停用：只有显式 true / false 合法；停用后默认不列、含停用=true 仍列", () =>
     Effect.gen(function* () {
       expect((yield* 发(成员, `/openhive/case/card-templates?projectId=${项目}&含停用=yes`)).status).toBe(400)
-      const 列表 = yield* 读回<{ list: { id: string }[] }>(
-        yield* 发(成员, `/openhive/case/card-templates?projectId=${项目}`),
-      )
-      const 目标 = 列表.list.find((t) => !t.id.startsWith("内置:"))!
+      // 自建模板、独立事件类型：不从别的用例的列表里捞（`#005-34`，单点复跑也必须绿）。
+      const 目标 = yield* 建模板口(我, 定义体({ name: "停用专用", eventType: "其他" }))
+      expect(目标.id.startsWith("用户:")).toBe(true)
       expect((yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 项目, id: 目标.id })).status).toBe(200)
       const 后 = yield* 读回<{ list: { id: string }[] }>(
         yield* 发(成员, `/openhive/case/card-templates?projectId=${项目}`),
@@ -208,6 +217,36 @@ describe("卡片模板 HTTP 六口（§10）", () => {
         yield* 发(成员, `/openhive/case/card-templates?projectId=${项目}&含停用=true`),
       )
       expect(含.list.find((t) => t.id === 目标.id)?.disabled_at).not.toBeNull()
+
+      // 停用幂等：已停用再停用 ⇒ 404（行保留，重复点击不报 200）。
+      expect((yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 项目, id: 目标.id })).status).toBe(
+        404,
+      )
+      // 内置模板停用 ⇒ 409 immutable（要求用户模板的闸在 DAO 之前）。
+      const 内置停 = yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 项目, id: 资金模板id })
+      expect(内置停.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(内置停)).code).toBe("immutable")
+    }),
+  )
+
+  it("权限矩阵：预览未登录 401 / 非成员 403；更新、停用非属主 403", () =>
+    Effect.gen(function* () {
+      // 用外项目当隔离域：唯一索引按 `project_id + event_type` 分级，同名事件类型在外项目里是独立槽位。
+      const 外 = yield* 建模板口(别人, 定义体({ projectId: 别人的项目, name: "外项目模板", eventType: "通话" }))
+      expect(外.id.startsWith("用户:")).toBe(true)
+      const 预览体 = { projectId: 别人的项目, materialId: "m-任意", templateId: 外.id }
+      expect((yield* 发JSON(null, "/openhive/case/card-template/preview", 预览体)).status).toBe(401)
+      // 我 不是外项目成员 ⇒ 403（与「成员但不是属主」区分）。
+      expect((yield* 发JSON(我, "/openhive/case/card-template/preview", 预览体)).status).toBe(403)
+
+      const 改体 = {
+        id: 外.id,
+        ...定义体({ projectId: 别人的项目, name: "外项目模板", eventType: "通话" }),
+      }
+      expect((yield* 发JSON(成员, "/openhive/case/card-template/update", 改体)).status).toBe(403)
+      expect(
+        (yield* 发JSON(成员, "/openhive/case/card-template/disable", { projectId: 别人的项目, id: 外.id })).status,
+      ).toBe(403)
     }),
   )
 })
