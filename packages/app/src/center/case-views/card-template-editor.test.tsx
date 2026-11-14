@@ -174,7 +174,7 @@ describe("抽屉编辑器", () => {
     })
   })
 
-  test("修改已验证模板：常驻「回到未验证」；保存走 update，收到定义体", async () => {
+  test("修改已验证模板：常驻「改内容回未验证、只改名不影响」；保存走 update，收到定义体", async () => {
     const 收到: Array<Record<string, unknown>> = []
     let 已保存 = false
     const api = 假api({
@@ -196,7 +196,10 @@ describe("抽屉编辑器", () => {
       />
     ))
     await 等(() => 找("card-template-verified-warning") !== null)
-    expect(找("card-template-verified-warning")!.textContent).toContain("回到未验证")
+    // 2026-11-14 真栈实测：只改名称不重置验证态（内核 §7.3），提示必须说清「改什么才回未验证」。
+    expect(找("card-template-verified-warning")!.textContent).toContain(
+      "改「哪一列对应哪一项」「事件类型」或「必须填满才产卡片」再保存，会回到未验证，需重新预览并转正；只改名称不影响",
+    )
     ;(找("card-template-save") as HTMLButtonElement).click()
     await 等(() => 收到.length === 1)
     expect(收到[0]).toEqual({

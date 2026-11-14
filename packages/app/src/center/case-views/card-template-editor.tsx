@@ -347,7 +347,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                       </Show>
                       <Show when={props.只读 !== true && props.行?.verified_at !== null && props.行 !== undefined}>
                         <p data-slot="card-template-verified-warning" class="rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-base">
-                          修改后模板回到未验证，需重新预览并转正
+                          改「哪一列对应哪一项」「事件类型」或「必须填满才产卡片」再保存，会回到未验证，需重新预览并转正；只改名称不影响
                         </p>
                       </Show>
 
