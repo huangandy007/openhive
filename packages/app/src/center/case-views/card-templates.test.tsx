@@ -424,12 +424,61 @@ describe("卡片模板列表", () => {
     expect(host.querySelector("[data-slot='card-templates-disabled']")!.textContent).toContain("通话模板")
   })
 
-  test("无已解析材料：转正确认给出提示，确认按钮置灰（Minor）", async () => {
+  test("无已解析材料：转正确认给出提示，确认按钮置灰，触发器显示「选择材料」（Minor）", async () => {
     const host = mount(() => <CardTemplates projectId="p-1" api={假api()} 材料api={无材料api} />)
     await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
     ;(host.querySelector("[data-slot='card-template-verify']") as HTMLButtonElement).click()
     await 等(() => 找("card-template-confirm") !== null)
     expect(找("card-template-confirm-nomaterial")!.textContent).toContain("先导入并解析材料")
     expect((找("card-template-confirm-ok") as HTMLButtonElement).disabled).toBe(true)
+    // 哨兵必须让触发器显示「选择材料」，不能是一块空白（fix 2/5 Nit）。
+    const 材料触发器 = 找("card-template-confirm")!.querySelector<HTMLElement>("[data-component='select-v2']")!
+    expect(材料触发器.textContent).toContain("选择材料")
+  })
+
+  test("材料读取失败：不把失败说成没有材料（fix 2/5 Nit）", async () => {
+    const 材料失败api: CaseMaterialsApi = {
+      read: async () => ({ kind: "error", message: "材料清单读取失败" }),
+      parse: async () => ({ kind: "error", message: "本用例不解析" }),
+    }
+    const host = mount(() => <CardTemplates projectId="p-1" api={假api()} 材料api={材料失败api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    await 等(() => host.querySelector("[data-slot='card-templates-material-error']") !== null)
+    ;(host.querySelector("[data-slot='card-template-verify']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") !== null)
+    expect(找("card-template-confirm")!.textContent).not.toContain("先导入并解析材料")
+  })
+
+  test("在途取消后成功响应：静默重拉列表，不写提示/错误（fix 2/5 回退）", async () => {
+    type 停用回包 = Awaited<ReturnType<CaseTemplateApi["disable"]>>
+    const 停用等待: Array<(回: 停用回包) => void> = []
+    let 列表次数 = 0
+    const api = 假api({
+      list: async (_projectId, 含停用) => {
+        列表次数 += 1
+        return { kind: "ok", value: 按含停用(行们, 含停用) }
+      },
+      disable: async () =>
+        new Promise<停用回包>((resolve) => {
+          停用等待.push(resolve)
+        }),
+    })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    ;(host.querySelector("[data-slot='card-template-disable']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") !== null)
+    ;(找("card-template-confirm-ok") as HTMLButtonElement).click()
+    await 等(() => 停用等待.length === 1)
+    // 请求在途时取消。
+    ;(找("card-template-confirm-cancel") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") === null)
+
+    const 前 = 列表次数
+    停用等待[0]!({ kind: "ok", value: { ok: true } })
+    // 成功响应虽被归属守卫挡在提示/错误之外，动作已在服务端生效 ⇒ 必须静默重拉让列表自纠。
+    await 等(() => 列表次数 > 前)
+    await 让一拍()
+    expect(host.querySelector("[data-slot='card-templates-notice']")).toBeNull()
+    expect(host.querySelector("[data-slot='card-templates-error']")).toBeNull()
   })
 })

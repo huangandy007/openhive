@@ -138,7 +138,11 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
         return
       }
       const 回 = await props.api.verify({ projectId: props.projectId, id: 目标.行.id, materialId: 材料 })
-      if (!仍是当前()) return
+      if (!仍是当前()) {
+        // 用户已取消/换目标：不写提示与错误；但成功动作已在服务端生效，静默重拉让列表自纠。
+        if (回.kind === "ok") void 读()
+        return
+      }
       设确认中(false)
       if (回.kind === "error") {
         设确认错误(回.message)
@@ -154,7 +158,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
       目标.类 === "停用"
         ? await props.api.disable({ projectId: props.projectId, id: 目标.行.id })
         : await props.api.restore({ projectId: props.projectId, id: 目标.行.id })
-    if (!仍是当前()) return
+    if (!仍是当前()) {
+      if (回.kind === "ok") void 读()
+      return
+    }
     设确认中(false)
     if (回.kind === "error") {
       设确认错误(回.message)
@@ -419,14 +426,17 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
                         options={[...材料们()]}
                         current={材料们().find((项) => 项.id === 本次复核()) ?? 空材料项}
                         value={(项) => 项.id}
-                        label={(项) => 项.path}
+                        // 哨兵要走 label 的「选择材料」：`SelectV2` 只在有选中项时渲染 label，
+                        // 空串会得到一块空白触发器而不是 placeholder（Nit）。
+                        label={(项) => (项.id === "" ? "选择材料" : 项.path)}
                         placeholder="选择材料"
                         onSelect={(项) => {
                           if (项 !== null && 项.id !== "") 设复核材料(项.id)
                         }}
                       />
                     </label>
-                    <Show when={材料们().length === 0}>
+                    {/* 读取失败不等于没有材料：错误由列表顶部的材料错误条说明，这里不误报。 */}
+                    <Show when={材料们().length === 0 && 材料错误() === undefined}>
                       <p data-slot="card-template-confirm-nomaterial" class="text-[12px] text-v2-text-text-muted">
                         先导入并解析材料，才能转正
                       </p>
