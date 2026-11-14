@@ -1,8 +1,10 @@
 import { Show, type JSX } from "solid-js"
 import { createCaseAlertsApi, type CaseAlertsApi } from "../project/case-alerts-api"
+import { createCaseTemplateApi, type CaseTemplateApi } from "../project/case-template-api"
 import type { CaseDetailApi, 图节点 } from "./case-detail-api"
 import { 案件伪路径, 解析案件路径, type 案件视图, type 案件路径 } from "./case-route"
 import { Alerts } from "./case-views/alerts"
+import { CardTemplates } from "./case-views/card-templates"
 import { EntityProfile } from "./case-views/entity-profile"
 import { Graph } from "./case-views/graph"
 import { MaterialFacts } from "./case-views/material-facts"
@@ -27,6 +29,8 @@ export interface CaseViewProps {
    * 并进去会让每个只读视图的调用方都得提供一份写能力。省略 = 用默认客户端（只在提醒页用到时建）。
    */
   readonly 提醒api?: CaseAlertsApi
+  /** 模板页的取数客户端：与 `提醒api` 同理，按需建，不把写能力塞进只读视图的 api。 */
+  readonly 模板api?: CaseTemplateApi
 }
 
 /**
@@ -39,6 +43,7 @@ export interface CaseViewProps {
 export function CaseView(props: CaseViewProps): JSX.Element {
   // 默认提醒客户端只在第一次用到时建（同 `CaseAlertEntry`：模块级常量会让测试替身与生产实例混住）。
   let 默认提醒api: CaseAlertsApi | undefined
+  let 默认模板api: CaseTemplateApi | undefined
   return (
     <div data-component="case-view" class="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
       <Show
@@ -58,7 +63,15 @@ export function CaseView(props: CaseViewProps): JSX.Element {
               </p>
             }
           >
-            {(api) => 视图(路径(), api(), props.open, () => props.提醒api ?? (默认提醒api ??= createCaseAlertsApi()))}
+            {(api) =>
+              视图(
+                路径(),
+                api(),
+                props.open,
+                () => props.提醒api ?? (默认提醒api ??= createCaseAlertsApi()),
+                () => props.模板api ?? (默认模板api ??= createCaseTemplateApi()),
+              )
+            }
           </Show>
         )}
       </Show>
@@ -71,6 +84,7 @@ function 视图(
   api: CaseDetailApi,
   open: CaseViewProps["open"],
   提醒api: () => CaseAlertsApi,
+  模板api: () => CaseTemplateApi,
 ): JSX.Element {
   /** 同一实体换视图：arg 一律是实体 id；标题由点按钮的那一层给。 */
   const 跳到 = (view: 案件视图, title: string) =>
@@ -115,5 +129,8 @@ function 视图(
     case "alerts":
       // `arg` 这一支固定是 `"all"`（本版只有「按项目」一个范围），不校验内容。
       return <Alerts projectId={路径.projectId} api={api} 提醒api={提醒api()} />
+    case "templates":
+      // `arg` 这一支固定是 `"all"`（本版只有「本项目全部模板」一个范围），不校验内容。
+      return <CardTemplates projectId={路径.projectId} api={模板api()} />
   }
 }

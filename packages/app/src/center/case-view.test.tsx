@@ -4,11 +4,13 @@ import type { JSX } from "solid-js"
 import { CaseView } from "./case-view"
 import type { CaseDetailApi, 实体档案 } from "./case-detail-api"
 import type { CaseAlertsApi } from "../project/case-alerts-api"
+import type { CaseTemplateApi } from "../project/case-template-api"
+import { CenterTabsProvider } from "./tab-context"
 
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  render(() => <CenterTabsProvider initialModule="project">{element()}</CenterTabsProvider>, host)
   return host
 }
 afterEach(() => {
@@ -197,5 +199,26 @@ describe("案件视图外壳", () => {
     const host = mount(() => <CaseView path="case://p-1/alerts/all" api={api} 提醒api={提醒api} />)
     await 等(() => host.querySelectorAll("[data-slot='alert-row']").length === 1)
     expect(host.textContent).toContain("张三 短期资金进出高度对称")
+  })
+
+  test("模板路径 ⇒ 渲染卡片模板列表（api 可注入，页面里不建真客户端）", async () => {
+    const 模板api: CaseTemplateApi = {
+      list: async () => ({
+        kind: "ok",
+        value: [
+          { id: "用户:1", name: "通话模板", event_type: "通话", slots: {}, required: ["谁"], version: 1, verified_at: null, hit_count: 0, disabled_at: null },
+        ],
+      }),
+      vocab: async () => ({ kind: "error", message: "本用例不取词表" }),
+      create: async () => ({ kind: "error", message: "未用" }),
+      update: async () => ({ kind: "error", message: "未用" }),
+      disable: async () => ({ kind: "error", message: "未用" }),
+      restore: async () => ({ kind: "error", message: "未用" }),
+      preview: async () => ({ kind: "error", message: "未用" }),
+      verify: async () => ({ kind: "error", message: "未用" }),
+    }
+    const host = mount(() => <CaseView path="case://p-1/templates/all" api={api} 模板api={模板api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-templates-title']").length === 1)
+    expect(host.querySelector("[data-slot='card-templates-title']")!.textContent).toContain("卡片模板")
   })
 })

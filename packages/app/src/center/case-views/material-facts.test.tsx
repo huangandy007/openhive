@@ -4,6 +4,7 @@ import { render } from "solid-js/web"
 import { MaterialFacts } from "./material-facts"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
 import type { 结果 } from "../../project/entity-api"
+import { CenterTabsProvider, useCenterTabs } from "../tab-context"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -16,7 +17,7 @@ async function 等(条件: () => boolean) {
 function mount(element: () => JSX.Element) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  render(element, host)
+  render(() => <CenterTabsProvider initialModule="project">{element()}</CenterTabsProvider>, host)
   return host
 }
 afterEach(() => {
@@ -732,6 +733,25 @@ describe("材料抽取结果", () => {
     // 产物没有 sheet / row 定位：材料事实清单那句「这份材料还没有登记事实」对产物是错的，不许露出来。
     expect(host.querySelector("[data-slot='material-facts-empty']")).toBeNull()
     expect(host.querySelector("[data-slot='artifact-review-gap']")!.textContent).toContain("没有引用任何事实")
+  })
+
+  test("顶部「卡片模板」按钮 ⇒ 经 context 开出 templates/all 这条 tab", async () => {
+    function 探针() {
+      const center = useCenterTabs()
+      return <span data-slot="tabs-probe">{center.pane(0).tabs.map((tab) => tab.path).join("|")}</span>
+    }
+    const host = mount(() => (
+      <>
+        <MaterialFacts projectId="p-1" path="材料/话单.xlsx" api={假api()} />
+        <探针 />
+      </>
+    ))
+    await 等(() => host.querySelector("[data-slot='material-facts-title']") !== null)
+    ;(host.querySelector("[data-slot='material-facts-templates-button']") as HTMLButtonElement).click()
+    await 等(() => host.querySelector("[data-slot='tabs-probe']")!.textContent!.includes("templates/all"))
+    expect(host.querySelector("[data-slot='tabs-probe']")!.textContent).toBe(
+      `case://p-1/templates/all`,
+    )
   })
 })
 

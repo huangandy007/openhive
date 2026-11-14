@@ -2,6 +2,8 @@ import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "soli
 import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
 import type { 解析状态 } from "../../project/case-materials-api"
+import { 案件伪路径 } from "../case-route"
+import { useCenterTabs } from "../tab-context"
 import { ArtifactReview } from "./artifact-review"
 
 export interface MaterialFactsProps {
@@ -215,6 +217,17 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [记住错误, set记住错误] = createSignal<string | undefined>()
   const [已记住, set已记住] = createSignal<string[]>([])
 
+  const center = useCenterTabs()
+  const 打开卡片模板 = () =>
+    center.open(
+      {
+        module: center.module() ?? "project",
+        title: "卡片模板",
+        path: 案件伪路径({ projectId: props.projectId, view: "templates", arg: "all" }),
+      },
+      center.activePane(),
+    )
+
   createEffect(() => {
     const 材料 = 清单()?.材料
     set待确认(材料 === undefined ? [] : 读待确认(材料.parse_detail))
@@ -332,16 +345,26 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
                 {清单().材料.parse_status}
               </span>
               {/* 入口与待确认面板同一条判据：进行中的 detail 可能是上一轮的，别把隔夜结论摆出来。 */}
-              <Show when={未认出().length > 0 && !是进行中(清单().材料.parse_status)}>
+              <div class="ml-auto flex items-center gap-2">
+                <Show when={未认出().length > 0 && !是进行中(清单().材料.parse_status)}>
+                  <button
+                    type="button"
+                    data-slot="material-facts-unrecognized-badge"
+                    onClick={() => set弹窗开(true)}
+                    class="h-6 shrink-0 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-2 text-[12px] font-semibold text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                  >
+                    {未认出().length} 列没认出来
+                  </button>
+                </Show>
                 <button
                   type="button"
-                  data-slot="material-facts-unrecognized-badge"
-                  onClick={() => set弹窗开(true)}
-                  class="ml-auto h-6 shrink-0 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-2 text-[12px] font-semibold text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                  data-slot="material-facts-templates-button"
+                  onClick={打开卡片模板}
+                  class="h-6 shrink-0 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 px-2 text-[12px] font-semibold text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
                 >
-                  {未认出().length} 列没认出来
+                  卡片模板
                 </button>
-              </Show>
+              </div>
             </div>
 
             {/* 待确认面板与「有问题」的 detail 是**两条独立的路径**：解析成功的材料同样可能有

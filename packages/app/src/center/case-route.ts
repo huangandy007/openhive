@@ -20,7 +20,7 @@ export const CASE_SCHEME = "case://"
  * 视图名**只写在这里**：类型由数组派生（`typeof 视图表[number]`），解析器也按这张表判成员。
  * 写成「一个联合类型 ＋ 一份同样的数组」就是同一条事实两处，加一支忘一边不会报错（Task 6 复审 Minor 8）。
  */
-const 视图表 = ["entity", "material", "timeline", "money", "graph", "alerts"] as const
+const 视图表 = ["entity", "material", "timeline", "money", "graph", "alerts", "templates"] as const
 export type 案件视图 = (typeof 视图表)[number]
 
 export interface 案件路径 {
