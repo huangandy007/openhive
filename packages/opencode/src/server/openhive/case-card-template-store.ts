@@ -5,7 +5,15 @@ import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { 文本数组 } from "./case-fact-store"
-import { 九格们, 归一槽位, 是用户模板id, 读模板, type 槽, type 模板行, type 模板定义 } from "./case-card-template"
+import {
+  归一槽位,
+  是用户模板id,
+  用户模板前缀,
+  解析必填,
+  读模板,
+  type 模板行,
+  type 模板定义,
+} from "./case-card-template"
 import { 是事件类型 } from "./case-event-types"
 import type { Queryable } from "./case-store"
 
@@ -40,16 +48,6 @@ function 读json(值: unknown): unknown {
   } catch {
     return undefined
   }
-}
-
-function 解析必填(值: unknown): 槽[] {
-  if (Array.isArray(值)) return 九格们.filter((槽名) => 值.includes(槽名))
-  if (typeof 值 === "string") {
-    // PG text[] 的文本形态 `{谁,何时}`（某些驱动/日志路径会给这种）。
-    const 项们 = 值.replace(/^\{|\}$/g, "").split(",")
-    return 九格们.filter((槽名) => 项们.includes(槽名))
-  }
-  return ["谁"]
 }
 
 function 映射模板行(行: Record<string, unknown>): 模板行 {
@@ -87,7 +85,7 @@ export async function 列出模板(
         from auth.case_card_template
        where project_id = ${input.projectId}
          and (${input.含停用 === true} or disabled_at is null)
-       order by case when id like '内置:%' then 0 else 1 end, created_at asc, id asc
+       order by case when id like ${`${内置模板前缀}%`} then 0 else 1 end, created_at asc, id asc
     `),
   )
   return 行们.map(映射模板行)
@@ -100,7 +98,7 @@ export async function 读模板行(db: Queryable, projectId: string, id: string)
 }
 
 export async function 建模板(db: Queryable, input: { projectId: string; 定义: 模板定义 }): Promise<模板行> {
-  const id = `用户:${crypto.randomUUID()}`
+  const id = `${用户模板前缀}${crypto.randomUUID()}`
   let 结果: unknown
   try {
     结果 = await db.execute(sql`
@@ -141,8 +139,9 @@ export async function 改模板(
   const eventType = sql`${input.定义.event_type}`
   const 变了 = sql`(slots is distinct from ${slots} or required is distinct from ${required} or event_type is distinct from ${eventType})`
 
-  const 行们 = rowsOf(
-    await db.execute(sql`
+  let 结果: unknown
+  try {
+    结果 = await db.execute(sql`
       update auth.case_card_template
          set name = ${input.定义.name},
              slots = ${slots},
@@ -152,14 +151,22 @@ export async function 改模板(
              verified_at = case when ${变了} then null else verified_at end
        where project_id = ${input.projectId} and id = ${input.id} and disabled_at is null
        returning ${列}
-    `),
-  )
+    `)
+  } catch (错误: unknown) {
+    // 改事件类型可能撞 0044 的部分唯一索引（同项目同类型只能有一个启用中的用户模板）：
+    // 与建模板一样翻成人能懂的错误，否则路由只能 500。
+    if (pgErrorCode(错误) === "23505") {
+      throw new 模板错误("conflict", "同类型下已有启用中的用户模板；不能改成该事件类型")
+    }
+    throw 错误
+  }
+  const 行们 = rowsOf(结果)
   const 行 = 行们[0]
   if (行 === undefined) throw new 模板错误("not_found", "没有这个模板")
   return 映射模板行(行)
 }
 
-/** 停用：保留行。返回是否真的停了（已停用 / 不存在 ⇒ false）。 */
+/** 停用：保留行。返回是否真的停了（已停用 ⇒ false；不存在 ⇒ not_found）。 */
 export async function 停用模板(db: Queryable, input: { projectId: string; id: string }): Promise<boolean> {
   要求用户模板(input.id, "停用")
   const 现有 = await 读模板行(db, input.projectId, input.id)
@@ -203,9 +210,12 @@ export async function 转正模板(
   return { verified_at: Number(行.verified_at), version: Number(行.version) }
 }
 
-/** 解析命中计数：只认**用户**模板（内置行不参与编辑器热度），去重、跳过不存在。 */
+/**
+ * 解析命中计数：只认**用户**模板（内置行不参与编辑器热度），跳过不存在。
+ * 单条 `UPDATE … where id = any(...)` 天然按集合去重——同一 id 传几次都只加 1。
+ */
 export async function 记模板命中(db: Queryable, input: { projectId: string; ids: readonly string[] }): Promise<void> {
-  const 用户id们 = [...new Set(input.ids.filter(是用户模板id))]
+  const 用户id们 = input.ids.filter(是用户模板id)
   if (用户id们.length === 0) return
   await db.execute(sql`
     update auth.case_card_template

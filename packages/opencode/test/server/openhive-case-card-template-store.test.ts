@@ -1,8 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { migrate } from "@opencode-ai/auth/migrate"
+import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 检查模板定义, 资金模板id, type 模板定义 } from "../../src/server/openhive/case-card-template"
+import {
+  检查模板定义,
+  确保内置模板,
+  资金模板id,
+  type 模板定义,
+} from "../../src/server/openhive/case-card-template"
 import {
   列出模板,
   读模板行,
@@ -61,15 +67,30 @@ describe("模板 DAO（§7）", () => {
     expect(错误 instanceof 模板错误 && 错误.code === "conflict").toBe(true)
   })
 
+  test("改模板改成已有类型 ⇒ 模板错误 code=conflict（不是原始 PG 错误）", async () => {
+    const 项目 = "p-dao-改冲突"
+    await 建模板(db(), { projectId: 项目, 定义: 定义() }) // 通话
+    const 乙 = await 建模板(db(), { projectId: 项目, 定义: 定义({ name: "住宿登记", eventType: "见面" }) })
+    const 错误 = await 改模板(db(), {
+      projectId: 项目,
+      id: 乙.id,
+      定义: 定义({ name: "住宿登记", eventType: "通话" }),
+    }).catch((e: unknown) => e)
+    expect(错误 instanceof 模板错误 && 错误.code === "conflict").toBe(true)
+    // 原始 PG 错误没有被漏出去：23505 已被翻成领域错误（未翻译路径不存在）。
+    expect(pgErrorCode(错误)).toBeUndefined()
+    // UPDATE 整条回滚：乙 的类型没有被写坏。
+    expect((await 读模板行(db(), 项目, 乙.id))?.event_type).toBe("见面")
+  })
+
   test("列出模板：默认不含停用；含停用=true 才列；内置排在最前", async () => {
     const 项目 = "p-dao-列表"
-    await db().execute(sql`
-      insert into auth.case_card_template
-        (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
-      values (${资金模板id}, ${项目}, '资金（内置）', '资金交易', '{}'::jsonb, ARRAY['谁'], 1, 1, 0, 0)
-    `)
     const 甲 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
     const 乙 = await 建模板(db(), { projectId: 项目, 定义: 定义({ name: "住宿登记", eventType: "见面" }) })
+    // 内置行在用户行**之后**建 ⇒ created_at 更大；它还能排最前，只能靠 case-when。
+    // nowSeconds 是秒级：等过一秒再建，保证严格更大而不是同秒并列。
+    await new Promise((解决) => setTimeout(解决, 1100))
+    await 确保内置模板(db(), 项目)
     const 全 = (await 列出模板(db(), { projectId: 项目 })).map((t) => t.id)
     // 内置恒在第一位；用户模板之间的次序由 created_at（同秒）+ id 决定，不钉具体顺序。
     expect(全[0]).toBe(资金模板id)
@@ -158,16 +179,25 @@ describe("模板 DAO（§7）", () => {
     )
     expect(错误 instanceof 模板错误 && 错误.code === "state_changed").toBe(true)
 
-    const 一 = await 转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 新.version })
+    await 转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 新.version })
+    // 把 verified_at 回拨成旧值：再转正若真走了 UPDATE，会覆盖成 nowSeconds ⇒ 断言红。
+    // 不能靠「两次都同秒」——同秒全绿、跨秒假红，咬不住「已转正早退」。
+    await db().execute(sql`
+      update auth.case_card_template set verified_at = 100
+       where project_id = ${项目} and id = ${行.id}
+    `)
     const 二 = await 转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 新.version })
-    expect(二.verified_at).toBe(一.verified_at)
+    expect(二.verified_at).toBe(100)
   })
 
-  test("记模板命中：只认用户模板、去重、跳过内置与不存在", async () => {
+  test("记模板命中：内置不记账、同 id 重复只加 1、跳过不存在", async () => {
     const 项目 = "p-dao-命中"
+    // 内置行必须真的在库里，否则「只认用户模板」的断言是空转（假绿）。
+    await 确保内置模板(db(), 项目)
     const 甲 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
-    await 记模板命中(db(), { projectId: 项目, ids: [甲.id, 甲.id, 资金模板id, "用户:不存在"] })
+    await 记模板命中(db(), { projectId: 项目, ids: [资金模板id, 甲.id, 甲.id, "用户:不存在"] })
     expect((await 读模板行(db(), 项目, 甲.id))?.hit_count).toBe(1)
+    expect((await 读模板行(db(), 项目, 资金模板id))?.hit_count).toBe(0)
     await 记模板命中(db(), { projectId: 项目, ids: [] })
     expect((await 读模板行(db(), 项目, 甲.id))?.hit_count).toBe(1)
   })

@@ -350,6 +350,24 @@ function 规范化必填(required: unknown): { 值: 槽[]; 错: string[] } {
   return { 值: 九格们.filter((槽名) => 集.has(槽名)), 错 }
 }
 
+/**
+ * 读侧 required 归一化：库里的 `text[]`（数组或文本形态）→ 槽名数组。
+ *
+ * 与写侧 `规范化必填` 同一份语义（`#002-06`）：只留 `九格们` 成员、去重、按九格顺序、
+ * 「谁」恒在。读口丢弃脏值、不产生错误清单——写口已经拦过。
+ */
+export function 解析必填(值: unknown): 槽[] {
+  const 项们 = Array.isArray(值)
+    ? 值
+    : typeof 值 === "string"
+      ? 值
+          .replace(/^\{|\}$/g, "")
+          .split(",")
+          .map((项) => 项.replace(/^"|"$/g, ""))
+      : []
+  return 规范化必填(项们).值
+}
+
 /** 角色 / 实体类型这两条（§6.3 第 7、8 条）。 */
 function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): string[] {
   const 角色 = 填.角色
