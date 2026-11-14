@@ -60,6 +60,12 @@ import {
   type 身份标注,
   type 待标注实体,
 } from "./case-identity"
+import {
+  列出数据源档案,
+  建数据源档案,
+  撤销数据源档案,
+  档案错误,
+} from "./case-source-profile-store"
 
 /**
  * MCP 工具层的取数实现：只认 `{ db, 身份 }`，不认识 MCP、不认识 HTTP。
@@ -2670,5 +2676,79 @@ export async function explore_entity(
         ? [{ 工具: "query_timeline", 参数: { 实体: 实体.value }, 为什么: "按时间顺序看它的事件" }]
         : []),
     ],
+  }
+}
+
+// ───────────────────────── P4：数据源档案三个工具 ─────────────────────────
+//
+// 三个工具与 HTTP 出口（`case-ui-routes.ts`）走**同一套 DAO**：建档规则（指纹 → 格式缓存 →
+// 表头映射、冲突/覆盖、幂等复用）只在 `case-source-profile-store.ts` 写一份（`#002-06`）。
+// 项目一律取自身份（`ctx.身份.projectId`），模型只能传材料 / 档案 id，不能传 projectId。
+
+export async function list_source_profiles(
+  ctx: 工具上下文,
+  args: { 含撤销?: boolean },
+): Promise<工具结果> {
+  const list = await 列出数据源档案(ctx.db, {
+    projectId: ctx.身份.projectId,
+    含撤销: args.含撤销 === true,
+  })
+  // 空列表不能回 `{ list: [] }`＋非 null 空原因：信封的「空」只认 `null` 与空数组
+  // （`case-envelope.ts` 的 `数据为空`），对象不算空 ⇒ 服务端会折成 tool_failed。
+  const 空 = list.length === 0
+  return {
+    摘要: `本项目共有 ${list.length} 个数据源档案`,
+    数据: 空 ? null : { list },
+    口径: args.含撤销 === true ? "含已撤销" : "只看未撤销",
+    缺口: [],
+    空原因: 空 ? "对象未登记" : null,
+    出处: [],
+    下一步: [],
+  }
+}
+
+export async function build_source_profile(
+  ctx: 工具上下文,
+  args: { 材料: string; 工作表?: string; 名称?: string; 覆盖?: boolean },
+): Promise<工具结果> {
+  try {
+    const 回执 = await 建数据源档案(ctx.db, {
+      projectId: ctx.身份.projectId,
+      materialId: args.材料,
+      ...(args.工作表 === undefined ? {} : { 工作表: args.工作表 }),
+      ...(args.名称 === undefined ? {} : { name: args.名称 }),
+      ...(args.覆盖 === undefined ? {} : { 覆盖: args.覆盖 }),
+    })
+    return {
+      摘要: 回执.created ? "已建立数据源档案" : "已复用或更新数据源档案",
+      数据: 回执,
+      口径: "从该材料的 format_fingerprints 读回表头与映射；只建本项目档案",
+      缺口: [],
+      空原因: null,
+      出处: [],
+      下一步: [],
+    }
+  } catch (错误) {
+    if (错误 instanceof 档案错误) {
+      throw new 工具错误(错误.code === "material_not_found" ? "not_found" : "bad_input", 错误.message)
+    }
+    throw 错误
+  }
+}
+
+export async function revoke_source_profile(
+  ctx: 工具上下文,
+  args: { 档案: string },
+): Promise<工具结果> {
+  const 撤销 = await 撤销数据源档案(ctx.db, { projectId: ctx.身份.projectId, id: args.档案 })
+  if (!撤销) throw new 工具错误("not_found", "没有这个档案或已撤销")
+  return {
+    摘要: "已撤销数据源档案",
+    数据: { ok: true },
+    口径: "只撤销本项目档案",
+    缺口: [],
+    空原因: null,
+    出处: [],
+    下一步: [],
   }
 }

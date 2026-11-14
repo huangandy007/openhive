@@ -101,19 +101,22 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 11 个工具，名字与设计 §7.1 逐字一致", async () => {
+test("tools/list 返回 14 个工具，名字与设计 §7.1 逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
+    "build_source_profile",
     "explore_entity",
     "find_crossings",
     "get_citation",
+    "list_source_profiles",
     "money_flow",
     "query_entities",
     "query_events",
     "query_relations",
     "query_rows",
     "query_timeline",
+    "revoke_source_profile",
     "search_materials",
   ])
 })
@@ -509,4 +512,73 @@ test("计数按 (userId, projectId) 隔离：甲用满 12 次后，乙第一次�
     const 乙第一次 = await 调一次(客, 乙meta)
     expect(乙第一次.缺口).not.toContain(预算上限缺口)
   })
+})
+
+// P4 Task 6：三个数据源档案工具走真握手。夹具直接种材料 + 格式缓存（生产入口之外的
+// 「已解析材料」最小形状），钉的是 MCP 层握手与参数白名单；建档规则本身由 DAO 用例守着。
+test("数据源档案：build / list / revoke 走真握手", async () => {
+  await 库().execute(sql`
+    insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, created_at)
+    values ('m-mcp-档案', ${身份甲.projectId}, '档案流水.xlsx', '资金', 'fp-mcp-档案', '档案流水.xlsx', 0)
+  `)
+  await 库().execute(sql`
+    update auth.case_material
+       set format_fingerprints = ${JSON.stringify([{ 工作表: "Sheet1", 指纹: "fp-mcp-档案" }])}::text::jsonb
+     where project_id = ${身份甲.projectId} and id = 'm-mcp-档案'
+  `)
+  await 库().execute(sql`
+    insert into auth.case_table_format
+      (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+    values (${身份甲.projectId}, 'fp-mcp-档案',
+            ${JSON.stringify(["交易时间", "交易金额", "对方户名"])}::text::jsonb,
+            ${JSON.stringify({ "0": "startedAt", "1": "amount", "2": "counterpartyName" })}::text::jsonb,
+            '词典', 0,
+            ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 0 })}::text::jsonb,
+            0, 0, 0)
+  `)
+
+  const meta = { "openhive/user": 身份甲.userId, "openhive/directory": `${沙箱根}/${身份甲.userId}/${身份甲.projectId}` }
+  const 建 = await client.callTool({
+    name: "build_source_profile",
+    arguments: { 材料: "m-mcp-档案", 名称: "MCP 档案" },
+    _meta: meta,
+  })
+  expect(建.isError).toBeFalsy()
+  const 建体 = JSON.parse((建.content as { text: string }[])[0]!.text) as {
+    数据: { id: string; created: boolean }
+  }
+  expect(建体.数据.created).toBe(true)
+
+  const 列表 = await client.callTool({ name: "list_source_profiles", arguments: {}, _meta: meta })
+  const 列表体 = JSON.parse((列表.content as { text: string }[])[0]!.text) as {
+    数据: { list: { id: string; name: string; type: string }[] }
+  }
+  expect(列表体.数据.list).toHaveLength(1)
+  expect(列表体.数据.list[0]).toMatchObject({ id: 建体.数据.id, name: "MCP 档案", type: "资金" })
+
+  const 撤 = await client.callTool({
+    name: "revoke_source_profile",
+    arguments: { 档案: 建体.数据.id },
+    _meta: meta,
+  })
+  expect(撤.isError).toBeFalsy()
+  const 再撤 = await client.callTool({
+    name: "revoke_source_profile",
+    arguments: { 档案: 建体.数据.id },
+    _meta: meta,
+  })
+  expect(再撤.isError).toBe(true)
+})
+
+// 信封契约：`数据为空` 只认 null 与空数组，对象不算空。空项目若回 `{ list: [] }` 又带
+// 非 null 空原因，会被服务端折成 tool_failed——所以空列表必须回 `数据: null`。
+test("数据源档案：空项目列表回 空原因（数据为空用 null），不折成 tool_failed", async () => {
+  const 空列 = await client.callTool({ name: "list_source_profiles", arguments: {}, _meta: 乙meta })
+  expect(空列.isError).toBeFalsy()
+  const 体 = JSON.parse((空列.content as { text: string }[])[0]!.text) as {
+    数据: unknown
+    空原因: string | null
+  }
+  expect(体.数据).toBeNull()
+  expect(体.空原因).toBe("对象未登记")
 })

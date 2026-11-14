@@ -10,15 +10,18 @@ import { 数据为空, 数据预算字节, 空原因枚举, 序列化字节 } fr
 import { 解析调用身份, 身份错误, type 调用身份 } from "./case-mcp-identity"
 import {
   aggregate_money,
+  build_source_profile,
   explore_entity,
   find_crossings,
   get_citation,
+  list_source_profiles,
   money_flow,
   query_entities,
   query_events,
   query_relations,
   query_rows,
   query_timeline,
+  revoke_source_profile,
   search_materials,
   工具错误,
   校验成员,
@@ -62,6 +65,9 @@ export const 工具名 = [
   "query_timeline",
   "explore_entity",
   "money_flow",
+  "list_source_profiles",
+  "build_source_profile",
+  "revoke_source_profile",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -367,6 +373,43 @@ const TOOLS: readonly Tool[] = [
       required: ["账户"],
     },
   },
+  {
+    name: "list_source_profiles",
+    description: "列出本项目的数据源档案（表头 → 字段映射），默认不返回已撤销的。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        含撤销: { type: "boolean", description: "是否包含已撤销的档案，默认否" },
+      },
+    },
+  },
+  {
+    name: "build_source_profile",
+    description:
+      "对一份已成功解析的材料显式建档：把表头与字段映射固化为数据源档案。" +
+      "材料没有解析指纹时会明确要求先重放；认不出列的格式（类型「其他」）会被拒绝。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        材料: { type: "string", description: "材料 id" },
+        工作表: { type: "string", description: "工作表名；缺省取第一张可建档的表" },
+        名称: { type: "string", description: "档案名；缺省为「材料文件名 · 工作表名」" },
+        覆盖: { type: "boolean", description: "同类型表头高度重合但映射不同时，确认覆盖既有档案" },
+      },
+      required: ["材料"],
+    },
+  },
+  {
+    name: "revoke_source_profile",
+    description: "撤销本项目的一个数据源档案；撤销后不再参与命中。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        档案: { type: "string", description: "档案 id" },
+      },
+      required: ["档案"],
+    },
+  },
 ]
 
 /**
@@ -423,6 +466,15 @@ export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<st
     ),
   money_flow: (ctx, args) =>
     money_flow(ctx, 收参数<Parameters<typeof money_flow>[1]>(args, ["账户", "方向", "对手"], ["起", "止"], [])),
+  list_source_profiles: (ctx, args) =>
+    list_source_profiles(ctx, 收参数<Parameters<typeof list_source_profiles>[1]>(args, [], [], ["含撤销"])),
+  build_source_profile: (ctx, args) =>
+    build_source_profile(
+      ctx,
+      收参数<Parameters<typeof build_source_profile>[1]>(args, ["材料", "工作表", "名称"], [], ["覆盖"]),
+    ),
+  revoke_source_profile: (ctx, args) =>
+    revoke_source_profile(ctx, 收参数<Parameters<typeof revoke_source_profile>[1]>(args, ["档案"], [], [])),
 }
 
 /**
