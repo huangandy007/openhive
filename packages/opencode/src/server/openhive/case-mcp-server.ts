@@ -25,6 +25,7 @@ import {
   search_materials,
   工具错误,
   校验成员,
+  校验属主,
   type 工具上下文,
   type 工具结果,
 } from "./case-mcp-tools"
@@ -34,15 +35,19 @@ import {
  *
  * ## 分发顺序写死
  *
- * ① 解析调用身份 → ② 校验成员 → ③ 判工具名 → ④ 调工具。
+ * ① 解析调用身份 → ② 校验成员 → ②b 写工具校验属主 → ③ 判工具名 → ④ 调工具。
  *
  * 前两步是**门**，必须在名字分发之前：未知工具名只说明模型叫错了名字，不能成为
  * 「没身份也能探到工具清单后面有什么」的侧信道。门只在入口做一次
  * （`LEARNINGS #004-09`：门在副作用之前，且只在一处）。
  *
+ * ②b 只拦写工具（`build_source_profile` / `revoke_source_profile`）：它们与 HTTP 的
+ * `过门({ 要属主: true })` 是同一条授权口径，普通成员不得改写共享映射或撤销他人档案。
+ * 读工具（含 `list_source_profiles`）不受影响。
+ *
  * ## 错误映射
  *
- * `工具错误` 的 `code`（`bad_input` / `not_found` / `not_a_member`）原样回给模型；
+ * `工具错误` 的 `code`（`bad_input` / `not_found` / `not_a_member` / `forbidden`）原样回给模型；
  * 其余任何异常一律 `tool_failed`，回给模型的**只有一句固定中文**——原文可能带表名 /
  * 列名 / SQL 片段，只进留痕的 `错误原文` 给运维查。
  *
@@ -522,6 +527,12 @@ function 是工具名(name: string): name is 工具名 {
   return (工具名 as readonly string[]).includes(name)
 }
 
+/**
+ * 写工具集合：只有它们需要属主门。**按名字显式列出**（不从 `tools/list` 描述里猜）——
+ * 新增写工具时必须在这里加一行，否则它会静默按成员门放行。
+ */
+const 写工具名: ReadonlySet<string> = new Set(["build_source_profile", "revoke_source_profile"])
+
 /** 工具执行失败回给模型的**唯一**文本；原文只进留痕。 */
 const 工具失败文案 = "工具执行失败，已记入服务端日志"
 
@@ -648,6 +659,18 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
     } catch (error) {
       if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
       return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
+    }
+
+    // ②b 属主门：只拦写工具，与 HTTP 的 `要属主: true` 对齐。同样在名字分发之前——
+    // 成员调 build/revoke 时，不管参数指向什么（甚至档案不存在）都先回 forbidden，
+    // 不拿 not_found / bad_input 当探路侧信道。未知名字不匹配写工具集合，仍落到 ③。
+    if (写工具名.has(工具)) {
+      try {
+        await 校验属主(ctx)
+      } catch (error) {
+        if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
+        return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
+      }
     }
 
     // ③ 名字。

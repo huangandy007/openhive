@@ -33,9 +33,12 @@ const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
 
 /** 沙箱根：身份解析只做路径比较，不碰磁盘，用临时目录下的一个不存在路径即可。 */
 const 沙箱根 = resolve(tmpdir(), "openhive-mcp-工具沙箱")
+/** 属主：数据源档案的写工具只对 owner 放开（与 HTTP 的 `要属主: true` 对齐）。 */
 const 身份甲 = { userId: "u-工具-甲", projectId: "p-工具-甲" }
 /** Task 4 身份隔离用例用：同一套 deps 换一个 `(userId, projectId)`，计数必须从 1 重新开始。 */
 const 身份乙 = { userId: "u-工具-乙", projectId: "p-工具-乙" }
+/** 同一项目里的普通成员：读工具放行，写工具必须 forbidden（Critical 1 的判别身份）。 */
+const 身份丙 = { userId: "u-工具-丙", projectId: 身份甲.projectId }
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 let 客户端: ReturnType<typeof connect> | undefined
@@ -61,7 +64,16 @@ beforeAll(async () => {
   `)
   await 客户端.execute(sql`
     insert into auth.project_member (project_id, user_id, role, time_created)
-    values (${身份甲.projectId}, ${身份甲.userId}, 'member', 0)
+    values (${身份甲.projectId}, ${身份甲.userId}, 'owner', 0)
+  `)
+  // 普通成员（同项目）：用来钉「写工具要属主，读工具仍对成员放开」。
+  await 客户端.execute(sql`
+    insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+    values (${身份丙.userId}, '970045', '服务器民警丙', 'z', 'z', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
+  `)
+  await 客户端.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${身份丙.projectId}, ${身份丙.userId}, 'member', 0)
   `)
   // 身份隔离用例：第二个合法成员（自己的用户行 + 自己的项目成员行，目录也落在自己沙箱下）。
   await 客户端.execute(sql`
@@ -516,6 +528,7 @@ test("计数按 (userId, projectId) 隔离：甲用满 12 次后，乙第一次�
 
 // P4 Task 6：三个数据源档案工具走真握手。夹具直接种材料 + 格式缓存（生产入口之外的
 // 「已解析材料」最小形状），钉的是 MCP 层握手与参数白名单；建档规则本身由 DAO 用例守着。
+// 身份甲 是 owner：写工具（build / revoke）成功路径的前提就是属主。
 test("数据源档案：build / list / revoke 走真握手", async () => {
   await 库().execute(sql`
     insert into auth.case_material (id, project_id, file_name, kind, fingerprint, path, created_at)
@@ -568,6 +581,38 @@ test("数据源档案：build / list / revoke 走真握手", async () => {
     _meta: meta,
   })
   expect(再撤.isError).toBe(true)
+})
+
+// Critical 1：写工具必须过属主门（HTTP build/revoke 是同一条口径）。普通成员即使参数指向
+// 一个不存在的材料 / 档案，也先回 forbidden——授权检查在工具分发之前，不拿 not_found /
+// bad_input 当「档案在不在」的探路侧信道。list 是读工具，成员仍允许。
+test("数据源档案写工具：普通成员 ⇒ forbidden（build / revoke），list 仍允许", async () => {
+  const 丙meta = {
+    "openhive/user": 身份丙.userId,
+    "openhive/directory": `${沙箱根}/${身份丙.userId}/${身份丙.projectId}`,
+  }
+  const 建 = await client.callTool({
+    name: "build_source_profile",
+    arguments: { 材料: "不存在的材料" },
+    _meta: 丙meta,
+  })
+  expect(建.isError).toBe(true)
+  const 建文本 = JSON.parse((建.content as { text: string }[])[0]!.text) as { error: string; message: string }
+  expect(建文本.error).toBe("forbidden")
+  expect(建文本.message).toBe("只有项目主能维护数据源档案")
+
+  const 撤 = await client.callTool({
+    name: "revoke_source_profile",
+    arguments: { 档案: "任意档案" },
+    _meta: 丙meta,
+  })
+  expect(撤.isError).toBe(true)
+  const 撤文本 = JSON.parse((撤.content as { text: string }[])[0]!.text) as { error: string }
+  // 不是 not_found：授权先于「档案存在性」，否则成员能借错误码探档案是否存在。
+  expect(撤文本.error).toBe("forbidden")
+
+  const 列表 = await client.callTool({ name: "list_source_profiles", arguments: {}, _meta: 丙meta })
+  expect(列表.isError).toBeFalsy()
 })
 
 // 信封契约：`数据为空` 只认 null 与空数组，对象不算空。空项目若回 `{ list: [] }` 又带

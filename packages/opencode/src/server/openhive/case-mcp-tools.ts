@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
+import { rolesOf } from "@opencode-ai/auth/project-member"
 import {
   默认限制,
   最大限制,
@@ -99,7 +100,7 @@ export interface 工具结果 {
   readonly 身份?: readonly 身份标注[]
 }
 
-export type 工具错误码 = "not_a_member" | "bad_input" | "not_found"
+export type 工具错误码 = "not_a_member" | "forbidden" | "bad_input" | "not_found"
 
 export class 工具错误 extends Error {
   readonly code: 工具错误码
@@ -183,6 +184,21 @@ export async function 校验成员(ctx: 工具上下文): Promise<void> {
   `)
   if (rowsOf(rows).length === 0) {
     throw new 工具错误("not_a_member", `你不是项目「${ctx.身份.projectId}」的成员，看不到它的数据`)
+  }
+}
+
+/**
+ * 写工具的属主门（数据源档案的建档 / 撤销），与 HTTP `过门({ 要属主: true })` 对齐。
+ *
+ * 角色判据复用 `rolesOf`（`@opencode-ai/auth/project-member`），不另写一份 SQL 角色判断
+ * （`#002-06`：同一前提单一出处）。MCP 入口**先**过 `校验成员`，所以这里只认
+ * `project_member.role = "owner"`：HTTP 的「老项目回退成属主」那一支在 MCP 不适用
+ * （MCP 已有成员行才走到这里）。
+ */
+export async function 校验属主(ctx: 工具上下文): Promise<void> {
+  const roles = await rolesOf(ctx.db, { userId: ctx.身份.userId, projectIds: [ctx.身份.projectId] })
+  if (roles.get(ctx.身份.projectId) !== "owner") {
+    throw new 工具错误("forbidden", "只有项目主能维护数据源档案")
   }
 }
 
