@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
+import { pgErrorCode } from "@opencode-ai/auth/pg-errors"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   资金模板id,
@@ -203,6 +204,9 @@ describe("迁移 0044（模板编辑器内核）", () => {
       拒绝错误 = 错误
     }
     expect(拒绝错误).toBeInstanceOf(Error)
+    // 必须是部分唯一索引的 23505，而不是别的约束/形状错误。
+    // drizzle 把原始错误包在 cause 里（bun-sql 的 SQLSTATE 在 `errno`），统一走 pgErrorCode。
+    expect(pgErrorCode(拒绝错误)).toBe("23505")
     // 停用后可以再建同类型：索引条件是 `disabled_at is null`。
     await db().execute(sql`
       update auth.case_card_template set disabled_at = 1
@@ -215,10 +219,68 @@ describe("迁移 0044（模板编辑器内核）", () => {
               '{"谁":[{"字段":"callee"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
     `)
   })
+
+  test("同项目同事件类型的两条内置模板可共存（谓词只限用户模板）", async () => {
+    const 项目 = "p-内置共存"
+    for (const id of ["内置:甲/v1", "内置:乙/v1"]) {
+      await db().execute(sql`
+        insert into auth.case_card_template
+          (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+        values (${id}, ${项目}, '内置', '通话',
+                '{"谁":[{"字段":"caller"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
+      `)
+    }
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select id from auth.case_card_template where project_id = ${项目}
+      `),
+    )
+    expect(new Set(行.map((r) => String(r.id)))).toEqual(new Set(["内置:甲/v1", "内置:乙/v1"]))
+  })
+
+  test("不同项目的同类型用户模板可共存（project_id 在索引里）", async () => {
+    const 对们: readonly (readonly [string, string])[] = [
+      ["p-跨项目甲", "用户:00000000-0000-0000-0000-00000000a011"],
+      ["p-跨项目乙", "用户:00000000-0000-0000-0000-00000000a012"],
+    ]
+    for (const [项目, id] of 对们) {
+      await db().execute(sql`
+        insert into auth.case_card_template
+          (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+        values (${id}, ${项目}, '通话', '通话',
+                '{"谁":[{"字段":"caller"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
+      `)
+    }
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select project_id from auth.case_card_template
+         where id in ('用户:00000000-0000-0000-0000-00000000a011', '用户:00000000-0000-0000-0000-00000000a012')
+      `),
+    )
+    expect(行).toHaveLength(2)
+  })
 })
 
 describe("角色词表与默认角色（§6.1）", () => {
-  test("人称角色 = 角色词表去掉三个地点角色", () => {
+  test("角色词表整表（16 项）；人称角色 = 去掉三个地点角色", () => {
+    expect(角色们).toEqual([
+      "主体",
+      "对方",
+      "入住人",
+      "同住人",
+      "付款方",
+      "收款方",
+      "主叫",
+      "被叫",
+      "地点",
+      "出发地",
+      "到达地",
+      "车辆",
+      "物品",
+      "班次",
+      "经办人",
+      "其他",
+    ])
     expect(地点角色们).toEqual(["地点", "出发地", "到达地"])
     expect(人称角色们.length).toBe(角色们.length - 3)
     for (const 角色 of 地点角色们) expect(人称角色们).not.toContain(角色)
@@ -228,11 +290,27 @@ describe("角色词表与默认角色（§6.1）", () => {
     expect(默认角色).toEqual({ 谁: "主体", 和谁: "对方", 何地: "地点" })
   })
 
-  test("字段显示名覆盖全部 17 个识别字段，且无重复值", () => {
+  test("字段显示名整表覆盖全部 17 个识别字段，且无重复值", () => {
+    expect(字段显示名).toEqual({
+      caller: "主叫号码",
+      callee: "被叫号码",
+      startedAt: "时间",
+      durationSec: "通话时长",
+      amount: "金额",
+      balance: "余额",
+      counterparty: "对方账号",
+      counterpartyName: "对方户名",
+      ownerAccount: "本方账号",
+      direction: "方向",
+      currency: "币种",
+      address: "地址",
+      merchant: "商户",
+      contactPhone: "联系电话",
+      personName: "姓名",
+      deliveredAt: "送达时间",
+      ownerName: "本方户名",
+    })
     expect(Object.keys(字段显示名)).toHaveLength(17)
-    expect(字段显示名.caller).toBe("主叫号码")
-    expect(字段显示名.durationSec).toBe("通话时长")
-    expect(字段显示名.ownerName).toBe("本方户名")
     expect(new Set(Object.values(字段显示名)).size).toBe(17)
   })
 
@@ -357,6 +435,17 @@ describe("模板定义校验（§6.3）", () => {
     expect(
       校验模板定义({ ...合法, slots: { 何时: { 字段: "startedAt" } }, required: [] }).some((e) =>
         e.includes("必填槽「谁」"),
+      ),
+    ).toBe(true)
+  })
+
+  test("required 不得含「其他」，也不得重复（§6.3 #9）", () => {
+    expect(校验模板定义({ ...合法, required: ["其他"] }).some((e) => e.includes("「其他」不能作为必填槽"))).toBe(
+      true,
+    )
+    expect(
+      校验模板定义({ ...合法, required: ["何时", "何时"] }).some(
+        (e) => e.includes("何时") && e.includes("重复"),
       ),
     ).toBe(true)
   })

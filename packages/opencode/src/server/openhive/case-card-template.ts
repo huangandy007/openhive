@@ -328,18 +328,29 @@ function 规范化必填(required: unknown): { 值: 槽[]; 错: string[] } {
   if (!Array.isArray(required)) return { 值: [], 错: ["required 必须是槽名数组"] }
   const 错: string[] = []
   const 集 = new Set<槽>(["谁"])
+  // 2026-11-14 评审回写：§6.3 #9 —— required 不得含「其他」、不得重复。
+  const 见过 = new Set<槽>()
   for (const 项 of required) {
     if (!是槽(项)) {
       错.push(`required 里的「${String(项)}」不是合法槽名；可用：${九格们.join("、")}`)
       continue
     }
+    if (项 === "其他") {
+      错.push("「其他」不能作为必填槽")
+      continue
+    }
+    if (见过.has(项)) {
+      错.push(`required 里的槽「${项}」重复了`)
+      continue
+    }
+    见过.add(项)
     集.add(项)
   }
   // 谁 恒必填；按九格顺序输出，保证同样的定义永远得到同样的 required（可比对、可去重）。
   return { 值: 九格们.filter((槽名) => 集.has(槽名)), 错 }
 }
 
-/** 角色 / 实体类型这两条（§6.3 第 6、7、8 条）。 */
+/** 角色 / 实体类型这两条（§6.3 第 7、8 条）。 */
 function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): string[] {
   const 角色 = 填.角色
   const 实体类型 = 填.实体类型
@@ -348,8 +359,8 @@ function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): strin
   }
   const 错: string[] = []
   if (角色 !== undefined) {
-    if (!(typeof 角色 === "string" && 角色集.has(角色))) {
-      错.push(`「${槽名}」的角色 ${String(角色)} 不在角色词表里`)
+    if (!是角色(角色)) {
+      错.push(`「${槽名}」的角色 ${JSON.stringify(角色)} 不在角色词表里`)
     } else if ((槽名 === "谁" || 槽名 === "和谁") && !人称角色集.has(角色)) {
       错.push(`「${槽名}」的角色只能用：${人称角色们.join("、")}`)
     } else if (槽名 === "何地" && !地点角色集.has(角色)) {
@@ -360,7 +371,7 @@ function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): strin
   }
   if (实体类型 !== undefined) {
     if (!(typeof 实体类型 === "string" && 实体类型集.has(实体类型))) {
-      错.push(`「${槽名}」的实体类型 ${String(实体类型)} 不在实体类型词表里`)
+      错.push(`「${槽名}」的实体类型 ${JSON.stringify(实体类型)} 不在实体类型词表里`)
     } else if (槽名 === "何地" && 实体类型 !== "地点") {
       错.push("「何地」的实体类型必须是「地点」")
     }
