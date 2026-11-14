@@ -11,6 +11,8 @@ import { 金额文本, 时间文本 } from "./format"
 export function CardTemplatePreview(props: { readonly 结果: 预览输出; readonly 过期?: boolean }): JSX.Element {
   const 跳过项 = () => Object.entries(props.结果.跳过)
   const 跳过合计 = () => 跳过项().reduce((和, [, 数]) => 和 + 数, 0)
+  // CNY 沿用 `format.ts:11` 的「元」写法；其它币种原样写币种码，不冒充人民币。
+  const 金额与币种 = (值: string | null, 币种: string) => (币种 === "CNY" ? 金额文本(值) : 值 === null ? "—" : `${值} ${币种}`)
   return (
     <section
       data-slot="card-template-preview"
@@ -55,7 +57,7 @@ export function CardTemplatePreview(props: { readonly 结果: 预览输出; read
                   <td class="px-3 py-1.5">{卡.摘要}</td>
                   <td class="px-3 py-1.5 font-mono whitespace-nowrap">{时间文本(卡.occurredAt)}</td>
                   <td class="px-3 py-1.5">{卡.参与者们.map((人) => `${人.角色}：${人.提及}`).join(" · ")}</td>
-                  <td class="px-3 py-1.5">{金额文本(卡.amount)}</td>
+                  <td class="px-3 py-1.5">{金额与币种(卡.amount, 卡.currency)}</td>
                   <td class="px-3 py-1.5 text-v2-text-text-muted">{`${卡.出处.sheet}#${卡.出处.rowNo}`}</td>
                 </tr>
               )}

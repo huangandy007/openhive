@@ -42,8 +42,13 @@ export interface CardTemplateEditorProps {
   readonly api: CaseTemplateApi
   /** 省略 = 新建；给了就载入现有定义。 */
   readonly 行?: 模板行
-  /** 内置模板的「查看」：所有输入禁用、无保存/预览。 */
+  /** 内置模板的「查看」/ 停用模板的「预览」：所有输入禁用、无保存。 */
   readonly 只读?: boolean
+  /**
+   * 只读抽屉是否仍可预览（停用模板用）：默认随 `只读`——内置只读不可预览。
+   * 预览是只读操作，停用模板也能安全跑；保存才是被内核拒绝的那个动作（最终广审 I-2）。
+   */
+  readonly 可预览?: boolean
   /** 打开即跑一次预览（列表行上的「预览」）。 */
   readonly 自动预览?: boolean
   readonly 材料们: readonly 材料视图[]
@@ -186,6 +191,8 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
   /** 预览成功时用的材料 id：换材料后旧结果同样过期（I4）。 */
   const [预览材料, 设预览材料] = createSignal("")
   const [关确认, 设关确认] = createSignal(false)
+  /** 可预览与只读是两个概念：停用行只读但可预览；内置行只读且不可预览。 */
+  const 可预览 = () => (props.可预览 === undefined ? props.只读 !== true : props.可预览)
 
   // 代次守卫：关掉抽屉后回来的响应一律丢弃（同 `governance/template-lib.tsx` 的写法）。
   let 代次 = 0
@@ -207,7 +214,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
       const 初 = 行 === undefined ? 新表单(回.value) : 从行(行, 回.value)
       设表单(初)
       设初始(JSON.stringify(成定义(初)))
-      if (props.自动预览 === true && props.只读 !== true) void 跑预览()
+      if (props.自动预览 === true && 可预览()) void 跑预览()
     })()
   })
 
@@ -289,7 +296,11 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
     props.onClose()
   }
 
-  const 标题 = () => (props.只读 === true ? "查看内置模板" : props.行 === undefined ? "新建模板" : "修改模板")
+  const 标题 = () => {
+    if (props.只读 !== true) return props.行 === undefined ? "新建模板" : "修改模板"
+    if (props.行 !== undefined && props.行.disabled_at !== null) return "查看已停用的模板"
+    return "查看内置模板"
+  }
 
   return (
     <Kobalte open={开()} onOpenChange={(值) => { if (!值) 请求关闭() }}>
@@ -329,7 +340,12 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                 <Show when={表单()} fallback={<p class="text-[13px] text-v2-text-text-muted">正在准备表单…</p>}>
                   {(形) => (
                     <div class="flex flex-col gap-4">
-                      <Show when={props.行?.verified_at !== null && props.行 !== undefined}>
+                      <Show when={props.只读 === true && props.行?.disabled_at !== null}>
+                        <p data-slot="card-template-disabled-hint" class="rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-base">
+                          模板已停用：先恢复才能修改
+                        </p>
+                      </Show>
+                      <Show when={props.只读 !== true && props.行?.verified_at !== null && props.行 !== undefined}>
                         <p data-slot="card-template-verified-warning" class="rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2 text-[12px] text-v2-text-text-base">
                           修改后模板回到未验证，需重新预览并转正
                         </p>
@@ -444,7 +460,7 @@ export function CardTemplateEditor(props: CardTemplateEditorProps): JSX.Element 
                         )}
                       </Show>
 
-                      <Show when={props.只读 !== true}>
+                      <Show when={可预览()}>
                         <section data-slot="card-template-preview-panel" class="flex flex-col gap-2 border-t border-v2-border-border-muted pt-3">
                           <div class="flex flex-wrap items-center gap-2">
                             <SelectV2

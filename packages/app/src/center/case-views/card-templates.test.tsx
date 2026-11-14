@@ -47,7 +47,8 @@ const 行们: 模板行[] = [
   { id: "用户:1", name: "通话模板", event_type: "通话", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 12, disabled_at: null },
   { id: "用户:2", name: "订餐模板", event_type: "消费", slots: {}, required: ["谁"], version: 1, verified_at: null, hit_count: 0, disabled_at: null },
   { id: "内置:资金/v1", name: "资金（内置）", event_type: "资金交易", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 3, disabled_at: null },
-  { id: "用户:3", name: "旧模板", event_type: "见面", slots: {}, required: ["谁"], version: 1, verified_at: null, hit_count: 0, disabled_at: 200 },
+  // 停用行故意给非空 `verified_at`：只读抽屉不得出现「修改后回到未验证」（I-2 / M-1）。
+  { id: "用户:3", name: "旧模板", event_type: "见面", slots: {}, required: ["谁"], version: 1, verified_at: 100, hit_count: 0, disabled_at: 200 },
 ]
 
 /**
@@ -241,6 +242,12 @@ describe("卡片模板列表", () => {
     await 等(() => 找("card-template-confirm-error") !== null)
     expect(找("card-template-confirm-error")!.textContent).toContain("请先停用旧模板再恢复")
     expect(恢复).toEqual(["用户:3"])
+
+    // 设计 §6.4：恢复冲突要给「去停用旧模板」的动作，不能让民警自己找旧模板。
+    const 去停用 = 找("card-template-confirm-goto-disabled") as HTMLButtonElement | null
+    expect(去停用 === null).toBe(false)
+    去停用!.click()
+    await 等(() => 找("card-template-confirm") === null)
   })
 
   test("新建：抽屉打开；词表失败原样展示（列表不替它编）", async () => {
@@ -287,6 +294,100 @@ describe("卡片模板列表", () => {
     await 等(() => host.querySelector("[data-slot='card-templates-notice']") !== null)
     expect(host.querySelector("[data-slot='card-templates-notice']")!.textContent).toContain("已新建")
     await 等(() => 列表次数 > 前)
+  })
+
+  test("保存在途关抽屉：不抛 Stale read，仍重拉列表并提示已新建（最终广审 I-1）", async () => {
+    type 新建回包 = Awaited<ReturnType<CaseTemplateApi["create"]>>
+    const 创建等待: Array<(回: 新建回包) => void> = []
+    let 列表次数 = 0
+    const api = 假api({
+      list: async (_projectId, 含停用) => {
+        列表次数 += 1
+        return { kind: "ok", value: 按含停用(行们, 含停用) }
+      },
+      vocab: async () => ({ kind: "ok", value: 词表 }),
+      create: async () =>
+        new Promise<新建回包>((resolve) => {
+          创建等待.push(resolve)
+        }),
+    })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    ;(host.querySelector("[data-slot='card-templates-create']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-name-field") !== null)
+
+    const 名称框 = 找("card-template-name-field")!.querySelector<HTMLInputElement>("input")!
+    名称框.value = "新模板"
+    名称框.dispatchEvent(new Event("input", { bubbles: true }))
+    const 事件触发器 = () => 找("card-template-event-field")!.querySelector<HTMLElement>("[data-component='select-v2']")!
+    开下拉(事件触发器())
+    await 点选项("通话")
+    await 等(() => (事件触发器().textContent ?? "").includes("通话"))
+    const 谁触发器 = () =>
+      document.body.querySelector<HTMLElement>(
+        "[data-slot='card-template-slot'][data-slot-name='谁'] [data-component='select-v2']",
+      )!
+    开下拉(谁触发器())
+    await 点选项("主叫号码")
+    await 等(() => !(找("card-template-save") as HTMLButtonElement).disabled)
+
+    const 前 = 列表次数
+    ;(找("card-template-save") as HTMLButtonElement).click()
+    // 请求在途时关抽屉：取消 → 放弃修改 ⇒ 父 `<Show>` 卸载编辑器。
+    await 等(() => (找("card-template-save") as HTMLButtonElement).textContent?.includes("保存中") === true)
+    ;(找("card-template-cancel") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-discard-ok") !== null)
+    ;(找("card-template-discard-ok") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-editor") === null)
+
+    // 迟到的成功响应：旧写法在已卸载的 `<Show>` 上读 `状()` ⇒ `Stale read from <Show>.`，
+    // 「已新建」与重拉都不会发生（等超时）。
+    创建等待[0]!({ kind: "ok", value: 新行 })
+    await 等(() => host.querySelector("[data-slot='card-templates-notice']") !== null)
+    expect(host.querySelector("[data-slot='card-templates-notice']")!.textContent).toContain("已新建")
+    await 等(() => 列表次数 > 前)
+  })
+
+  test("已停用行「预览」：只读抽屉可预览、无保存按钮、提示先恢复（最终广审 I-2）", async () => {
+    const api = 假api({
+      vocab: async () => ({ kind: "ok", value: 词表 }),
+      preview: async () => ({ kind: "ok", value: { 卡片数: 0, 跳过: {}, 工作表们: [], 卡片们: [] } }),
+    })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    await 让一拍() // 等已解析材料清单落地，预览按钮才有可选材料。
+    ;(host.querySelector("[data-slot='card-templates-disabled-toggle']") as HTMLButtonElement).click()
+    await 等(() => host.querySelector("[data-slot='card-templates-disabled']") !== null)
+    const 停用区 = host.querySelector("[data-slot='card-templates-disabled']")!
+    ;(停用区.querySelector("[data-slot='card-template-preview']") as HTMLButtonElement).click()
+    // 等表单真的渲染出来，保存按钮的显隐才是确定状态（不能只看抽屉外壳）。
+    await 等(() => 找("card-template-name-field") !== null)
+    // 只读抽屉：保存按钮必须先消失（旧实现把它渲染成可编辑抽屉）。
+    // （本机 bun + happy-dom 下 `toBeNull` 对 DOM 元素不生效，用显式布尔断言。）
+    expect(找("card-template-save") === null).toBe(true)
+    // 只读 + 可预览：预览面板在、按钮可点。
+    await 等(() => 找("card-template-preview-panel") !== null)
+    const 预览按钮 = 找("card-template-preview-button") as HTMLButtonElement
+    await 等(() => !预览按钮.disabled)
+    expect(找("card-template-disabled-hint")!.textContent).toContain("模板已停用：先恢复才能修改")
+    // 「修改后模板回到未验证」只对可编辑模板成立：只读抽屉不得出现。
+    expect(找("card-template-verified-warning") === null).toBe(true)
+    expect(找("card-template-editor")!.textContent).toContain("查看已停用的模板")
+  })
+
+  test("内置行「查看」：无预览面板、无保存、不出现停用/未验证提示（I-2 守门）", async () => {
+    const api = 假api({ vocab: async () => ({ kind: "ok", value: 词表 }) })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    ;(host.querySelector("[data-slot='card-template-view']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-name-field") !== null)
+    expect(找("card-template-save") === null).toBe(true)
+    expect(找("card-template-preview-panel") === null).toBe(true)
+    expect(找("card-template-preview-button") === null).toBe(true)
+    expect(找("card-template-disabled-hint") === null).toBe(true)
+    // 内置模板 seed 时带 `verified_at`：只读抽屉仍不该承诺「修改后回到未验证」。
+    expect(找("card-template-verified-warning") === null).toBe(true)
+    expect(找("card-template-editor")!.textContent).toContain("查看内置模板")
   })
 
   test("乱序读：慢的旧响应不得覆盖新列表（I1）", async () => {

@@ -89,6 +89,24 @@ describe("预览结果区", () => {
     )
   })
 
+  test("金额币种：CNY 显示「元」，非 CNY 原样显示币种码（最终广审 T4 M-7）", () => {
+    const 两币: 预览输出 = {
+      卡片数: 2,
+      跳过: {},
+      工作表们: [{ sheet: "Sheet1", 卡片数: 2, 跳过: {} }],
+      卡片们: [
+        { ...结果.卡片们[0]!, id: "预览:1", amount: "100.00", currency: "CNY" },
+        { ...结果.卡片们[0]!, id: "预览:2", amount: "200.00", currency: "USD" },
+      ],
+    }
+    const host = mount(() => <CardTemplatePreview 结果={两币} />)
+    const 行们 = [...host.querySelectorAll<HTMLElement>("[data-slot='card-template-preview-card']")]
+    expect(行们[0]!.textContent).toContain("100.00 元")
+    // 非人民币不能冒充「元」：币种码原样显示（项目里真实存在非 CNY 数据）。
+    expect(行们[1]!.textContent).toContain("200.00 USD")
+    expect(行们[1]!.textContent).not.toContain("元")
+  })
+
   test("过期：置灰并说「需重新预览」，不是悄悄用旧结果", () => {
     const host = mount(() => <CardTemplatePreview 结果={结果} 过期 />)
     expect(host.querySelector("[data-slot='card-template-preview']")!.getAttribute("data-expired")).toBe("")

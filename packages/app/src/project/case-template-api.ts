@@ -15,6 +15,7 @@ import { PREFIX, 默认发送, 请求, 请求带错误体, type CaseFetch, type 
  *
  * 为什么前端也要列一遍：槽表是**类型**（`槽表: Record<模板槽名, …>`），编译期要它。
  * 展示顺序不读这里——编辑器按词表 `槽们` 渲染，两张表不一致时以词表为准（服务端是边界）。
+ * 前端的「单值槽」分类也不在本文件、词表同样不下发：唯一出处是 `card-template-form.ts` 的 `单值槽们`。
  */
 export const 模板槽名们 = ["谁", "和谁", "何时", "何时止", "何地", "多少钱", "其他"] as const
 export type 模板槽名 = (typeof 模板槽名们)[number]
@@ -29,7 +30,12 @@ export interface 槽填法 {
   readonly 实体类型?: string
 }
 
-/** 单值槽（谁/何时/何时止/多少钱）服务端读回是对象，其余槽是数组；两种都收。 */
+/**
+ * 槽位。**服务端读回一律是 `槽填法[]`**：内核 `归一槽位` 对每个槽都输出数组
+ * （`case-card-template.ts:286-301`，`读模板行` 用它）。写出时相反——单值槽
+ * （谁/何时/何时止/多少钱）写单个对象、其余槽写数组（`card-template-form.ts:96`）。
+ * 客户端两种都收（`card-template-form.ts` 的 `读槽` 按需包成数组）。
+ */
 export type 模板槽位 = Partial<Record<模板槽名, 槽填法 | readonly 槽填法[]>>
 
 export interface 模板行 {

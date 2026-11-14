@@ -17,7 +17,13 @@ type 模板状态 = "已验证" | "未验证" | "已停用" | "内置"
 type 确认类 = "转正" | "停用" | "恢复"
 type 抽屉 =
   | { readonly mode: "create" }
-  | { readonly mode: "edit"; readonly 行: 模板行; readonly 只读?: boolean; readonly 自动预览?: boolean }
+  | {
+      readonly mode: "edit"
+      readonly 行: 模板行
+      readonly 只读?: boolean
+      readonly 可预览?: boolean
+      readonly 自动预览?: boolean
+    }
 
 function 状态(行: 模板行): 模板状态 {
   if (!是用户模板id(行.id)) return "内置"
@@ -62,9 +68,14 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
   const [提示, 设提示] = createSignal<string>()
   const [展开停用, 设展开停用] = createSignal(false)
   const [抽屉, 设抽屉] = createSignal<抽屉>()
+  /**
+   * 抽屉模式存在 `<Show>` **之外**：`onSaved` 可能在抽屉已关（`<Show>` 已卸载）之后才被调用，
+   * 那时读 `<Show>` 子作用域的 `状()` 会抛 `Stale read from <Show>.`，成功/失败都被吞掉（最终广审 I-1）。
+   */
+  const [抽屉模式, 设抽屉模式] = createSignal<"新建" | "修改">("新建")
   const [待确认, 设待确认] = createSignal<{ 类: 确认类; 行: 模板行 }>()
   const [确认中, 设确认中] = createSignal(false)
-  const [确认错误, 设确认错误] = createSignal<string>()
+  const [确认错误, 设确认错误] = createSignal<{ message: string; code?: string }>()
   const [确认跳过, 设确认跳过] = createSignal<Record<string, number>>()
   const [复核材料, 设复核材料] = createSignal("")
   const [材料们, 设材料们] = createSignal<readonly 材料视图[]>([])
@@ -134,7 +145,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
       const 材料 = 本次复核()
       if (材料 === "") {
         设确认中(false)
-        设确认错误("请先选择一份已解析材料")
+        设确认错误({ message: "请先选择一份已解析材料" })
         return
       }
       const 回 = await props.api.verify({ projectId: props.projectId, id: 目标.行.id, materialId: 材料 })
@@ -145,7 +156,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
       }
       设确认中(false)
       if (回.kind === "error") {
-        设确认错误(回.message)
+        设确认错误({ message: 回.message, ...(回.code === undefined ? {} : { code: 回.code }) })
         设确认跳过(回.跳过)
         return
       }
@@ -164,7 +175,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
     }
     设确认中(false)
     if (回.kind === "error") {
-      设确认错误(回.message)
+      设确认错误({ message: 回.message, ...(回.code === undefined ? {} : { code: 回.code }) })
       return
     }
     关确认框()
@@ -199,7 +210,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-view"
-              onClick={() => 设抽屉({ mode: "edit", 行, 只读: true })}
+              onClick={() => {
+                设抽屉模式("修改")
+                设抽屉({ mode: "edit", 行, 只读: true })
+              }}
             >
               查看
             </ButtonV2>
@@ -210,7 +224,12 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-preview"
-              onClick={() => 设抽屉({ mode: "edit", 行, 自动预览: true })}
+              onClick={() => {
+                设抽屉模式("修改")
+                // 停用模板内核拒改（`改模板` 对 `disabled_at !== null` 回 not_found）：
+                // 抽屉只读但可预览，要修改须先恢复（最终广审 I-2）。
+                设抽屉({ mode: "edit", 行, 只读: true, 可预览: true, 自动预览: true })
+              }}
             >
               预览
             </ButtonV2>
@@ -230,7 +249,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-edit"
-              onClick={() => 设抽屉({ mode: "edit", 行 })}
+              onClick={() => {
+                设抽屉模式("修改")
+                设抽屉({ mode: "edit", 行 })
+              }}
             >
               编辑
             </ButtonV2>
@@ -239,7 +261,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               variant="ghost"
               size="small"
               data-slot="card-template-preview"
-              onClick={() => 设抽屉({ mode: "edit", 行, 自动预览: true })}
+              onClick={() => {
+                设抽屉模式("修改")
+                设抽屉({ mode: "edit", 行, 自动预览: true })
+              }}
             >
               预览
             </ButtonV2>
@@ -283,7 +308,10 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
           size="small"
           class="ml-auto"
           data-slot="card-templates-create"
-          onClick={() => 设抽屉({ mode: "create" })}
+          onClick={() => {
+            设抽屉模式("新建")
+            设抽屉({ mode: "create" })
+          }}
         >
           新建模板
         </ButtonV2>
@@ -386,12 +414,14 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
               api={props.api}
               行={编辑()?.行}
               只读={编辑()?.只读 === true}
+              可预览={编辑()?.可预览}
               自动预览={编辑()?.自动预览 === true}
               材料们={材料们()}
               onClose={() => 设抽屉(undefined)}
               onSaved={() => {
-                // 先取值再关抽屉：`<Show>` 的条件变假后再读 `状()` 会抛 `Stale read from <Show>.`（C2）。
-                const 是编辑 = 状().mode === "edit"
+                // 读 `<Show>` **之外**的模式信号：保存请求在途时抽屉可能已被卸载，
+                // 此时读 `状()` 会抛 `Stale read from <Show>.`（最终广审 I-1）。
+                const 是编辑 = 抽屉模式() === "修改"
                 设抽屉(undefined)
                 设提示(是编辑 ? "已保存" : "已新建")
                 void 读()
@@ -451,7 +481,7 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
                   <Show when={确认错误()}>
                     {(话) => (
                       <p data-slot="card-template-confirm-error" role="alert" class="text-[12px] text-v2-state-fg-danger">
-                        {话()}
+                        {话().message}
                       </p>
                     )}
                   </Show>
@@ -464,6 +494,18 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
                   </Show>
                 </div>
                 <div class="mt-4 flex justify-end gap-2">
+                  {/* 设计 §6.4：恢复撞上「同类型已有启用中模板」时，给出去停用旧模板的出口。 */}
+                  <Show when={目标().类 === "恢复" && 确认错误()?.code === "conflict"}>
+                    <ButtonV2
+                      type="button"
+                      variant="ghost"
+                      size="small"
+                      data-slot="card-template-confirm-goto-disabled"
+                      onClick={关确认框}
+                    >
+                      关闭并去停用旧模板
+                    </ButtonV2>
+                  </Show>
                   <ButtonV2 type="button" variant="neutral" data-slot="card-template-confirm-cancel" onClick={关确认框}>
                     取消
                   </ButtonV2>
