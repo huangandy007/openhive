@@ -13,6 +13,7 @@ import { 关系图, 关系图强度们 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
 import { aggregate_money, query_events, 工具错误 } from "./case-mcp-tools"
 import { 确认别名, 撤销别名 } from "./case-field-alias"
+import { 列出数据源档案, 建数据源档案, 撤销数据源档案, 档案错误 } from "./case-source-profile-store"
 import { 单位闸放行, 是识别字段 } from "./case-field-registry"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享 } from "./project-actor"
@@ -50,6 +51,9 @@ export const PATH = {
   artifactReview: `${PREFIX}/artifacts/review`,
   fieldAlias: `${PREFIX}/field-alias`,
   fieldAliasRevoke: `${PREFIX}/field-alias/revoke`,
+  sourceProfiles: `${PREFIX}/source-profiles`,
+  sourceProfileBuild: `${PREFIX}/source-profile/build`,
+  sourceProfileRevoke: `${PREFIX}/source-profile/revoke`,
 } as const
 
 interface Deps {
@@ -76,6 +80,9 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("GET", PATH.artifactReview, (request) => handleArtifactReview(request, deps))
     yield* router.add("POST", PATH.fieldAlias, (request) => handleFieldAlias(request, deps))
     yield* router.add("POST", PATH.fieldAliasRevoke, (request) => handleFieldAliasRevoke(request, deps))
+    yield* router.add("GET", PATH.sourceProfiles, (request) => handleSourceProfiles(request, deps))
+    yield* router.add("POST", PATH.sourceProfileBuild, (request) => handleSourceProfileBuild(request, deps))
+    yield* router.add("POST", PATH.sourceProfileRevoke, (request) => handleSourceProfileRevoke(request, deps))
   }),
 )
 
@@ -120,7 +127,7 @@ function 是合法段(value: unknown): value is string {
 function 过门(
   deps: Deps,
   projectId: string | null,
-  选项: { readonly 要属主?: boolean; readonly 已知身份?: User.Info } = {},
+  选项: { readonly 要属主?: boolean; readonly 已知身份?: User.Info; readonly 属主拒绝文案?: string } = {},
 ): Effect.Effect<{ readonly user: User.Info } | HttpServerResponse.HttpServerResponse> {
   return Effect.gen(function* () {
     const user = 选项.已知身份 !== undefined ? Option.some(选项.已知身份) : yield* 身份
@@ -129,7 +136,7 @@ function 过门(
     const 角色 = yield* 成员角色(deps, user.value.id, projectId)
     if (角色 === undefined) return fail(403, "不是该项目成员", "forbidden")
     if (选项.要属主 === true && 角色 !== "owner")
-      return fail(403, "只有项目属主能维护字段别名", "forbidden")
+      return fail(403, 选项.属主拒绝文案 ?? "只有项目属主能维护字段别名", "forbidden")
     return { user: user.value }
   })
 }
@@ -531,5 +538,110 @@ function handleFieldAliasRevoke(request: HttpServerRequest.HttpServerRequest, de
 
     const 撤销 = yield* Effect.promise(() => 撤销别名(deps.pg(), { header: 表头, by: 门.user.id }))
     return 撤销 ? ok({ ok: true }) : fail(404, "没有这个别名或已撤销", "not_found")
+  })
+}
+
+/**
+ * 数据源档案三个出口（P4 Task 5）。
+ *
+ * 读口只有一个开关：`含撤销=true` 才把已撤销的档案也列出来；只有显式 `true` / `false`
+ * 合法，其他值回 400（静默忽略会让人以为筛过了）。写口两个都是**属主口**：
+ * 门文案换成「只有项目属主能维护数据源档案」，别让档案口回一句「维护字段别名」。
+ *
+ * 建档的次序沿用本文件写口口径（R51）：身份最先（未登录 + 坏体也是 401）→ 读体 →
+ * 字段校验 → 门（`要属主`）→ DAO。DAO 的业务错误按 `档案错误` 的 code 翻成 404 / 409 / 400；
+ * 其余错误原样抛出，成为 defect（500＋ref），不把 DB / schema 细节当 400 漏给客户端。
+ */
+function 翻档案错误(错误: 档案错误) {
+  if (错误.code === "material_not_found") return fail(404, 错误.message, "not_found")
+  if (错误.code === "no_fingerprints") return fail(409, 错误.message, "conflict")
+  if (错误.code === "conflict") return fail(409, 错误.message, "conflict")
+  return fail(400, 错误.message, "bad_request")
+}
+
+function handleSourceProfiles(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 参数 = new URL(request.url, "http://localhost").searchParams
+    const 门 = yield* 过门(deps, 参数.get("projectId"))
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+    const 含撤销 = 参数.get("含撤销")
+    if (含撤销 !== null && 含撤销 !== "true" && 含撤销 !== "false") {
+      return fail(400, "含撤销 只能是 true / false", "bad_request")
+    }
+    const list = yield* Effect.promise(() =>
+      列出数据源档案(deps.pg(), { projectId: 参数.get("projectId")!, 含撤销: 含撤销 === "true" }),
+    )
+    return ok({ list })
+  })
+}
+
+function handleSourceProfileBuild(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const materialId = body["materialId"]
+    if (typeof materialId !== "string" || materialId === "") return fail(400, "materialId 必填", "bad_request")
+    const 工作表 = body["工作表"]
+    if (工作表 !== undefined && (typeof 工作表 !== "string" || 工作表.trim() === "")) {
+      return fail(400, "工作表 必须是非空字符串", "bad_request")
+    }
+    const name = body["name"]
+    if (name !== undefined && (typeof name !== "string" || name.trim() === "" || name.length > 200)) {
+      return fail(400, "name 必须是非空字符串且不超过 200 字", "bad_request")
+    }
+    const 覆盖 = body["覆盖"]
+    if (覆盖 !== undefined && typeof 覆盖 !== "boolean") return fail(400, "覆盖 必须是布尔值", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护数据源档案",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const 结果 = yield* Effect.promise(() =>
+      建数据源档案(deps.pg(), {
+        projectId: projectId!,
+        materialId,
+        ...(工作表 === undefined ? {} : { 工作表 }),
+        ...(name === undefined ? {} : { name }),
+        ...(覆盖 === undefined ? {} : { 覆盖 }),
+      }).then(
+        (值) => ({ 值 }),
+        (错误: unknown) => {
+          if (错误 instanceof 档案错误) return { 错误 }
+          throw 错误
+        },
+      ),
+    )
+    if ("错误" in 结果) return 翻档案错误(结果.错误)
+    return ok(结果.值)
+  })
+}
+
+function handleSourceProfileRevoke(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const id = body["id"]
+    if (typeof id !== "string" || id === "") return fail(400, "id 必填", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护数据源档案",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const 撤销 = yield* Effect.promise(() => 撤销数据源档案(deps.pg(), { projectId: projectId!, id }))
+    return 撤销 ? ok({ ok: true }) : fail(404, "没有这个档案或已撤销", "not_found")
   })
 }

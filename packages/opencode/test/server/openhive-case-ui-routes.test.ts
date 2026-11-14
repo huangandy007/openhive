@@ -11,7 +11,7 @@ import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@ope
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
-import { addCitation } from "../../src/server/openhive/case-store"
+import { addCitation, createMaterial } from "../../src/server/openhive/case-store"
 import { testEffect } from "../lib/effect"
 import { 建材料, 建事件, 建关系, 建实体 } from "./openhive-case-fact-fixture"
 
@@ -709,6 +709,70 @@ describe("openhive 案件视图出口（计划 7）", () => {
         ).status,
       ).toBe(200)
       expect((yield* 发撤销(我, "z".repeat(200) + " ")).status).toBe(200)
+    }),
+  )
+
+  // ── 计划 P4 Task 5：数据源档案三出口（列表 / 建档 / 撤销，写口只认项目属主） ──
+
+  it("数据源档案：建档 200 / 非属主 403 / 列表 / 撤销 200 后再撤 404", () =>
+    Effect.gen(function* () {
+      const 头 = { "content-type": "application/json" }
+      yield* Effect.promise(async () => {
+        const 库 = pg
+        if (!库) throw new Error("真库没起来")
+        await createMaterial(库.db, {
+          id: "m-档案路由",
+          projectId: 项目,
+          fileName: "档案流水.xlsx",
+          kind: "资金",
+          fingerprint: "fp-档案路由",
+          path: "档案流水.xlsx",
+        })
+        await 库.db.execute(sql`
+          update auth.case_material
+             set format_fingerprints = ${JSON.stringify([{ 工作表: "Sheet1", 指纹: "fp-档案路由" }])}::text::jsonb
+           where project_id = ${项目} and id = 'm-档案路由'
+        `)
+        await 库.db.execute(sql`
+          insert into auth.case_table_format
+            (project_id, fingerprint, header, mapping, method, unknown_columns, result, hit_count, created_at, updated_at)
+          values (${项目}, 'fp-档案路由',
+                  ${JSON.stringify(["交易时间", "交易金额", "对方户名"])}::text::jsonb,
+                  ${JSON.stringify({ "0": "startedAt", "1": "amount", "2": "counterpartyName" })}::text::jsonb,
+                  '词典', 0,
+                  ${JSON.stringify({ 来源: {}, 待确认: [], 方法: "词典", 未知列: 0 })}::text::jsonb,
+                  0, 0, 0)
+        `)
+      })
+
+      const 发建 = (subject: TokenSubject) =>
+        发(subject, "/openhive/case/source-profile/build", {
+          method: "POST",
+          headers: 头,
+          body: JSON.stringify({ projectId: 项目, materialId: "m-档案路由", name: "微信流水档案" }),
+        })
+      expect((yield* 发建(成员)).status).toBe(403)
+      const 建 = yield* 发建(我)
+      expect(建.status).toBe(200)
+      const 回执 = yield* 读回<{ id: string; created: boolean }>(建)
+      expect(回执.created).toBe(true)
+
+      const 列表 = yield* 发(我, `/openhive/case/source-profiles?projectId=${encodeURIComponent(项目)}`)
+      expect(列表.status).toBe(200)
+      const 列表体 = yield* 读回<{ list: { id: string; name: string; type: string }[] }>(列表)
+      expect(列表体.list).toHaveLength(1)
+      expect(列表体.list[0]).toMatchObject({ id: 回执.id, name: "微信流水档案", type: "资金" })
+
+      const 发撤 = (id: string) =>
+        发(我, "/openhive/case/source-profile/revoke", {
+          method: "POST",
+          headers: 头,
+          body: JSON.stringify({ projectId: 项目, id }),
+        })
+      expect((yield* 发撤(回执.id)).status).toBe(200)
+      expect((yield* 发撤(回执.id)).status).toBe(404)
+      const 空 = yield* 发(我, `/openhive/case/source-profiles?projectId=${encodeURIComponent(项目)}`)
+      expect((yield* 读回<{ list: unknown[] }>(空)).list).toHaveLength(0)
     }),
   )
 })
