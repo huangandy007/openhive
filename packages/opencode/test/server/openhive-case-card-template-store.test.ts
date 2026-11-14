@@ -15,6 +15,7 @@ import {
   建模板,
   改模板,
   停用模板,
+  恢复模板,
   转正模板,
   记模板命中,
   草稿模板行,
@@ -211,5 +212,46 @@ describe("模板 DAO（§7）", () => {
     expect(行.id).toBe(预览模板id)
     expect(行.version).toBe(0)
     expect(行.verified_at).toBeNull()
+  })
+})
+
+describe("模板 DAO · 恢复（设计 §4）", () => {
+  test("停用 → 恢复：disabled_at 回 null，verified_at 与 version 不动", async () => {
+    const 项目 = "p-dao-恢复"
+    const 行 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
+    await 转正模板(db(), { projectId: 项目, id: 行.id, expectedVersion: 1 })
+    await 停用模板(db(), { projectId: 项目, id: 行.id })
+    await 恢复模板(db(), { projectId: 项目, id: 行.id })
+    const 后 = await 读模板行(db(), 项目, 行.id)
+    expect(后?.disabled_at).toBeNull()
+    expect(后?.verified_at).not.toBeNull()
+    expect(后?.version).toBe(1)
+  })
+
+  test("恢复后再恢复：幂等通过（不抛、不改任何列）", async () => {
+    const 项目 = "p-dao-恢复幂等"
+    const 行 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
+    await 恢复模板(db(), { projectId: 项目, id: 行.id })
+    const 前 = await 读模板行(db(), 项目, 行.id)
+    await 恢复模板(db(), { projectId: 项目, id: 行.id })
+    const 后 = await 读模板行(db(), 项目, 行.id)
+    expect(后).toEqual(前)
+  })
+
+  test("同类型已有启用中的模板 ⇒ conflict（内核原文说「请先停用旧模板再恢复」）", async () => {
+    const 项目 = "p-dao-恢复冲突"
+    const 甲 = await 建模板(db(), { projectId: 项目, 定义: 定义() })
+    await 停用模板(db(), { projectId: 项目, id: 甲.id })
+    await 建模板(db(), { projectId: 项目, 定义: 定义({ name: "通话乙" }) })
+    const 错误 = await 恢复模板(db(), { projectId: 项目, id: 甲.id }).catch((e: unknown) => e)
+    expect(错误 instanceof 模板错误 && 错误.code === "conflict").toBe(true)
+    expect(错误 instanceof 模板错误 && 错误.message.includes("请先停用旧模板再恢复")).toBe(true)
+  })
+
+  test("内置 ⇒ immutable；不存在 ⇒ not_found", async () => {
+    const 内置错误 = await 恢复模板(db(), { projectId: "p-dao-恢复", id: 资金模板id }).catch((e: unknown) => e)
+    expect(内置错误 instanceof 模板错误 && 内置错误.code === "immutable").toBe(true)
+    const 无错误 = await 恢复模板(db(), { projectId: "p-dao-恢复", id: "用户:无此模板" }).catch((e: unknown) => e)
+    expect(无错误 instanceof 模板错误 && 无错误.code === "not_found").toBe(true)
   })
 })

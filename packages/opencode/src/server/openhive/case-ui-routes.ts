@@ -24,6 +24,7 @@ import {
   建模板,
   改模板,
   停用模板,
+  恢复模板,
   转正模板,
   草稿模板行,
   模板错误,
@@ -111,6 +112,7 @@ export const routes = HttpRouter.use((router) =>
     yield* router.add("POST", PATH.cardTemplatePreview, (request) => handleCardTemplatePreview(request, deps))
     yield* router.add("POST", PATH.cardTemplateVerify, (request) => handleCardTemplateVerify(request, deps))
     yield* router.add("GET", PATH.cardTemplateVocab, (request) => handleCardTemplateVocab(request))
+    yield* router.add("POST", PATH.cardTemplateRestore, (request) => handleCardTemplateRestore(request, deps))
   }),
 )
 
@@ -823,6 +825,33 @@ function handleCardTemplateDisable(request: HttpServerRequest.HttpServerRequest,
     const 停 = yield* 跑模板(() => 停用模板(deps.pg(), { projectId: projectId!, id }))
     if ("错误" in 停) return 翻模板错误(停.错误)
     return 停.值 ? ok({ ok: true }) : fail(404, "没有这个模板或已停用", "not_found")
+  })
+}
+
+/**
+ * 恢复口（设计 §4）：属主；200 幂等。判定全在 DAO，这里只翻错误码。
+ */
+function handleCardTemplateRestore(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
+  return Effect.gen(function* () {
+    const 用户 = yield* 身份
+    if (Option.isNone(用户)) return HttpServerResponse.empty({ status: 401 })
+
+    const body = yield* 读体(request)
+    if (body === undefined) return fail(400, "请求体不是 JSON 对象", "bad_request")
+    const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null
+    const id = body["id"]
+    if (typeof id !== "string" || id === "") return fail(400, "id 必填", "bad_request")
+
+    const 门 = yield* 过门(deps, projectId, {
+      要属主: true,
+      已知身份: 用户.value,
+      属主拒绝文案: "只有项目属主能维护卡片模板",
+    })
+    if (HttpServerResponse.isHttpServerResponse(门)) return 门
+
+    const 结果 = yield* 跑模板(() => 恢复模板(deps.pg(), { projectId: projectId!, id }))
+    if ("错误" in 结果) return 翻模板错误(结果.错误)
+    return ok({ ok: true })
   })
 }
 

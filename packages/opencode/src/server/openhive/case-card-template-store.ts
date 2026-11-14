@@ -184,6 +184,42 @@ export async function 停用模板(db: Queryable, input: { projectId: string; id
 }
 
 /**
+ * 恢复：把 `disabled_at` 置回 null（设计 §4）。
+ *
+ * 先用**一条带条件的 UPDATE**，0 行后再回读区分三种成因（已启用 / 不存在 / 并发改回）：
+ * - 回读放在 UPDATE 之后而不是之前：判定依据是「这次 UPDATE 真的改到了没有」，
+ *   不是「读的时候看起来是什么」（先读再写会把这个窗口里的状态当成结论）。
+ * - 同类型已有启用中的用户模板 ⇒ 唯一索引 23505，翻成 conflict 的人话；
+ *   这个分支**只有**在真去恢复时才会触发，所以它是恢复语义的真闸。
+ * - 恢复不改 `verified_at` / `version`：验证状态管的是「这一版的定义」，停用/恢复不动定义。
+ */
+export async function 恢复模板(db: Queryable, input: { projectId: string; id: string }): Promise<void> {
+  要求用户模板(input.id, "恢复")
+  let 行们: Record<string, unknown>[]
+  try {
+    行们 = rowsOf(
+      await db.execute(sql`
+        update auth.case_card_template
+           set disabled_at = null
+         where project_id = ${input.projectId} and id = ${input.id} and disabled_at is not null
+         returning id
+      `),
+    )
+  } catch (错误: unknown) {
+    if (pgErrorCode(错误) === "23505") {
+      throw new 模板错误("conflict", "同类型下已有启用中的用户模板；请先停用旧模板再恢复")
+    }
+    throw 错误
+  }
+  if (行们.length > 0) return
+  const 现有 = await 读模板行(db, input.projectId, input.id)
+  if (现有 === undefined) throw new 模板错误("not_found", "没有这个模板")
+  if (现有.disabled_at === null) return // 已启用：幂等
+  // UPDATE 0 行但回读仍是停用 ⇒ 两次读之间被别的请求改回了停用；让用户刷新重来。
+  throw new 模板错误("state_changed", "模板状态在恢复期间被改动，请刷新后重试")
+}
+
+/**
  * 转正（§10.4）：`expectedVersion` 是预览时读到的版本 —— 预览与转正之间模板被改过 ⇒
  * `state_changed`，让用户重新预览。已转正的返回原时间（幂等，带 `already` 标记）。
  *

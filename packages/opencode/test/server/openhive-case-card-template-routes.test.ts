@@ -39,6 +39,8 @@ const 别人: TokenSubject = { id: "u-case-other", policeNo: "970012", name: "�
 const 成员: TokenSubject = { id: "u-case-member", policeNo: "970013", name: "丙民警", isAdmin: false }
 const 项目 = "p-纠错-我的"
 const 别人的项目 = "p-纠错-别人的"
+/** 恢复用例专用：`项目` 的事件类型已被既有 7 条用例占掉，恢复需要干净的类型槽位。 */
+const 恢复项目 = "p-纠错-恢复"
 
 const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-case-card-template-"))
 const restoreWs = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
@@ -68,7 +70,9 @@ beforeAll(async () => {
   await pg.db.execute(sql`
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${项目}, ${我.id}, 'owner', 0),
+           (${恢复项目}, ${我.id}, 'owner', 0),
            (${项目}, ${成员.id}, 'member', 0),
+           (${恢复项目}, ${成员.id}, 'member', 0),
            (${别人的项目}, ${别人.id}, 'owner', 0),
            -- 外项目里也给 成员 一个普通成员位：让「非属主（member）403」与「非成员 403」分得开。
            (${别人的项目}, ${成员.id}, 'member', 0)
@@ -249,6 +253,42 @@ describe("卡片模板 HTTP 六口（§10）", () => {
       expect(
         (yield* 发JSON(成员, "/openhive/case/card-template/disable", { projectId: 别人的项目, id: 外.id })).status,
       ).toBe(403)
+    }),
+  )
+
+  it("恢复口五态：停用→恢复→列表可见（verified_at 保持）；冲突 409；内置 409；不存在 404；非属主 403；未登录 401", () =>
+    Effect.gen(function* () {
+      expect((yield* 发JSON(null, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: "用户:x" })).status).toBe(401)
+
+      const 行 = yield* 建模板口(我, 定义体({ projectId: 恢复项目, name: "恢复专用", eventType: "通话" }))
+      yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 恢复项目, id: 行.id })
+      expect((yield* 发JSON(成员, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: 行.id })).status).toBe(403)
+
+      const 恢复 = yield* 发JSON(我, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: 行.id })
+      expect(恢复.status).toBe(200)
+      expect(yield* 读回<{ ok: boolean }>(恢复)).toEqual({ ok: true })
+      // 幂等：再恢复一次仍 200
+      expect((yield* 发JSON(我, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: 行.id })).status).toBe(200)
+      const 列表 = yield* 读回<{ list: { id: string; disabled_at: number | null }[] }>(
+        yield* 发(成员, `/openhive/case/card-templates?projectId=${恢复项目}`),
+      )
+      expect(列表.list.find((项) => 项.id === 行.id)?.disabled_at).toBeNull()
+
+      // 冲突：同类型已有启用中的用户模板
+      const 甲 = yield* 建模板口(我, 定义体({ projectId: 恢复项目, name: "冲突甲", eventType: "乘机" }))
+      yield* 发JSON(我, "/openhive/case/card-template/disable", { projectId: 恢复项目, id: 甲.id })
+      yield* 建模板口(我, 定义体({ projectId: 恢复项目, name: "冲突乙", eventType: "乘机" }))
+      const 冲突 = yield* 发JSON(我, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: 甲.id })
+      expect(冲突.status).toBe(409)
+      const 冲突体 = yield* 读回<{ error: string; code: string }>(冲突)
+      expect(冲突体.code).toBe("conflict")
+      expect(冲突体.error).toContain("请先停用旧模板再恢复")
+
+      // 内置 / 不存在
+      const 内置 = yield* 发JSON(我, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: 资金模板id })
+      expect(内置.status).toBe(409)
+      expect((yield* 读回<{ code: string }>(内置)).code).toBe("immutable")
+      expect((yield* 发JSON(我, "/openhive/case/card-template/restore", { projectId: 恢复项目, id: "用户:无此模板" })).status).toBe(404)
     }),
   )
 })
