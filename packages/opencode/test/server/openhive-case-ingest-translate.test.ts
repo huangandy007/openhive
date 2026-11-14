@@ -348,7 +348,13 @@ describe("跑表格产出卡片", () => {
     if (!是对象(detail)) throw new Error("没有 parse_detail")
     // 非资金材料不做翻译（既有话单语义不变）。
     expect(Object.hasOwn(detail, "翻译")).toBe(false)
-    expect(detail.未翻译表).toEqual([{ sheet: "Sheet2", 原因: "材料类型=话单，本期只翻译资金材料" }])
+    // §9 起非资金表也进模板候选：话单表（Sheet1）没配模板时按模板原因点名；
+    // 资金表（Sheet2）仍按材料级类型闸拦下。顺序即入队顺序：跑表格时的资金表在前，
+    // 模板候选的未命中提示在选模板阶段才追加。
+    expect(detail.未翻译表).toEqual([
+      { sheet: "Sheet2", 原因: "材料类型=话单，本期只翻译资金材料" },
+      { sheet: "Sheet1", 原因: "没有匹配的卡片模板（可在项目里配置）" },
+    ])
     const 事件 = rowsOf(
       await db().execute(sql`select id from auth.case_event where project_id = 'p2mix'`),
     )
@@ -372,7 +378,8 @@ describe("跑表格产出卡片", () => {
     if (!是对象(detail) || !是对象(detail.翻译)) throw new Error("没有翻译明细")
     expect(detail.翻译.卡片数).toBe(1)
     expect(detail.翻译.跳过行号).toEqual([])
-    expect(detail.未翻译表).toEqual([{ sheet: "Sheet2", 原因: "本表类型=其他，不是资金表" }])
+    // 非资金表从 §9 起不再「静默不进翻译」，而是进模板候选；没配模板时按模板原因点名。
+    expect(detail.未翻译表).toEqual([{ sheet: "Sheet2", 原因: "没有匹配的卡片模板（可在项目里配置）" }])
   })
 
   test("话单只落明细行：不做资金翻译、不建资金模板", async () => {

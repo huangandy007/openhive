@@ -460,3 +460,43 @@ export function 检查模板定义(定义: 模板定义输入): { 错: string[];
 export function 校验模板定义(定义: 模板定义输入): string[] {
   return 检查模板定义(定义).错
 }
+
+export interface 模板建议 {
+  id: string
+  name: string
+  event_type: 事件类型
+  命中槽数: number
+}
+
+const 建议最低命中 = 2
+
+/**
+ * 按表自动建议模板（§7.4）。只认启用中的**用户**模板：
+ * 内置模板由材料类型直通、不参与打分（否则资金模板永远赢）。
+ *
+ * 三条判据缺一不可：①必填槽的字段全在映射里；②命中槽数 ≥ 2；③最高分唯一。
+ * 并列就返回 `undefined`——猜错模板比不猜更糟（卡片会整批出现在错误的事件类型下）。
+ */
+export function 建议模板(
+  模板们: readonly 模板行[],
+  映射字段集: ReadonlySet<识别字段>,
+): 模板建议 | undefined {
+  const 候选: 模板建议[] = []
+  for (const 模板 of 模板们) {
+    if (模板.disabled_at !== null || !是用户模板id(模板.id)) continue
+    const 命中必填 = 模板.required.every((槽名) =>
+      槽条目们(模板.slots, 槽名).some((条目) => 映射字段集.has(条目.字段)),
+    )
+    if (!命中必填) continue
+    const 命中槽数 = 九格们
+      .flatMap((槽名) => 槽条目们(模板.slots, 槽名))
+      .filter((条目) => 映射字段集.has(条目.字段)).length
+    候选.push({ id: 模板.id, name: 模板.name, event_type: 模板.event_type, 命中槽数 })
+  }
+  if (候选.length === 0) return undefined
+  候选.sort((甲, 乙) => 乙.命中槽数 - 甲.命中槽数)
+  const 最高 = 候选[0]
+  if (最高 === undefined || 最高.命中槽数 < 建议最低命中) return undefined
+  if (候选.length > 1 && 候选[1]?.命中槽数 === 最高.命中槽数) return undefined
+  return 最高
+}

@@ -51,9 +51,11 @@ import {
   upsertEntity,
   删除本材料的事实,
 } from "./case-fact-store"
-import { 翻译资金, 跳过原因们 } from "./case-translate"
+import { 翻译资金, 跳过原因们, type 翻译结果 } from "./case-translate"
 import { 清本材料翻译, 写入翻译结果, 重建关系, 本材料转账对, type 关系对 } from "./case-translate-store"
-import { 确保内置模板 } from "./case-card-template"
+import { 确保内置模板, 是用户模板id, 建议模板, 资金模板id, type 模板行 } from "./case-card-template"
+import { 记模板命中, 读模板行, 列出模板 } from "./case-card-template-store"
+import { 翻译模板 } from "./case-template-translate"
 import type { ParseAction, ParseStatus } from "./case-status"
 
 /**
@@ -96,6 +98,8 @@ export interface EnqueueInput {
    * 上传自动入队与「重新解析」保持 FIFO——前者是系统顺带做的，后者是重跑，都不该插队。
    */
   置顶?: boolean
+  /** 人工指定的卡片模板（§9.5）；不传 = 按表自动建议。 */
+  templateId?: string
 }
 
 export interface EnqueueResult {
@@ -158,8 +162,8 @@ export async function enqueueMaterial(db: Queryable, input: EnqueueInput): Promi
     await applyParseAction(tx, { projectId: input.projectId, materialId, action, by: input.by })
     await tx.execute(sql`
       insert into auth.case_ingest_job
-        (id, project_id, material_id, source_path, status, attempts, queued_by, queued_at)
-      values (${crypto.randomUUID()}, ${input.projectId}, ${materialId}, ${input.sourcePath},
+        (id, project_id, material_id, template_id, source_path, status, attempts, queued_by, queued_at)
+      values (${crypto.randomUUID()}, ${input.projectId}, ${materialId}, ${input.templateId ?? null}, ${input.sourcePath},
               '排队中', 0, ${input.by ?? null}, ${入队时刻})
     `)
   })
@@ -171,6 +175,8 @@ export interface ClaimedJob {
   jobId: string
   materialId: string
   sourcePath: string
+  /** 入队时人工指定的卡片模板（§9.5）；缺省 = 按表自动建议。 */
+  templateId?: string
 }
 
 /**
@@ -193,7 +199,7 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
           limit 1
        )
          and status = '排队中'
-      returning project_id, id, material_id, source_path
+      returning project_id, id, material_id, source_path, template_id
     `),
   )
   const row = rows[0]
@@ -203,6 +209,9 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
     jobId: String(row.id),
     materialId: String(row.material_id),
     sourcePath: String(row.source_path),
+    ...(row.template_id === null || row.template_id === undefined
+      ? {}
+      : { templateId: String(row.template_id) }),
   }
 }
 
@@ -390,6 +399,16 @@ export async function runJob(
   }
 }
 
+/** 合并多路翻译结果（资金 + 逐表模板）。顺序保持：资金在前、模板按表序。 */
+function 合并翻译结果(结果们: readonly 翻译结果[]): 翻译结果 {
+  return {
+    卡片们: 结果们.flatMap((结果) => 结果.卡片们),
+    别名们: 结果们.flatMap((结果) => 结果.别名们),
+    属性们: 结果们.flatMap((结果) => 结果.属性们),
+    跳过们: 结果们.flatMap((结果) => 结果.跳过们),
+  }
+}
+
 /**
  * 表格链路：读表 → 查缓存 → 识别（四层 ＋ 缓存 ＋ 模型）→ 组装 → 一个事务里落库。
  *
@@ -492,6 +511,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
    * 不塞进 `翻译` 键——非资金材料本来就不该出现 `翻译`（既有话单用例守着）。
    */
   const 未翻译表: { sheet: string; 原因: string }[] = []
+  /** 逐表模板候选（§9.1）：行源 + 识别出的字段集（打分用）。资金表不进。 */
+  const 模板候选表: { sheet: string; rows: FactRowInput[]; 映射字段集: Set<识别字段> }[] = []
+  /** 资金表的表名（`卡片模板` 里记为「代码规则」）。 */
+  const 资金表们: string[] = []
   let 认出列数 = 0
   /**
    * 每张表「没认出来的列」明细，随 `parse_detail` 落库（人工确认弹窗的唯一数据源）。
@@ -577,10 +600,20 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     // 逐表类型：与 `识别材料` 的材料级判定**同一份** `classifyMaterialType`（`#002-06`）。
     const 表类型 = classifyMaterialType(表.列)
     if (表类型 === "资金") {
-      if (识别.类型 === "资金") 资金行.push(...行)
-      else 未翻译表.push({ sheet: sheet.name, 原因: `材料类型=${识别.类型}，本期只翻译资金材料` })
-    } else if (识别.类型 === "资金") {
-      未翻译表.push({ sheet: sheet.name, 原因: `本表类型=${表类型}，不是资金表` })
+      if (识别.类型 === "资金") {
+        资金行.push(...行)
+        资金表们.push(sheet.name)
+      } else {
+        未翻译表.push({ sheet: sheet.name, 原因: `材料类型=${识别.类型}，本期只翻译资金材料` })
+      }
+    } else {
+      // 非资金表：一律成为模板候选（§9.1）。材料判资金时同样收——混合材料的非资金表
+      // 以前被静默丢弃，模板正是给它一条通路。
+      模板候选表.push({
+        sheet: sheet.name,
+        rows: 行,
+        映射字段集: new Set(Object.values(表.列).filter(是识别字段)),
+      })
     }
   }
 
@@ -605,16 +638,67 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
   if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
 
-  // 翻译（§4.0）：本期只做资金（`资金/v1`）。其他类型照旧只落明细行，不产卡片。
-  // 行源是 `资金行`（逐表过滤）而不是 `待写`（全部表）：混合材料里非资金表的行不该进翻译。
-  const 翻译 =
-    识别.类型 === "资金"
-      ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 资金行 })
-      : undefined
+  // ── 选模板（§9.2）：显式指定优先，否则按表自动建议；资金表只走资金通路（§4 偏差 3）──
+  const 指定id = job.templateId
+  let 指定模板: 模板行 | undefined
+  if (指定id !== undefined) {
+    const 读 = await 读模板行(db, job.projectId, 指定id)
+    // 入队时路由已校验过；作业可能排队很久，模板在此期间被停用 / 删除 ⇒ 这里 fail-closed。
+    // 静默回落到自动建议等于替用户改了主意，比让作业「有问题」更糟。
+    if (读 === undefined || !是用户模板id(读.id) || 读.disabled_at !== null) {
+      throw new Error(`指定的卡片模板不存在或已停用：${指定id}`)
+    }
+    指定模板 = 读
+  }
+  const 启用模板们 = 模板候选表.length === 0 ? [] : await 列出模板(db, { projectId: job.projectId })
+
+  const 套用们: { 表: (typeof 模板候选表)[number]; 模板: 模板行; 方式: "自动" | "指定"; 命中槽数?: number }[] = []
+  for (const 候选 of 模板候选表) {
+    if (指定模板 !== undefined) {
+      套用们.push({ 表: 候选, 模板: 指定模板, 方式: "指定" })
+      continue
+    }
+    const 建议 = 建议模板(启用模板们, 候选.映射字段集)
+    if (建议 === undefined) {
+      未翻译表.push({ sheet: 候选.sheet, 原因: "没有匹配的卡片模板（可在项目里配置）" })
+      continue
+    }
+    const 模板 = 启用模板们.find((候选模板) => 候选模板.id === 建议.id)
+    if (模板 === undefined) continue // 建议来自同一份列表，正常到不了
+    套用们.push({ 表: 候选, 模板, 方式: "自动", 命中槽数: 建议.命中槽数 })
+  }
+
+  // 翻译（§4.0）：资金通路只在材料判资金时跑；模板通路逐表独立（§9.1）。
+  // 行源是 `资金行`（逐表过滤）而不是 `待写`（全部表）：混合材料里非资金表的行不进资金翻译。
+  const 模板翻译们 = 套用们.map((套) =>
+    翻译模板({ projectId: job.projectId, materialId: job.materialId, template: 套.模板, rows: 套.表.rows }),
+  )
+  const 资金翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 资金行 }) : undefined
+  const 翻译 = 资金翻译 === undefined && 模板翻译们.length === 0 ? undefined : 合并翻译结果([
+    ...(资金翻译 === undefined ? [] : [资金翻译]),
+    ...模板翻译们,
+  ])
   // 模板在事务外创建：解析失败回滚后，项目里可能留下已提交的 `内置:资金/v1` 行。
   // 它幂等，可接受；但别把「文件落库」当成连同模板一起原子。回滚时若项目里还没有卡片，
   // 这行就是个无引用空模板；若已有卡片，它照旧被引用——两种情况都无害。
-  const 模板id = 翻译 === undefined ? undefined : await 确保内置模板(db, job.projectId)
+  // 内置模板只在资金通路真跑时懒建（模板卡的模板行由用户自己建）。
+  const 模板id = 资金翻译 === undefined ? undefined : await 确保内置模板(db, job.projectId)
+  // 命中计数只算**真的产出卡片**的用户模板（§9.4）。
+  const 命中模板id = 套用们
+    .filter((_, i) => (模板翻译们[i]?.卡片们.length ?? 0) > 0)
+    .map((套) => 套.模板.id)
+
+  // `parse_detail.卡片模板`（顺序：资金表按表序，再模板表按表序）。
+  const 卡片模板明细: { 工作表: string; 方式: "代码规则" | "自动" | "指定"; id: string; name: string; 命中槽数?: number }[] = [
+    ...资金表们.map((工作表) => ({ 工作表, 方式: "代码规则" as const, id: 资金模板id, name: "资金（内置）" })),
+    ...套用们.map((套) => ({
+      工作表: 套.表.sheet,
+      方式: 套.方式,
+      id: 套.模板.id,
+      name: 套.模板.name,
+      ...(套.命中槽数 === undefined ? {} : { 命中槽数: 套.命中槽数 }),
+    })),
+  ]
 
   // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
   //
@@ -628,9 +712,14 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     await 清本材料翻译(tx, job.projectId, job.materialId)
     await insertFactRows(tx, 待写)
     const 翻译回执 =
-      翻译 === undefined || 模板id === undefined
+      翻译 === undefined
         ? undefined
-        : await 写入翻译结果(tx, { projectId: job.projectId, materialId: job.materialId, templateId: 模板id, 翻译 })
+        : await 写入翻译结果(tx, {
+            projectId: job.projectId,
+            materialId: job.materialId,
+            ...(模板id === undefined ? {} : { templateId: 模板id }),
+            翻译,
+          })
 
     await setMaterialKind(tx, job.projectId, job.materialId, 识别.类型)
     // 成功路径也要写 `mapping`，**缓存命中同样要写**，否则第二份同格式材料的待确认角标
@@ -652,6 +741,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
                 方法: s.方法,
                 未认出: 未认出们[i]?.列们 ?? [],
                 候选字段: 未认出们[i]?.候选字段 ?? [],
+                // 预览要按原映射重建行（§10.3）；老材料没有这个键 ⇒ 预览 409 `material_not_ready`。
+                列: s.列,
                 ...(s.档案 === undefined ? {} : { 档案: s.档案 }),
               },
             ]),
@@ -659,6 +750,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         },
         // 根级（不进 `翻译`）：非资金材料也要能说清「哪张表为什么不产卡片」（I3 / G4）。
         ...(未翻译表.length === 0 ? {} : { 未翻译表 }),
+        ...(卡片模板明细.length === 0 ? {} : { 卡片模板: 卡片模板明细 }),
         ...(翻译回执 === undefined || 翻译 === undefined
           ? {}
           : {
@@ -674,6 +766,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       },
     })
     for (const id of 命中档案id) await 记档案命中(tx, job.projectId, id)
+    await 记模板命中(tx, { projectId: job.projectId, ids: 命中模板id })
     await setMaterialFormatFingerprints(tx, {
       projectId: job.projectId,
       materialId: job.materialId,

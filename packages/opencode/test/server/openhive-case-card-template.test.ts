@@ -18,8 +18,10 @@ import {
   归一槽位,
   校验模板定义,
   检查模板定义,
+  建议模板,
+  type 模板行,
 } from "../../src/server/openhive/case-card-template"
-import { 字段显示名 } from "../../src/server/openhive/case-field-registry"
+import { 字段显示名, 是识别字段, type 识别字段 } from "../../src/server/openhive/case-field-registry"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
@@ -464,5 +466,42 @@ describe("槽条目们（填法收窄，§6.1）", () => {
     expect(
       槽条目们({ 和谁: [{ 字段: "caller", 角色: "主叫" }, { 字段: "callee", 角色: "被叫" }] }, "和谁"),
     ).toEqual([{ 字段: "caller", 角色: "主叫" }, { 字段: "callee", 角色: "被叫" }])
+  })
+})
+
+describe("自动建议模板（§7.4）", () => {
+  const 模板 = (改: Partial<模板行>): 模板行 => ({
+    id: "用户:t1",
+    name: "通话",
+    event_type: "通话",
+    slots: { 谁: [{ 字段: "caller" }], 何时: [{ 字段: "startedAt" }] },
+    required: ["谁", "何时"],
+    version: 1,
+    verified_at: null,
+    hit_count: 0,
+    disabled_at: null,
+    ...改,
+  })
+  const 字段集 = (...字段: string[]): ReadonlySet<识别字段> => new Set(字段.filter(是识别字段))
+
+  test("必填字段全在映射里 ⇒ 命中；不在 ⇒ 不命中", () => {
+    expect(建议模板([模板({})], 字段集("caller", "startedAt"))).toMatchObject({ id: "用户:t1", 命中槽数: 2 })
+    expect(建议模板([模板({})], 字段集("caller"))).toBeUndefined()
+  })
+
+  test("得分 < 2 ⇒ 不命中（一个字段不够可信）", () => {
+    const 只一槽 = 模板({ slots: { 谁: [{ 字段: "caller" }] }, required: ["谁"] })
+    expect(建议模板([只一槽], 字段集("caller", "callee", "durationSec"))).toBeUndefined()
+  })
+
+  test("并列最高 ⇒ 不猜", () => {
+    const 甲 = 模板({ id: "用户:a" })
+    const 乙 = 模板({ id: "用户:b", name: "通话B" })
+    expect(建议模板([甲, 乙], 字段集("caller", "startedAt"))).toBeUndefined()
+  })
+
+  test("停用 / 内置不参与建议", () => {
+    expect(建议模板([模板({ disabled_at: 1 })], 字段集("caller", "startedAt"))).toBeUndefined()
+    expect(建议模板([模板({ id: 资金模板id })], 字段集("caller", "startedAt"))).toBeUndefined()
   })
 })

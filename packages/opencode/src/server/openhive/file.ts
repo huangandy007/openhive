@@ -757,6 +757,8 @@ export async function 入队材料(
      * 上传自动入队不传——系统顺带做的事不该插到用户前面。
      */
     置顶?: boolean
+    /** 人工指定的卡片模板；不传按表自动建议。 */
+    templateId?: string
   },
 ): Promise<{ materialId: string; enqueued: boolean } | undefined> {
   // 相对输入一律跳过：下面两道 `inside` 闸在相对 base 下是 **fail-open**
@@ -788,6 +790,7 @@ export async function 入队材料(
     ...(方式 === "文本" ? { kind: 猜测文本类型(input.fileName) } : {}),
     ...(input.force === true ? { force: true } : {}),
     ...(input.置顶 === true ? { 置顶: true } : {}),
+    ...(input.templateId === undefined ? {} : { templateId: input.templateId }),
   })
 }
 

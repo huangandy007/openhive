@@ -543,3 +543,80 @@ export async function citationsOf(
     extractMethod: String(row.extract_method),
   }))
 }
+
+function 文本列(值: unknown): string | null {
+  return typeof 值 === "string" ? 值 : null
+}
+
+function 是精度(值: unknown): 值 is "到日" | "到分" | "到秒" {
+  return 值 === "到日" || 值 === "到分" || 值 === "到秒"
+}
+
+function 是时间类型(值: unknown): 值 is "发生" | "记录" | "入库" {
+  return 值 === "发生" || 值 === "记录" || 值 === "入库"
+}
+
+function 是方向(值: unknown): 值 is "收" | "付" {
+  return 值 === "收" || 值 === "付"
+}
+
+function 读extras(值: unknown): Record<string, unknown> {
+  if (typeof 值 !== "string") return {}
+  try {
+    const 解: unknown = JSON.parse(值)
+    return typeof 解 === "object" && 解 !== null && !Array.isArray(解) ? { ...解 } : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 读一份材料某张表的明细行（模板**预览**用，只读，上限 20 行）。
+ *
+ * `amount` / `balance` 出库即 `::text`（`#002-01`：numeric 的 JS 形状随驱动而变）。
+ * 原文旁路（`ownerAccountRaw` / `counterpartyRaw`）在明细表里**没有列**（`toFactRows` 不写它）⇒
+ * 这里用归一化值兜底：预览的「提及」会显示归一化后的值，这是登记的已知缺口（§10.3）。
+ */
+export async function 读材料事实行(
+  db: Queryable,
+  projectId: string,
+  materialId: string,
+  sheet: string,
+  上限: number,
+): Promise<FactRowInput[]> {
+  const 行们 = rowsOf(
+    await db.execute(sql`
+      select sheet, row_no, caller, callee, started_at, started_raw, precision, time_type,
+             duration_sec, amount::text as amount, balance::text as balance,
+             counterparty, counterparty_name, owner_account, direction, currency,
+             extras::text as extras
+        from auth.case_fact_row
+       where project_id = ${projectId} and material_id = ${materialId} and sheet = ${sheet}
+       order by row_no asc
+       limit ${上限}
+    `),
+  )
+  return 行们.map((行) => ({
+    projectId,
+    materialId,
+    sheet: String(行.sheet),
+    rowNo: Number(行.row_no),
+    caller: 文本列(行.caller),
+    callee: 文本列(行.callee),
+    startedAt: 行.started_at === null ? null : Number(行.started_at),
+    startedRaw: 文本列(行.started_raw),
+    precision: 是精度(行.precision) ? 行.precision : null,
+    timeType: 是时间类型(行.time_type) ? 行.time_type : null,
+    durationSec: 行.duration_sec === null ? null : Number(行.duration_sec),
+    amount: 文本列(行.amount),
+    balance: 文本列(行.balance),
+    counterparty: 文本列(行.counterparty),
+    counterpartyName: 文本列(行.counterparty_name),
+    ownerAccount: 文本列(行.owner_account),
+    ownerAccountRaw: 文本列(行.owner_account),
+    counterpartyRaw: 文本列(行.counterparty),
+    direction: 是方向(行.direction) ? 行.direction : null,
+    currency: 文本列(行.currency) ?? "CNY",
+    extras: 读extras(行.extras),
+  }))
+}

@@ -13,6 +13,8 @@ import { 取消排队作业 } from "./case-ingest"
 // `可解析扩展名` 仍要给 GET /case/materials 返回，别在替换时丢掉它。
 import { 可解析扩展名, 可解析材料 } from "./case-parseable"
 import { applyParseAction, createMaterial, getMaterial, getMaterialByPath, inTransaction, 解析冲突 } from "./case-store"
+import { 读模板行 } from "./case-card-template-store"
+import { 是用户模板id } from "./case-card-template"
 import { 人工解析动作, 该动作可用, isRunning, nextStatus } from "./case-status"
 import { 入队材料, inside, LINK_ESCAPE, realInside } from "./file"
 import { 材料视图 } from "./case-materials"
@@ -173,9 +175,25 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if (typeof path !== "string" || !是项目内相对路径(path))
       return fail(400, "path 必须是项目内的相对路径（/ 分隔）", "bad_request")
     if (!是动作(action)) return fail(400, "action 只能是 入队 / 重新解析 / 取消 / 跳过", "bad_request")
+    const templateId = body["templateId"]
+    if (templateId !== undefined && (typeof templateId !== "string" || templateId.trim() === "")) {
+      return fail(400, "templateId 必须是非空字符串", "bad_request")
+    }
 
     if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
+
+    // 指定模板只对「入队 / 重新解析」有意义（设计 §9.5）；取消 / 跳过带了就是请求形状不对。
+    if (templateId !== undefined && (action === "取消" || action === "跳过"))
+      return fail(400, "templateId 只对「入队 / 重新解析」生效", "bad_request")
+    if (templateId !== undefined) {
+      // 入队前先判一次（存在 / 用户模板 / 启用中）。失败统回 400 且不区分原因：
+      // 用 404 / 不同文案会让调用方拿它探测别的项目里的模板 id。
+      const 模板 = yield* Effect.promise(() => 读模板行(deps.pg(), projectId, templateId))
+      if (模板 === undefined || !是用户模板id(模板.id) || 模板.disabled_at !== null) {
+        return fail(400, "指定的卡片模板不存在或已停用", "bad_request")
+      }
+    }
 
     const 当前 = yield* Effect.promise(() => getMaterialByPath(deps.pg(), projectId, path))
 
@@ -287,6 +305,7 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
           ...(action === "重新解析" ? { force: true } : {}),
           // 人工「解析入库」置顶；「重新解析」与上传自动入队保持 FIFO（终审阻塞 3）。
           ...(action === "入队" ? { 置顶: true } : {}),
+          ...(templateId === undefined ? {} : { templateId }),
         }),
       ),
     )
