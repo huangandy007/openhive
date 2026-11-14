@@ -190,17 +190,19 @@ describe("迁移 0044（模板编辑器内核）", () => {
               '{"谁":[{"字段":"caller"}],"何时":[{"字段":"startedAt"}]}'::jsonb, ARRAY['谁','何时'], 1, null, 0, 1)
     `)
     // 同类型第二条：部分唯一索引必须拒绝（错误码 23505，这里的用例只钉「拒绝」这件事）。
-    // `Promise.resolve` 只是把 drizzle 的 thenable 转成原生 Promise——Bun 的 `.rejects` 只认原生 Promise。
-    await expect(
-      Promise.resolve(
-        db().execute(sql`
-          insert into auth.case_card_template
-            (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
-          values ('用户:00000000-0000-0000-0000-00000000a002', ${项目}, '通话2', '通话',
-                  '{"谁":[{"字段":"callee"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
-        `),
-      ),
-    ).rejects.toThrow()
+    // drizzle 的 execute 返回 thenable、Bun 的 `.rejects` 只认原生 Promise，故用 try/catch 钉「拒绝」。
+    let 拒绝错误: unknown
+    try {
+      await db().execute(sql`
+        insert into auth.case_card_template
+          (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+        values ('用户:00000000-0000-0000-0000-00000000a002', ${项目}, '通话2', '通话',
+                '{"谁":[{"字段":"callee"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
+      `)
+    } catch (错误) {
+      拒绝错误 = 错误
+    }
+    expect(拒绝错误).toBeInstanceOf(Error)
     // 停用后可以再建同类型：索引条件是 `disabled_at is null`。
     await db().execute(sql`
       update auth.case_card_template set disabled_at = 1
@@ -362,5 +364,16 @@ describe("模板定义校验（§6.3）", () => {
   test("归一槽位：畸形 JSON 不抛，只收合法条目", () => {
     expect(() => 归一槽位("oops")).not.toThrow()
     expect(归一槽位({ 谁: { 字段: "notAField" }, 何时: "oops" })).toEqual({})
+  })
+})
+
+describe("槽条目们（填法收窄，§6.1）", () => {
+  test("单对象与数组两种填法都收成条目数组，角色原样保留", () => {
+    expect(槽条目们({ 谁: { 字段: "caller", 角色: "主叫" } }, "谁")).toEqual([
+      { 字段: "caller", 角色: "主叫" },
+    ])
+    expect(
+      槽条目们({ 和谁: [{ 字段: "caller", 角色: "主叫" }, { 字段: "callee", 角色: "被叫" }] }, "和谁"),
+    ).toEqual([{ 字段: "caller", 角色: "主叫" }, { 字段: "callee", 角色: "被叫" }])
   })
 })
