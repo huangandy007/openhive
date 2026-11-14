@@ -140,6 +140,15 @@ export function 卡片id(projectId: string, materialId: string, sheet: string, r
  * 各写一遍字面量，改了键格式却漏改一处，表现是「实体建了但关系/属性静默丢失」。
  */
 export function 实体键(类型: 实体类型, 规范值: string): string {
+  return 实体缓存键(类型, 规范值)
+}
+
+/**
+ * 同形键，但收 `string`：调用方手里是**从库里读回**的 type（驱动给的是 `unknown → string`，
+ * 库约束 `case_entity_type` 已经保证取值域），不该为此在调用方撒 `as`。
+ * 拼法只此一处，`实体键` 委托它。
+ */
+export function 实体缓存键(类型: string, 规范值: string): string {
   return `${类型}\u0000${规范值}`
 }
 

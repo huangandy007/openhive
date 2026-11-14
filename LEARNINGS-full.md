@@ -23,6 +23,92 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #013-10 · 2026-11-15 · pitfall · 013-事实卡片-P2-资金翻译与账户归并
+
+**现象 / 决策**：`#013-09` 批量写落地后，5,000 行流水在真栈**仍要 70–74 秒**（`case_ingest_job`：queued 1794674810 → finished 1794674880；更早一次 74s），离 30 秒目标还差一截。`pg_stat_activity` 每 150ms 采样 110 秒，197/192 次都停在 `重建关系` 的两条取数语句上，**各 3.3–3.7 秒**；但把同样的 SQL 在事务外、或事务内空闲时重放只要 8–57ms。差异根源不在事务，而在**语句形状**：
+
+```sql
+-- 现状：对过滤与两张表的 join 写在同一层
+where ... and (付.entity_id, 收.entity_id) in (values (…), …)
+```
+
+`EXPLAIN (ANALYZE)`（真库，500 对 / 5,005 事件）实测计划：
+
+```
+Hash Join  (付.entity_id = "*VALUES*".column1)          → 809,880 行
+  Nested Loop
+    Join Filter: (收.entity_id = "*VALUES*".column2)
+    Rows Removed by Join Filter: 809,379                ← 逐行索引取收款方只为比第二列
+Buffers: shared hit=3248102    Execution Time: 2633.850 ms
+```
+
+规划器把**多列对过滤下推成只按第一列 hash**（付款方），把「收款方等于第二列」降级成连接后的过滤条件，于是候选行先膨胀到 80.9 万，再为每行按 `(project_id, event_id)` 取收款方。同族第三处：①human 转账关系（过滤列是 `coalesce(对齐代表, id)`）膨胀 809,031 行、**926ms**——本测试项目里 human 关系为 0，这 926ms 是事务内临时把 `source_kind` 改成 `'human'` 再回滚才量出来的（功能等价分支为空 ≠ 同族落点不存在）。
+
+另一个叠加因素：同一条命名预备语句**第 6 次执行起转通用计划**。`PREPARE` + `plan_cache_mode` 对照实测：`force_custom_plan` 2.5–2.6s，`force_generic_plan` 5.6–5.9s；12 次连跑前 5 次 ~2.5s、第 6 次起 ~5.6s。`重建关系` 20 条语句（2 次调用 × 10 chunk）正好跨过切换点。
+
+**应对**：先把「被过滤的那张事实表」物化，再做对过滤——规划器不许把过滤下推穿透 `WITH … AS MATERIALIZED`：
+
+```sql
+with 事件对 as materialized (   -- 先按事件算完 (付款方, 收款方)，只受事件数约束
+  select e.id, …, 付.entity_id as from_id, 收.entity_id as to_id
+    from auth.case_event e join …参与人两张…
+   where e.project_id = $1 and … )
+select … from 事件对 where (from_id, to_id) in (values …)
+```
+
+实测：同数据同过滤 **2,633ms → 13.5ms**（字面量）/ **55–95ms**（参数化，8 轮无退化）；① **926ms → 68ms**。作业 **70–74s → 17–19s**（两次：1794675538−1794675520 = 17s；1794675235−1794675214 = 19s）。落点三处（① human 关系、② 事件取数、④ 聚合）各一个 `materialized` CTE；角色/非空前提仍只在 `资金参与者基` 定义（`#002-06`）。
+
+**应用范围**：多表 join +「一对集合」过滤的聚合/取数（尤其远端或多租户 PG）。判断顺序：①数语句条数（`#013-09`）→ ②单条语句跑 ≥6 次看是否换通用计划 → ③`EXPLAIN (ANALYZE)` 看 `Rows Removed by Join Filter` 是否十万级——是则是本条。
+
+**变异记录**：去掉 ②④ 的 `as materialized` → 用例红（`Expected to contain: "as materialized"`，实得语句回落到同一层 `in (values …)`）；去掉 ① 的 → 同一用例红。两处各自可拆、各自会红。
+
+**未改的同型落点**：`case-fact-store.ts:125` 的 `where (project_id, type, canonical_value) in (values …)` 是**单表**（`auth.case_entity`）过滤、没有多表 join 可供膨胀，本轮未改（真栈 5,000 行写入的采样里也没进慢点）。`清本材料翻译` 取旧对的查询用同一个 `资金参与者基` 但不带对过滤，无本条形态。
+
+## #013-09 · 2026-11-15 · pitfall · 013-事实卡片-P2-资金翻译与账户归并
+
+**现象 / 决策**：`#013-08` 的 analyze 修复落地后，5,000 行流水在真栈**仍跑 569 秒**（`case_ingest_job` 的 `finished_at - started_at` 实测：1794673574 → 1794674143）。`pg_stat_activity` 每 10s 采样看到同一个写事务开着 5–7 分钟，且始终停在三条**单行** INSERT 上：
+
+```
+insert into auth.case_entity_alias (id, project_id, entity_id, …) values ($1,…,$9)   ← 5:18 还是它
+insert into auth.case_relation     (id, project_id, from_id, to_id, …)              ← 6:48 换成它
+```
+
+用「同一事务里真跑 300 条再回滚」的探针量单次代价（远端 PG，`rtt.ts`，2026-11-15）：实体(select+insert) 22.1ms、别名 22.4ms、关系 22.3ms。这份 CSV 有 **5001 个不同对手账号** ⇒ 实体 2×5001 + 别名 5001 + 关系 5001 ≈ **1.5 万次往返，外推 445s**。所以「10 分钟」不是 SQL 慢，是**逐行语句 = O(N × RTT)**：库在本机 PGlite 或带连接池的近库上，同一条逐行循环毫秒级，上远端就变成分钟级。
+
+**应对**：写路径一律「分块多值语句」，与 `insertFactRows` / `insertEvents` 同形（每 500 行 1 条）。这次改了三处：`upsertEntities`（先一次 `in (values …)` 取现有 attrs，再一条 `ON CONFLICT DO UPDATE … RETURNING`）、`upsertEntityAliases`、`insertRelations`；单条版 `upsertEntity` / `insertRelation` 一律委托批量版，不再维护第二份 SQL。
+
+两条必须记住的细节：
+1. **批量前按唯一键去重**：`do update` 一条语句改同一行两次报 `21000`（逐行写撞不出来，所以只有批量版会踩）；`do nothing` 不去重也可以。
+2. **用例只能钉形状，钉不了耗时**：PGlite 是本机进程，量不出网络往返（`#004-03`）。断言写成「`insert into auth.case_entity (` 语句数 ≤ 分块数」，变异（`i += INSERT_CHUNK` 改 `i += 1`）三条各自转红；真实耗时留给真栈总时长。
+
+**未改的同型落点**（`#002-06`：逐个打勾）：`跑文本`（case-ingest.ts:911/937/979）仍逐条 `upsertEntity` / `insertRelation` / `insertEvent` + `addCitation`。同一缺陷类别，但那份材料的耗时被 AI 抽取（分钟级）压着，批量化搬不动总时长——先记着，等真栈量到它成为瓶颈再改。
+
+**应用范围**：任何「一份材料 / 一次导入写 N 行」的落库路径；尤其多租户远端 PG（RTT ≥10ms）。判断顺序：先量**单次往返**（同事务真写 N 条再回滚），再数语句条数；别一上来就怀疑 SQL 计划（那是 `#013-08` 的场景，特征是**单条语句**慢）。
+
+## #013-08 · 2026-11-15 · pitfall · 013-事实卡片-P2-资金翻译与账户归并
+
+**现象 / 决策**：A13 验收（5,000 行资金流水 ≤30s）在真栈上卡死 17 分钟、材料停在「解析中」、后面 5 行的小文件一直「排队中」。用一次性探针在**真实事务里**（写完即回滚）对远程 PG 计时，`EXPLAIN (ANALYZE, BUFFERS)` 照出根因：
+
+```
+Nested Loop
+  -> Hash Join   (VALUES 120 行 × 付索引扫描 1,000 行)  = 34,748 行
+  -> Index Scan using case_event_purpose_l1 on case_event e   loops=34748
+       Index Cond: project_id = …
+       Filter: type / trust_state / id <> ALL
+       Rows Removed by Join Filter: 17,322,878   ← 1,000 行数据，扫掉 1732 万行
+```
+
+原因是**事务内刚写入的行没有任何统计信息**：ANALYZE 不随事务回滚，autovacuum 也来不及。规划器以为小项目里 `case_event` 只有很少行，于是对每个候选参与者行都做一次「只带 project_id」的索引扫描，再把 `id = 付.event_id` 当连接过滤。同一事务内先 `analyze auth.case_event, auth.case_event_participant`（79ms）后，同样两条语句 4,528+4,713ms → 217+177ms，整份写入 16.5s → 7.4s；5,000 行整份 10.1s。
+
+**同时被证伪的猜想**（别重复走）：`(付.entity_id, 收.entity_id) in (values …)` 这个行值 IN 号称为「用不上索引」，按实体补 `in ($1,…, $60)` 字面列表后**一点没变快**（42s，比原版还慢）；用 `= any(array(select jsonb_array_elements_text($n::text::jsonb)))` 更糟（SubPlan 表达式，见 `#013-05`）。小改动猜计划是假动作。
+
+**应对**：
+1. 同一事务内先写、再 join/聚合之前，先 `analyze` 参与的两张表；`analyze` 不随事务回滚，回滚后统计偏大，无害。
+2. 定位靠 `EXPLAIN (ANALYZE, BUFFERS, costs off)` **在事务里直接照那条语句**，看 `Rows Removed by Join Filter` 的量级——一出来根因当场定，别靠猜。
+3. 单 worker 顺序消费必须给单条语句上限：写事务里 `set_config('statement_timeout', '600000', true)`，超时由 PG 取消、`runJob` 收尾落「有问题」，队列继续往下走。
+
+**应用范围**：任何「同一事务里先批量写、再 join/聚合」的落库路径（导入、重放、报表重算）；单 worker 队列。
+
 ## #013-07 · 2026-11-14 · pitfall · 013-事实卡片-P3-第二期-实体打通与探索原语
 
 **现象 / 决策**：用途词表是「有序优先级 + first-match wins」，`排除` 的实现是「备注含排除词就 `continue` 本条规则」（`case-purpose.ts:149`）。这意味着一件事：**排除没有跨规则效力**。更高优先级的规则先命中就返回，低优先级规则里写的 `排除` 根本不会被评估。

@@ -11,6 +11,7 @@ import {
   createMaterial,
   deleteFactRowsOfMaterial,
   getMaterial,
+  inTransaction,
   insertFactRows,
   setMaterialKind,
 } from "../../src/server/openhive/case-store"
@@ -455,4 +456,25 @@ test("明细三列可写可读；direction 只收 收/付", async () => {
     },
   )
   expect(拒因).toContain("case_fact_row_direction")
+})
+
+/**
+ * A13 的队列保护：单 worker 顺序消费，一条语句不返回就代表整个队列堵死
+ * （2026-11-14 真栈：5,000 行那份流水的一条取数语句跑了 17 分钟没回来，
+ * 后面 5 行的小文件一直「排队中」，材料全卡「解析中」）。
+ *
+ * 事务内把 `statement_timeout` 设成 10 分钟：超时由 PG 主动取消，
+ * `runJob` 的 catch 把材料落「有问题」、作业落「失败」，队列继续往下走。
+ *
+ * 只管**单条语句**，不管整份作业的总时长（AI 调用另有 120s 中止）。
+ */
+describe("写事务 · 单条语句超时上限", () => {
+  test("事务内 statement_timeout = 600000ms", async () => {
+    const 值 = await inTransaction(db(), async (tx) => {
+      // `current_setting` 会规范化成 `10min`；`pg_settings.setting` 一律是毫秒数。
+      const 行们 = rowsOf(await tx.execute(sql`select setting as v from pg_settings where name = 'statement_timeout'`))
+      return String(行们[0]?.v)
+    })
+    expect(值).toBe("600000")
+  })
 })

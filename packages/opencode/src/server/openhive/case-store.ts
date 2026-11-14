@@ -36,6 +36,16 @@ interface TransactionCapable {
 }
 
 /**
+ * 写事务里单条语句的上限（10 分钟）。
+ *
+ * 单 worker 顺序消费：一条语句不返回 = 整个导入队列堵死（2026-11-14 真栈，A13：
+ * 5,000 行那份流水的一条取数语句 17 分钟没回来，后面 5 行的小文件一直「排队中」）。
+ * 病态计划/坏数据下由 PG 主动取消，`runJob` 的 catch 把材料落「有问题」、作业落
+ * 「失败」，队列继续往下走。只管单条语句，不管整份作业总时长（AI 调用另有 120s 中止）。
+ */
+const 单条语句上限ms = 10 * 60_000
+
+/**
  * 在**一个事务**里跑 `fn`。`Queryable` 只承诺 `execute`，事务能力是驱动给的
  * （生产 `connect()` 与测试夹具 `startProductionDb().db` 都是 drizzle 实例）。
  * 拿不到事务就**响亮失败**，不退化成一串自动提交语句——重放要的是原子性。
@@ -43,10 +53,15 @@ interface TransactionCapable {
  * 为什么不把 `transaction` 并进 `Queryable`：那会波及计划 1 的全部 DAO 契约，
  * 而它们只读/写单条语句，不需要事务。事务是**调用点的选择**，不是 DAO 的形状。
  */
+
 export async function inTransaction<T>(db: Queryable, fn: (tx: Queryable) => Promise<T>): Promise<T> {
   const 候选 = db as Queryable & Partial<TransactionCapable>
   if (typeof 候选.transaction !== "function") throw new Error("库句柄不支持事务：这一步需要原子性")
-  return 候选.transaction(fn)
+  return 候选.transaction(async (tx) => {
+    // `set_config(..., true)` 而不是 `set local`：SET 不接受参数绑定，这能带值且只活本事务。
+    await tx.execute(sql`select set_config('statement_timeout', ${String(单条语句上限ms)}, true)`)
+    return fn(tx)
+  })
 }
 
 export const MATERIAL_KINDS = ["话单", "资金", "笔录", "视频", "物证照", "产物", "其他"] as const

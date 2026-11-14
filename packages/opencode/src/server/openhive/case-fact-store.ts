@@ -59,45 +59,109 @@ export function 文本数组(值: readonly string[]) {
  *
  * 用 `do update` 而不是 `do nothing`：`do nothing` 不返回行，调用方拿不到既有 id，
  * 关系就会挂到一个不存在的实体上。别名取并集并去重。
+ *
+ * 单条版**直接委托批量版**（同 `insertEvent` → `insertEvents`）：两份 upsert 各自维护
+ * 「先读 attrs 再合并」迟早会分叉。逐行调用它仍是每实体两次往返——批量场景用
+ * `upsertEntities`（2026-11-15：5000 行流水 = 5001 个账号，逐行时实测外推 445s）。
  */
 export async function upsertEntity(db: Queryable, input: 实体写入): Promise<string> {
-  // 先读现有 attrs，再按键合并写回（§3.10 / 05 §5.2）。
-  // 不能再用 `attrs || excluded.attrs`：那是键级覆盖，两家材料给出不同开户行时后写的
-  // 把前一条整键抹掉（`openhive-case-entity-attrs.test.ts` 专钉这一条）。
-  // 这里只能做「无剥离的合并」——拿不到 materialId，无从判断哪条观察属于本次材料；
-  // 「剥离本材料出处」只在 `写入翻译结果` ⑤ 里做（那里才有 materialId）。
-  // 并发面：同一项目同一实体在同一材料事务内只有一个写者；跨材料并发时仍可能丢键，
-  // 这是设计允许的（读→追加→写），真出现再上 advisory lock。
-  const 现有行 = rowsOf(
-    await db.execute(sql`
-      select attrs from auth.case_entity
-       where project_id = ${input.projectId} and type = ${input.type}
-         and canonical_value = ${input.canonicalValue}
-    `),
-  )
-  const 合并后 = 合并属性(读jsonb(现有行[0]?.attrs), input.attrs ?? {})
-  const 行 = rowsOf(
-    await db.execute(sql`
-      insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, created_at)
-      values (${input.id}, ${input.projectId}, ${input.type}, ${input.canonicalValue},
-              ${文本数组(input.aliases)}, ${JSON.stringify(合并后)}::text::jsonb, ${nowSeconds()})
-      on conflict (project_id, type, canonical_value) do update
-         set aliases = (
-           select coalesce(array_agg(distinct x), '{}'::text[])
-             from unnest(auth.case_entity.aliases || excluded.aliases) as x
-         ),
-         attrs = excluded.attrs
-      returning id
-    `),
-  )
+  const [行] = await upsertEntities(db, [input])
   // `rowsOf` 返回 `Record<string, unknown>[]`；`!` 在这里是多余断言（本包没开
   // `noUncheckedIndexedAccess`），写成显式判空既过 lint 又能报出「没返回行」这种真异常。
-  const id = 行[0]?.id
-  // 用 `typeof` 判空而不是 `String(id)`：驱动将来把 `text` 列读成非字符串（Buffer 之类）时，
-  // `String()` 会把它悄悄变成 `"[object Object]"` 当 id 返回；显式判型才能当场报出来。
-  // 顺带消掉 `no-base-to-string` 的那条 warning（`String(unknown)` 会触发）。
+  const id = 行?.id
+  // 用显式判型而不是 `String(id)`：驱动将来把 `text` 列读成非字符串（Buffer 之类）时，
+  // `String()` 会把它悄悄变成 `"[object Object]"` 当 id 返回（`no-base-to-string`）。
   if (typeof id !== "string") throw new Error(`实体写入没有返回 id：${input.canonicalValue}`)
   return id
+}
+
+/** 实体的唯一键（与库上 `unique (project_id, type, canonical_value)` 同形）。 */
+function 实体键三列(projectId: string, type: string, canonicalValue: string): string {
+  return `${projectId}\u0000${type}\u0000${canonicalValue}`
+}
+
+/**
+ * 批量版：`写入翻译结果` ① 一次写几百上千个账号。
+ *
+ * 分块多值写（理由同 `insertRows`）：先一次 SELECT 取现有 attrs，再一条
+ * `INSERT … ON CONFLICT DO UPDATE … RETURNING` 回全部 id ⇒ 每 500 个实体 2 次往返，
+ * 而不是 2×N 次。
+ *
+ * **必须先按唯一键去重**：同一个 `(project_id, type, canonical_value)` 在一个语句里
+ * 出现两次时，`do update` 会报 `21000 ON CONFLICT DO UPDATE command cannot affect
+ * row a second time`（逐行写时两次调用分属不同语句，撞不出这个错）。合并顺序与逐行一致：
+ * attrs 按出现顺序 `合并属性`，aliases 取并集。
+ */
+export async function upsertEntities(
+  db: Queryable,
+  inputs: readonly 实体写入[],
+): Promise<{ id: string; type: string; canonicalValue: string }[]> {
+  if (inputs.length === 0) return []
+  const 待写 = new Map<string, 实体写入>()
+  for (const input of inputs) {
+    const 键 = 实体键三列(input.projectId, input.type, input.canonicalValue)
+    const 已有 = 待写.get(键)
+    待写.set(
+      键,
+      已有 === undefined
+        ? input
+        : {
+            ...已有,
+            attrs: 合并属性(已有.attrs ?? {}, input.attrs ?? {}),
+            aliases: [...new Set([...已有.aliases, ...input.aliases])],
+          },
+    )
+  }
+  const 列表 = [...待写.values()]
+
+  // 现有 attrs 一次取回。三个列一起做行值 `in (values …)`：用两个 `= any(…)` 等于把
+  // 「项目 × 值」做成笛卡尔积，规划器各扫一遍（`#013-05`：同一归属集只写一遍）。
+  const 现按实体 = new Map<string, Record<string, unknown>>()
+  for (let i = 0; i < 列表.length; i += INSERT_CHUNK) {
+    const chunk = 列表.slice(i, i + INSERT_CHUNK)
+    const 行们 = rowsOf(
+      await db.execute(sql`
+        select project_id, type, canonical_value, attrs from auth.case_entity
+         where (project_id, type, canonical_value) in (values ${sql.join(
+           chunk.map((e) => sql`(${e.projectId}, ${e.type}, ${e.canonicalValue})`),
+           sql`, `,
+         )})
+      `),
+    )
+    for (const r of 行们) {
+      现按实体.set(实体键三列(String(r.project_id), String(r.type), String(r.canonical_value)), 读jsonb(r.attrs))
+    }
+  }
+
+  const 返回: { id: string; type: string; canonicalValue: string }[] = []
+  for (let i = 0; i < 列表.length; i += INSERT_CHUNK) {
+    const chunk = 列表.slice(i, i + INSERT_CHUNK)
+    const 行们 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_entity (id, project_id, type, canonical_value, aliases, attrs, created_at)
+        values ${sql.join(
+          chunk.map(
+            (e) => sql`(${e.id}, ${e.projectId}, ${e.type}, ${e.canonicalValue},
+                        ${文本数组(e.aliases)},
+                        ${JSON.stringify(合并属性(现按实体.get(实体键三列(e.projectId, e.type, e.canonicalValue)) ?? {}, e.attrs ?? {}))}::text::jsonb,
+                        ${nowSeconds()})`,
+          ),
+          sql`, `,
+        )}
+        on conflict (project_id, type, canonical_value) do update
+           set aliases = (
+             select coalesce(array_agg(distinct x), '{}'::text[])
+               from unnest(auth.case_entity.aliases || excluded.aliases) as x
+           ),
+           attrs = excluded.attrs
+        returning id, type, canonical_value
+      `),
+    )
+    for (const r of 行们) {
+      返回.push({ id: String(r.id), type: String(r.type), canonicalValue: String(r.canonical_value) })
+    }
+  }
+  return 返回
 }
 
 /**
@@ -114,7 +178,8 @@ export interface 关系写入 {
   fromId: string
   toId: string
   type: string
-  amount?: number | null
+  /** 金额：number 走 `toFixed(2)`，字符串原样绑（`numeric::text` 在 18 位上不能过 Number）。 */
+  amount?: number | string | null
   basis?: string | null
   sourceKind: "data" | "human"
   trustState: 事实信任态
@@ -122,6 +187,8 @@ export interface 关系写入 {
   lastAt?: number | null
   precision?: string | null
   times?: number | null
+  /** 人民币笔数（0040）。不传即 NULL——单条版历史列集不含它，语义不变。 */
+  timesCny?: number | null
 }
 
 /**
@@ -129,21 +196,97 @@ export interface 关系写入 {
  * 的注释同款理由：number 绑定出来的形状随驱动而变，还可能带浮点尾差）。调用方给 number，
  * 这里统一补两位小数。
  */
-function 金额参数(值: number | null | undefined): string | null {
-  return 值 === null || 值 === undefined ? null : 值.toFixed(2)
+function 金额参数(值: number | string | null | undefined): string | null {
+  if (值 === null || 值 === undefined) return null
+  // 已经是 `numeric::text` 的字符串原样绑：经 `Number` 再 `toFixed` 会在 18 位金额上丢精度
+  // （`重建关系` 的聚合金额就是这种字符串）。
+  return typeof 值 === "string" ? 值 : 值.toFixed(2)
 }
 
+/** 单条版委托批量版（理由同 `upsertEntity`）；批量场景用 `insertRelations`。 */
 export async function insertRelation(db: Queryable, input: 关系写入): Promise<void> {
-  await db.execute(sql`
-    insert into auth.case_relation
-      (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, amount,
-       basis, source_kind, trust_state, created_at)
-    values (${input.id}, ${input.projectId}, ${input.fromId}, ${input.toId}, ${input.type},
-            ${input.firstAt ?? null}, ${input.lastAt ?? null}, ${input.precision ?? null},
-            ${input.times ?? null}, ${金额参数(input.amount)}, ${input.basis ?? null},
-            ${input.sourceKind}, ${input.trustState}, ${nowSeconds()})
-    on conflict (project_id, id) do nothing
-  `)
+  await insertRelations(db, [input])
+}
+
+/**
+ * 批量写关系，返回**实际插入**的行数（`on conflict do nothing` 的 returning 为空，不虚高）。
+ *
+ * `do nothing` 允许同一语句里出现重复 id（`do update` 才会 21000），所以这里不去重。
+ * 2026-11-15：`重建关系` 曾按对逐条插——5000 行流水 = 5000 个对手对，单次往返 22ms
+ * ⇒ 110s 只写关系。
+ */
+export async function insertRelations(db: Queryable, inputs: readonly 关系写入[]): Promise<number> {
+  let written = 0
+  for (let i = 0; i < inputs.length; i += INSERT_CHUNK) {
+    const chunk = inputs.slice(i, i + INSERT_CHUNK)
+    const 结果 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_relation
+          (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, times_cny, amount,
+           basis, source_kind, trust_state, created_at)
+        values ${sql.join(
+          chunk.map(
+            (r) => sql`(${r.id}, ${r.projectId}, ${r.fromId}, ${r.toId}, ${r.type},
+                        ${r.firstAt ?? null}, ${r.lastAt ?? null}, ${r.precision ?? null},
+                        ${r.times ?? null}, ${r.timesCny ?? null}, ${金额参数(r.amount)},
+                        ${r.basis ?? null}, ${r.sourceKind}, ${r.trustState}, ${nowSeconds()})`,
+          ),
+          sql`, `,
+        )}
+        on conflict (project_id, id) do nothing
+        returning id
+      `),
+    )
+    written += 结果.length
+  }
+  return written
+}
+
+export interface 实体别名写入 {
+  projectId: string
+  id: string
+  entityId: string
+  kind: string
+  value: string
+  rawValue: string
+  sourceKind: string
+  materialId: string
+  createdAt: number
+}
+
+/**
+ * 批量写 `case_entity_alias`。重放语义：命中同 id 时把 `revoked_at` 清回 null
+ * （逐条版写死 `null`，`do update` 里也写死 `null`——这是「撤销过的别名重新出现」的复位）。
+ *
+ * 必须按 `(project_id, id)` 去重：`do update` 不允许一条语句改同一行两次（21000）。
+ * 2026-11-15：`写入翻译结果` ③ 曾逐条插——5001 个别名 × 22ms = 110s。
+ */
+export async function upsertEntityAliases(db: Queryable, inputs: readonly 实体别名写入[]): Promise<number> {
+  const 待写 = new Map<string, 实体别名写入>()
+  for (const a of inputs) 待写.set(`${a.projectId}\u0000${a.id}`, a)
+  const 列表 = [...待写.values()]
+  let written = 0
+  for (let i = 0; i < 列表.length; i += INSERT_CHUNK) {
+    const chunk = 列表.slice(i, i + INSERT_CHUNK)
+    const 结果 = rowsOf(
+      await db.execute(sql`
+        insert into auth.case_entity_alias
+          (id, project_id, entity_id, kind, value, raw_value, source_kind, material_id, created_at, revoked_at)
+        values ${sql.join(
+          chunk.map(
+            (a) => sql`(${a.id}, ${a.projectId}, ${a.entityId}, ${a.kind}, ${a.value}, ${a.rawValue},
+                        ${a.sourceKind}, ${a.materialId}, ${a.createdAt}, null)`,
+          ),
+          sql`, `,
+        )}
+        on conflict (project_id, id) do update
+           set value = excluded.value, raw_value = excluded.raw_value, revoked_at = null
+        returning id
+      `),
+    )
+    written += 结果.length
+  }
+  return written
 }
 
 export interface 事件写入 {

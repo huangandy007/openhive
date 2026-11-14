@@ -9,12 +9,17 @@ import {
   deleteCitationsOfMaterial,
   insertEvents,
   insertParticipants,
-  upsertEntity,
+  insertRelations,
+  upsertEntities,
+  upsertEntityAliases,
   文本数组,
   删除本材料的事实,
+  type 关系写入,
+  type 实体写入,
+  type 实体别名写入,
 } from "./case-fact-store"
 import { INSERT_CHUNK, type CitationInput, type Queryable } from "./case-store"
-import { 账户键, 实体键, type 翻译结果 } from "./case-translate"
+import { 实体缓存键, 账户键, 实体键, type 翻译结果 } from "./case-translate"
 import { 资金交易 } from "./case-event-types"
 import { 合并属性, 属性观察表, 剥离本材料出处, 读jsonb } from "./case-entity-attrs"
 import { 户名对齐 } from "./case-party"
@@ -143,21 +148,26 @@ export async function 写入翻译结果(
   const { projectId, materialId, templateId, 翻译 } = input
 
   // ① 实体归并：内存 Map 缓存「<类型>\u0000规范值 → entityId」（§4.0.3c，硬要求）。
+  // 一次批量写：5000 行流水 = 5001 个账号，逐条 upsert 是 2×5001 次往返（远端 PG 22ms/次
+  // ⇒ 外推 220s，`#013-09`）。
   const 实体缓存 = new Map<string, string>()
+  const 待建实体 = new Map<string, 实体写入>()
   for (const 卡 of 翻译.卡片们) {
     for (const p of 卡.participants) {
       if (!p.实体) continue
       const 键 = 实体键(p.实体类型, p.规范值)
-      if (实体缓存.has(键)) continue
-      const id = await upsertEntity(tx, {
+      if (待建实体.has(键)) continue
+      待建实体.set(键, {
         projectId,
         id: 事实id(projectId, p.实体类型, p.规范值),
         type: p.实体类型,
         canonicalValue: p.规范值,
         aliases: [],
       })
-      实体缓存.set(键, id)
     }
+  }
+  for (const 行 of await upsertEntities(tx, [...待建实体.values()])) {
+    实体缓存.set(实体缓存键(行.type, 行.canonicalValue), 行.id)
   }
 
   // ② 卡片 + 参与者 + 出处（一份材料 2×N 行参与者，必须批量）
@@ -240,18 +250,24 @@ export async function 写入翻译结果(
   await insertParticipants(tx, 参与者们)
 
   // ③ 别名（kind='户名'，挂账户）：id 由 (材料, 实体, 值) 决定，重放时把 revoked_at 清回 null。
+  // 批量写：5001 个别名逐条插 = 5001 次往返（`#013-09`）。
+  const 别名写入: 实体别名写入[] = []
   for (const a of 翻译.别名们) {
     const entityId = 实体缓存.get(账户键(a.规范值))
     if (entityId === undefined) continue
-    await tx.execute(sql`
-      insert into auth.case_entity_alias
-        (id, project_id, entity_id, kind, value, raw_value, source_kind, material_id, created_at, revoked_at)
-      values (${事实id(projectId, "alias", entityId, a.值, materialId)}, ${projectId}, ${entityId},
-              '户名', ${a.值}, ${a.值}, '表格', ${materialId}, ${nowSeconds()}, null)
-      on conflict (project_id, id) do update
-         set value = excluded.value, raw_value = excluded.raw_value, revoked_at = null
-    `)
+    别名写入.push({
+      projectId,
+      id: 事实id(projectId, "alias", entityId, a.值, materialId),
+      entityId,
+      kind: "户名",
+      value: a.值,
+      rawValue: a.值,
+      sourceKind: "表格",
+      materialId,
+      createdAt: nowSeconds(),
+    })
   }
+  await upsertEntityAliases(tx, 别名写入)
 
   // ④ 关系重建：只重算本次受影响的账户对（双方都可建实体才算，掩码账号不建关系）。
   // 同一对会被多张卡片命中 ⇒ 按 (from, to) 去重；只处理资金交易卡（`卡片草稿.type`
@@ -331,6 +347,30 @@ function 资金参与者基(projectId: string): SQL {
 }
 
 /**
+ * 「本项目资金事件 → (付款方, 收款方)」的物化事件对。
+ *
+ * 为什么必须物化：`(付.entity_id, 收.entity_id) in (values …)` 若直接写在同一层，
+ * 规划器会把对过滤**下推到付款方一侧**（只按一列做 hash），再对每个候选行按
+ * `(project_id, event_id)` 取收款方行只为比第二列。真栈 500 对 / 5,005 事件实测：
+ * 中间结果 809,880 行、`Rows Removed by Join Filter: 809,379`、单条 2,633ms
+ * （2026-11-15，`EXPLAIN (ANALYZE)`）；同一语句第 6 次起转通用计划后升到 5.6s。
+ * 物化后规划器不许重排：先按事件算完对（受事件数约束），再做哈希半连接，
+ * 同数据同语句 13.5ms。参数化重复执行 55–95ms（`exact.ts` 探针，8 轮）。
+ *
+ * 角色 / 非空前提仍只在 `资金参与者基` 定义（`#002-06`）；`type` / `trust_state`
+ * 由两个调用点（② 取数、④ 聚合）共有，放在本 CTE 里，别在调用点各写一遍。
+ */
+function 资金事件对CTE(projectId: string): SQL {
+  return sql`with 事件对 as materialized (
+    select e.id, e.amount, e.occurred_at, e.currency, e.precision,
+           付.entity_id as from_id, 收.entity_id as to_id
+      ${资金参与者基(projectId)}
+         and e.type = ${资金交易}
+         and e.trust_state <> '已排除'
+  )`
+}
+
+/**
  * 从卡片重建关系（§4.0.4：卡片是唯一事实，关系是对卡片的聚合）。
  *
  * 为什么不能「按材料增量累加」：同一对账户常出现在双方各自导出的流水里。增量累加会在
@@ -349,6 +389,16 @@ function 资金参与者基(projectId: string): SQL {
  */
 export async function 重建关系(tx: Queryable, projectId: string, 对们: readonly 关系对[]): Promise<number> {
   if (对们.length === 0) return 0
+  // 事务内刚写入的行没有统计信息（ANALYZE 不随事务回滚）。不先刷新，规划器会把
+  // 「本项目的全部事件」估成很小的集合，改为对每个候选参与者行做一次
+  // `case_event_purpose_l1`（只带 project_id）索引扫描 + `id = 付.event_id` 连接过滤：
+  // 真栈 1,000 行实测两次扫描共去掉 1,732 万行、两条语句 9.2s；先 analyze（79ms）
+  // 同样两条降到 0.4s，整份写入 16.5s → 7.4s（A13 卡死 17 分钟的根因）。
+  // 尽力而为：ANALYZE 要表属主（或超管）。部署账号不是属主时这里会报权限错 ——
+  // 那是**性能退化**（回到病态计划），不是数据错误，不能把整份解析带下去。
+  await Promise.resolve(tx.execute(sql`analyze auth.case_event, auth.case_event_participant`)).catch(
+    () => undefined,
+  )
   let written = 0
   for (let i = 0; i < 对们.length; i += INSERT_CHUNK_PAIRS) {
     const chunk = 对们.slice(i, i + INSERT_CHUNK_PAIRS)
@@ -359,19 +409,26 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
 
     // ① 该 chunk 的 human 转账关系（端点先对齐；对齐后落在本 chunk 的才算）。
     //    `#002-06`：别名前提只在 case-party.ts 定义；这里只负责 join 与行值过滤。
+    //    与 ②④ 同族：过滤列是 `coalesce(对齐代表, id)`，直接写同一层会被下推成
+    //    「先按 from 列 hash」→ 809,031 行、再逐行算 to 列（事务内临时改 source_kind
+    //    实测 926ms；物化后 68ms）。先物化人类转账关系，再按对过滤。
     const 关系行 = rowsOf(
       await tx.execute(sql`
-        select r.id, r.amount::text as amount, r.first_at, r.trust_state,
-               coalesce(起对齐.代表, r.from_id) as from_代表,
-               coalesce(终对齐.代表, r.to_id) as to_代表
-          from auth.case_relation r
-          join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
-          join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
-          left join lateral ${户名对齐(projectId, sql`起.id`, sql`起.type`, sql`起.canonical_value`)} 起对齐 on true
-          left join lateral ${户名对齐(projectId, sql`终.id`, sql`终.type`, sql`终.canonical_value`)} 终对齐 on true
-         where r.project_id = ${projectId} and r.type = '转账' and r.source_kind = 'human'
-           and r.trust_state <> '已排除'
-           and (coalesce(起对齐.代表, r.from_id), coalesce(终对齐.代表, r.to_id)) in (values ${值})
+        with 人类转账关系 as materialized (
+          select r.id, r.amount, r.first_at, r.trust_state,
+                 coalesce(起对齐.代表, r.from_id) as from_代表,
+                 coalesce(终对齐.代表, r.to_id) as to_代表
+            from auth.case_relation r
+            join auth.case_entity 起 on 起.project_id = r.project_id and 起.id = r.from_id
+            join auth.case_entity 终 on 终.project_id = r.project_id and 终.id = r.to_id
+            left join lateral ${户名对齐(projectId, sql`起.id`, sql`起.type`, sql`起.canonical_value`)} 起对齐 on true
+            left join lateral ${户名对齐(projectId, sql`终.id`, sql`终.type`, sql`终.canonical_value`)} 终对齐 on true
+           where r.project_id = ${projectId} and r.type = '转账' and r.source_kind = 'human'
+             and r.trust_state <> '已排除'
+        )
+        select id, amount::text as amount, first_at, trust_state, from_代表, to_代表
+          from 人类转账关系
+         where (from_代表, to_代表) in (values ${值})
       `),
     )
     const 关系们: 关系候选[] = 关系行.map((行) => {
@@ -392,12 +449,10 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
     //    「全外币对」也有事件可数，只是匹配不上。
     const 事件行 = rowsOf(
       await tx.execute(sql`
-        select e.id, e.amount::text as amount, e.occurred_at, e.currency,
-               付.entity_id as from_id, 收.entity_id as to_id
-        ${资金参与者基(projectId)}
-           and e.type = ${资金交易}
-           and e.trust_state <> '已排除'
-           and (付.entity_id, 收.entity_id) in (values ${值})
+        ${资金事件对CTE(projectId)}
+        select id, amount::text as amount, occurred_at, currency, from_id, to_id
+          from 事件对
+         where (from_id, to_id) in (values ${值})
       `),
     )
     const 事件们: 事件候选[] = 事件行.map((行) => ({
@@ -425,27 +480,27 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
     // ④ 聚合：排除被 human 覆盖的事件；times_cny 只数 CNY。
     const 聚合 = rowsOf(
       await tx.execute(sql`
-        select 付.entity_id as from_id, 收.entity_id as to_id,
+        ${资金事件对CTE(projectId)}
+        select from_id, to_id,
                count(*)::int as times,
-               count(*) filter (where e.currency = 'CNY')::int as times_cny,
-               coalesce(sum(e.amount) filter (where e.currency = 'CNY'), 0)::numeric(18,2)::text as amount,
-               min(e.occurred_at) as first_at, max(e.occurred_at) as last_at,
+               count(*) filter (where currency = 'CNY')::int as times_cny,
+               coalesce(sum(amount) filter (where currency = 'CNY'), 0)::numeric(18,2)::text as amount,
+               min(occurred_at) as first_at, max(occurred_at) as last_at,
                -- 精度取最粗；全为 NULL 时输出 NULL（M5：不升级为最细）。
                -- 到秒必须显式列出：把它并进 else 再改 null，会把「真的到秒」也一起抹掉。
                -- 同函数对金额判型失败选择抛错，这里的兜底也不许 fail-open。
-               case when bool_or(e.precision = '到日') then '到日'
-                    when bool_or(e.precision = '到分') then '到分'
-                    when bool_or(e.precision = '到秒') then '到秒'
+               case when bool_or(precision = '到日') then '到日'
+                    when bool_or(precision = '到分') then '到分'
+                    when bool_or(precision = '到秒') then '到秒'
                     else null end as precision
-        ${资金参与者基(projectId)}
-           and e.type = ${资金交易}
-           and e.trust_state <> '已排除'
-           and (付.entity_id, 收.entity_id) in (values ${值})
-           and e.id <> all(${文本数组(覆盖)})
+          from 事件对
+         where (from_id, to_id) in (values ${值})
+           and id <> all(${文本数组(覆盖)})
          group by 1, 2
       `),
     )
 
+    const 关系行们: 关系写入[] = []
     for (const 行 of 聚合) {
       const fromId = String(行.from_id)
       const toId = String(行.to_id)
@@ -456,23 +511,26 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
       // 「自动抽取」自环 ⇒ 同一事实两行两态，`query_relations` 默认还把它当关系返回，
       // 而档案 / 探索走 XOR 得 0 条（缺口 #7）。落已排除后两端口径一致：默认读口都不返回，
       // 金额也不会被算重（`aggregate_money` 的 XOR 本就把自环挡在收支之外）。
-      const 信任态 = fromId === toId ? "已排除" : "自动抽取"
-      const 写入 = rowsOf(
-        await tx.execute(sql`
-          insert into auth.case_relation
-            (id, project_id, from_id, to_id, type, first_at, last_at, precision, times, times_cny, amount,
-             basis, source_kind, trust_state, created_at)
-          values (${事实id(projectId, "转账", fromId, toId)}, ${projectId}, ${fromId}, ${toId}, '转账',
-                  ${行.first_at ?? null}, ${行.last_at ?? null}, ${行.precision ?? null},
-                  ${Number(行.times ?? 0)}, ${Number(行.times_cny ?? 0)}, ${行.amount}, null, 'data', ${信任态},
-                  ${nowSeconds()})
-          on conflict (project_id, id) do nothing
-          returning id
-        `),
-      )
-      // 按**实际插入行数**累计：`on conflict do nothing` 时 returning 为空，返回值不虚高。
-      written += 写入.length
+      关系行们.push({
+        projectId,
+        id: 事实id(projectId, "转账", fromId, toId),
+        fromId,
+        toId,
+        type: "转账",
+        firstAt: 行.first_at === null ? null : Number(行.first_at),
+        lastAt: 行.last_at === null ? null : Number(行.last_at),
+        precision: typeof 行.precision === "string" ? 行.precision : null,
+        times: Number(行.times ?? 0),
+        timesCny: Number(行.times_cny ?? 0),
+        amount: 行.amount,
+        basis: null,
+        sourceKind: "data",
+        trustState: fromId === toId ? "已排除" : "自动抽取",
+      })
     }
+    // 按**实际插入行数**累计：`on conflict do nothing` 时 returning 为空，返回值不虚高。
+    // 批量写：5000 个对手对逐条插 = 5000 次往返（`#013-09`）。
+    written += await insertRelations(tx, 关系行们)
   }
   return written
 }

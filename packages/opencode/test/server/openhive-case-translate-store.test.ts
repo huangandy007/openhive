@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
+import { PgDialect } from "drizzle-orm/pg-core"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { 清本材料翻译, 写入翻译结果 } from "../../src/server/openhive/case-translate-store"
+import { 清本材料翻译, 写入翻译结果, 重建关系 } from "../../src/server/openhive/case-translate-store"
 import { 确保内置模板, type 模板行 } from "../../src/server/openhive/case-card-template"
 import { 翻译资金 } from "../../src/server/openhive/case-translate"
 import { 翻译模板 } from "../../src/server/openhive/case-template-translate"
@@ -452,5 +453,190 @@ describe("备注事实落库（组织 / 车辆 / 号码 / 摘要）", () => {
     await 写备注("rm1", [备注行()])
     expect(await 数()).toEqual(一次)
     expect(一次).toEqual([5, 5, 1, "午餐"])
+  })
+})
+
+/**
+ * A13 的性能回归（2026-11-14 真栈：5,000 行一份流水卡在「解析中」17 分钟，队列全堵）。
+ *
+ * 真栈探针（事务内回滚，`EXPLAIN (ANALYZE, BUFFERS)`）实测根因：
+ * **事务内刚写入的行没有任何统计信息**，规划器以为 `case_event` 里一个小项目的行很少，
+ * 于是对每个候选参与者行都做一次 `case_event_purpose_l1`（只带 project_id）索引扫描 +
+ * `id = 付.event_id` 连接过滤 —— 1,000 行时两次扫描共去掉 1,732 万行，两条语句 9.2s。
+ * 同一事务内先 `analyze` 这两张表（79ms）后，同样两条语句降到 0.4s，整份写入 16.5s → 7.4s。
+ *
+ * 这里钉「建关系前必须先刷新统计」这一前提；单条语句 4.5s→0.2s 的性能见证在真栈
+ * `EXPLAIN (ANALYZE)` 基线（同 `openhive-case-fact-index.test.ts` 的口径，`#004-03`）。
+ */
+describe("重建关系 · 取数前先刷新事务内统计", () => {
+  const 尺度项目 = "prj-rel-analyze"
+
+  test("analyze case_event / case_event_participant 先于两条取数语句", async () => {
+    const templateId = await 确保内置模板(db(), 尺度项目)
+    const 翻译 = 翻译资金({
+      projectId: 尺度项目,
+      materialId: "sm1",
+      rows: [{ ...行(), projectId: 尺度项目, materialId: "sm1" }],
+    })
+    await 写入翻译结果(db(), { projectId: 尺度项目, materialId: "sm1", templateId, 翻译 })
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select id, canonical_value from auth.case_entity where project_id = ${尺度项目}
+      `),
+    ).map((e) => ({ id: String(e.id), 值: String(e.canonical_value) }))
+    const 找 = (值: string) => 实体.find((e) => e.值 === 值)?.id ?? ""
+    const fromId = 找("6217001234567896514")
+    const toId = 找("6222021234567890123")
+    if (!fromId || !toId) throw new Error(`骨架实体没建出来：${JSON.stringify(实体)}`)
+
+    const 方言 = new PgDialect()
+    const 语句们: string[] = []
+    const 真库 = db()
+    const 记账库 = {
+      execute(query: SQL) {
+        语句们.push(方言.sqlToQuery(query).sql)
+        return 真库.execute(query)
+      },
+    }
+    await 重建关系(记账库, 尺度项目, [{ fromId, toId }])
+
+    const 分析位 = 语句们.findIndex((s) => s.trimStart().startsWith("analyze ") && s.includes("case_event_participant"))
+    expect(分析位).toBeGreaterThanOrEqual(0)
+    for (const s of 语句们) {
+      if (!(s.includes("from auth.case_event e") && s.includes("auth.case_event_participant 付"))) continue
+      expect(语句们.indexOf(s)).toBeGreaterThan(分析位)
+    }
+  })
+})
+
+/**
+ * A13 的第二根因（2026-11-15 真栈，`EXPLAIN (ANALYZE)` 实测）：
+ * `重建关系` 的两条取数语句用 `(付.entity_id, 收.entity_id) in (values …)` 过滤，
+ * 规划器把对过滤**下推到付款方一侧**（只按一列 hash），再对每个候选行按
+ * `(project_id, event_id)` 取收款方行去比第二列 —— 500 对 / 5,005 事件时中间结果
+ * 809,880 行、`Rows Removed by Join Filter: 809,379`，单条 **2,633ms**；把同一规划
+ * 语句第 6 次起转通用计划后升到 5.6s。先把「事件对」物化（规划器不许重排），
+ * 同数据同语句 **13.5ms**。
+ *
+ * 这里只钉「取数语句带 `as materialized`」这一形态前提 —— 真实耗时是远端 PG 的计划
+ * 属性，PGlite 量不出（`#004-03`）；计划本身的真栈基线见 A13 回写。
+ */
+describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
+  const 计划项目 = "prj-rel-materialized"
+
+  test("两条取数语句都先把事件对物化，再按对过滤", async () => {
+    const templateId = await 确保内置模板(db(), 计划项目)
+    const 翻译 = 翻译资金({
+      projectId: 计划项目,
+      materialId: "pm1",
+      rows: [{ ...行(), projectId: 计划项目, materialId: "pm1" }],
+    })
+    await 写入翻译结果(db(), { projectId: 计划项目, materialId: "pm1", templateId, 翻译 })
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select id, canonical_value from auth.case_entity where project_id = ${计划项目}
+      `),
+    ).map((e) => ({ id: String(e.id), 值: String(e.canonical_value) }))
+    const 找 = (值: string) => 实体.find((e) => e.值 === 值)?.id ?? ""
+    const fromId = 找("6217001234567896514")
+    const toId = 找("6222021234567890123")
+    if (!fromId || !toId) throw new Error(`骨架实体没建出来：${JSON.stringify(实体)}`)
+
+    const 方言 = new PgDialect()
+    const 语句们: string[] = []
+    const 真库 = db()
+    const 记账库 = {
+      execute(query: SQL) {
+        语句们.push(方言.sqlToQuery(query).sql)
+        return 真库.execute(query)
+      },
+    }
+    await 重建关系(记账库, 计划项目, [{ fromId, toId }])
+
+    const 取数语句 = 语句们.filter(
+      (s) => s.includes("from auth.case_event e") && s.includes("auth.case_event_participant 付"),
+    )
+    // ② 事件取数 + ④ 聚合：一条都不能漏（逐行实现时这里是 0 条带 materialized）。
+    expect(取数语句.length).toBeGreaterThanOrEqual(2)
+    for (const s of 取数语句) expect(s).toContain("as materialized")
+
+    // ① human 转账关系同族：过滤列是 `coalesce(对齐代表, id)`，同样会把对过滤下推到
+    // 单列再逐行算第二列（事务内临时改 source_kind 实测 926ms；物化后 68ms）。
+    const 关系取数 = 语句们.filter(
+      (s) => s.includes("from auth.case_relation r") && s.includes("auth.case_entity_alias"),
+    )
+    expect(关系取数.length).toBeGreaterThanOrEqual(1)
+    for (const s of 关系取数) expect(s).toContain("as materialized")
+  })
+})
+
+/**
+ * 5000 行 = 5001 个不同对手账号时，写事务里的**三条逐行循环**（实体归并 / 别名 / 关系）
+ * 会变成约 1.5 万次往返。真栈远端 PG 实测单次 22ms（2026-11-15，`rtt.ts` 探针）⇒ 外推 445s，
+ * 与「10 分钟没跑完」的观测一致（A13）。这里钉的是**语句数与行数无关**（分块批量），
+ * 单次往返的真实耗时在真栈基线里量（`#004-03`：PGlite 是本机进程，量不出网络往返）。
+ */
+describe("写入翻译结果 · 逐行往返（5000 行 ⇒ 万次往返）", () => {
+  const 批量项目 = "prj-batch"
+
+  test("600 张卡（602 个账号）：实体 / 别名 / 关系都按分块批量写", async () => {
+    const 材料 = "mb1"
+    const rows = Array.from({ length: 600 }, (_, i) =>
+      行({
+        projectId: 批量项目,
+        materialId: 材料,
+        rowNo: 1000 + i,
+        counterparty: `6222${String(i).padStart(13, "0")}`,
+        counterpartyName: `对手${i}`,
+      }),
+    )
+    // 同一对手出现两次：批量后一个 chunk 里会有重复的 (type, canonical_value)，
+    // `on conflict do update` 不许同一语句改同一行两次（21000）——用例顺带钉住写入前去重。
+    rows.push(
+      行({
+        projectId: 批量项目,
+        materialId: 材料,
+        rowNo: 2000,
+        counterparty: `6222${String(1).padStart(13, "0")}`,
+        counterpartyName: "对手1",
+      }),
+    )
+
+    const 方言 = new PgDialect()
+    const 语句们: string[] = []
+    const 真库 = db()
+    const 记账库 = {
+      execute(query: SQL) {
+        语句们.push(方言.sqlToQuery(query).sql)
+        return 真库.execute(query)
+      },
+    }
+    const templateId = await 确保内置模板(真库, 批量项目)
+    const 翻译 = 翻译资金({ projectId: 批量项目, materialId: 材料, rows })
+    const r = await 写入翻译结果(记账库, { projectId: 批量项目, materialId: 材料, templateId, 翻译 })
+
+    const 数 = (片段: string) => 语句们.filter((s) => s.includes(片段)).length
+    // 601 个账号（600 个对手 + 本方）⇒ 每类最多 2 个分块（INSERT_CHUNK=500）；
+    // 留 1 条余量，别把测试绑死在分块大小的具体取值上。逐行实现时这里是 601 / 601 / 600。
+    expect(数("insert into auth.case_entity (")).toBeLessThanOrEqual(3)
+    expect(数("insert into auth.case_entity_alias")).toBeLessThanOrEqual(3)
+    expect(数("insert into auth.case_relation")).toBeLessThanOrEqual(3)
+
+    // 批量化不能改变结果：卡片数按行算（重复对手不影响卡片），
+    // 账号实体去重后 601 个（600 个对手 + 1 个本方账号），资金对去重后 600 条。
+    expect(r.卡片数).toBe(601)
+    const 账号 = rowsOf(
+      await 真库.execute(sql`
+        select count(*)::int as n from auth.case_entity
+         where project_id = ${批量项目} and type = '账户'
+      `),
+    )
+    expect(Number(账号[0]?.n)).toBe(601)
+    const 关系 = rowsOf(
+      await 真库.execute(sql`
+        select count(*)::int as n from auth.case_relation where project_id = ${批量项目} and type = '转账'
+      `),
+    )
+    expect(Number(关系[0]?.n)).toBe(600)
   })
 })
