@@ -89,14 +89,17 @@ export interface 用途规则 {
 }
 
 /**
- * 备注分段解析（06 §2.1：`##` 分段，段内 `键：值`）。
+ * 备注分段解析（06 §2.1：`##` 分段，段内 `键：值`）。返回三样：`首段`（整段，摘要用）、
+ * `主体`（首段再按 `;` 取第一段，用途规则用）、`段`（键值表，商户等②层事实用）。
  *
  * 这是**机械还原**不是解释：切段、取键值，不改一个字符（01 §6.7「预处理只做格式对齐」）。
  * 主体 = 第一个 `##` 段再按 `;` 取第一段——「零钱通作后缀」的判据要靠它（06 §6.3 修正 4）。
  */
-export function 解析备注段(备注: string): { 主体: string; 段: Record<string, string> } {
+export function 解析备注段(备注: string): { 首段: string; 主体: string; 段: Record<string, string> } {
   const 段: Record<string, string> = {}
-  const 首段 = 备注.split("##")[0] ?? ""
+  const 首段原 = 备注.split("##")[0] ?? ""
+  // 摘要要整段（还要按 `;` 折叠，见 `case-remark-facts.ts`）；`备注：` 是导出的固定前缀，去掉。
+  const 首段 = 首段原.replace(/^备注[：:]\s*/u, "").trim()
   for (const 一 of 备注.split("##")) {
     const 文本 = 一.trim()
     // 冒号必须在行首之后：`键` 为空或整段就是冒号时不算键值。
@@ -107,7 +110,7 @@ export function 解析备注段(备注: string): { 主体: string; 段: Record<s
     // 同键重复取第一个：后出现的多半是拼接噪音，覆盖会让结果依赖拼接顺序。
     if (键 !== "" && !Object.hasOwn(段, 键)) 段[键] = 值
   }
-  return { 主体: (首段.split(";")[0] ?? "").trim(), 段 }
+  return { 首段, 主体: (首段原.split(";")[0] ?? "").trim(), 段 }
 }
 
 function 字段取值(字段: string, 备注: string, 段: Record<string, string>, 主体: string): string | null {
