@@ -7,7 +7,18 @@ import {
   资金模板插槽,
   校验槽位种类,
   确保内置模板,
+  角色们,
+  人称角色们,
+  地点角色们,
+  默认角色,
+  是角色,
+  是用户模板id,
+  槽条目们,
+  归一槽位,
+  校验模板定义,
+  检查模板定义,
 } from "../../src/server/openhive/case-card-template"
+import { 字段显示名 } from "../../src/server/openhive/case-field-registry"
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 beforeAll(async () => {
@@ -137,5 +148,219 @@ describe("内置模板行（Q15）", () => {
       `),
     )
     expect(行[0]?.verified_at).toBe(1000000000)
+  })
+})
+
+describe("迁移 0044（模板编辑器内核）", () => {
+  test("disabled_at / template_id 与用户模板唯一索引都在", async () => {
+    const 列 = rowsOf(
+      await db().execute(sql`
+        select table_name, column_name from information_schema.columns
+         where table_schema = 'auth'
+           and ((table_name = 'case_card_template' and column_name = 'disabled_at')
+             or (table_name = 'case_ingest_job' and column_name = 'template_id'))
+      `),
+    ).map((r) => `${String(r.table_name)}.${String(r.column_name)}`)
+    expect(列.sort()).toEqual(["case_card_template.disabled_at", "case_ingest_job.template_id"])
+
+    const 索引 = rowsOf(
+      await db().execute(sql`
+        select indexname from pg_indexes
+         where schemaname = 'auth' and tablename = 'case_card_template'
+           and indexname = 'case_card_template_active_user'
+      `),
+    )
+    expect(索引).toHaveLength(1)
+  })
+
+  test("同项目同事件类型只允许一个启用中的用户模板（部分唯一索引）", async () => {
+    const 项目 = "p-模板唯一"
+    const 定义 = {
+      name: "通话",
+      eventType: "通话",
+      slots: { 谁: { 字段: "caller" }, 何时: { 字段: "startedAt" } },
+      required: ["谁", "何时"],
+    }
+    const 一 = 检查模板定义(定义)
+    expect(一.错).toEqual([])
+    await db().execute(sql`
+      insert into auth.case_card_template
+        (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+      values ('用户:00000000-0000-0000-0000-00000000a001', ${项目}, '通话', '通话',
+              '{"谁":[{"字段":"caller"}],"何时":[{"字段":"startedAt"}]}'::jsonb, ARRAY['谁','何时'], 1, null, 0, 1)
+    `)
+    // 同类型第二条：部分唯一索引必须拒绝（错误码 23505，这里的用例只钉「拒绝」这件事）。
+    // `Promise.resolve` 只是把 drizzle 的 thenable 转成原生 Promise——Bun 的 `.rejects` 只认原生 Promise。
+    await expect(
+      Promise.resolve(
+        db().execute(sql`
+          insert into auth.case_card_template
+            (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+          values ('用户:00000000-0000-0000-0000-00000000a002', ${项目}, '通话2', '通话',
+                  '{"谁":[{"字段":"callee"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
+        `),
+      ),
+    ).rejects.toThrow()
+    // 停用后可以再建同类型：索引条件是 `disabled_at is null`。
+    await db().execute(sql`
+      update auth.case_card_template set disabled_at = 1
+       where project_id = ${项目} and id = '用户:00000000-0000-0000-0000-00000000a001'
+    `)
+    await db().execute(sql`
+      insert into auth.case_card_template
+        (id, project_id, name, event_type, slots, required, version, verified_at, hit_count, created_at)
+      values ('用户:00000000-0000-0000-0000-00000000a002', ${项目}, '通话2', '通话',
+              '{"谁":[{"字段":"callee"}]}'::jsonb, ARRAY['谁'], 1, null, 0, 1)
+    `)
+  })
+})
+
+describe("角色词表与默认角色（§6.1）", () => {
+  test("人称角色 = 角色词表去掉三个地点角色", () => {
+    expect(地点角色们).toEqual(["地点", "出发地", "到达地"])
+    expect(人称角色们.length).toBe(角色们.length - 3)
+    for (const 角色 of 地点角色们) expect(人称角色们).not.toContain(角色)
+  })
+
+  test("默认角色：谁→主体、和谁→对方、何地→地点", () => {
+    expect(默认角色).toEqual({ 谁: "主体", 和谁: "对方", 何地: "地点" })
+  })
+
+  test("字段显示名覆盖全部 17 个识别字段，且无重复值", () => {
+    expect(Object.keys(字段显示名)).toHaveLength(17)
+    expect(字段显示名.caller).toBe("主叫号码")
+    expect(字段显示名.durationSec).toBe("通话时长")
+    expect(字段显示名.ownerName).toBe("本方户名")
+    expect(new Set(Object.values(字段显示名)).size).toBe(17)
+  })
+
+  test("是用户模板id 只认 `用户:` 前缀；是角色 只认词表", () => {
+    expect(是用户模板id("用户:abc")).toBe(true)
+    expect(是用户模板id(资金模板id)).toBe(false)
+    expect(是角色("主体")).toBe(true)
+    expect(是角色("路人")).toBe(false)
+    expect(是角色(undefined)).toBe(false)
+  })
+})
+
+describe("模板定义校验（§6.3）", () => {
+  const 合法 = {
+    name: "通话",
+    eventType: "通话",
+    slots: {
+      谁: { 字段: "caller", 角色: "主叫" },
+      和谁: [{ 字段: "callee", 角色: "被叫" }],
+      何时: { 字段: "startedAt" },
+      其他: [{ 字段: "durationSec" }, { 字段: "address" }],
+    },
+    required: ["何时"],
+  }
+
+  test("合法定义：零错误，谁被自动加进必填并按九格排序", () => {
+    const 检查 = 检查模板定义(合法)
+    expect(检查.错).toEqual([])
+    expect(检查.值?.required).toEqual(["谁", "何时"])
+    expect(检查.值?.slots).toEqual({
+      谁: [{ 字段: "caller", 角色: "主叫" }],
+      和谁: [{ 字段: "callee", 角色: "被叫" }],
+      何时: [{ 字段: "startedAt" }],
+      其他: [{ 字段: "durationSec" }, { 字段: "address" }],
+    })
+  })
+
+  test("名称为空 / 超 200 字被拒", () => {
+    expect(校验模板定义({ ...合法, name: "  " }).some((e) => e.includes("200"))).toBe(true)
+    expect(校验模板定义({ ...合法, name: "x".repeat(201) }).some((e) => e.includes("200"))).toBe(true)
+  })
+
+  test("资金交易 / 住宿 不能建用户模板", () => {
+    for (const 事件类型 of ["资金交易", "住宿"]) {
+      const 错 = 校验模板定义({ ...合法, eventType: 事件类型 })
+      expect(错.some((e) => e.includes("不能建用户模板"))).toBe(true)
+    }
+    expect(校验模板定义({ ...合法, eventType: "不存在的类型" }).some((e) => e.includes("未知的事件类型"))).toBe(
+      true,
+    )
+  })
+
+  test("未知槽名被拒（校验槽位种类 不查未知键，这里必须补）", () => {
+    const 错 = 校验模板定义({ ...合法, slots: { ...合法.slots, 备注: { 字段: "merchant" } } })
+    expect(错.some((e) => e.includes("备注"))).toBe(true)
+  })
+
+  test("同一字段出现两次被拒", () => {
+    const 错 = 校验模板定义({
+      ...合法,
+      slots: { 谁: { 字段: "caller" }, 和谁: [{ 字段: "caller" }], 何时: { 字段: "startedAt" } },
+    })
+    expect(错.some((e) => e.includes("caller") && e.includes("次"))).toBe(true)
+  })
+
+  test("单值槽最多 1 条；总条数最多 100", () => {
+    const 两条 = 校验模板定义({ ...合法, slots: { ...合法.slots, 谁: [{ 字段: "caller" }, { 字段: "callee" }] } })
+    expect(两条.some((e) => e.includes("「谁」") && e.includes("最多 1 条"))).toBe(true)
+    const 一百零一 = Array.from({ length: 101 }, () => ({ 字段: "address" }))
+    const 超量 = 校验模板定义({ ...合法, slots: { 谁: { 字段: "caller" }, 何时: { 字段: "startedAt" }, 其他: 一百零一 } })
+    expect(超量.some((e) => e.includes("超过上限 100"))).toBe(true)
+  })
+
+  test("角色词表与槽位归属", () => {
+    expect(校验模板定义({ ...合法, slots: { ...合法.slots, 谁: { 字段: "caller", 角色: "路人" } } }).some((e) =>
+      e.includes("角色词表"),
+    )).toBe(true)
+    // 地点角色不能出现在「谁」。
+    expect(校验模板定义({ ...合法, slots: { ...合法.slots, 谁: { 字段: "caller", 角色: "到达地" } } }).some((e) =>
+      e.includes("「谁」"),
+    )).toBe(true)
+    // 「何时」不收角色。
+    expect(校验模板定义({ ...合法, slots: { ...合法.slots, 何时: { 字段: "startedAt", 角色: "主体" } } }).some(
+      (e) => e.includes("「何时」不收角色"),
+    )).toBe(true)
+    // 「何地」只收地点角色。
+    expect(校验模板定义({ ...合法, slots: { ...合法.slots, 何地: { 字段: "address", 角色: "主体" } } }).some((e) =>
+      e.includes("「何地」"),
+    )).toBe(true)
+  })
+
+  test("实体类型词表；何地必须是「地点」", () => {
+    expect(
+      校验模板定义({ ...合法, slots: { ...合法.slots, 谁: { 字段: "caller", 实体类型: "外星人" } } }).some((e) =>
+        e.includes("实体类型"),
+      ),
+    ).toBe(true)
+    expect(
+      校验模板定义({ ...合法, slots: { ...合法.slots, 何地: { 字段: "address", 实体类型: "组织" } } }).some((e) =>
+        e.includes("何地"),
+      ),
+    ).toBe(true)
+    expect(
+      校验模板定义({ ...合法, slots: { ...合法.slots, 何地: { 字段: "address", 实体类型: "地点" } } }).some((e) =>
+        e.includes("何地"),
+      ),
+    ).toBe(false)
+  })
+
+  test("「其他」不收角色与实体类型", () => {
+    const 错 = 校验模板定义({
+      ...合法,
+      slots: { ...合法.slots, 其他: [{ 字段: "durationSec", 角色: "主体", 实体类型: "人" }] },
+    })
+    expect(错.some((e) => e.includes("其他") && e.includes("角色"))).toBe(true)
+  })
+
+  test("必填必须是槽名数组；必填槽必须有填法", () => {
+    expect(校验模板定义({ ...合法, required: "谁" }).some((e) => e.includes("required"))).toBe(true)
+    expect(校验模板定义({ ...合法, required: ["备注"] }).some((e) => e.includes("备注"))).toBe(true)
+    // 谁 恒必填 ⇒ 没填 谁 的定义过不去。
+    expect(
+      校验模板定义({ ...合法, slots: { 何时: { 字段: "startedAt" } }, required: [] }).some((e) =>
+        e.includes("必填槽「谁」"),
+      ),
+    ).toBe(true)
+  })
+
+  test("归一槽位：畸形 JSON 不抛，只收合法条目", () => {
+    expect(() => 归一槽位("oops")).not.toThrow()
+    expect(归一槽位({ 谁: { 字段: "notAField" }, 何时: "oops" })).toEqual({})
   })
 })

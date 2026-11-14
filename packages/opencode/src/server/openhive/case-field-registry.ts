@@ -189,6 +189,30 @@ export function 是识别字段(值: unknown): 值 is 识别字段 {
   return typeof 值 === "string" && 识别字段集.has(值)
 }
 
+/**
+ * 字段的中文显示名（§6.1）。模板卡片的 `attrs` 键用它，不用字段名 ——
+ * 民警在卡片上看到的是「通话时长」，不是 `durationSec`（`01` §4.7.6）。
+ */
+export const 字段显示名: Record<识别字段, string> = {
+  caller: "主叫号码",
+  callee: "被叫号码",
+  startedAt: "时间",
+  durationSec: "通话时长",
+  amount: "金额",
+  balance: "余额",
+  counterparty: "对方账号",
+  counterpartyName: "对方户名",
+  ownerAccount: "本方账号",
+  direction: "方向",
+  currency: "币种",
+  address: "地址",
+  merchant: "商户",
+  contactPhone: "联系电话",
+  personName: "姓名",
+  deliveredAt: "送达时间",
+  ownerName: "本方户名",
+}
+
 export function 是标准列(字段: 识别字段): 字段 is 标准列字段 {
   return 字段目录[字段].落点 === "列"
 }

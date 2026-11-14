@@ -10,6 +10,8 @@ import {
   type 字段种类,
   type 识别字段,
 } from "./case-field-registry"
+import { 实体类型们 } from "./case-extract"
+import { 资金交易, 是事件类型, type 事件类型 } from "./case-event-types"
 import type { Queryable } from "./case-store"
 
 /**
@@ -26,6 +28,54 @@ import type { Queryable } from "./case-store"
 
 export const 九格们 = ["谁", "和谁", "何时", "何时止", "何地", "多少钱", "其他"] as const
 export type 槽 = (typeof 九格们)[number]
+
+/**
+ * 角色词表（§6.1）。落 `case_event_participant.role`。
+ *
+ * 「谁 / 和谁」用人称角色（主体 / 对方 / 主叫 / 被叫 / 入住人 …），
+ * 「何地」用地点角色（地点 / 出发地 / 到达地）；两套不能混（`校验模板定义` 第 6 条）。
+ */
+export const 角色们 = [
+  "主体",
+  "对方",
+  "入住人",
+  "同住人",
+  "付款方",
+  "收款方",
+  "主叫",
+  "被叫",
+  "地点",
+  "出发地",
+  "到达地",
+  "车辆",
+  "物品",
+  "班次",
+  "经办人",
+  "其他",
+] as const
+export type 角色 = (typeof 角色们)[number]
+
+const 角色集: ReadonlySet<string> = new Set(角色们)
+
+/** 引擎、校验、DAO 共用的角色判定（`#002-06`：这一条只能有一处）。 */
+export function 是角色(值: unknown): 值 is 角色 {
+  return typeof 值 === "string" && 角色集.has(值)
+}
+
+export const 地点角色们: readonly 角色[] = ["地点", "出发地", "到达地"]
+const 地点角色集: ReadonlySet<string> = new Set(地点角色们)
+export const 人称角色们: readonly 角色[] = 角色们.filter((角色) => !地点角色集.has(角色))
+const 人称角色集: ReadonlySet<string> = new Set(人称角色们)
+
+/** 槽位没写角色时的默认值（§6.1）。 */
+export const 默认角色 = { 谁: "主体", 和谁: "对方", 何地: "地点" } as const satisfies Partial<Record<槽, 角色>>
+
+export const 用户模板前缀 = "用户:"
+
+/** 用户模板 id 形如 `用户:<uuid>`；内置是 `内置:…`。模板 DAO 的不可变判定只认这一条。 */
+export function 是用户模板id(id: string): boolean {
+  return id.startsWith(用户模板前缀)
+}
 
 export interface 槽填法 {
   字段: 识别字段
@@ -201,4 +251,183 @@ export async function 读模板(db: Queryable, projectId: string, id: string) {
     `),
   )
   return 行[0]
+}
+
+const 槽集: ReadonlySet<string> = new Set(九格们)
+const 实体类型集: ReadonlySet<string> = new Set(实体类型们)
+
+/** 读回 / 建议 / 引擎共用的「已收窄填法」视图（`#002-06`：拆法只有一份）。 */
+export interface 槽条目 {
+  字段: 识别字段
+  角色?: string
+  实体类型?: string
+}
+
+export function 槽条目们(槽位: 模板槽位, 槽名: 槽): 槽条目[] {
+  return 拆填法(槽名, 槽位[槽名]).条目.flatMap((填) => {
+    if (!是识别字段(填.字段)) return []
+    const 一条: 槽条目 = { 字段: 填.字段 }
+    if (typeof 填.角色 === "string") 一条.角色 = 填.角色
+    if (typeof 填.实体类型 === "string") 一条.实体类型 = 填.实体类型
+    return [一条]
+  })
+}
+
+/** 模板 JSON（库 / HTTP）→ 合法形状；畸形条目丢掉，不抛。写入口已先校验，这里只是收窄。 */
+export function 归一槽位(槽位: unknown): 模板槽位 {
+  const 出: { [K in 槽]?: 槽填法[] } = {}
+  if (!是记录(槽位)) return 出
+  for (const 槽名 of 九格们) {
+    const 填法们: 槽填法[] = []
+    for (const 填 of 拆填法(槽名, 槽位[槽名]).条目) {
+      if (!是识别字段(填.字段)) continue
+      const 一条: 槽填法 = { 字段: 填.字段 }
+      if (typeof 填.角色 === "string") 一条.角色 = 填.角色
+      if (typeof 填.实体类型 === "string") 一条.实体类型 = 填.实体类型
+      填法们.push(一条)
+    }
+    if (填法们.length > 0) 出[槽名] = 填法们
+  }
+  return 出
+}
+
+/** 规范化后的模板定义（已通过校验）。 */
+export interface 模板定义 {
+  name: string
+  event_type: 事件类型
+  slots: 模板槽位
+  required: 槽[]
+}
+
+/** 校验入参：name / eventType 已在 HTTP 层过形状闸（都是字符串）。 */
+export interface 模板定义输入 {
+  name: string
+  eventType: string
+  slots: unknown
+  required: unknown
+}
+
+/** 模板行（`auth.case_card_template` 的一行，已收窄类型）。 */
+export interface 模板行 {
+  id: string
+  name: string
+  event_type: 事件类型
+  slots: 模板槽位
+  required: 槽[]
+  version: number
+  verified_at: number | null
+  hit_count: number
+  disabled_at: number | null
+}
+
+function 是槽(值: unknown): 值 is 槽 {
+  return typeof 值 === "string" && 槽集.has(值)
+}
+
+function 规范化必填(required: unknown): { 值: 槽[]; 错: string[] } {
+  if (!Array.isArray(required)) return { 值: [], 错: ["required 必须是槽名数组"] }
+  const 错: string[] = []
+  const 集 = new Set<槽>(["谁"])
+  for (const 项 of required) {
+    if (!是槽(项)) {
+      错.push(`required 里的「${String(项)}」不是合法槽名；可用：${九格们.join("、")}`)
+      continue
+    }
+    集.add(项)
+  }
+  // 谁 恒必填；按九格顺序输出，保证同样的定义永远得到同样的 required（可比对、可去重）。
+  return { 值: 九格们.filter((槽名) => 集.has(槽名)), 错 }
+}
+
+/** 角色 / 实体类型这两条（§6.3 第 6、7、8 条）。 */
+function 校验角色与实体(槽名: 槽, 填: Record<string, unknown>): string[] {
+  const 角色 = 填.角色
+  const 实体类型 = 填.实体类型
+  if (槽名 === "其他") {
+    return 角色 !== undefined || 实体类型 !== undefined ? ["「其他」不收角色与实体类型"] : []
+  }
+  const 错: string[] = []
+  if (角色 !== undefined) {
+    if (!(typeof 角色 === "string" && 角色集.has(角色))) {
+      错.push(`「${槽名}」的角色 ${String(角色)} 不在角色词表里`)
+    } else if ((槽名 === "谁" || 槽名 === "和谁") && !人称角色集.has(角色)) {
+      错.push(`「${槽名}」的角色只能用：${人称角色们.join("、")}`)
+    } else if (槽名 === "何地" && !地点角色集.has(角色)) {
+      错.push(`「何地」的角色只能用：${地点角色们.join("、")}`)
+    } else if (槽名 !== "谁" && 槽名 !== "和谁" && 槽名 !== "何地") {
+      错.push(`「${槽名}」不收角色（只有 谁 / 和谁 / 何地 能定角色）`)
+    }
+  }
+  if (实体类型 !== undefined) {
+    if (!(typeof 实体类型 === "string" && 实体类型集.has(实体类型))) {
+      错.push(`「${槽名}」的实体类型 ${String(实体类型)} 不在实体类型词表里`)
+    } else if (槽名 === "何地" && 实体类型 !== "地点") {
+      错.push("「何地」的实体类型必须是「地点」")
+    }
+  }
+  return 错
+}
+
+const 单值槽: ReadonlySet<string> = new Set(["谁", "何时", "何时止", "多少钱"])
+const 模板填法上限 = 100
+
+/**
+ * 模板定义的完整校验（§6.3 十条）。返回错误清单（空 = 通过）+ 规范化结果。
+ *
+ * `校验模板定义` 是本函数的薄包装（HTTP 只关心错误）；DAO 用 `值` 落库 ⇒ 校验与收窄**同一份**
+ * （`#002-06`：两处各写一遍就是下一处漂移）。
+ */
+export function 检查模板定义(定义: 模板定义输入): { 错: string[]; 值?: 模板定义 } {
+  const 错: string[] = []
+  const name = 定义.name.trim()
+  if (name === "" || name.length > 200) 错.push("模板名不能为空且不超过 200 字")
+
+  const eventType = 定义.eventType.trim()
+  if (!是事件类型(eventType)) 错.push(`未知的事件类型：${定义.eventType}`)
+  else if (eventType === 资金交易 || eventType === "住宿") {
+    错.push("资金交易由方向算法负责、住宿由区间合并负责，不能建用户模板")
+  }
+
+  const slots = 定义.slots
+  错.push(...校验槽位种类(slots))
+  if (是记录(slots)) {
+    for (const 键 of Object.keys(slots)) {
+      if (!槽集.has(键)) 错.push(`未知槽名「${键}」；可用：${九格们.join("、")}`)
+    }
+  }
+
+  const 字段计数 = new Map<string, number>()
+  let 总条数 = 0
+  for (const 槽名 of 九格们) {
+    const 条目 = 是记录(slots) ? 拆填法(槽名, slots[槽名]).条目 : []
+    总条数 += 条目.length
+    if (单值槽.has(槽名) && 条目.length > 1) 错.push(`「${槽名}」最多 1 条填法`)
+    for (const 填 of 条目) {
+      if (typeof 填.字段 === "string") 字段计数.set(填.字段, (字段计数.get(填.字段) ?? 0) + 1)
+      错.push(...校验角色与实体(槽名, 填))
+    }
+  }
+  for (const [字段, 数] of 字段计数) {
+    if (数 > 1) 错.push(`字段 ${字段} 在模板里出现了 ${数} 次；一个字段只能落一个槽`)
+  }
+  if (总条数 > 模板填法上限) 错.push(`模板填法共 ${总条数} 条，超过上限 ${模板填法上限}`)
+
+  const 必填 = 规范化必填(定义.required)
+  错.push(...必填.错)
+  if (必填.错.length === 0) {
+    for (const 槽名 of 必填.值) {
+      const 条目 = 是记录(slots) ? 拆填法(槽名, slots[槽名]).条目 : []
+      if (条目.length === 0) 错.push(`必填槽「${槽名}」还没有填法`)
+    }
+  }
+
+  if (错.length > 0) return { 错 }
+  // 上面 `!是事件类型` 已 push 过错误 ⇒ 走到这里 eventType 必定合法；这一行只为类型收窄。
+  if (!是事件类型(eventType)) return { 错: [`未知的事件类型：${定义.eventType}`] }
+  return { 错: [], 值: { name, event_type: eventType, slots: 归一槽位(slots), required: 必填.值 } }
+}
+
+/** HTTP 层只看错误（§6.3）。 */
+export function 校验模板定义(定义: 模板定义输入): string[] {
+  return 检查模板定义(定义).错
 }
