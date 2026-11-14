@@ -426,8 +426,8 @@ export function CardTemplates(props: CardTemplatesProps): JSX.Element {
                         options={[...材料们()]}
                         current={材料们().find((项) => 项.id === 本次复核()) ?? 空材料项}
                         value={(项) => 项.id}
-                        // 哨兵要走 label 的「选择材料」：`SelectV2` 只在有选中项时渲染 label，
-                        // 空串会得到一块空白触发器而不是 placeholder（Nit）。
+                        // Kobalte 把「唯一选中值为 `""`」判为空选择 ⇒ 渲染 placeholder（实测）。
+                        // 这里的 label 分支只是上游语义变化时的兜底（fix 3/5）。
                         label={(项) => (项.id === "" ? "选择材料" : 项.path)}
                         placeholder="选择材料"
                         onSelect={(项) => {

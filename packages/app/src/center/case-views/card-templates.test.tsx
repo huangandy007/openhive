@@ -476,8 +476,56 @@ describe("卡片模板列表", () => {
     const 前 = 列表次数
     停用等待[0]!({ kind: "ok", value: { ok: true } })
     // 成功响应虽被归属守卫挡在提示/错误之外，动作已在服务端生效 ⇒ 必须静默重拉让列表自纠。
-    await 等(() => 列表次数 > 前)
     await 让一拍()
+    // 精确 +1：`>` 会放过「多回拉一次」，且红点只报「等超时」而不报实得次数（fix 3/5）。
+    expect(列表次数).toBe(前 + 1)
+    expect(host.querySelector("[data-slot='card-templates-notice']")).toBeNull()
+    expect(host.querySelector("[data-slot='card-templates-error']")).toBeNull()
+  })
+
+  test("转正在途取消：成功响应静默重拉列表；error 响应不回拉（fix 3/5，镜像停用路径）", async () => {
+    type 转正回包 = Awaited<ReturnType<CaseTemplateApi["verify"]>>
+    const 转正等待: Array<(回: 转正回包) => void> = []
+    let 列表次数 = 0
+    const api = 假api({
+      list: async (_projectId, 含停用) => {
+        列表次数 += 1
+        return { kind: "ok", value: 按含停用(行们, 含停用) }
+      },
+      verify: async () =>
+        new Promise<转正回包>((resolve) => {
+          转正等待.push(resolve)
+        }),
+    })
+    const host = mount(() => <CardTemplates projectId="p-1" api={api} 材料api={材料api} />)
+    await 等(() => host.querySelectorAll("[data-slot='card-template-item']").length > 0)
+    await 让一拍() // 等材料清单落地，确认框里的材料选择才有可选值。
+
+    // 第一拍：成功响应被归属守卫丢弃后，仍须静默重拉（与停用路径同一处修复的另一落点）。
+    ;(host.querySelector("[data-slot='card-template-verify']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") !== null)
+    ;(找("card-template-confirm-ok") as HTMLButtonElement).click()
+    await 等(() => 转正等待.length === 1)
+    ;(找("card-template-confirm-cancel") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") === null)
+    const 前 = 列表次数
+    转正等待[0]!({ kind: "ok", value: { already: false, verified_at: 100, 卡片数: 2, 跳过: {} } })
+    await 让一拍()
+    expect(列表次数).toBe(前 + 1)
+    expect(host.querySelector("[data-slot='card-templates-notice']")).toBeNull()
+    expect(host.querySelector("[data-slot='card-templates-error']")).toBeNull()
+
+    // 第二拍：error 响应被守卫丢弃 ⇒ 不得回拉（守卫不能写成无条件 `void 读()`）。
+    ;(host.querySelector("[data-slot='card-template-verify']") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") !== null)
+    ;(找("card-template-confirm-ok") as HTMLButtonElement).click()
+    await 等(() => 转正等待.length === 2)
+    ;(找("card-template-confirm-cancel") as HTMLButtonElement).click()
+    await 等(() => 找("card-template-confirm") === null)
+    const 前错 = 列表次数
+    转正等待[1]!({ kind: "error", message: "服务端拒绝了这次转正" })
+    await 让一拍()
+    expect(列表次数).toBe(前错)
     expect(host.querySelector("[data-slot='card-templates-notice']")).toBeNull()
     expect(host.querySelector("[data-slot='card-templates-error']")).toBeNull()
   })
