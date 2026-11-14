@@ -45,6 +45,10 @@ describe("预览结果区", () => {
     const 汇总 = host.querySelector("[data-slot='card-template-preview-summary']")!
     expect(汇总.textContent).toContain("1")
     expect(汇总.textContent).toContain("3")
+    // 完整文案断言：单看 "1"/"3" 会被原因明细里的「空行 1」满足（审查 I-1）。
+    expect(汇总.textContent).toContain("产出 1 张卡片 · 跳过 3 行")
+    // 非过期形态不渲染过期提示（审查 I-2）。
+    expect(host.querySelector("[data-slot='card-template-preview-expired']")).toBeNull()
     expect(汇总.textContent).toContain("缺少「谁」 2")
     expect(汇总.textContent).toContain("空行 1")
     expect(host.querySelector("[data-slot='card-template-preview-sheets']")!.textContent).toContain("Sheet1：1 卡")
@@ -59,11 +63,37 @@ describe("预览结果区", () => {
     expect(行.textContent).toContain("被叫：13900000002")
     expect(行.textContent).toContain("Sheet1#2")
     expect(行.textContent).toContain("—") // 金额 null ⇒ 金额文本 的占位
+    // 时间列是格式化后的 `YYYY-MM-DD HH:mm`，不写死时区值（审查 M-1）。
+    const 格们 = 行.querySelectorAll("td")
+    expect(格们[1].textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    // 表头文案与列序（审查 M-2）。
+    const 表头们 = [...host.querySelectorAll("[data-slot='card-template-preview-cards'] thead th")].map((项) => 项.textContent)
+    expect(表头们).toEqual(["摘要", "时间", "参与者", "金额", "来源"])
+  })
+
+  test("0 卡：一张工作表全被跳过也不崩，汇总写明产出 0 卡", () => {
+    // 服务端可达形态：表在、卡片为 0、跳过计数在（不是 `工作表们: []`）。
+    const 全跳过: 预览输出 = {
+      卡片数: 0,
+      跳过: { 空行: 2 },
+      工作表们: [{ sheet: "Sheet1", 卡片数: 0, 跳过: { 空行: 2 } }],
+      卡片们: [],
+    }
+    const host = mount(() => <CardTemplatePreview 结果={全跳过} />)
+    expect(host.querySelector("[data-slot='card-template-preview-summary']")!.textContent).toContain(
+      "产出 0 张卡片 · 跳过 2 行",
+    )
+    expect(host.querySelector("[data-slot='card-template-preview-card']")).toBeNull()
+    expect(host.querySelector("[data-slot='card-template-preview-sheets']")!.textContent).toContain(
+      "Sheet1：0 卡 · 跳过 2",
+    )
   })
 
   test("过期：置灰并说「需重新预览」，不是悄悄用旧结果", () => {
     const host = mount(() => <CardTemplatePreview 结果={结果} 过期 />)
     expect(host.querySelector("[data-slot='card-template-preview']")!.getAttribute("data-expired")).toBe("")
     expect(host.querySelector("[data-slot='card-template-preview-expired']")!.textContent).toContain("需重新预览")
+    // 置灰是独立于文案的视觉事实，整 token 匹配（审查 I-2）。
+    expect(host.querySelector("[data-slot='card-template-preview']")!.classList.contains("opacity-50")).toBe(true)
   })
 })
