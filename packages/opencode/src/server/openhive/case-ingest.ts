@@ -33,6 +33,7 @@ import {
   getMaterial,
   inTransaction,
   insertFactRows,
+  setMaterialFormatFingerprints,
   setMaterialKind,
   type FactRowInput,
   type MaterialKind,
@@ -643,6 +644,14 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
               },
             }),
       },
+    })
+    await setMaterialFormatFingerprints(tx, {
+      projectId: job.projectId,
+      materialId: job.materialId,
+      指纹们: sheets.flatMap((sheet, i) => {
+        const 指纹 = 指纹们[i]
+        return 指纹 === undefined || 指纹 === "" ? [] : [{ 工作表: sheet.name, 指纹 }]
+      }),
     })
     // 只记来源为「别名库」的表头（设计 §4.3：一份材料同一个别名只 +1，由 `记别名命中` 去重）。
     await 记别名命中(

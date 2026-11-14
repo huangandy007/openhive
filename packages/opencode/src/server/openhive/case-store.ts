@@ -425,6 +425,25 @@ export async function setMaterialKind(
   `)
 }
 
+/**
+ * 解析成功时记录各表指纹。与状态 / 事实写入**同一事务**：材料标了「已解析」却没有指纹，
+ * 建档接口只会说「先重放」，用户看不出是写漏还是真没解析过（`#007-01`）。
+ */
+export async function setMaterialFormatFingerprints(
+  db: Queryable,
+  input: {
+    projectId: string
+    materialId: string
+    readonly 指纹们: readonly { 工作表: string; 指纹: string }[]
+  },
+): Promise<void> {
+  await db.execute(sql`
+    update auth.case_material
+       set format_fingerprints = ${JSON.stringify(input.指纹们)}::text::jsonb
+     where project_id = ${input.projectId} and id = ${input.materialId}
+  `)
+}
+
 export async function countFactRows(db: Queryable, projectId: string): Promise<number> {
   const rows = rowsOf(
     await db.execute(sql`

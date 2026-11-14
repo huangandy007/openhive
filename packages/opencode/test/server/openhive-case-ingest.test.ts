@@ -9,6 +9,7 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { claimNextJob, enqueueMaterial, runJob, 作业项目目录, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
+import { 读别名上下文 } from "../../src/server/openhive/case-field-alias"
 import { readSheets } from "../../src/server/openhive/case-sheet"
 import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
 import type { 材料识别 } from "../../src/server/openhive/case-recognize"
@@ -1954,5 +1955,32 @@ describe("parse_detail 的未认出明细（人工确认弹窗的数据源）", 
 
     const 未认出 = 取未认出((await getMaterial(db(), "p-全认出", r.materialId))?.parseDetail)
     expect(未认出?.列们).toEqual([])
+  })
+})
+
+describe("format_fingerprints", () => {
+  test("解析成功写入工作表名与指纹；值与 formatFingerprint 逐字相同", async () => {
+    文件.set("p-指纹/话单.xlsx", 话单)
+    await 入队("p-指纹", "话单.xlsx", Hash.sha256("p-指纹-内容"))
+    await 跑下一条()
+
+    const 表 = readSheets(话单)
+    const { 版本 } = await 读别名上下文(db())
+    const 期望 = formatFingerprint(
+      表.sheets[0].header.map((c) => c.text),
+      表.sheets[0].rows.slice(0, 20).map((r) => r.cells.map((c) => c.text)),
+      版本,
+    )
+
+    const 行们 = rowsOf(
+      await db().execute(sql`
+        select format_fingerprints from auth.case_material
+         where project_id = 'p-指纹' and file_name = '话单.xlsx'
+      `),
+    )
+    expect(行们).toHaveLength(1)
+    const 原始 = 行们[0]?.format_fingerprints
+    const 实得 = typeof 原始 === "string" ? JSON.parse(原始) : 原始
+    expect(实得).toEqual([{ 工作表: "Sheet1", 指纹: 期望 }])
   })
 })
