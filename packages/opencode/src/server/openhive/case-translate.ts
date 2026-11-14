@@ -7,6 +7,8 @@ import { 资金交易, type 事件类型 } from "./case-event-types"
 import { 判定用途, type 用途 } from "./case-purpose"
 import { 抽取备注事实, type 备注事实 } from "./case-remark-facts"
 import type { FactRowInput } from "./case-store"
+import type { 实体类型 } from "./case-extract"
+import type { 角色 } from "./case-card-template"
 
 /**
  * 翻译层：明细行 → 卡片 / 别名 / 属性 / 跳过（01 §4.0）。
@@ -24,18 +26,27 @@ export const 跳过原因们 = [
   "小计行",
   "方向不明",
   "金额无法解析",
+  "必填槽为空",
+  "时间区间倒置",
   "时间无法解析",
   "缺本方账号",
   "缺对方账号",
 ] as const
 export type 跳过原因 = (typeof 跳过原因们)[number]
 
-export type 实体类型 = "账户" | "组织" | "车辆" | "号码"
+// 实体类型词表的唯一出处是 `case-extract.ts`（8 值），这里只转出类型（`#002-06`）。
+export type { 实体类型 }
+
+/**
+ * 资金通路专用角色（2026-11-14 评审裁定）：`商户` / `号码` 不在设计 §6.1 的 16 项角色词表里，
+ * 但资金卡既有的参与者角色含它们。模板词表（`角色们`）保持 16 项不动，这两个只在本文件出现。
+ */
+export type 资金专用角色 = "商户" | "号码"
 
 export interface 卡片参与者 {
   /** 归一化后的账号 / 商户名 / 车牌 / 手机号。 */
   规范值: string
-  角色: "付款方" | "收款方" | "商户" | "车辆" | "号码"
+  角色: 角色 | 资金专用角色
   /** 明细行里的原文；商户用解码后的值（`UTF8#` 编码串不给人看）。 */
   提及: string
   /** 0/1 恒为付款方/收款方；②层事实从 2 起递增。 */
@@ -48,15 +59,16 @@ export interface 卡片参与者 {
 export interface 卡片草稿 {
   id: string
   type: 事件类型
-  occurredAt: number
-  occurredRaw: string
-  precision: "到日" | "到分" | "到秒"
+  /** 模板卡允许无时间（如「见面」只认人）；资金通路仍恒为非空值。 */
+  occurredAt: number | null
+  occurredRaw: string | null
+  precision: "到日" | "到分" | "到秒" | null
   /** `numeric(18,2)` 一律字符串传（`#002-01`）。永远正数（§4.0.5 坑 2）。 */
-  amount: string
+  amount: string | null
   currency: string
   /** 只放不参与过滤的属性（余额）。 */
   attrs: Record<string, unknown>
-  participants: [卡片参与者, 卡片参与者, ...卡片参与者[]]
+  participants: [卡片参与者, ...卡片参与者[]]
   /** 备注事实摘要（17：给人看的一行字；回退链保证非空）。 */
   摘要: string | null
   sheet: string
@@ -66,6 +78,10 @@ export interface 卡片草稿 {
    * 落库时三列一起变 null 却没人发现（判定引擎自己兜底「未分类」）。
    */
   用途: 用途
+  /** 产出这张卡片的模板行 id（用户模板卡必填；资金卡由写入器按 `input.templateId` 兜底）。 */
+  模板id?: string
+  /** 区间事件结束（模板里配了「何时止」时非空）。 */
+  occurredEnd?: number | null
 }
 
 export interface 别名观察 {
@@ -145,7 +161,8 @@ export function 账户键(规范值: string): string {
 const 合计形状 = /^(本页)?合\s*计(金额)?\s*[:：]?\s*[\d,，]*(\.\d{1,2})?\s*$/
 const 小计形状 = /^(本页)?小\s*计(金额)?\s*[:：]?\s*[\d,，]*(\.\d{1,2})?\s*$/
 
-function 文本值(row: FactRowInput): string[] {
+/** 一行里所有非空单元格文本（空行判定、汇总行判定的唯一入口）。 */
+export function 文本值(row: FactRowInput): string[] {
   const 值: (string | null | undefined)[] = [
     row.caller,
     row.callee,
@@ -157,7 +174,7 @@ function 文本值(row: FactRowInput): string[] {
   return 值.filter((v): v is string => typeof v === "string" && v.trim() !== "")
 }
 
-function 是空行(row: FactRowInput): boolean {
+export function 是空行(row: FactRowInput): boolean {
   return (
     row.startedAt == null &&
     row.amount == null &&
@@ -165,6 +182,17 @@ function 是空行(row: FactRowInput): boolean {
     row.durationSec == null &&
     文本值(row).length === 0
   )
+}
+
+/**
+ * 汇总行判定（先小计后合计，与资金通路的原顺序一致）。
+ * 模板引擎与资金通路共用这一份：两处各写一遍正则会漂（`#002-06`）。
+ */
+export function 汇总行原因(row: FactRowInput): "小计行" | "合计行" | null {
+  const 文本 = 文本值(row)
+  if (文本.some((v) => 小计形状.test(v.trim()))) return "小计行"
+  if (文本.some((v) => 合计形状.test(v.trim()))) return "合计行"
+  return null
 }
 
 function 户名字段(row: FactRowInput): string {
@@ -214,13 +242,9 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "空行" })
       continue
     }
-    const 文本 = 文本值(row)
-    if (文本.some((v) => 小计形状.test(v.trim()))) {
-      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "小计行" })
-      continue
-    }
-    if (文本.some((v) => 合计形状.test(v.trim()))) {
-      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: "合计行" })
+    const 汇总 = 汇总行原因(row)
+    if (汇总 !== null) {
+      跳过们.push({ sheet: row.sheet, rowNo: row.rowNo, 原因: 汇总 })
       continue
     }
     // 方向必须在映射表内：映射之外的取值 = 不知道该谁付谁，宁可不出卡片（§4.4）。

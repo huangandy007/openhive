@@ -169,7 +169,11 @@ describe.each(目录们)(
     test("C4 案件级：笔数与合计完全一致", () => {
       const 明细 = toFactRows({ projectId: "p-gold", materialId: "m-gold", sheet, mapping: 映射.columns })
       const { 卡片们 } = 翻译资金({ projectId: "p-gold", materialId: "m-gold", rows: 明细 })
-      const 合计分 = 卡片们.reduce((n, c) => n + 金额分(c.amount), 0n)
+      const 合计分 = 卡片们.reduce((n, c) => {
+        // `卡片草稿.amount` 因模板卡放宽为可空；资金卡恒有金额，缺了就是实现坏了。
+        if (c.amount === null) throw new Error(`资金卡缺金额：${c.id}`)
+        return n + 金额分(c.amount)
+      }, 0n)
       expect(卡片们.length).toBe(期望.汇总.笔数)
       expect(合计分).toBe(金额分(期望.汇总.合计))
       // 设计 `01:926` 的 C4 含「对手方数」：同一对手的多次交易只能算一个对手。

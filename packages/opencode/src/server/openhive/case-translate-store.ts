@@ -57,7 +57,8 @@ const 人工结论值 = sql.join(
 export interface 写入翻译输入 {
   projectId: string
   materialId: string
-  templateId: string
+  /** 资金通路的内置模板 id；模板卡的 `卡.模板id` 优先。两者都没有 ⇒ 卡片 `template_id` 落 null。 */
+  templateId?: string
   翻译: 翻译结果
 }
 
@@ -175,7 +176,8 @@ export async function 写入翻译结果(
     trustState: "自动抽取" as const,
     attrs: 卡.attrs,
     currency: 卡.currency,
-    templateId,
+    templateId: 卡.模板id ?? templateId ?? null,
+    occurredEnd: 卡.occurredEnd ?? null,
     // 用途三列（01 §3.11.2）：`purpose` 存最具体类，`purpose_l1` 存一级，两级都能直接过滤。
     purpose: 卡.用途.二级 ?? 卡.用途.一级,
     purposeL1: 卡.用途.一级,
