@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { sql } from "drizzle-orm"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -48,6 +48,9 @@ const 成员 = { userId: "u-hgt-member", projectId: 属主.projectId }
 const 空项目 = { userId: 属主.userId, projectId: "p-hgt-empty" }
 const 单图项目 = { userId: 属主.userId, projectId: "p-hgt-single" }
 const 多图项目 = { userId: 属主.userId, projectId: "p-hgt-multi" }
+/** R86 #7 的两种「读不了目录」：目录被删（ENOENT）／位置被文件占住（ENOTDIR）。 */
+const 目录不存项目 = { userId: 属主.userId, projectId: "p-hgt-gone" }
+const 目录被占项目 = { userId: 属主.userId, projectId: "p-hgt-notdir" }
 
 const 属主目录 = join(沙箱根, 属主.userId, 属主.projectId)
 const 项目目录 = (身份: { userId: string; projectId: string }) => join(沙箱根, 身份.userId, 身份.projectId)
@@ -72,7 +75,14 @@ beforeAll(async () => {
       values (${id}, ${警号}, ${姓名}, 'x', 'x', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
     `)
   }
-  for (const projectId of [属主.projectId, 空项目.projectId, 单图项目.projectId, 多图项目.projectId]) {
+  for (const projectId of [
+    属主.projectId,
+    空项目.projectId,
+    单图项目.projectId,
+    多图项目.projectId,
+    目录不存项目.projectId,
+    目录被占项目.projectId,
+  ]) {
     await pg.db.execute(sql`
       insert into auth.project_member (project_id, user_id, role, time_created)
       values (${projectId}, ${属主.userId}, 'owner', 0)
@@ -83,6 +93,10 @@ beforeAll(async () => {
     values (${属主.projectId}, ${成员.userId}, 'member', 0)
   `)
   for (const 身份 of [属主, 空项目, 单图项目, 多图项目]) mkdirSync(项目目录(身份), { recursive: true })
+  // 目录不存项目：**故意不建**目录（模拟项目目录被删）。
+  // 目录被占项目：同一路径上摆一个普通文件（readdir 会回 ENOTDIR）。
+  mkdirSync(dirname(项目目录(目录被占项目)), { recursive: true })
+  writeFileSync(项目目录(目录被占项目), "这不是目录", "utf8")
 })
 
 afterAll(async () => {
@@ -202,6 +216,29 @@ describe("graph_list", () => {
 
   test("空项目 ⇒ { 图: [] }（列表本身不报 not_found）", async () => {
     expect(await graph_list(ctx(空项目))).toEqual({ 图: [] })
+  })
+
+  test("项目目录不在了 ⇒ not_found「项目目录不在了」（不把 readdir 的 ENOENT 吞成 { 图: [] }）", async () => {
+    // R86 #7 / `#006-28`：`catch(() => [])` 会把「目录没了」伪装成「还没有关系图」。
+    const 错 = await 取工具错误(() => graph_list(ctx(目录不存项目)))
+    expect(错.code).toBe("not_found")
+    expect(错.message).toBe("项目目录不在了")
+  })
+
+  test("项目目录读不了（位置被文件占住，ENOTDIR）⇒ 抛错而不是 { 图: [] }（分发改折 tool_failed）", async () => {
+    // 无权限 / 不是目录都不是「没有图」：这里不谎报空列表，也不谎报 not_found；
+    // 普通 Error ⇒ 分发处折 `tool_failed`（原文只进留痕，模型侧不泄露路径）。
+    let 捕获: unknown
+    try {
+      await graph_list(ctx(目录被占项目))
+    } catch (错误) {
+      捕获 = 错误
+    }
+    expect(捕获).toBeInstanceOf(Error)
+    if (!(捕获 instanceof Error)) throw new Error("期望抛普通 Error")
+    // 不是业务错误（否则模型会把它当成可自纠的参数问题）。
+    expect(捕获 instanceof 工具错误).toBe(false)
+    expect(捕获.message).toContain("读不了目录")
   })
 })
 

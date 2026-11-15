@@ -141,13 +141,16 @@ export type 导出结果 = { ok: true; 允许: true; 文件名: string } | 核�
 // 小工具
 // ---------------------------------------------------------------------------
 
+/** 项目目录整层不在（区别于「图文件不存在」）。`graph_list` 也回这一句（`#002-06` 单一出处）。 */
+export const 项目目录不在 = "项目目录不在了"
+
 const 话术 = {
   OUTSIDE_PROJECT: "路径越出项目目录",
   LINK_ESCAPE,
   GIT_LOCKED,
   NOT_HGRAPH: "只能改关系图文件（.hgraph）",
   NOT_FOUND: "图文件不存在",
-  PROJECT_GONE: "项目目录不在了",
+  PROJECT_GONE: 项目目录不在,
   VERSION_CONFLICT: "这份图在你打开之后被改过。为避免覆盖别人的改动，请重新载入",
   WRITE_FAILED: "图没存上：写盘失败",
 } as const

@@ -4,7 +4,7 @@ import { basename, join, relative, sep } from "node:path"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "./case-mcp-tools"
 import type { 类别, 边草稿, 操作, 改字段目标, 节点草稿, 删对象目标 } from "./hgraph-edit"
 import { 解析图 } from "./hgraph-file"
-import { 应用并写回, 读文件, 现在ISO, type 核心依赖, type 失败码 } from "./hgraph-ops"
+import { 应用并写回, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 失败码 } from "./hgraph-ops"
 import { 项目属主 } from "./project-actor"
 
 /**
@@ -132,11 +132,31 @@ interface 图条目 {
  * **为什么不复用 `archive.ts` 的 `filesUnder`**：它是私有函数，且 archive 模块牵连 MinIO /
  * 备份代码；为了一次目录遍历把整条依赖链拉进 MCP 进程不值当（R27 的裁定）。这里只需要
  * `readdir(withFileTypes)` 一层判断：跳过符号链接与 `.git`，相对路径归一成 `/`。
+ *
+ * **读失败不吞**（R86 #7 / `#006-28`）：`catch(() => [])` 会把「项目目录被删 / 读不了」
+ * 伪装成「还没有关系图」。根目录 ENOENT ⇒ `not_found`「项目目录不在了」；其余失败
+ * （子目录无权限 / 被删 / 位置不是目录）抛普通 Error，由分发处折 `tool_failed`。
  */
+function 错误码(值: unknown): string {
+  if (typeof 值 !== "object" || 值 === null) return ""
+  const code: unknown = (值 as { code?: unknown }).code
+  return typeof code === "string" ? code : ""
+}
+
 async function 列图(目录: string): Promise<图条目[]> {
   const 结果: 图条目[] = []
   const 走 = async (当前: string): Promise<void> => {
-    for (const 条目 of await readdir(当前, { withFileTypes: true }).catch(() => [])) {
+    let 条目们
+    try {
+      条目们 = await readdir(当前, { withFileTypes: true })
+    } catch (错误) {
+      if (当前 === 目录 && 错误码(错误) === "ENOENT") throw new 工具错误("not_found", 项目目录不在)
+      // 不把「读不到」当成「没有图」：原文（含路径）只进留痕，模型侧只有固定话术。
+      throw new Error(`列图时读不了目录 ${当前}：${错误 instanceof Error ? 错误.message : String(错误)}`, {
+        cause: 错误,
+      })
+    }
+    for (const 条目 of 条目们) {
       if (条目.isSymbolicLink() || 条目.name === ".git") continue
       const 绝对 = join(当前, 条目.name)
       if (条目.isDirectory()) {
