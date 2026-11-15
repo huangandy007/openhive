@@ -1046,10 +1046,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set选中([计划.保留])
   }
 
-  /** `Ctrl+C`（R97）：只记**编辑器实例内**快照，不写盘。 */
+  /** `Ctrl+C`（R97）：只记**编辑器实例内**快照，不写盘。空选集（只剩文字/边）⇒ 清空。 */
   const 复制到剪贴板 = () => {
     const 节点们 = 文档().节点.filter((点) => 选中().includes(点.id))
-    if (节点们.length === 0) return
+    if (节点们.length === 0) {
+      剪贴板 = undefined
+      return
+    }
     const 节点id = 节点们.map((点) => 点.id)
     const 集 = new Set(节点id)
     // 快照当时的内部边：粘贴只复制它们（复制后新出现的内部边不算）。
