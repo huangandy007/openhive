@@ -1965,11 +1965,19 @@ describe("T013 · 页面接收 AI 改动", () => {
     expect(按钮("hgraph-undo").disabled).toBe(false)
     expect(文案("hgraph-save-status")).toBe("已保存")
 
-    // 版本是重载版本 a1：下一次写必须带它（否则 409 / 下一 tick 又误判外部改动）。
-    拖(节点组("n2")!, 200, 100, 230, 100)
+    // I-2 修复：不能只看 disabled —— 按一次 Ctrl+Z 必须「一次到底」并让撤销变灰，
+    // 才证明栈深恰 1（旧步没有被回填成第二步）。
+    // I-1：载荷只许含 AI 还原；被丢弃的那次拖动（n1 → 150,130）绝不能借撤销写回。
+    按键(画布()!, { key: "z", ctrlKey: true })
     await 过防抖()
     expect(服.写们.length).toBe(2)
+    // 这一次写必须基于重载版本 a1（否则 409 / 下一 tick 又误判外部改动）。
     expect(服.写们[1].版本).toBe("a1")
+    expect(服.写们[1].操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n9" }] }])
+    expect(节点组("n9")).toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+    expect(按钮("hgraph-redo").disabled).toBe(false)
   })
 
   test("I-1 在途写「失败」应答晚于外部重载 ⇒ 不被旧基线覆盖、状态不误导", async () => {
@@ -2001,6 +2009,16 @@ describe("T013 · 页面接收 AI 改动", () => {
     // 状态说「没存上」会误导：这批结果已丢弃，当前文档就是服务端那份。
     expect(文案("hgraph-save-status")).toBe("已保存")
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("已存")
+
+    // I-2 修复：一次 Ctrl+Z 必须到底（撤销变灰 ⇒ 栈深恰 1），且载荷只含 AI 还原；
+    // I-1：失败批的拖动（n1 → 150,130）已经「没存上」，不许借撤销写回。
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    expect(服.写们.length).toBe(2)
+    expect(服.写们[1].操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n9" }] }])
+    expect(节点组("n9")).toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(按钮("hgraph-undo").disabled).toBe(true)
   })
 
   test("I-1 回归：没有外部重载时正常发送仍落地文档 + 压栈", async () => {
@@ -2225,6 +2243,82 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     expect(节点组("n2")!.getAttribute("transform")).toBe("translate(200 100)")
     // 飞行中新增的节点不受撤销影响（它不在那一步里）。
     expect(document.querySelector("[data-node-id^='临时']")).not.toBeNull()
+  })
+
+  test("#11 撤销写失败 ⇒ 步骤放回撤销栈（可直接再按 Ctrl+Z 重试），不进重做栈", async () => {
+    let 次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        次 += 1
+        if (次 === 2) return { kind: "error", message: "写不进去", code: "INTERNAL" }
+        return 成功("v2")
+      },
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    const 撤销键 = 按钮("hgraph-undo")
+    expect(撤销键.disabled).toBe(false)
+
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    // 失败：文档回滚到已存（150,130），但这一步必须回到**撤销栈**——用户能直接再撤一次。
+    expect(写们.length).toBe(2)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+    expect(撤销键.disabled).toBe(false)
+    expect(按钮("hgraph-redo").disabled).toBe(true)
+    expect(文案("hgraph-save-status")).toContain("没存上")
+
+    // 再按一次 Ctrl+Z：直接重试（不是先按重做把步挪回来）。
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(3)
+    expect(写们[2]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 100, y: 100 }] },
+    ])
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+  })
+
+  test("#12 成功应答后选中收口：已不存在的 id 清掉、仍在的保留（R81 成功路径）", async () => {
+    let 次 = 0
+    const { api } = 假api({
+      写: (输入) => {
+        次 += 1
+        if (次 > 1) return 成功("v2")
+        const 加 = 输入.操作[0]!
+        if (加.操作 !== "加节点") throw new Error("期望加节点")
+        return 成功("v2", { [String(加.节点[0]!.id)]: "n7" })
+      },
+    })
+    挂上(api)
+    await flush()
+
+    // 加一颗节点（临时 id 立刻被选中），成功后映射成 n7。
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await 过防抖()
+    await flush()
+    await flush()
+    expect(节点组("n7")).not.toBeNull()
+    expect(节点组("n7")!.getAttribute("data-selected")).toBe("true")
+
+    // 再 Shift 点选 n1：选中 = [n7, n1]。撤销「加节点」后 n7 不再存在，n1 必须留着。
+    点选("n1", 100, 100, { shiftKey: true })
+    await flush()
+    expect(document.querySelectorAll("[data-slot='hgraph-node'][data-selected='true']").length).toBe(2)
+
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    await flush()
+
+    expect(节点组("n7")).toBeNull()
+    const 选中们 = [...document.querySelectorAll("[data-slot='hgraph-node'][data-selected='true']")]
+    expect(选中们.map((元素) => 元素.getAttribute("data-node-id"))).toEqual(["n1"])
+    // 选中集合里不能再留着 n7：否则「已选 2 个」⇒ 批量对齐可用（DOM 上已看不出这颗节点）。
+    expect(按钮("hgraph-toolbar-align-左").disabled).toBe(true)
+    expect(按钮("hgraph-undo").disabled).toBe(true)
   })
 
   test("R94 AI 改了白名单外字段（来源）⇒ 不压栈、撤销不可用、提示不能自动撤销", async () => {
