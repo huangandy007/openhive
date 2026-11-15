@@ -425,6 +425,25 @@ describe("选择器 · 加入节点", () => {
     expect(new Set(操作.节点.map((点) => (点 as Record<string, unknown>).id)).size).toBe(3)
   })
 
+  test("R91-2 摆放给小数 ⇒ 节点 x/y 取整（100.4 → 100，200.6 → 201）", async () => {
+    // 服务端要求整数 x/y（hgraph-edit「x 必须是整数」）；`阶梯位置` 恰好整数，
+    // 但注入的 `摆放` 若给小数，整批 `加节点` 会被拒。
+    const 器 = 挂选择器({ 摆放: () => ({ x: 100.4, y: 200.6 }) })
+    await 落定()
+
+    勾选("e1")
+    点加入()
+    await 落定()
+
+    expect(器.加过.length).toBe(1)
+    const 操作 = 器.加过[0]![0]!
+    expect(操作.操作).toBe("加节点")
+    if (操作.操作 !== "加节点") throw new Error("形状不对")
+    const 点 = 操作.节点[0]! as Record<string, unknown>
+    expect(点.x).toBe(100)
+    expect(点.y).toBe(201)
+  })
+
   test("全部失败 ⇒ 不调 onAdd，面板保留错误", async () => {
     const 器 = 挂选择器({
       profile: () => ({ kind: "error", message: "网络断了" }),

@@ -673,7 +673,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     存快照(id, 快照映射(回.value))
     // 刷新成功即回填缓存：写回补丁会改文档，选中 effect 不该再为同一实体多取一次。
     已取快照.add(id)
-    const 点 = 文档().节点.find((点) => 点.来源?.kind === "实体" && 点.来源.实体 === id)
+    // 定位写补丁的对象：AI `graph_add` 可造出第二颗同来源节点，按「第一颗匹配」会把
+    // 补丁写到没选中的那颗。优先用当前选中节点（且它的来源实体与回调 id 一致），
+    // 选中在应答途中换走或不符时才回落「第一颗匹配」（R91）。
+    const 当前 = 单个已绑()
+    const 点 =
+      (当前 !== undefined && 当前.库id === id ? 当前.点 : undefined) ??
+      文档().节点.find((点) => 点.来源?.kind === "实体" && 点.来源.实体 === id)
     if (点 === undefined) return
 
     const 补丁: Record<string, unknown> = {}
@@ -700,7 +706,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const ids = 操作们.flatMap((操作) =>
       操作.操作 === "加节点"
         ? 操作.节点.flatMap((行) => {
-            const id = (行 as Record<string, unknown>).id
+            const id = 行.id
             return typeof id === "string" ? [id] : []
           })
         : [],
