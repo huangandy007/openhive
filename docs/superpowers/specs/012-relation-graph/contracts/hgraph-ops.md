@@ -161,6 +161,6 @@
 |---|---|
 | `POST /openhive/file/write` | **不复用**：trim/CRLF/非原子/无锁/版本口径不同（research R1）。本 feature 让它对 `.hgraph` 返回 `HGRAPH_READONLY` |
 | `POST /openhive/file/create` | **复用**：新建先走它（`{flag:"wx"}`，不覆盖），再 `init` |
-| `GET /openhive/file/stat` | **复用**：轮询只比 `mtime/size`，变了才 `read` |
+| `GET /openhive/file/stat` | **不复用**：它只回 `{size}`（`file.ts` 的 `handleStat`），**根本没有 `mtime`**，同尺寸改动测不出来。轮询改打 `GET /openhive/hgraph/read` 比 `版本`（内容哈希），变了才用返回的内容重载（T013；裁定见任务台账 R26） |
 | `GET /openhive/case/entities` / `entity` / `facts` / `graph` | **复用**：从库加入、快照、角标、关系页，全部只读调用，不新增检索接口 |
 | MCP `case-mcp-server.ts` | **复用**门（身份/成员/属主）与留痕格式；5 个图工具只加实现（见 `mcp-tools.md`） |

@@ -137,7 +137,7 @@ timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./so
 **Independent Test**: 只用工具从空图加 ≥5 节点 ≥3 边，人工核对每条边出处与性质。
 
 - [ ] T012 [US3] 5 个 MCP 工具：`graph_list / graph_read / graph_add / graph_update / graph_remove`，全部转调 T006 的 `应用并写回`；注册进 `TOOLS` + `工具名` + `分发表`，三个写工具加进 `写工具名`；图工具**跳过**七字段信封；路径省略规则（1 张用它并回写路径 / 0 张 `not_found` / ≥2 张 `ambiguous_path`）；`≤50`；同名同类型复用；返回 `映射/复用/放置`。文件 `case-hgraph-tools.ts`、`case-mcp-server.ts`；用例 `test/server/case-hgraph-tools.test.ts`。依赖 T006。
-- [ ] T013 [US3] 页面接收 AI 改动：`editor.tsx` 10 秒轮询 `GET /openhive/file/stat`，变了且无待发 ⇒ 静默重载；有 ⇒ 询问「重新载入？」且只重载本标签页；`undo.ts` 按 `批次` 把多步合并成一步（`Ctrl+Z` 一次全还原）。入参 `{批次, 逆操作[]}`，出参 = 撤销栈一步。依赖 T009、T012。
+- [ ] T013 [US3] 页面接收 AI 改动：`editor.tsx` 10 秒轮询 `GET /openhive/hgraph/read` 比 `版本`（**不是** `file/stat`：它只回 size、测不出同尺寸改动，R26），变了且无待发 ⇒ 静默重载；有 ⇒ 询问「重新载入？」且只重载本标签页；`undo.ts` 按 `批次` 把多步合并成一步（`Ctrl+Z` 一次全还原）。入参 `{批次, 逆操作[]}`，出参 = 撤销栈一步。依赖 T009、T012。
 
 **验证**
 

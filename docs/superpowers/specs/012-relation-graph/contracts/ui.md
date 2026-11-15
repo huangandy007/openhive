@@ -50,7 +50,8 @@ export interface HgraphApi {
 ```
 
 - **不注入 `SaveFileContent`**：通用存盘口对 `.hgraph` 会拒绝（`HGRAPH_READONLY`），且语义不对（research R1）。
-- 轮询用既有 `GET /openhive/file/stat`（可经 `openhive-file-ops` / 项目层取数），只比 `mtime/size`。
+- **轮询不用** `GET /openhive/file/stat`：它只回 `{size}`、没有 `mtime`（`file.ts` 的 `handleStat`），同尺寸改动测不出来。
+  改打 `GET /openhive/hgraph/read` 比 `版本`（内容哈希，10 秒一次），变了才用返回的内容重载（T013；裁定 R26）。
 
 ---
 

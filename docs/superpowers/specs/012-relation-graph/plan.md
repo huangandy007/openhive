@@ -211,7 +211,7 @@ packages/opencode/test/server/
                     │   ├─ 读：GET /openhive/hgraph/read → { 内容, 版本 }            │
                     │   ├─ 编辑：本地信号 → 操作队列（父→子单向下行）                │
                     │   ├─ 存：POST /openhive/hgraph/ops { 路径, 版本, 操作[] }      │
-                    │   ├─ 轮询：10s 一次 stat 版本（无未发出改动才静默重载）        │
+                    │   ├─ 轮询：10s 一次 read 比版本（无未发出改动才静默重载；非 stat）│
                     │   └─ 导出：POST /openhive/hgraph/export → 许可 → canvas → blob │
                     └──────────────────────────────────────────────────────────────┘
                                               │
