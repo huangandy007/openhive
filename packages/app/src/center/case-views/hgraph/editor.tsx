@@ -36,7 +36,7 @@
  * 子组件只调动作条目，`应用` 是唯一把 `操作[]` 交给 api 的地方。UI 发起的 `加节点`
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
-import { Show, createSignal, onCleanup, type JSX } from "solid-js"
+import { Show, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { 关系图结果 } from "../../case-detail-api"
 import { 自动位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
@@ -45,6 +45,7 @@ import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./can
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
 import { 检查器 } from "./inspector"
+import { 演示步进, 演示覆盖层 } from "./present"
 import {
   可撤销,
   可重做,
@@ -302,6 +303,17 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [布局模式, set布局模式] = createSignal<排列模式>()
   /** 收起右键菜单的请求计数：共同父容器点到菜单外时递增（不用 window 监听，FR-040）。 */
   const [收起菜单, set收起菜单] = createSignal(0)
+  /** 演示态（T011）：本地展示态，不产生写、不进撤销栈。 */
+  const [演示中, set演示中] = createSignal(false)
+  /** 演示步号：每次进入从 0 开始（0 是合法起始态）。 */
+  const [演示步号, set演示步号] = createSignal(0)
+
+  /** 演示态交给画布的可见集合；编辑态传 `undefined`（全显）。 */
+  const 可见集 = createMemo(() => {
+    if (!演示中()) return undefined
+    const 出 = 演示步进(文档(), 演示步号())
+    return { 节点: 出.可见节点, 边: 出.可见边 }
+  })
 
   let 待发: 操作[] = []
   let 计时: ReturnType<typeof setTimeout> | undefined
@@ -508,6 +520,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     撤销: 撤销一步,
     重做: 重做一步,
     切换模式: set模式,
+    // 演示是本地展示态：只切信号，不拼 `操作[]`、不调 `写`、不进撤销栈。
+    演示切换: () => {
+      if (演示中()) {
+        set演示中(false)
+        return
+      }
+      set演示步号(0)
+      set演示中(true)
+    },
   }
 
   const 状态文案 = () => {
@@ -529,7 +550,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         set收起菜单((旧) => 旧 + 1)
       }}
     >
-      <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
+      {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
+      <Show when={!演示中()}>
+        <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
         <button
           type="button"
           data-slot="hgraph-undo"
@@ -594,18 +617,30 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           </button>
         </div>
       </Show>
+      </Show>
 
       <div class="relative flex min-h-0 flex-1">
+        {/*
+          演示态复用**同一个画布实例**（只读 + 可见过滤），不另挂第二套渲染器：
+          卸载画布会丢掉视口，而 FR-040 要求退出后视口保持进入前的样子（T011）。
+        */}
         <画布
           文档={文档()}
-          选中={选中()}
+          选中={演示中() ? [] : 选中()}
           模式={模式()}
           坐标换算={props.坐标换算}
           动作={动作}
-          重命名id={重命名id()}
+          重命名id={演示中() ? undefined : 重命名id()}
           收起菜单={收起菜单()}
+          只读={演示中() ? true : undefined}
+          可见={可见集()}
         />
-        <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
+        <Show when={!演示中()}>
+          <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
+        </Show>
+        <Show when={演示中()}>
+          <演示覆盖层 步号={演示步号()} 设置步号={set演示步号} 关闭={() => set演示中(false)} />
+        </Show>
       </div>
     </div>
   )

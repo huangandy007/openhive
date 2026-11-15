@@ -820,6 +820,7 @@ function 幽灵动作表() {
     对齐: (边, ids) => 记("对齐", [边, ids]),
     等距: (轴, ids) => 记("等距", [轴, ids]),
     自动布局: (模式) => 记("自动布局", [模式]),
+    演示切换: () => 记("演示切换", []),
   }
   const 总 = () => Object.values(计数).reduce((甲, 乙) => 甲 + 乙, 0)
   return { 动作, 计数, 参数, 总 }
@@ -1427,6 +1428,36 @@ describe("T010 · 修复轮 1", () => {
     expect(表三.get("n1")!.跳数).toBe(0)
     expect(表三.get("n2")!.跳数).toBe(1)
     expect(表三.get("n2")!.度数).toBe(0)
+  })
+
+  test("T011 #6 检查器改出现序 2 后失焦：恰一条写、一步撤销（逆操作归 T016）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    expect(写们.length).toBe(0)
+
+    const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+    expect(输入).not.toBeNull()
+    输入.value = "2"
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 出现序: 2 } }] },
+    ])
+
+    // 一次改动 = 一步撤销：撤销按钮亮起，Ctrl+Z 弹掉这一步。
+    const 撤销键 = 取("[data-slot='hgraph-undo']") as HTMLButtonElement
+    expect(撤销键.disabled).toBe(false)
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await flush()
+    expect(撤销键.disabled).toBe(true)
+    // 逆操作生成归 T016：本轮只弹栈、不发写、文档值不回退（报告缺口表写明）。
+    await 过防抖()
+    expect(写们.length).toBe(1)
   })
 
   test("M7 自动布局：默认环形与网格产出不同坐标；锁定节点不在目标里", () => {

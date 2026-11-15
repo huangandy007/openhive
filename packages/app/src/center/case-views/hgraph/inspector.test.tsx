@@ -48,6 +48,7 @@ function 幽灵动作表() {
     对齐: (边, ids) => 记("对齐", [边, ids]),
     等距: (轴, ids) => 记("等距", [轴, ids]),
     自动布局: (模式) => 记("自动布局", [模式]),
+    演示切换: () => 记("演示切换", []),
   }
   return { 动作, 计数, 参数 }
 }
@@ -258,6 +259,74 @@ describe("检查器 · 失焦即存", () => {
     失焦(输入)
 
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: { 档: 3, 颜色: "红" } }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T011 · 出现序（数字输入，失焦即存，清空 = 删键）
+// ---------------------------------------------------------------------------
+
+describe("检查器 · 出现序", () => {
+  const 提示 = () => 文本("hgraph-field-出现序-提示")
+
+  test("#6 改为 2 后失焦：恰好 1 次改字段，补丁是 出现序: 2", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement | null
+    expect(输入).not.toBeNull()
+    // 缺省不写 0，输入框留空（缺省值不在文档里伪造）。
+    expect(输入!.value).toBe("")
+
+    输入!.value = "2"
+    失焦(输入!)
+
+    expect(幽.计数.改字段).toBe(1)
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 出现序: 2 }])
+    expect(提示()).toBeUndefined()
+  })
+
+  test("#7 清空后失焦：补丁含 出现序: null（删键，不是 0）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 出现序: 2 }), 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+    expect(输入.value).toBe("2")
+
+    输入.value = ""
+    失焦(输入)
+
+    expect(幽.计数.改字段).toBe(1)
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 出现序: null }])
+    // 明确钉住「不是 0」：契约里 0 是合法步号，语义完全不同。
+    expect((幽.参数.改字段![0]![2] as Record<string, unknown>).出现序).not.toBe(0)
+  })
+
+  test("非法输入（1.5 / abc / -1）不发补丁、保留旧值并就地提示", () => {
+    for (const 非法 of ["1.5", "abc", "-1"]) {
+      document.body.innerHTML = ""
+      const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 出现序: 3 }), 快照 })
+      const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+
+      输入.value = 非法
+      失焦(输入)
+
+      expect(幽.计数.改字段 ?? 0).toBe(0)
+      expect(提示()).toBe("要填非负整数")
+    }
+  })
+
+  test("值没变失焦不发补丁；缺省节点清空也不发（删不存在的键不算改动）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+
+    // 缺省为空，失焦不动。
+    输入.value = ""
+    失焦(输入)
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+
+    document.body.innerHTML = ""
+    const 幽二 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 出现序: 4 }), 快照 })
+    const 输入二 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+    输入二.value = "4"
+    失焦(输入二)
+    expect(幽二.计数.改字段 ?? 0).toBe(0)
   })
 })
 

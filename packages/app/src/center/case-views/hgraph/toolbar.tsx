@@ -5,8 +5,9 @@
  * 状态从这里传入的 `选中` / `文档` 算出来，点下去一律落到 `动作表` 的同一条目。
  * 快捷键在 `canvas.tsx` 的容器 `keydown` 上，落到同一张表（FR-040）。
  *
- * 范围（R28）：本轮只放 `加节点 / 删除所选 / 锁定切换 / 对齐 / 等距 / 自动布局`；
- * `合并` 按 tasks.md 呈现为 `disabled`，真实语义在 T016。复制粘贴、导出、演示等不在本轮。
+ * 范围：`加节点 / 删除所选 / 锁定切换 / 对齐 / 等距 / 自动布局`（R28）与 `演示`
+ * （T011；`演示切换` 只是本地展示态，不产生写）。`合并` 按 tasks.md 呈现为 `disabled`，
+ * 真实语义在 T016。复制粘贴、导出等不在本轮。
  */
 import { For, Show, type JSX } from "solid-js"
 import type { 图文件 } from "./file"
@@ -121,6 +122,17 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         onClick={() => props.动作表.自动布局()}
       >
         自动布局
+      </button>
+
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-present"
+        aria-label="演示"
+        title="演示"
+        class={按钮}
+        onClick={() => props.动作表.演示切换()}
+      >
+        演示
       </button>
 
       <Show when={可批量()}>

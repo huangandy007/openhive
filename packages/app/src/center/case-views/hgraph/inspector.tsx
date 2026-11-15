@@ -12,12 +12,18 @@
  * - **库里现在**读注入的 `快照`（库的真相）：没注入就明写「还没有接入库里的数据」；
  *   注入了但这条不在库里就写「这条不在库里」——**不拿文档值回填**、不伪造空属性。
  *
+ * ## 出现序（T011）
+ *
+ * 数字输入，失焦即存、算一步撤销（一次 `改字段`）；清空补丁 `{ 出现序: null }`（删键，
+ * **不是 0**——0 是合法步号，语义完全不同）。非法输入（小数 / 非数字 / 负数）不发补丁、
+ * 保留文档旧值并就地提示「要填非负整数」。
+ *
  * ## 本轮不做（R28）
  *
- * `出现序`（T011）、「打开档案 / 绑定到库实体」与真实取数（T014）。`刷新此节点` 只在
- * 调用方注入 `刷新节点` 时出现，没注入就不显示（不放禁用假按钮）。
+ * 「打开档案 / 绑定到库实体」与真实取数（T014）；边/文字的出现序 UI（本轮只做节点）。
+ * `刷新此节点` 只在调用方注入 `刷新节点` 时出现，没注入就不显示（不放禁用假按钮）。
  */
-import { For, Show, type JSX } from "solid-js"
+import { For, Show, createSignal, type JSX } from "solid-js"
 import type { 图文件, 节点 } from "./file"
 import type { 画布动作 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
@@ -137,6 +143,34 @@ export function 检查器(props: 检查器Props): JSX.Element {
     const 颜色 = 原值.trim() === "" ? undefined : 原值.trim()
     if (颜色 === (点.外环?.颜色 ?? undefined)) return
     props.动作表.改字段("节点", 点.id, 外环补丁(点.外环?.档, 颜色))
+  }
+
+  /** 就地提示绑定到节点 id：换选中后不把上一条的提示挂在新节点上。 */
+  const [提示, set提示] = createSignal<{ readonly id: string; readonly 文本: string } | undefined>()
+  const 出现序提示 = () => {
+    const 点 = 单个()
+    const 现 = 提示()
+    return 点 !== undefined && 现 !== undefined && 现.id === 点.id ? 现.文本 : undefined
+  }
+
+  const 提交出现序 = (点: 节点, 原值: string) => {
+    const 文本 = 原值.trim()
+    // 清空 = 删键（补丁 null，不是 0）；本来就没有这个键 ⇒ 不算改动。
+    if (文本 === "") {
+      set提示(undefined)
+      if (点.出现序 === undefined) return
+      props.动作表.改字段("节点", 点.id, { 出现序: null })
+      return
+    }
+    const 值 = Number(文本)
+    // fail-closed：非法输入不发补丁，保留旧值，就地提示（不猜用户想填什么）。
+    if (!Number.isFinite(值) || !Number.isInteger(值) || 值 < 0) {
+      set提示({ id: 点.id, 文本: "要填非负整数" })
+      return
+    }
+    set提示(undefined)
+    if (值 === 点.出现序) return
+    props.动作表.改字段("节点", 点.id, { 出现序: 值 })
   }
 
   return (
@@ -286,6 +320,31 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   value={点().备注 ?? ""}
                   onBlur={(事件) => 提交(点(), "备注", 事件.currentTarget.value)}
                 />
+              </div>
+              <div class={行}>
+                <label class={标签} for="hgraph-field-出现序">
+                  出现序
+                </label>
+                {/* 用 text + inputmode：非法值（abc / 1.5）要能留在框里让人改；
+                    type=number 会在赋值时就被清成空串，把「非法」误当成「清空」。 */}
+                <input
+                  id="hgraph-field-出现序"
+                  data-slot="hgraph-field-出现序"
+                  class={`${输入} w-14 flex-none`}
+                  inputmode="numeric"
+                  value={点().出现序 ?? ""}
+                  onBlur={(事件) => 提交出现序(点(), 事件.currentTarget.value)}
+                />
+                <Show when={出现序提示()}>
+                  <span
+                    id="hgraph-field-出现序-提示"
+                    data-slot="hgraph-field-出现序-提示"
+                    role="alert"
+                    class="text-12-regular text-v2-state-fg-danger"
+                  >
+                    {出现序提示()}
+                  </span>
+                </Show>
               </div>
             </section>
 

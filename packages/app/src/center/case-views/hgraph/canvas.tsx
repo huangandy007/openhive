@@ -76,6 +76,11 @@ export interface 画布动作 {
   readonly 对齐: (边: 对齐边, ids: readonly string[]) => void
   readonly 等距: (轴: 等距轴, ids: readonly string[]) => void
   readonly 自动布局: (模式?: 排列模式) => void
+  /**
+   * 演示态是**本地展示态**（T011）：切换信号在编辑器，不产生任何 `操作[]`、不进撤销栈。
+   * 工具栏「演示」按钮与 `Esc` 都落这一条（contracts/ui.md §3）。
+   */
+  readonly 演示切换: () => void
 }
 
 export interface 画布Props {
@@ -92,6 +97,16 @@ export interface 画布Props {
    * 仍是组件内监听：不挂 `window`（FR-040）。
    */
   readonly 收起菜单?: number
+  /**
+   * 只读（T011 演示态）：忽略 pointerdown / keydown / dblclick / contextmenu，且不渲染
+   * 画布 chrome 按钮。演示覆盖层自己拿键盘（FR-040：快捷键只挂容器）。
+   */
+  readonly 只读?: true
+  /**
+   * 演示态可见集合（`演示步进` 的输出）：渲染时按集合过滤；不传 = 全显。
+   * `文字` 不参与（R35）——这个集合只过滤节点与边。
+   */
+  readonly 可见?: { readonly 节点: ReadonlySet<string>; readonly 边: ReadonlySet<string> }
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -199,6 +214,7 @@ export function 画布(props: 画布Props): JSX.Element {
   /** 右键：先把落点选中（节点/文字），菜单项只调动作表（FR-025）。 */
   const 右键 = (事件: MouseEvent) => {
     事件.preventDefault()
+    if (props.只读 === true) return
     上次边提交 = undefined
     const 目标 = 事件.target
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
@@ -231,10 +247,18 @@ export function 画布(props: 画布Props): JSX.Element {
     props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
 
   const 节点表 = createMemo(() => new Map(props.文档.节点.map((点) => [点.id, 点])))
+  // 演示态过滤（T011）：`可见` 不传 = 全显。文字不过滤（R35）。
+  const 可见节点们 = createMemo(() =>
+    props.可见 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => props.可见!.节点.has(点.id)),
+  )
+  const 可见边们 = createMemo(() =>
+    props.可见 === undefined ? props.文档.边 : props.文档.边.filter((行) => props.可见!.边.has(行.id)),
+  )
   const 节点位 = (点: 节点) => 拖影().get(点.id) ?? { x: 数(点.x), y: 数(点.y) }
   const 文字位 = (行: 文字) => 拖影().get(行.id) ?? { x: 数(行.x), y: 数(行.y) }
 
   const 按下 = (事件: PointerEvent) => {
+    if (props.只读 === true) return
     const 目标 = 事件.target
     // 菜单内部的点击交给菜单项自己；点外面则收起菜单。
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
@@ -428,6 +452,8 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 按键 = (事件: KeyboardEvent) => {
+    // 演示态画布是只读的：编辑快捷键必须完全静默（空格/Backspace/Esc 归覆盖层）。
+    if (props.只读 === true) return
     // 输入框判定按 tagName 读，**不能**用 `instanceof HTMLElement`：画布内文字编辑框
     // 在 `<foreignObject>` 里，happy-dom 下它是 SVG 命名空间节点（HTMLElement 为 false），
     // 旧守卫会漏掉它 ⇒ 选中非空时在输入框里按 Delete 会删节点（M1 实测）。
@@ -480,6 +506,7 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 双击 = (事件: MouseEvent) => {
+    if (props.只读 === true) return
     const 目标 = 事件.target
     // 菜单与画布内的按钮 / 输入框不算「双击空白」：否则双击 chrome 按钮会额外加一个节点（M2）。
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu'], button, input, textarea, select") !== null)
@@ -554,7 +581,8 @@ export function 画布(props: 画布Props): JSX.Element {
       ref={(元素) => (容器 = 元素)}
       data-slot="hgraph-canvas"
       data-mode={props.模式}
-      tabindex="0"
+      data-readonly={props.只读 === true ? "true" : undefined}
+      tabindex={props.只读 === true ? undefined : "0"}
       role="application"
       aria-label="关系图画布"
       class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-v2-background-bg-base outline-none"
@@ -566,7 +594,8 @@ export function 画布(props: 画布Props): JSX.Element {
       onDblClick={双击}
       onContextMenu={右键}
     >
-      <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1">
+      <Show when={props.只读 !== true}>
+        <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1">
         <button
           type="button"
           data-slot="hgraph-mode-pointer"
@@ -597,7 +626,8 @@ export function 画布(props: 画布Props): JSX.Element {
         >
           加文字
         </button>
-      </div>
+        </div>
+      </Show>
 
       <svg
         data-slot="hgraph-svg"
@@ -606,7 +636,7 @@ export function 画布(props: 画布Props): JSX.Element {
         class="block h-full w-full select-none"
       >
         <g data-slot="hgraph-viewport" transform={`translate(${视口().x} ${视口().y}) scale(${视口().缩放})`}>
-          <For each={props.文档.边}>
+          <For each={可见边们()}>
             {(行: 边) => {
               const 甲 = () => props.文档.节点.find((点) => 点.id === 行.从)
               const 乙 = () => props.文档.节点.find((点) => 点.id === 行.到)
@@ -647,7 +677,7 @@ export function 画布(props: 画布Props): JSX.Element {
             }}
           </For>
 
-          <For each={props.文档.节点}>
+          <For each={可见节点们()}>
             {(点: 节点) => {
               const 位 = () => 节点位(点)
               const 选中 = () => props.选中.includes(点.id)
