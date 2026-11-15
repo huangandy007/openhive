@@ -22,7 +22,11 @@
  *
  * 栈本体在 `undo.ts`（T009a）；本组件只做「每个成功应用的批次压一步」与
  * `Ctrl+Z` / `Ctrl+Shift+Z` 的接线（按键挂在画布容器上，见 `canvas.tsx`）。
- * **逆操作生成归 T016**：本轮压入的步 `逆操作` 为空，撤销只弹栈、不发写。
+ * T016a 起每批压入 `{正操作, 逆操作, 副本?}`：逆操作在 `history.ts` 里按**应用前**的文档生成，
+ * 撤销应用逆操作、重做应用正操作；撤销/重做触发的写**不再压新步**（否则会清掉重做栈）。
+ *
+ * 外部重载（AI 改动）只**压一步**、不写盘（R92）：文档保持 AI 的新内容，写发生在用户按
+ * `Ctrl+Z` 时；diff 覆盖不了的改动不压栈，只提示（R94）。
  *
  * ## 本地操作代数只覆盖本组件会发出的六种
  *
@@ -59,7 +63,9 @@ import {
   重做 as 弹重做,
   清空,
   type 撤销栈,
+  type 副本,
 } from "./undo"
+import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 
 export interface 编辑器Props {
   readonly path: string
@@ -112,7 +118,7 @@ function 打补丁(行: Record<string, unknown>, 补丁: Record<string, unknown>
 
 /**
  * 本地乐观应用（只为显示）。不校验来源、不分配正式 id —— 这两件事只有服务端一份实现。
- * `合并节点` 原样返回：本轮不产生（T016）。
+ * `合并节点` 原样返回：T016a 不产生（合并归 T016b）。
  */
 function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
   if (操作.操作 === "移动") {
@@ -218,6 +224,11 @@ function 换操作id(操作: 操作, 映射: Readonly<Record<string, string>>): 
 
 /** 读放宽：缺 x/y 的行按 0 算（同 `canvas.tsx`，别让 NaN 进文件）。 */
 const 数 = (值: unknown) => (typeof 值 === "number" && Number.isFinite(值) ? 值 : 0)
+
+/** 选中收口（T016a）：只认文档里仍存在的节点/文字 id（画布不把边放进 `选中`）。 */
+function 仍存在(文档: 图文件, id: string): boolean {
+  return 文档.节点.some((点) => 点.id === id) || 文档.文字.some((行) => 行.id === id)
+}
 
 /**
  * `自动位置` 的入参是 `关系图结果`（与实体关系图共用同一套布局算法，`#002-06`）。
@@ -352,6 +363,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [询问重载, set询问重载] = createSignal(false)
   /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
   const [重载提示, set重载提示] = createSignal(false)
+  /** AI 改动无法整体还原时的提示（R94）；只压不写，也不压半还原的步。 */
+  const [撤销提示, set撤销提示] = createSignal<string | undefined>()
   /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
   const [选择器开, set选择器开] = createSignal(false)
   /** T015：导出选项面板（本地 UI 态，不写文件、不进撤销栈）。 */
@@ -386,6 +399,19 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   })
 
   let 待发: 操作[] = []
+  /**
+   * 当前待发批的逆操作草稿（R81）：每次 `应用` 用**应用前**文档算一份，按「后做的先退」
+   * 前插；只在这一批成功时与正操作一起压成一步，失败/重载就丢。
+   */
+  let 草稿逆操作: 操作[] = []
+  /** 草稿里被删对象的完整副本（R78；本任务只负责攒与交付，消费归 T016b）。 */
+  let 草稿副本: 副本[] = []
+  /**
+   * 当前待发批**只由撤销/重做产生**（T016a 接线必需）：撤销触发的写若照常压一步，会把
+   * 刚移进重做栈的那步清空（`压入` 即清空重做）⇒ 重做永远不可用。混入任何用户新操作后
+   * 它就是一次新的历史步，照常压（线性化）。
+   */
+  let 草稿仅撤销重做 = false
   let 计时: ReturnType<typeof setTimeout> | undefined
   let 正在发 = false
   /**
@@ -420,12 +446,21 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     正在发 = true
     const 批 = 待发
     待发 = []
+    // 摘下这一批的逆操作草稿与「只由撤销/重做产生」标记；新批从空草稿开始。
+    const 批逆操作 = 草稿逆操作
+    const 批副本 = 草稿副本
+    const 仅撤销重做 = 草稿仅撤销重做
+    草稿逆操作 = []
+    草稿副本 = []
+    草稿仅撤销重做 = false
     const 批次 = `批-${++批次序号}`
     // 发送时快照 = 已存基线 + 本批；它才是「服务端接受这一批之后」的文档。
     // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
     const 快照 = 文档()
     const 前 = 已存文档()
     const 代 = 文档代
+    // R81 失败清理的差集基准：发送时文档里已有哪些 id（临时 id 也记）。
+    const 快照id们 = new Set([...快照.节点, ...快照.边, ...快照.文字].map((行) => 行.id))
     set状态("发送中")
 
     const 回 = await props.api.写({
@@ -450,14 +485,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       const 基 = 换id(快照, 映射)
       // 飞行中新增的待发操作：临时 id 换成正式 id，再折到新基线之上（不丢用户改动）。
       待发 = 待发.map((操作) => 换操作id(操作, 映射))
-      set文档(待发.reduce(应用本地, 基))
+      // 飞行中新增操作的逆操作草稿引用本批临时 id 时也要一起换，否则下一批撤销打到旧 id。
+      草稿逆操作 = 草稿逆操作.map((操作) => 换操作id(操作, 映射))
+      const 新文档 = 待发.reduce(应用本地, 基)
+      set文档(新文档)
       set已存文档(基)
       set版本(回.value.版本)
       // 临时 id → 正式 id 也要作用到选中/改名目标：否则「加节点→立刻 F2」会打到不存在的对象。
-      set选中((旧) => 旧.map((id) => 映射[id] ?? id))
-      set重命名id((旧) => (旧 === undefined ? undefined : (映射[旧] ?? 旧)))
-      // 逆操作生成归 T016；本轮先压一个带空逆操作的空步（批次边界现在就钉住）。
-      set撤销栈(压入(撤销栈(), { 批次, 逆操作: [] }))
+      const 换回 = (id: string) => 映射[id] ?? id
+      // 成功后选中收口到「文档里仍存在的节点/文字 id」——撤销合并后保留者 id 已变，
+      // 不清理会让删除按钮指向不存在的对象。
+      set选中((旧) => 旧.map(换回).filter((id) => 仍存在(新文档, id)))
+      set重命名id((旧) => {
+        if (旧 === undefined) return undefined
+        const 新id = 换回(旧)
+        return 仍存在(新文档, 新id) ? 新id : undefined
+      })
+      // 撤销/重做触发的写不再压一步、也不清重做栈（R78）；混入用户新操作则照常线性化。
+      if (!仅撤销重做) {
+        set撤销栈(
+          压入(撤销栈(), {
+            批次,
+            正操作: 批.map((操作) => 换操作id(操作, 映射)),
+            逆操作: 批逆操作.map((操作) => 换操作id(操作, 映射)),
+            ...(批副本.length > 0 ? { 副本: 批副本 } : {}),
+          }),
+        )
+      }
       set错误(undefined)
       set最新版本(undefined)
       // 还有没发出去的改动就不算「已保存」。
@@ -465,12 +519,20 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     } else {
       // 失败的批丢弃（回改到服务端已接受值）；飞行中新增、从未发出的待发重折回来。
       // 两类失败都停在「待发」、只说「没存上」；不自动重试、不替用户合并。
-      set文档(待发.reduce(应用本地, 前))
+      const 回滚后 = 待发.reduce(应用本地, 前)
+      set文档(回滚后)
       set已存文档(前)
-      // 失败批里的临时 id 已随回滚消失：选中 / 改名目标必须清掉这些项，
-      // 否则「删除」按钮仍按「选中非空」亮着，却指向不存在的对象。
-      set选中((旧) => 旧.filter((id) => !是临时id(id)))
-      set重命名id((旧) => (旧 !== undefined && 是临时id(旧) ? undefined : 旧))
+      // 该批草稿已随发送摘下并丢弃；飞行中新增的待发按回滚后的文档重算一份，
+      // 否则撤销会退到「失败批仍生效时」的位置。
+      const 重算 = 求逆操作(前, 待发)
+      草稿逆操作 = [...重算.逆操作]
+      草稿副本 = [...(重算.副本 ?? [])]
+      const 现存 = new Set([...回滚后.节点, ...回滚后.边, ...回滚后.文字].map((行) => 行.id))
+      // R81：只清「发送时快照里有、回滚后不存在」的临时 id。失败前就在的临时 id
+      // （例如飞行中刚加、还没发过的对象）不能误删——它仍指向文档里真实存在的对象。
+      const 该清 = (id: string) => 是临时id(id) && 快照id们.has(id) && !现存.has(id)
+      set选中((旧) => 旧.filter((id) => !该清(id)))
+      set重命名id((旧) => (旧 !== undefined && 该清(旧) ? undefined : 旧))
       set错误("没存上")
       set最新版本(回.code === "VERSION_CONFLICT" ? 回.最新版本 : undefined)
       set状态("待发")
@@ -495,8 +557,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   /**
    * 应用一次外部重载（R55）。**只读零写盘**：这里不调 `api.写`。
-   * 旧逆操作基于旧版本，重载后不能再写回（US6 场景 4）；T016 用 `外部改动` 回调
-   * diff 出「AI 这一批」的新一步。
+   *
+   * R92：AI 这一整批折成**一步压栈，但不立刻写盘**——重载后文档保持 AI 的新内容，写发生在
+   * 用户按 `Ctrl+Z` 时（恰一次）。原 R82 字面「重载后应用逆操作」会在重载瞬间抹掉 AI 改动，
+   * 与 T013 用例和「只发 1 次写」同时冲突。
+   *
+   * R94：`diff逆操作` 判「不能整体还原」时不压栈，只提示；绝不压半还原的步。
    */
   const 执行重载 = (变更: 外部变更) => {
     const 新 = 变更.文档
@@ -507,10 +573,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       return
     }
     const 旧 = 文档()
+    const 差 = 求diff逆操作(旧, 新)
     // R89：先换代，再落实文档；在途写的应答回来时据此整段丢弃。
     文档代 += 1
     clearTimeout(计时)
     待发 = []
+    草稿逆操作 = []
+    草稿副本 = []
+    草稿仅撤销重做 = false
     待重载 = undefined
     set文档(新)
     set已存文档(新)
@@ -518,7 +588,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set状态("已存")
     set错误(undefined)
     set最新版本(undefined)
-    set撤销栈(清空(撤销栈()))
+    // 旧历史一律清掉（US6 场景 4）；随后把 AI 那一步压成栈里唯一的一步（顺序按发生时间）。
+    const 空栈 = 清空(撤销栈())
+    set撤销栈(
+      !差.ok || (差.正操作.length === 0 && 差.逆操作.length === 0)
+        ? 空栈
+        : 压入(空栈, {
+            正操作: 差.正操作,
+            逆操作: 差.逆操作,
+            ...(差.副本 !== undefined ? { 副本: 差.副本 } : {}),
+          }),
+    )
+    set撤销提示(差.ok ? undefined : "AI 的改动中有不能自动撤销的部分")
     // 旧 id 可能已不存在：选中 / 改名 / 确认条 / 菜单一并收起（`#005-48`）。
     set选中([])
     set重命名id(undefined)
@@ -592,13 +673,24 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set询问重载(false)
   }
 
-  const 应用 = (操作们: readonly 操作[]) => {
+  /**
+   * 唯一把操作放进待发批的出口（R81）。在**应用前**文档上算逆操作并前插到草稿：
+   * 一批里先后两次 `应用` 时，撤销要「后做的先退」，所以新逆操作放在已有草稿之前。
+   */
+  const 应用 = (操作们: readonly 操作[], 选项: { 仅撤销重做?: boolean } = {}) => {
     if (操作们.length === 0) return
     const 旧 = 文档()
+    const 逆 = 求逆操作(旧, 操作们)
+    草稿逆操作 = [...逆.逆操作, ...草稿逆操作]
+    if (逆.副本 !== undefined) 草稿副本 = [...草稿副本, ...逆.副本]
+    草稿仅撤销重做 =
+      待发.length === 0 ? 选项.仅撤销重做 === true : 草稿仅撤销重做 && 选项.仅撤销重做 === true
     set文档(操作们.reduce(应用本地, 旧))
     待发 = [...待发, ...操作们]
     set错误(undefined)
     set最新版本(undefined)
+    // 新的本地动作让「AI 改动无法整体撤销」的提示过期。
+    set撤销提示(undefined)
     set状态("待发")
     排发()
   }
@@ -768,15 +860,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 出 = 弹撤销(撤销栈())
     if (出 === undefined) return
     set撤销栈(出.栈)
-    // 逆操作归 T016；空步只弹栈、不发写，避免产生一次空改动的写请求。
-    if (出.步.逆操作.length > 0) 应用(出.步.逆操作)
+    // 撤销应用 `逆操作`；空步只弹栈、不发写（避免一次空改动的写请求）。本次发送不压新步。
+    if (出.步.逆操作.length > 0) 应用(出.步.逆操作, { 仅撤销重做: true })
   }
 
   const 重做一步 = () => {
     const 出 = 弹重做(撤销栈())
     if (出 === undefined) return
     set撤销栈(出.栈)
-    if (出.步.逆操作.length > 0) 应用(出.步.逆操作)
+    // R78：重做应用 `正操作`，不是再发一次逆操作。
+    if (出.步.正操作.length > 0) 应用(出.步.正操作, { 仅撤销重做: true })
   }
 
   /**
@@ -1053,7 +1146,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           role="status"
           class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
         >
-          图已重新载入，撤销记录已清空
+          图已重新载入，之前的撤销记录已清空
+        </p>
+      </Show>
+
+      {/* R94：AI 改动里有 diff 覆盖不了的部分 ⇒ 未压栈，明确告诉用户不可整批撤销。 */}
+      <Show when={撤销提示()}>
+        <p
+          data-slot="hgraph-undo-notice"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          {撤销提示()}
         </p>
       </Show>
 

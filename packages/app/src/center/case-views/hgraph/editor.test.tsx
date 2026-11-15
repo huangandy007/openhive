@@ -22,7 +22,7 @@ import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 实体档案, 档案关系 } from "@/center/case-detail-api"
-import { 解析图, 序列化图, type 图文件, type 节点, type 文字 } from "./file"
+import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
@@ -1448,7 +1448,7 @@ describe("T010 · 修复轮 1", () => {
     expect(表三.get("n2")!.度数).toBe(0)
   })
 
-  test("T011 #6 检查器改出现序 2 后失焦：恰一条写、一步撤销（逆操作归 T016）", async () => {
+  test("T011 #6 检查器改出现序 2 后失焦：恰一条写、一步撤销（T016a：撤销写回 null）", async () => {
     const { api, 写们 } = 假api()
     挂上(api)
     await flush()
@@ -1473,9 +1473,12 @@ describe("T010 · 修复轮 1", () => {
     按键(画布()!, { key: "z", ctrlKey: true })
     await flush()
     expect(撤销键.disabled).toBe(true)
-    // 逆操作生成归 T016：本轮只弹栈、不发写、文档值不回退（报告缺口表写明）。
+    // T016a：撤销应用逆操作并发一次写——旧键不存在 ⇒ 补丁 null（删键）。
     await 过防抖()
-    expect(写们.length).toBe(1)
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 出现序: null } }] },
+    ])
   })
 
   test("M7 自动布局：默认环形与网格产出不同坐标；锁定节点不在目标里", () => {
@@ -1670,9 +1673,11 @@ describe("T013 · 页面接收 AI 改动", () => {
     await 等(200)
 
     expect(节点组("n9")).not.toBeNull()
-    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，之前的撤销记录已清空")
     expect(取("[data-slot='hgraph-reload-notice']")!.getAttribute("role")).toBe("status")
-    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // R92b（语义变更）：AI 那一步已压栈 ⇒ 撤销可用（旧步已清）；深度恰 1 见 #7。
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    expect(按钮("hgraph-redo").disabled).toBe(true)
     // 重载只读：写调用数停在存档那一次。
     expect(服.写们.length).toBe(存档)
   })
@@ -1729,7 +1734,7 @@ describe("T013 · 页面接收 AI 改动", () => {
 
     expect(节点组("n9")).not.toBeNull()
     expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
-    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，之前的撤销记录已清空")
     // I-2：必须**跨过原来的 500ms 防抖窗口**再断言，否则计时器还没到点、
     // 卸载时又被 afterEach 清掉 ⇒ 断言恒真（假绿）。
     await 过防抖()
@@ -1779,7 +1784,7 @@ describe("T013 · 页面接收 AI 改动", () => {
     expect(收到.length).toBe(0)
   })
 
-  test("#7 重载后按 Ctrl+Z ⇒ 旧逆操作不写回（写调用数不变）", async () => {
+  test("#7 重载后按 Ctrl+Z ⇒ 恰 1 次写、只含 AI 还原、旧步不写回（R92b）", async () => {
     const 服 = 假服务端(一份图())
     挂轮询(服.api, { 轮询毫秒: 25 })
     await flush()
@@ -1789,13 +1794,24 @@ describe("T013 · 页面接收 AI 改动", () => {
     expect(按钮("hgraph-undo").disabled).toBe(false)
 
     服.设远端(外部改过的图(服.现图()), "a1")
-    await 等(150)
+    await 等到条件(() => 节点组("n9") !== null)
+    await flush()
     expect(节点组("n9")).not.toBeNull()
-    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // R92b：栈里恰有 AI 一步（旧步已清空）⇒ 撤销可用、重做没有内容。
+    // 「恰 1」由下面一次 Ctrl+Z 后撤销即变灰来钉死。
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    expect(按钮("hgraph-redo").disabled).toBe(true)
 
     按键(画布()!, { key: "z", ctrlKey: true })
     await 过防抖()
-    expect(服.写们.length).toBe(1)
+    // 恰好一次写（不是每对象一次），且只含 AI 还原：删掉 AI 新增的 n9。
+    expect(服.写们.length).toBe(2)
+    expect(服.写们[1]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n9" }] }])
+    // 旧步（把 n1 挪到 150,130）没有被写回：n1 仍在重载后的位置。
+    expect(节点组("n9")).toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+    expect(按钮("hgraph-redo").disabled).toBe(false)
   })
 
   test("#8 重载后选中清空，检查器不再显示旧节点", async () => {
@@ -1836,7 +1852,7 @@ describe("T013 · 页面接收 AI 改动", () => {
 
     await 等(150)
     expect(节点组("n9")).not.toBeNull()
-    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，之前的撤销记录已清空")
   })
 
   test("#10 重载时外部改动收到（旧文档, 新文档）各一次；同版本不重复回调", async () => {
@@ -1887,7 +1903,7 @@ describe("T013 · 页面接收 AI 改动", () => {
     服.设远端(外部改过的图(服.现图()), "w10")
     await 等(200)
     expect(节点组("n9")).not.toBeNull()
-    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，之前的撤销记录已清空")
     expect(收到.length).toBe(1)
   })
 
@@ -1945,7 +1961,8 @@ describe("T013 · 页面接收 AI 改动", () => {
 
     expect(节点组("n9")).not.toBeNull()
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
-    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // R92b（语义变更）：栈里是重载时压入的 AI 一步（旧步没有回填）；撤销可用。
+    expect(按钮("hgraph-undo").disabled).toBe(false)
     expect(文案("hgraph-save-status")).toBe("已保存")
 
     // 版本是重载版本 a1：下一次写必须带它（否则 409 / 下一 tick 又误判外部改动）。
@@ -1979,7 +1996,8 @@ describe("T013 · 页面接收 AI 改动", () => {
     // 旧基线（拖过 n1、没有 n9）不许覆盖重载后的文档。
     expect(节点组("n9")).not.toBeNull()
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
-    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // R92b（语义变更）：AI 一步在栈里（失败批的旧步没有回填）；撤销可用。
+    expect(按钮("hgraph-undo").disabled).toBe(false)
     // 状态说「没存上」会误导：这批结果已丢弃，当前文档就是服务端那份。
     expect(文案("hgraph-save-status")).toBe("已保存")
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("已存")
@@ -2064,6 +2082,173 @@ describe("T013 · 页面接收 AI 改动", () => {
     挂过的.pop()!()
     await 等(120)
     expect(服.读们.length).toBe(卸载前)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T016a · 逆操作接线（撤销/重做）与 AI 外部改动一步还原
+// ---------------------------------------------------------------------------
+
+/** 一条手写推断边（端点由调用方给）。 */
+function 造边(id: string, 从: string, 到: string): 边 {
+  return { id, 从, 到, 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } }
+}
+
+/** n4/n5/n6 三颗节点 + e1/e2（串起三颗）/e3（n1–n4，删 n4 会被级联带走）。 */
+function 带边的图(): 图文件 {
+  const 基 = 一份图()
+  return {
+    ...基,
+    节点: [...基.节点, 造节点("n4", 400, 200), 造节点("n5", 500, 200), 造节点("n6", 600, 200)],
+    边: [造边("e1", "n4", "n5"), 造边("e2", "n5", "n6"), 造边("e3", "n1", "n4")],
+  }
+}
+
+const 节点数 = () => document.querySelectorAll("[data-slot='hgraph-node']").length
+const 边数 = () => document.querySelectorAll("[data-slot='hgraph-edge']").length
+
+describe("T016a · 撤销/重做与 AI 一步还原", () => {
+  test("#6 重做应用 正操作：撤销写回原位、重做再写回新位（不是重发逆操作）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 150, y: 130 }] },
+    ])
+
+    // 撤销 ⇒ 写回旧坐标。
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 100, y: 100 }] },
+    ])
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    // 撤销触发的写不压新步 ⇒ 重做栈还在。
+    expect((取("[data-slot='hgraph-redo']") as HTMLButtonElement).disabled).toBe(false)
+
+    // 重做 ⇒ 应用 `正操作`（回到 150,130），不是把逆操作再发一次。
+    按键(画布()!, { key: "z", ctrlKey: true, shiftKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(3)
+    expect(写们[2]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 150, y: 130 }] },
+    ])
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+    expect((取("[data-slot='hgraph-undo']") as HTMLButtonElement).disabled).toBe(false)
+    expect((取("[data-slot='hgraph-redo']") as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  test("#8 AI 删 3 节点（连带 3 条边）⇒ 一次 Ctrl+Z 整批还原：回原值、恰 1 次写", async () => {
+    const 服 = 假服务端(带边的图())
+    挂轮询(服.api, { 轮询毫秒: 25, 初始文档: 带边的图() })
+    await flush()
+    expect(节点数()).toBe(6)
+    expect(边数()).toBe(3)
+
+    const 删后 = { ...服.现图() }
+    删后.节点 = 删后.节点.filter((点) => !["n4", "n5", "n6"].includes(点.id))
+    删后.边 = 删后.边.filter((条) => !["e1", "e2", "e3"].includes(条.id))
+    删后.更新于 = "2026-11-16T13:00:00+08:00"
+    服.设远端(删后, "a1")
+    await 等到条件(() => 节点组("n4") === null)
+    await flush()
+
+    expect(节点数()).toBe(3)
+    expect(边数()).toBe(0)
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+
+    // 整批一次回来：节点/边数回到删前具体值。
+    expect(节点数()).toBe(6)
+    expect(边数()).toBe(3)
+    // 恰 1 次写（重载零写 + 撤销一次写），只含还原操作；原 id 加回（R93）。
+    expect(服.写们.length).toBe(1)
+    const 还原 = 服.写们[0]!.操作
+    expect(还原.map((操作) => 操作.操作)).toEqual(["加节点", "加边"])
+    const 加节点 = 还原[0]!
+    if (加节点.操作 !== "加节点") throw new Error("不是加节点")
+    expect(加节点.节点.map((行) => 行.id)).toEqual(["n4", "n5", "n6"])
+    const 加边 = 还原[1]!
+    if (加边.操作 !== "加边") throw new Error("不是加边")
+    expect(加边.边.map((行) => `${行.id}:${行.从}-${行.到}`)).toEqual(["e1:n4-n5", "e2:n5-n6", "e3:n1-n4"])
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+  })
+
+  test("#9 失败批：只丢本批草稿，之前步仍可撤；飞行中新增的临时 id 不被清", async () => {
+    const { api, 写们, 解 } = 闸门api()
+    挂上(api)
+    await flush()
+
+    // 第一笔：n2 拖动，成功 ⇒ 栈里一步（失败后必须仍在）。
+    拖(节点组("n2")!, 200, 100, 230, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    解(0, 成功("v2"))
+    await flush()
+    await flush()
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+
+    // 第二笔：n1 拖动，应答挂住（飞行中）。
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(写们.length).toBe(2)
+
+    // 飞行中再加一颗节点：它的临时 id 不在发送时快照里。
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await flush()
+    const 飞行中 = document.querySelector("[data-node-id^='临时']")
+    expect(飞行中).not.toBeNull()
+
+    // 第二笔失败：回滚到已接受值，但飞行中新增的节点/选中必须留着。
+    解(1, { kind: "error", message: "写不进去", code: "INTERNAL" })
+    await flush()
+    await flush()
+
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(document.querySelector("[data-node-id^='临时']")).not.toBeNull()
+    expect(节点数()).toBe(4)
+    expect(document.querySelector("[data-node-id^='临时']")!.getAttribute("data-selected")).toBe("true")
+    expect(文案("hgraph-save-status")).toContain("没存上")
+
+    // 之前那一步仍可撤：撤一次就到底（说明栈里恰好还是 1 步，失败批没有混进去）。
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await flush()
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+    expect(节点组("n2")!.getAttribute("transform")).toBe("translate(200 100)")
+    // 飞行中新增的节点不受撤销影响（它不在那一步里）。
+    expect(document.querySelector("[data-node-id^='临时']")).not.toBeNull()
+  })
+
+  test("R94 AI 改了白名单外字段（来源）⇒ 不压栈、撤销不可用、提示不能自动撤销", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+
+    const 改后 = {
+      ...服.现图(),
+      更新于: "2026-11-16T13:30:00+08:00",
+      节点: 服.现图().节点.map((点) =>
+        点.id === "n1" ? { ...点, 来源: { kind: "实体" as const, 实体: "e9", 值: "n1" } } : 点,
+      ),
+    }
+    服.设远端(改后, "a1")
+    await 等到条件(() => 文案("hgraph-undo-notice") !== undefined)
+    await flush()
+
+    expect(文案("hgraph-undo-notice")).toBe("AI 的改动中有不能自动撤销的部分")
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // 重载本身仍发生、零写盘（写回旧状态会让「看得见 AI 的改动」失效）。
+    expect(取("[data-slot='hgraph-reload-notice']")).not.toBeNull()
+    await 过防抖()
+    expect(服.写们.length).toBe(0)
   })
 })
 
