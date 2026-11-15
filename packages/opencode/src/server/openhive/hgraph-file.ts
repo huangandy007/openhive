@@ -17,7 +17,8 @@ import { type ParseError, parse as 解析JSONC } from "jsonc-parser"
  * ——那样必丢字段（08 §4.4）。数组按身份键配对（节点/边/文字按 `id`，属性按 `键`，
  * 证据按 `关系`），所以重排、增删都不会把未知键贴到别的对象上。
  *
- * 已知键不在 `文档` 里（`undefined`）⇒ 视为删除该键（T005 的 `null` 补丁落地在这里）。
+ * 已知键为 `undefined` **或 `null`** ⇒ 视为删除该键（契约 §3.1：`补丁[键] = null` 就是
+ * 删键，T005 按这个编码发删除）；`null` 永远不会被写进文件。
  */
 
 export interface 设置 {
@@ -137,13 +138,18 @@ export type 解析结果 =
   | { ok: true; 文档: 图文件; 原文树: unknown }
   | { ok: false; code: 解析失败码; 说明: string }
 
-/** data-model §2：阈值只影响渲染档位。取用时复制，别直接往常量里 push。 */
-export const 默认设置: 设置 = {
-  线宽度量: "按类型默认",
-  次数阈值: [1, 2, 5, 10, 50],
-  金额阈值: [10000, 50000, 200000, 1000000],
-  外环阈值: [1, 2, 4, 8],
+/** 冻结只做兜底：调用方取 `默认设置` 时必须复制（`补全设置` / `空骨架` 都复制）。 */
+function 冻结数组(值: number[]): number[] {
+  return Object.freeze(值) as number[]
 }
+
+/** data-model §2：阈值只影响渲染档位。常量本身冻结，别直接往常量里 push。 */
+export const 默认设置: 设置 = Object.freeze({
+  线宽度量: "按类型默认",
+  次数阈值: 冻结数组([1, 2, 5, 10, 50]),
+  金额阈值: 冻结数组([10000, 50000, 200000, 1000000]),
+  外环阈值: 冻结数组([1, 2, 4, 8]),
+})
 
 // ---------------------------------------------------------------------------
 // 已知键表：`data-model.md` §1–§5 的字段是唯一来源，别在这里加没写过的键。
@@ -260,7 +266,9 @@ function 贴(原: unknown, 新: unknown, 形状: 对象形状): unknown {
   const 结果: Record<string, unknown> = 是普通对象(原) ? { ...原 } : {}
   for (const 键 of 形状.键们) {
     const 值 = 新[键]
-    if (值 === undefined) {
+    // 契约 §3.1 / data-model §7：`补丁[键] = null` 表示删该键，T005 的删除就按这个编码发；
+    // 缺键（`undefined`）与 `null` 同义——**绝不能**把 `null` 写进文件。
+    if (值 === undefined || 值 === null) {
       delete 结果[键]
       continue
     }
@@ -340,6 +348,11 @@ function 补全设置(值: unknown): 设置 {
   }
 }
 
+/**
+ * 缺省字段的**读放宽**是显式选择：`设置`、`标题`、`创建于`、`更新于` 缺失或类型不对时补
+ * 默认值，下次写回会把这些默认落盘。data-model §1 的「必填」约束的是**写入**；读侧若因
+ * 一个缺字段就 `BAD_SHAPE`，用户连图都打不开（手写/老文件也无从救）。
+ */
 function 成文档(树: Record<string, unknown>): 图文件 {
   const 视图 = 投影(树, 图文件形状) as Record<string, unknown>
   return {
@@ -356,6 +369,11 @@ function 成文档(树: Record<string, unknown>): 图文件 {
 
 const 量词: Readonly<Record<string, string>> = { 节点: "个节点", 边: "条边", 文字: "个文字" }
 
+/**
+ * 读只做**版本闸 + 形状闸**：id 文件内唯一、`从`/`到` 指向存在的节点都不在这里判——
+ * 那两件在**写入校验**（T005/T006）里判；悬空边读时**不丢弃、不自动修**，由前端画成
+ * 灰色虚线（契约 §1）。读侧也不校验开放词表（`类型`）与 `来源.kind`/`性质` 的取值。
+ */
 export function 解析图(原文: string): 解析结果 {
   let 树: unknown
   try {
@@ -399,7 +417,15 @@ export function 解析图(原文: string): 解析结果 {
     const 数组 = 树[键] as unknown[]
     for (let 序 = 0; 序 < 数组.length; 序++) {
       const 元素 = 数组[序]
-      if (!是普通对象(元素) || typeof 元素.id !== "string" || 元素.id.trim() === "") {
+      // 两种失败分开报：`null`/字符串 不是「缺 id」，是整条不是对象（定位话术要能照做）。
+      if (!是普通对象(元素)) {
+        return {
+          ok: false,
+          code: "BAD_SHAPE",
+          说明: `第 ${序 + 1} ${量词[键]}不是对象（读到 ${类型名(元素)}）`,
+        }
+      }
+      if (typeof 元素.id !== "string" || 元素.id.trim() === "") {
         return {
           ok: false,
           code: "BAD_SHAPE",

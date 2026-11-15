@@ -145,6 +145,39 @@ describe("T003 · 解析闸", () => {
     if (结果.ok) return
     expect(结果.code).toBe("BAD_SHAPE")
   })
+
+  test("⑧ 数组成员不是对象 ⇒ 说「不是对象」，不与「缺了 id」混用", () => {
+    for (const [键, 量词] of [
+      ["节点", "个节点"],
+      ["边", "条边"],
+      ["文字", "个文字"],
+    ] as const) {
+      const 结果 = 解析图(JSON.stringify({ ...最小图(), [键]: [null] }))
+      expect(结果.ok).toBe(false)
+      if (结果.ok) return
+      expect(结果.code).toBe("BAD_SHAPE")
+      expect(结果.说明).toContain(`第 1 ${量词}不是对象`)
+      expect(结果.说明).not.toContain("缺了 id")
+    }
+  })
+})
+
+describe("T003 · 读放宽：缺省字段补默认（写回落盘）", () => {
+  test("① 缺整个 `设置` ⇒ 文档给默认，序列化后文件里含完整设置", () => {
+    const 图 = 最小图() as Record<string, unknown>
+    delete 图.设置
+    const 结果 = 解析或抛(JSON.stringify(图))
+    expect(结果.文档.设置).toEqual(默认设置)
+    const 写回 = JSON.parse(序列化图(结果.原文树, 结果.文档)) as Record<string, unknown>
+    expect(写回["设置"]).toEqual(默认设置)
+  })
+
+  test("② 缺 `标题` ⇒ 空串", () => {
+    const 图 = 最小图() as Record<string, unknown>
+    delete 图.标题
+    const 结果 = 解析或抛(JSON.stringify(图))
+    expect(结果.文档.标题).toBe("")
+  })
 })
 
 describe("T003 · 未知字段保真", () => {
@@ -205,6 +238,57 @@ describe("T003 · 未知字段保真", () => {
     expect("备注" in 写回.节点[0]).toBe(false)
     expect(写回.节点[0]["未来字段"]).toEqual({ 嵌套: [1, 2, { 深: true }] })
   })
+
+  test("⑥ 补丁值为 null ⇒ 删键，不是把 null 写进文件（T005 的删法）", () => {
+    const 结果 = 解析或抛(JSON.stringify(带未知键的图(), null, 2))
+    // T005 的 `补丁[键] = null` 在文档上就是这个形状；类型上 `备注` 是 string，故从记录口写。
+    const 节点记录 = 结果.文档.节点[0] as unknown as Record<string, unknown>
+    节点记录.备注 = null
+    const 写回 = JSON.parse(序列化图(结果.原文树, 结果.文档)) as {
+      节点: Array<Record<string, unknown>>
+    }
+    expect(Object.hasOwn(写回.节点[0], "备注")).toBe(false)
+    expect(写回.节点[0]["未来字段"]).toEqual({ 嵌套: [1, 2, { 深: true }] })
+  })
+
+  test("⑦ 边内 `证据` 乱序 + 元素未知键、`金额` 内未知键，往返后都保留", () => {
+    const 边骨架 = {
+      标签: "转账",
+      性质: "事实",
+      方向: "有向",
+      来源: { kind: "关系", 关系们: ["rel_1", "rel_2"] },
+      时间: { 首: "", 末: "" },
+      出处: ["mat_x#Sheet1#1"],
+    }
+    const 原文对象 = {
+      ...最小图(),
+      节点: [
+        { id: "n1", 名称: "甲", 类型: "人", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" }, x: 0, y: 0 },
+        { id: "n2", 名称: "乙", 类型: "人", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" }, x: 0, y: 0 },
+      ],
+      边: [
+        {
+          id: "e1",
+          从: "n1",
+          到: "n2",
+          ...边骨架,
+          证据: [
+            { 关系: "rel_1", 出处: "mat_x#Sheet1#1", 权重: 0.7 },
+            { 关系: "rel_2", 出处: "mat_x#Sheet1#2", 备注: "第二笔" },
+          ],
+          金额: { 值: "12000", 单位: "元", 折合: "USD" },
+        },
+      ],
+    }
+    const 结果 = 解析或抛(JSON.stringify(原文对象, null, 2))
+    结果.文档.边[0].证据?.reverse()
+    const 写回 = JSON.parse(序列化图(结果.原文树, 结果.文档))
+    expect(写回.边[0].证据).toEqual([
+      { 关系: "rel_2", 出处: "mat_x#Sheet1#2", 备注: "第二笔" },
+      { 关系: "rel_1", 出处: "mat_x#Sheet1#1", 权重: 0.7 },
+    ])
+    expect(写回.边[0].金额).toEqual({ 值: "12000", 单位: "元", 折合: "USD" })
+  })
 })
 
 describe("T003 · 空骨架与默认设置", () => {
@@ -245,5 +329,11 @@ describe("T003 · 空骨架与默认设置", () => {
     const 原文 = 序列化图(undefined, 空骨架("张三资金流向", 时刻))
     const 结果 = 解析或抛(原文)
     expect(结果.文档).toEqual(空骨架("张三资金流向", 时刻))
+  })
+
+  test("⑤ 默认设置被冻结兜底，调用处拿到的仍是副本", () => {
+    expect(Object.isFrozen(默认设置)).toBe(true)
+    expect(Object.isFrozen(默认设置.次数阈值)).toBe(true)
+    expect(Object.isFrozen(空骨架("图", 时刻).设置.次数阈值)).toBe(false)
   })
 })
