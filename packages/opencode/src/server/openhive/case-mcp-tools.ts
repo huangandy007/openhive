@@ -102,7 +102,15 @@ export interface 工具结果 {
   readonly 身份?: readonly 身份标注[]
 }
 
-export type 工具错误码 = "not_a_member" | "forbidden" | "bad_input" | "not_found"
+export type 工具错误码 =
+  | "not_a_member"
+  | "forbidden"
+  | "bad_input"
+  | "not_found"
+  // T012 图工具：批量超限 / 路径省略歧义 / 写盘或读回失败（R51）。
+  | "too_many"
+  | "ambiguous_path"
+  | "write_failed"
 
 export class 工具错误 extends Error {
   readonly code: 工具错误码
@@ -116,6 +124,12 @@ export class 工具错误 extends Error {
 export interface 工具上下文 {
   readonly db: Queryable
   readonly 身份: 调用身份
+  /**
+   * 沙箱根（图工具要它拼项目目录）。**可选**是为了不惊动全仓十几处只取数的
+   * `{ db, 身份 }` 夹具；真实入口 `case-mcp-server.ts` 必给，图工具拿不到时 fail-closed
+   * （`tool_failed`），不会悄悄按空根拼路径。
+   */
+  readonly workspaceRoot?: string
 }
 
 export { 默认限制, 最大限制 } from "./case-envelope"
@@ -197,10 +211,15 @@ export async function 校验成员(ctx: 工具上下文): Promise<void> {
  * `project_member.role = "owner"`：HTTP 的「老项目回退成属主」那一支在 MCP 不适用
  * （MCP 已有成员行才走到这里）。
  */
-export async function 校验属主(ctx: 工具上下文): Promise<void> {
+export async function 校验属主(
+  ctx: 工具上下文,
+  // 判据只有一份；只有**话术**按工具族区分（数据源档案 / 关系图）。判据与话术都留在这一个函数里，
+  // 不在两个调用点各写一次「角色是不是 owner」。
+  不属主话术 = "只有项目主能维护数据源档案",
+): Promise<void> {
   const roles = await rolesOf(ctx.db, { userId: ctx.身份.userId, projectIds: [ctx.身份.projectId] })
   if (roles.get(ctx.身份.projectId) !== "owner") {
-    throw new 工具错误("forbidden", "只有项目主能维护数据源档案")
+    throw new 工具错误("forbidden", 不属主话术)
   }
 }
 

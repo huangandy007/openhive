@@ -1959,7 +1959,8 @@ describe("query_events 按用途查（P4-A / 01 §3.11.6）", () => {
     expect((按一级.数据 as { purpose_l1: string }[])[0]!.purpose_l1).toBe("消费")
     // 参数白名单在服务端 `收参数`：直接调工具测不到「模型传来的键被服务端丢掉」，
     // 必须经过一次分发入口（`#004-09`：门在入口，白名单漏键要能红）。
-    const 经分发 = await 分发表.query_events(ctx(身份用途), { 用途: "停车" })
+    // 分发表的返回类型自 T012 起含图结果（R48）；这条测的是查库工具，按 `工具结果` 收窄。
+    const 经分发 = (await 分发表.query_events(ctx(身份用途), { 用途: "停车" })) as 工具结果
     expect((经分发.数据 as { purpose: string }[]).map((行) => 行.purpose)).toEqual(["停车"])
   })
 

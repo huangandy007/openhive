@@ -150,7 +150,7 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 14 个工具，名字与设计 §7.1 逐字一致", async () => {
+test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图工具逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
@@ -158,6 +158,11 @@ test("tools/list 返回 14 个工具，名字与设计 §7.1 逐字一致", asyn
     "explore_entity",
     "find_crossings",
     "get_citation",
+    "graph_add",
+    "graph_list",
+    "graph_read",
+    "graph_remove",
+    "graph_update",
     "list_source_profiles",
     "money_flow",
     "query_entities",

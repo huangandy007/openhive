@@ -7,6 +7,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import type { Queryable } from "./case-store"
 import { 数据为空, 数据预算字节, 空原因枚举, 序列化字节 } from "./case-envelope"
+import {
+  graph_add,
+  graph_list,
+  graph_read,
+  graph_remove,
+  graph_update,
+  图工具名,
+  type 图结果,
+} from "./case-hgraph-tools"
 import { 解析调用身份, 身份错误, type 调用身份 } from "./case-mcp-identity"
 import {
   aggregate_money,
@@ -41,13 +50,15 @@ import {
  * 「没身份也能探到工具清单后面有什么」的侧信道。门只在入口做一次
  * （`LEARNINGS #004-09`：门在副作用之前，且只在一处）。
  *
- * ②b 只拦写工具（`build_source_profile` / `revoke_source_profile`）：它们与 HTTP 的
- * `过门({ 要属主: true })` 是同一条授权口径，普通成员不得改写共享映射或撤销他人档案。
- * 读工具（含 `list_source_profiles`）不受影响。
+ * ②b 只拦写工具（数据源档案的 `build_source_profile` / `revoke_source_profile`，关系图的
+ * `graph_add` / `graph_update` / `graph_remove`）：它们与 HTTP 的 `过门({ 要属主: true })`
+ * 是同一条授权口径，普通成员不得改写共享映射、撤销他人档案或改关系图。
+ * 读工具（含 `list_source_profiles` / `graph_list` / `graph_read`）不受影响。
  *
  * ## 错误映射
  *
- * `工具错误` 的 `code`（`bad_input` / `not_found` / `not_a_member` / `forbidden`）原样回给模型；
+ * `工具错误` 的 `code`（`bad_input` / `not_found` / `not_a_member` / `forbidden` / `too_many` /
+ * `ambiguous_path` / `write_failed`）原样回给模型；
  * 其余任何异常一律 `tool_failed`，回给模型的**只有一句固定中文**——原文可能带表名 /
  * 列名 / SQL 片段，只进留痕的 `错误原文` 给运维查。
  *
@@ -73,6 +84,12 @@ export const 工具名 = [
   "list_source_profiles",
   "build_source_profile",
   "revoke_source_profile",
+  // T012：AI 改图的 5 个受约束工具（结果不套七字段信封）。
+  "graph_list",
+  "graph_read",
+  "graph_add",
+  "graph_update",
+  "graph_remove",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -427,6 +444,96 @@ const TOOLS: readonly Tool[] = [
       required: ["档案"],
     },
   },
+  {
+    name: "graph_list",
+    description: "列出本项目里的关系图（.hgraph）：路径、标题、节点数与更新时间。打不开的文件照列并标「打不开」。",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "graph_read",
+    description:
+      "读一份关系图的节点 / 边 / 文字（原样，含出处、证据、时间、来源）。" +
+      "省略 `路径` 时要求项目里恰好有一张图；超过 2 MB 会被拒绝，请先在界面里拆分。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: {
+          type: "string",
+          description: "项目内的 .hgraph 相对路径；省略时项目里必须恰好有一张图",
+        },
+      },
+    },
+  },
+  {
+    name: "graph_add",
+    description:
+      "往图上加节点和边（一次节点 + 边合计最多 50 条，整批原子：任一条不合格一条都不写）。" +
+      "节点用 `临时id` 互指；图上已有同名同类型的节点会复用而不是新建。" +
+      "事实性质的边必须有 `出处` 或 `证据`；推断性质的节点/边必须有 `来源.依据` 与 `可信度`。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: { type: "string", description: "项目内的 .hgraph 相对路径；省略时项目里必须恰好有一张图" },
+        节点: {
+          type: "array",
+          description:
+            "节点草稿数组：{ 临时id?, 名称, 类型, 来源, 时间, 出处?, 属性?, 可信度?, x?, y? }（未给 x/y 时服务端放置）",
+          items: { type: "object" },
+        },
+        边: {
+          type: "array",
+          description:
+            "边草稿数组：{ 临时id?, 从, 到, 标签, 性质(事实/推断), 方向(有向/无向), 来源, 时间, 出处?, 证据? }",
+          items: { type: "object" },
+        },
+        批次: { type: "string", description: "撤销批次名（前端按它把整批算一步撤销），原样回传" },
+        幂等键: { type: "string", description: "同一键重试返回上次结果、不重复写（10 分钟窗口）" },
+      },
+    },
+  },
+  {
+    name: "graph_update",
+    description:
+      "改图上已有对象的字段（节点 名称/类型/细类/外环/备注/出现序/锁定/样式；边 标签/性质/方向/备注/线宽档/出现序；" +
+      "文字 内容/字号/加粗/颜色/对齐/宽度/出现序）。id 不存在会被拒绝，不会顺手新建。" +
+      "把边的性质改成推断同样过硬闸（依据 + 可信度）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: { type: "string", description: "项目内的 .hgraph 相对路径；省略时项目里必须恰好有一张图" },
+        目标: {
+          type: "array",
+          description: "要改的对象：[{ 类别: 节点|边|文字, id, 字段: { …白名单字段 } }]",
+          items: { type: "object" },
+        },
+        批次: { type: "string", description: "撤销批次名，原样回传" },
+        幂等键: { type: "string", description: "同一键重试返回上次结果、不重复写（10 分钟窗口）" },
+      },
+      required: ["目标"],
+    },
+  },
+  {
+    name: "graph_remove",
+    description:
+      "从图上删对象；删节点会连带删两端边（计入同一步的删除条数）。id 不存在会被拒绝，不会静默成功。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: { type: "string", description: "项目内的 .hgraph 相对路径；省略时项目里必须恰好有一张图" },
+        目标: {
+          type: "array",
+          description: "要删的对象：[{ 类别: 节点|边|文字, id }]",
+          items: { type: "object" },
+        },
+        批次: { type: "string", description: "撤销批次名，原样回传" },
+        幂等键: { type: "string", description: "同一键重试返回上次结果、不重复写（10 分钟窗口）" },
+      },
+      required: ["目标"],
+    },
+  },
 ]
 
 /**
@@ -435,7 +542,10 @@ const TOOLS: readonly Tool[] = [
  * 导出给用例：直接调工具的实现测不到「模型传来的键被 `收参数` 丢掉」，
  * 只有经过分发入口才看得出（`#004-09`：门在入口，白名单漏键要能红）。
  */
-export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果>> = {
+export const 分发表: Record<
+  工具名,
+  (ctx: 工具上下文, args: Record<string, unknown>) => Promise<工具结果 | 图结果>
+> = {
   search_materials: (ctx, args) =>
     search_materials(ctx, 收参数<Parameters<typeof search_materials>[1]>(args, ["关键词", "类型"], ["限制"], [])),
   query_entities: (ctx, args) =>
@@ -508,14 +618,39 @@ export const 分发表: Record<工具名, (ctx: 工具上下文, args: Record<st
     ),
   revoke_source_profile: (ctx, args) =>
     revoke_source_profile(ctx, 收参数<Parameters<typeof revoke_source_profile>[1]>(args, ["档案"], [], [])),
+  graph_list: (ctx) => graph_list(ctx),
+  graph_read: (ctx, args) => graph_read(ctx, 收参数<Parameters<typeof graph_read>[1]>(args, ["路径"], [], [])),
+  graph_add: (ctx, args) =>
+    graph_add(
+      ctx,
+      收参数<Parameters<typeof graph_add>[1]>(args, ["路径", "批次", "幂等键"], [], [], ["节点", "边"]),
+    ),
+  graph_update: (ctx, args) =>
+    graph_update(
+      ctx,
+      收参数<Parameters<typeof graph_update>[1]>(args, ["路径", "批次", "幂等键"], [], [], ["目标"]),
+    ),
+  graph_remove: (ctx, args) =>
+    graph_remove(
+      ctx,
+      收参数<Parameters<typeof graph_remove>[1]>(args, ["路径", "批次", "幂等键"], [], [], ["目标"]),
+    ),
 }
 
 /**
  * 模型给的 JSON → 工具入参。**未列出的键 ⇒ bad_input**（fail-closed，不静默忽略——
  * 模型把「起始时间」写成 `起时` 时，静默丢掉等于按全时段返回，答案会悄悄错）。
  */
-function 收参数<T>(args: Record<string, unknown>, 文本: string[], 整数: string[], 布尔: string[]): T {
-  const 允许 = new Set([...文本, ...整数, ...布尔])
+function 收参数<T>(
+  args: Record<string, unknown>,
+  文本: string[],
+  整数: string[],
+  布尔: string[],
+  // 数组类参数（图工具的 节点 / 边 / 目标）：这里只判「是不是数组」，元素形状由工具 /
+  // `hgraph-edit.ts` / `校验来源` 兜住——工具层不复制第二份字段白名单（`#002-06`）。
+  数组: string[] = [],
+): T {
+  const 允许 = new Set([...文本, ...整数, ...布尔, ...数组])
   for (const 键 of Object.keys(args)) {
     if (!允许.has(键)) throw new 工具错误("bad_input", `不认识的参数：${键}；可用参数：${[...允许].join("、")}`)
   }
@@ -536,6 +671,12 @@ function 收参数<T>(args: Record<string, unknown>, 文本: string[], 整数: s
     const 值 = args[键]
     if (值 === undefined) continue
     if (typeof 值 !== "boolean") throw new 工具错误("bad_input", `参数「${键}」必须是布尔值`)
+    结果[键] = 值
+  }
+  for (const 键 of 数组) {
+    const 值 = args[键]
+    if (值 === undefined) continue
+    if (!Array.isArray(值)) throw new 工具错误("bad_input", `参数「${键}」必须是数组`)
     结果[键] = 值
   }
   return 结果 as unknown as T
@@ -559,7 +700,13 @@ function 是工具名(name: string): name is 工具名 {
  * 写工具集合：只有它们需要属主门。**按名字显式列出**（不从 `tools/list` 描述里猜）——
  * 新增写工具时必须在这里加一行，否则它会静默按成员门放行。
  */
-const 写工具名: ReadonlySet<string> = new Set(["build_source_profile", "revoke_source_profile"])
+const 写工具名: ReadonlySet<string> = new Set([
+  "build_source_profile",
+  "revoke_source_profile",
+  "graph_add",
+  "graph_update",
+  "graph_remove",
+])
 
 /** 工具执行失败回给模型的**唯一**文本；原文只进留痕。 */
 const 工具失败文案 = "工具执行失败，已记入服务端日志"
@@ -630,7 +777,7 @@ export function 截断数据(数据: unknown, 缺口: readonly string[]): { 数�
   }
 }
 
-function 成功结果(结果: 工具结果): CallToolResult {
+function 成功结果(结果: 工具结果 | 图结果): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(结果, null, 2) }] }
 }
 
@@ -679,7 +826,7 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
       return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
     }
 
-    const ctx: 工具上下文 = { db: deps.db, 身份 }
+    const ctx: 工具上下文 = { db: deps.db, 身份, workspaceRoot: deps.workspaceRoot }
 
     // ② 成员门。放在名字分发之前：未知工具名不该成为探路侧信道。
     try {
@@ -694,7 +841,8 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
     // 不拿 not_found / bad_input 当探路侧信道。未知名字不匹配写工具集合，仍落到 ③。
     if (写工具名.has(工具)) {
       try {
-        await 校验属主(ctx)
+        // 判据仍是 `校验属主` 一份；只有话术按工具族区分（图写工具 / 数据源档案）。
+        await 校验属主(ctx, 图工具名.has(工具) ? "只有项目属主能改关系图" : undefined)
       } catch (error) {
         if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
         return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
@@ -710,14 +858,20 @@ export function createCaseMcpServer(deps: CaseMcpDeps): Server {
       校验必填(工具, request.params.arguments ?? {})
       // 计数在分发之前：未知工具名已在 ③ 提前 return，不进分发也不计数。
       const 第几次 = 预算.计次(身份)
-      const 表 = { ...分发表, ...deps.工具表 }
-      const 结果 = await 表[工具](ctx, request.params.arguments ?? {})
-      校验信封(结果)
-      const 截 = 截断数据(结果.数据, 结果.缺口)
+      const 执行 = deps.工具表?.[工具] ?? 分发表[工具]
+      const 结果 = await 执行(ctx, request.params.arguments ?? {})
+      // R48：图结果是「一次改动的回执」，不套七字段信封、也不做数组截断；预算计次仍在分发前
+      // （上面那行），只是它的上限缺口没有字段可挂——图工具没有 `缺口`。
+      if (图工具名.has(工具)) return 记(成功结果(结果))
+
+      // 走到这里只可能是查库工具；`分发表` 两侧按工具名互斥，TS 看不见这层相关性，故显式收窄。
+      const 查库 = 结果 as 工具结果
+      校验信封(查库)
+      const 截 = 截断数据(查库.数据, 查库.缺口)
       // 截断后镜像仍成立：至少留 1 条，且截断不改 `空原因`。
       // 上限缺口只进**成功**返回（失败返回先让模型纠正错误码），追加在末尾、不覆盖工具自己的缺口。
       const 缺口 = 第几次 >= 预算上限 ? [...截.缺口, 预算上限缺口] : 截.缺口
-      return 记(成功结果({ ...结果, 数据: 截.数据, 缺口 }))
+      return 记(成功结果({ ...查库, 数据: 截.数据, 缺口 }))
     } catch (error) {
       if (error instanceof 工具错误) return 记(失败结果(error.code, error.message), error.code)
       return 记(失败结果("tool_failed", 工具失败文案), "tool_failed", 原文(error))
