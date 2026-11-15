@@ -17,10 +17,13 @@
  * 在 400ms 时断言**一次都没发**，证明写不是立即发生的。
  */
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
 import type { 图文件, 节点, 文字 } from "./file"
-import type { 坐标换算 } from "./canvas"
+import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
+import { 检查器 } from "./inspector"
+import { 工具栏 } from "./toolbar"
 import { 编辑器 } from "./editor"
 
 const 挂过的: Array<() => void> = []
@@ -786,5 +789,380 @@ describe("画布 · 键盘作用域", () => {
 
     expect(写们.length).toBe(0)
     expect(文字行("t1")).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T010 · 动作单一出口（工具栏 / 快捷键 / 右键 / 检查器）
+// ---------------------------------------------------------------------------
+
+function 幽灵动作表() {
+  const 计数: Record<string, number> = {}
+  const 参数: Record<string, unknown[][]> = {}
+  const 记 = (名: string, 参: unknown[]) => {
+    计数[名] = (计数[名] ?? 0) + 1
+    ;(参数[名] ??= []).push(参)
+  }
+  const 动作: 画布动作 = {
+    选择: (ids, 追加) => 记("选择", [ids, 追加]),
+    移动: (目标) => 记("移动", [目标]),
+    加边: (从, 到) => 记("加边", [从, 到]),
+    加文字: (x, y) => 记("加文字", [x, y]),
+    改字段: (类别, id, 补丁) => 记("改字段", [类别, id, 补丁]),
+    删对象: (目标) => 记("删对象", [目标]),
+    撤销: () => 记("撤销", []),
+    重做: () => 记("重做", []),
+    切换模式: (模式) => 记("切换模式", [模式]),
+    加节点: (位置) => 记("加节点", [位置]),
+    删除所选: () => 记("删除所选", []),
+    重命名: (id) => 记("重命名", [id]),
+    锁定切换: (ids) => 记("锁定切换", [ids]),
+    对齐: (边, ids) => 记("对齐", [边, ids]),
+    等距: (轴, ids) => 记("等距", [轴, ids]),
+    自动布局: (模式) => 记("自动布局", [模式]),
+  }
+  const 总 = () => Object.values(计数).reduce((甲, 乙) => 甲 + 乙, 0)
+  return { 动作, 计数, 参数, 总 }
+}
+
+/**
+ * 把工具栏 / 画布 / 检查器拼在一个宿主里，共用**同一张幽灵动作表**。
+ * 这是「同一出口」的判据载体：点按钮与按快捷键必须落到同一个 spy 条目。
+ */
+function 挂拼装(选项: { 选中?: readonly string[]; 文档?: 图文件 } = {}) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  const 幽 = 幽灵动作表()
+  const [选中, set选中] = createSignal<readonly string[]>(选项.选中 ?? [])
+  const [重命名id, set重命名id] = createSignal<string | undefined>()
+  const 动作: 画布动作 = {
+    ...幽.动作,
+    选择: (ids, 追加) => {
+      幽.动作.选择(ids, 追加)
+      set选中(追加 ? [...new Set([...选中(), ...ids])] : ids)
+    },
+    重命名: (id) => {
+      幽.动作.重命名(id)
+      set重命名id(id)
+    },
+  }
+  const 文档 = 选项.文档 ?? 一份图()
+  挂过的.push(
+    render(
+      () => (
+        <div>
+          <工具栏 选中={选中()} 文档={文档} 动作表={动作} />
+          <画布组件
+            文档={文档}
+            选中={选中()}
+            模式="指针"
+            坐标换算={({ clientX, clientY }) => ({ x: clientX, y: clientY })}
+            动作={动作}
+            重命名id={重命名id()}
+          />
+          <检查器 选中={选中()} 文档={文档} 动作表={动作} />
+        </div>
+      ),
+      host,
+    ),
+  )
+  return { 幽, 选中, set选中, 文档 }
+}
+
+function 点选(id: string, x = 100, y = 100, 修饰: PointerEventInit = {}) {
+  按下(节点组(id)!, x, y, 修饰)
+  松开(x, y)
+}
+
+describe("T010 · 单一出口", () => {
+  test("删除：工具栏按钮与画布 Delete 打到同一个动作条目；各 1 个批次", async () => {
+    // 幽灵侧：两个入口必须落到同一个 `删除所选` spy，且都不自己拼操作。
+    const { 幽 } = 挂拼装()
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement).click()
+    await flush()
+    expect(幽.计数.删除所选).toBe(1)
+    expect(幽.计数.删对象 ?? 0).toBe(0)
+
+    按键(画布()!, { key: "Delete" })
+    await flush()
+    expect(幽.计数.删除所选).toBe(2)
+    expect(幽.计数.删对象 ?? 0).toBe(0)
+
+    // 真编辑器侧：每个入口恰好一个批次（不是每对象一批、也不是重复批）。
+    document.body.innerHTML = ""
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n1" }] }])
+    expect(节点组("n1")).toBeNull()
+
+    点选("n2", 200, 100)
+    await flush()
+    按键(画布()!, { key: "Delete" })
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n2" }] }])
+    expect(节点组("n2")).toBeNull()
+  })
+
+  test("焦点在检查器输入框按 Delete ⇒ 动作表零调用，节点仍在", async () => {
+    const { 幽 } = 挂拼装({ 选中: ["n1"] })
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    expect(输入).not.toBeNull()
+    输入.focus()
+    按键(输入, { key: "Delete" })
+    await flush()
+
+    expect(幽.总()).toBe(0)
+    expect(节点组("n1")).not.toBeNull()
+  })
+
+  test("双击节点标签：出现改名输入框；回车一个 改字段（名称），Esc 零操作", async () => {
+    const { 幽 } = 挂拼装()
+    await flush()
+
+    const 标签 = 节点组("n1")!.querySelector("[data-slot='hgraph-node-label']")!
+    标签.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 127 }))
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    expect(输入).not.toBeNull()
+    expect(输入!.value).toBe("n1")
+
+    输入!.value = "新名字"
+    按键(输入!, { key: "Enter" })
+    await flush()
+    expect(幽.计数.改字段).toBe(1)
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 名称: "新名字" }])
+    expect(取("[data-slot='hgraph-rename-editor']")).toBeNull()
+
+    // Esc：重新打开后放弃 ⇒ 改字段计数不动，且输入框收起。
+    标签.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 127 }))
+    await flush()
+    const 再次 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement
+    expect(再次).not.toBeNull()
+    再次.value = "不该存"
+    按键(再次, { key: "Escape" })
+    await flush()
+    expect(幽.计数.改字段).toBe(1)
+    expect(取("[data-slot='hgraph-rename-editor']")).toBeNull()
+  })
+
+  test("F2 与双击走同一动作（同一 spy 各 +1）", async () => {
+    const { 幽 } = 挂拼装({ 选中: ["n1"] })
+    await flush()
+
+    按键(画布()!, { key: "F2" })
+    await flush()
+    expect(幽.计数.重命名).toBe(1)
+    expect(幽.参数.重命名![0]).toEqual(["n1"])
+    expect(取("[data-slot='hgraph-rename-editor']")).not.toBeNull()
+
+    const 标签 = 节点组("n1")!.querySelector("[data-slot='hgraph-node-label']")!
+    标签.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 127 }))
+    await flush()
+    expect(幽.计数.重命名).toBe(2)
+  })
+
+  test("右键节点：菜单项只调动作表（重命名）", async () => {
+    const { 幽 } = 挂拼装()
+    await flush()
+
+    节点组("n1")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }),
+    )
+    await flush()
+    expect(取("[data-slot='hgraph-menu']")).not.toBeNull()
+    ;(取("[data-slot='hgraph-menu-rename']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(幽.计数.重命名).toBe(1)
+    expect(取("[data-slot='hgraph-rename-editor']")).not.toBeNull()
+  })
+
+  test("右键空白：加节点在点处（动作表收到坐标）", async () => {
+    const { 幽 } = 挂拼装()
+    await flush()
+
+    画布()!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 321, clientY: 234 }),
+    )
+    await flush()
+    ;(取("[data-slot='hgraph-menu-add-node']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(幽.计数.加节点).toBe(1)
+    expect(幽.参数.加节点![0]).toEqual([{ x: 321, y: 234 }])
+  })
+
+  test("检查器改名称：逐字输入 0 次待发，失焦恰好 1 次写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    expect(输入.value).toBe("n1")
+    for (const 值 of ["张", "张三", "张三丰"]) {
+      输入.value = 值
+      输入.dispatchEvent(new Event("input", { bubbles: true }))
+      await flush()
+    }
+    await 过防抖()
+    expect(写们.length).toBe(0)
+
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 名称: "张三丰" } }] },
+    ])
+  })
+
+  test("清空备注后失焦 ⇒ 补丁含 备注: null，不是空串", async () => {
+    const { api, 写们 } = 假api()
+    const 图 = 一份图()
+    图.节点[0]!.备注 = "旧备注"
+    挂上(api, 图)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-field-备注']") as HTMLInputElement
+    expect(输入.value).toBe("旧备注")
+    输入.value = ""
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 备注: null } }] },
+    ])
+  })
+
+  test("批量态：选中 2 个 ⇒ 对齐/等距可用、合并 disabled；选中 1 个 ⇒ 对齐/等距 disabled、删除可用", async () => {
+    const { 幽, set选中 } = 挂拼装({ 选中: ["n1"] })
+    await flush()
+
+    expect((取("[data-slot='hgraph-toolbar-align-左']") as HTMLButtonElement).disabled).toBe(true)
+    expect((取("[data-slot='hgraph-toolbar-space-水平']") as HTMLButtonElement).disabled).toBe(true)
+    expect((取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement).disabled).toBe(false)
+    expect(取("[data-slot='hgraph-toolbar-merge']")).toBeNull()
+
+    set选中(["n1", "n2"])
+    await flush()
+    const 对齐 = 取("[data-slot='hgraph-toolbar-align-左']") as HTMLButtonElement
+    expect(对齐.disabled).toBe(false)
+    expect((取("[data-slot='hgraph-toolbar-space-水平']") as HTMLButtonElement).disabled).toBe(false)
+    const 合并 = 取("[data-slot='hgraph-toolbar-merge']") as HTMLButtonElement
+    expect(合并).not.toBeNull()
+    expect(合并.disabled).toBe(true)
+    expect(合并.getAttribute("title")).toBe("合并（下个任务做）")
+
+    // 检查器批量面板也出现且可用（FR-028）。
+    expect(取("[data-slot='hgraph-batch']")).not.toBeNull()
+    expect((取("[data-slot='hgraph-batch-align-左']") as HTMLButtonElement).disabled).toBe(false)
+
+    对齐.click()
+    await flush()
+    expect(幽.参数.对齐![0]).toEqual(["左", ["n1", "n2"]])
+  })
+
+  test("工具栏加节点：恰好 1 个带坐标的 加节点；应答映射后节点出现且选中是正式 id", async () => {
+    const { api, 写们 } = 假api({
+      写: (输入) => {
+        const 加 = 输入.操作[0]!
+        if (加.操作 !== "加节点") throw new Error("期望加节点")
+        return 成功("v2", { [String(加.节点[0]!.id)]: "n7" })
+      },
+    })
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 操作 = 写们[0]!.操作
+    expect(操作.length).toBe(1)
+    const 加 = 操作[0]!
+    expect(加.操作).toBe("加节点")
+    if (加.操作 !== "加节点") throw new Error("不是加节点")
+    expect(加.节点.length).toBe(1)
+    expect(typeof 加.节点[0]!.x).toBe("number")
+    expect(typeof 加.节点[0]!.y).toBe("number")
+    expect(Number.isInteger(加.节点[0]!.x)).toBe(true)
+    expect(Number.isInteger(加.节点[0]!.y)).toBe(true)
+
+    await flush()
+    await flush()
+    const 新 = 节点组("n7")
+    expect(新).not.toBeNull()
+    expect(新!.getAttribute("data-selected")).toBe("true")
+    expect(document.querySelector("[data-node-id^='临时']")).toBeNull()
+  })
+
+  test("批量对齐 3 个节点 ⇒ 一条写、一步撤销", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    点选("n3", 300, 100, { shiftKey: true })
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-align-左']") as HTMLButtonElement).click()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作.length).toBe(1)
+    const 移动 = 写们[0]!.操作[0]!
+    expect(移动.操作).toBe("移动")
+    if (移动.操作 !== "移动") throw new Error("不是移动")
+    // n1 本来就在 x=100；n2/n3 被对齐到 100（锁定节点仍参与显式对齐）。
+    expect(移动.目标.map((目标) => `${目标.id}:${目标.x}`)).toEqual(["n2:100", "n3:100"])
+
+    const 撤销键 = 取("[data-slot='hgraph-undo']") as HTMLButtonElement
+    expect(撤销键.disabled).toBe(false)
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await flush()
+    expect(撤销键.disabled).toBe(true)
+  })
+
+  test("自动布局：先确认；确认后一次批次，锁定节点不动", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-layout']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(0)
+    expect(取("[data-slot='hgraph-layout-confirm']")).not.toBeNull()
+
+    ;(取("[data-slot='hgraph-layout-confirm-ok']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    const 操作 = 写们[0]!.操作
+    expect(操作.length).toBe(1)
+    expect(操作[0]!.操作).toBe("移动")
+    if (操作[0]!.操作 !== "移动") throw new Error("不是移动")
+    // n3 锁定 ⇒ 不在目标里；其余节点的坐标是整数。
+    expect(操作[0]!.目标.some((目标) => 目标.id === "n3")).toBe(false)
+    for (const 目标 of 操作[0]!.目标) {
+      expect(Number.isInteger(目标.x)).toBe(true)
+      expect(Number.isInteger(目标.y)).toBe(true)
+    }
   })
 })

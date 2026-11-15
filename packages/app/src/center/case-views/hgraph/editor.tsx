@@ -24,16 +24,27 @@
  * `Ctrl+Z` / `Ctrl+Shift+Z` 的接线（按键挂在画布容器上，见 `canvas.tsx`）。
  * **逆操作生成归 T016**：本轮压入的步 `逆操作` 为空，撤销只弹栈、不发写。
  *
- * ## 本地操作代数只覆盖本组件会发出的五种
+ * ## 本地操作代数只覆盖本组件会发出的六种
  *
- * `加边 / 加文字 / 改字段 / 删对象 / 移动`——它们是为了「立即显示」，正式语义仍由服务端
- * `hgraph-edit.ts` 决定（同一前提不在这里重判：不校验来源、不分配正式 id）。`加节点` /
- * `合并节点` 本轮不产生（T010 / T014 / T016）。
+ * `加节点 / 加边 / 加文字 / 改字段 / 删对象 / 移动`——它们是为了「立即显示」，正式语义仍由
+ * 服务端 `hgraph-edit.ts` 决定（同一前提不在这里重判：不校验来源、不分配正式 id）。
+ * `合并节点` 本轮不产生（T016）。
+ *
+ * ## 动作表（T010）
+ *
+ * 工具栏 / 画布快捷键 / 右键菜单 / 检查器**共用同一个 `动作` 对象**；本文件是唯一出口：
+ * 子组件只调动作条目，`应用` 是唯一把 `操作[]` 交给 api 的地方。UI 发起的 `加节点`
+ * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
-import { createSignal, onCleanup, type JSX } from "solid-js"
+import { Show, createSignal, onCleanup, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
-import type { 边, 图文件, 文字 } from "./file"
+import type { 关系图结果 } from "../../case-detail-api"
+import { 自动位置, 画布 as 布局画布 } from "../graph-layout"
+import type { 边, 图文件, 节点, 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
+import { 工具栏 } from "./toolbar"
+import { 检查器 } from "./inspector"
 import {
   可撤销,
   可重做,
@@ -61,13 +72,16 @@ const 防抖毫秒 = 500
 
 /** 临时 id：不匹配服务端的 `^[net]\d+$`，服务端按类别分配正式 id 并写进 `映射`。 */
 let 临时序号 = 0
-const 临时id = (前缀: "e" | "t") => `临时${前缀}${++临时序号}`
+const 临时id = (前缀: "n" | "e" | "t") => `临时${前缀}${++临时序号}`
 
-/** `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）。 */
+/**
+ * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
+ * `锁定: false` 也按删键（后端同义：false = 未锁定 = 没有这个键）。
+ */
 function 打补丁(行: Record<string, unknown>, 补丁: Record<string, unknown>): Record<string, unknown> {
   const 新 = { ...行 }
   for (const [键, 值] of Object.entries(补丁)) {
-    if (值 === null || 值 === undefined) delete 新[键]
+    if (值 === null || 值 === undefined || (键 === "锁定" && 值 === false)) delete 新[键]
     else 新[键] = 值
   }
   return 新
@@ -75,7 +89,7 @@ function 打补丁(行: Record<string, unknown>, 补丁: Record<string, unknown>
 
 /**
  * 本地乐观应用（只为显示）。不校验来源、不分配正式 id —— 这两件事只有服务端一份实现。
- * 不认识的（`加节点` / `合并节点`）原样返回：本轮不从画布发出这两种操作。
+ * `合并节点` 原样返回：本轮不产生（T016）。
  */
 function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
   if (操作.操作 === "移动") {
@@ -128,6 +142,10 @@ function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
     }
   }
 
+  if (操作.操作 === "加节点") {
+    return { ...文档, 节点: [...文档.节点, ...(操作.节点 as unknown as 节点[])] }
+  }
+
   if (操作.操作 === "加边") {
     return { ...文档, 边: [...文档.边, ...(操作.边 as unknown as 边[])] }
   }
@@ -175,6 +193,30 @@ function 换操作id(操作: 操作, 映射: Readonly<Record<string, string>>): 
   return { ...操作, 节点: 操作.节点.map(换行) }
 }
 
+/** 读放宽：缺 x/y 的行按 0 算（同 `canvas.tsx`，别让 NaN 进文件）。 */
+const 数 = (值: unknown) => (typeof 值 === "number" && Number.isFinite(值) ? 值 : 0)
+
+/**
+ * `自动位置` 的入参是 `关系图结果`（与实体关系图共用同一套布局算法，`#002-06`）。
+ * 网格模式只按 `type`/`id` 排序、只读坐标，因此这里补齐类型要求的字段即可。
+ */
+function 构图(文档: 图文件): 关系图结果 {
+  return {
+    节点: 文档.节点.map((点) => ({
+      id: 点.id,
+      type: 点.类型 ?? "",
+      value: 点.名称 ?? "",
+      trust_state: 点.可信度 ?? "",
+      中心: false,
+      跳数: 1,
+      关联数: 0,
+      度数: 0,
+    })),
+    边: [],
+    缺口: [],
+  }
+}
+
 let 批次序号 = 0
 
 export function 编辑器(props: 编辑器Props): JSX.Element {
@@ -187,6 +229,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [撤销栈, set撤销栈] = createSignal<撤销栈>(新建撤销栈())
   const [选中, set选中] = createSignal<readonly string[]>([])
   const [模式, set模式] = createSignal<模式>("指针")
+  /** 正在内联改名的节点；`undefined` = 没有输入框。 */
+  const [重命名id, set重命名id] = createSignal<string | undefined>()
+  /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
+  const [待确认布局, set待确认布局] = createSignal(false)
 
   let 待发: 操作[] = []
   let 计时: ReturnType<typeof setTimeout> | undefined
@@ -223,6 +269,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       set文档(待发.reduce(应用本地, 基))
       set已存文档(基)
       set版本(回.value.版本)
+      // 临时 id → 正式 id 也要作用到选中/改名目标：否则「加节点→立刻 F2」会打到不存在的对象。
+      set选中((旧) => 旧.map((id) => 映射[id] ?? id))
+      set重命名id((旧) => (旧 === undefined ? undefined : (映射[旧] ?? 旧)))
       // 逆操作生成归 T016；本轮先压一个带空逆操作的空步（批次边界现在就钉住）。
       set撤销栈(压入(撤销栈(), { 批次, 逆操作: [] }))
       set错误(undefined)
@@ -273,6 +322,38 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     if (出.步.逆操作.length > 0) 应用(出.步.逆操作)
   }
 
+  /**
+   * 几何结果 → 一条 `移动` 批次。没动的目标剔掉：否则「对齐一个本来就在边上的节点」也会
+   * 产生一次空写和一步空撤销。
+   */
+  const 位置操作 = (位们: readonly { readonly id: string; readonly x: number; readonly y: number }[]) => {
+    const 表 = new Map(文档().节点.map((点) => [点.id, 点]))
+    const 目标 = 位们.flatMap((位) => {
+      if (!Number.isFinite(位.x) || !Number.isFinite(位.y)) return []
+      const 点 = 表.get(位.id)
+      if (点 === undefined) return []
+      if (数(点.x) === 位.x && 数(点.y) === 位.y) return []
+      return [{ 类别: "节点" as const, id: 位.id, x: 位.x, y: 位.y }]
+    })
+    if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
+  }
+
+  const 执行布局 = () => {
+    set待确认布局(false)
+    const 表 = new Map(自动位置(构图(文档()), 布局画布, "网格").map((位) => [位.id, 位]))
+    const 目标 = 文档().节点.flatMap((点) => {
+      // 锁定节点不动（data-model §3）；坐标取整（画布要求整数像素）。
+      if (点.锁定 === true) return []
+      const 位 = 表.get(点.id)
+      if (位 === undefined) return []
+      const x = Math.round(位.x)
+      const y = Math.round(位.y)
+      if (x === 数(点.x) && y === 数(点.y)) return []
+      return [{ 类别: "节点" as const, id: 点.id, x, y }]
+    })
+    if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
+  }
+
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
@@ -297,8 +378,67 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       ]),
     加文字: (x, y) =>
       应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
+    加节点: (位置) => {
+      // R29：UI 发起的加节点必须自带坐标（工具栏 = 画布中心阶梯偏移；右键/双击 = 点处）。
+      const 已有数 = 文档().节点.length
+      const 位 = 位置 ?? {
+        x: 布局画布.宽 / 2 + ((已有数 % 5) - 2) * 28,
+        y: 布局画布.高 / 2 + ((已有数 % 4) - 2) * 28,
+      }
+      const id = 临时id("n")
+      应用([
+        {
+          操作: "加节点",
+          节点: [
+            {
+              id,
+              名称: "新节点",
+              类型: "未分类",
+              来源: { kind: "手写" },
+              时间: { 首: "", 末: "" },
+              x: Math.round(位.x),
+              y: Math.round(位.y),
+            },
+          ],
+        },
+      ])
+      // 新节点立刻选中：加完就能 F2 改名 / 继续拖。
+      set选中([id])
+    },
     改字段: (类别, id, 补丁) => 应用([{ 操作: "改字段", 目标: [{ 类别, id, 补丁 }] }]),
     删对象: (目标) => 应用([{ 操作: "删对象", 目标: [...目标] }]),
+    删除所选: () => {
+      // 选中 id 到类别的翻译只在这里做一次（工具栏/快捷键/菜单都只调 `删除所选`）。
+      type 删目标 = { readonly 类别: "节点" | "边" | "文字"; readonly id: string }
+      const 目标 = 选中().flatMap((id): 删目标[] => {
+        if (文档().节点.some((点) => 点.id === id)) return [{ 类别: "节点", id }]
+        if (文档().边.some((行) => 行.id === id)) return [{ 类别: "边", id }]
+        if (文档().文字.some((行) => 行.id === id)) return [{ 类别: "文字", id }]
+        return []
+      })
+      if (目标.length === 0) return
+      set选中([])
+      set重命名id(undefined)
+      应用([{ 操作: "删对象", 目标 }])
+    },
+    重命名: (id) => set重命名id(id),
+    锁定切换: (ids) => {
+      const 点们 = 文档().节点.filter((点) => ids.includes(点.id))
+      if (点们.length === 0) return
+      const 全锁 = 点们.every((点) => 点.锁定 === true)
+      // 全锁 ⇒ 解锁（false 按删键，与后端同义）；否则全部锁定。一次批次。
+      应用([
+        {
+          操作: "改字段",
+          目标: 点们.map((点) => ({ 类别: "节点" as const, id: 点.id, 补丁: { 锁定: !全锁 } })),
+        },
+      ])
+    },
+    对齐: (边, ids) => 位置操作(对齐位置(ids, 边, 文档().节点)),
+    等距: (轴, ids) => 位置操作(等距位置(ids, 轴, 文档().节点)),
+    自动布局: () => {
+      if (文档().节点.length > 0) set待确认布局(true)
+    },
     撤销: 撤销一步,
     重做: 重做一步,
     切换模式: set模式,
@@ -311,7 +451,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   }
 
   return (
-    <div data-slot="hgraph-editor" class="flex min-h-0 flex-1 flex-col">
+    <div data-slot="hgraph-editor" class="relative flex min-h-0 flex-1 flex-col">
       <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
         <button
           type="button"
@@ -348,7 +488,47 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           {状态文案()}
         </span>
       </div>
-      <画布 文档={文档()} 选中={选中()} 模式={模式()} 坐标换算={props.坐标换算} 动作={动作} />
+
+      <工具栏 选中={选中()} 文档={文档()} 动作表={动作} />
+
+      <Show when={待确认布局()}>
+        <div
+          data-slot="hgraph-layout-confirm"
+          role="alertdialog"
+          aria-label="自动布局确认"
+          class="flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <span class="text-12-regular text-v2-text-text-muted">自动布局会移动除锁定外的节点，确定吗？</span>
+          <button
+            type="button"
+            data-slot="hgraph-layout-confirm-ok"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            onClick={执行布局}
+          >
+            确定
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-layout-confirm-cancel"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={() => set待确认布局(false)}
+          >
+            取消
+          </button>
+        </div>
+      </Show>
+
+      <div class="relative flex min-h-0 flex-1">
+        <画布
+          文档={文档()}
+          选中={选中()}
+          模式={模式()}
+          坐标换算={props.坐标换算}
+          动作={动作}
+          重命名id={重命名id()}
+        />
+        <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
+      </div>
     </div>
   )
 }

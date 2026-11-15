@@ -23,8 +23,8 @@ export interface GraphProps {
 }
 
 /** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[280px]` 一致（测试钉着）。 */
-const 面板宽 = 280
-const 面板边距 = 24
+export const 面板宽 = 280
+export const 面板边距 = 24
 
 // 布局纯函数住在 `graph-layout.ts`（关系图编辑器共用同一套）。这里保留同名 re-export，
 // 既有调用方与 `graph.test.tsx` 一行不改（`#002-06` 同一前提单一出处）。

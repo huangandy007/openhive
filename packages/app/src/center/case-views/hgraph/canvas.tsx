@@ -24,9 +24,10 @@
  * `#006-06`）。因此「屏幕坐标 → 画布坐标」是入参 `坐标换算`；默认实现读容器矩形 +
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js"
 import type { 边, 图文件, 节点, 文字 } from "./file"
-import { 框选命中, 连线目标, type 矩形, type 视口变换 } from "./geometry"
+import { 框选命中, 连线目标, type 矩形, type 视口变换, type 对齐边, type 等距轴 } from "./geometry"
+import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
 const 画布宽 = 760
@@ -49,16 +50,32 @@ export interface 移动目标 {
   readonly y: number
 }
 
+/**
+ * 动作表（contracts/ui.md §3）：工具栏 / 右键菜单 / 快捷键 / 检查器**共用这一个对象**。
+ * 画布只会调用它，不自己拼 `操作[]`、不直接写盘（T010 的单一出口）。
+ *
+ * T010 在 T009b 的最小表（拖拽/连线/文字）之上**追加**条目，既有条目名字与语义不动；
+ * `改字段` 的类别从「文字」放宽到三类，仍是一张表里的一条（契约 §3 的 `改字段(类别, id, 补丁)`）。
+ */
 export interface 画布动作 {
   readonly 选择: (ids: readonly string[], 追加: boolean) => void
   readonly 移动: (目标: readonly 移动目标[]) => void
   readonly 加边: (从: string, 到: string) => void
   readonly 加文字: (x: number, y: number) => void
-  readonly 改字段: (类别: "文字", id: string, 补丁: Record<string, unknown>) => void
-  readonly 删对象: (目标: readonly { readonly 类别: "节点" | "文字"; readonly id: string }[]) => void
+  readonly 改字段: (类别: "节点" | "边" | "文字", id: string, 补丁: Record<string, unknown>) => void
+  readonly 删对象: (目标: readonly { readonly 类别: "节点" | "边" | "文字"; readonly id: string }[]) => void
   readonly 撤销: () => void
   readonly 重做: () => void
   readonly 切换模式: (模式: 模式) => void
+  /** 省略位置 ⇒ 编辑器按画布中心 + 既有节点数做阶梯偏移（R29）。 */
+  readonly 加节点: (位置?: { readonly x: number; readonly y: number }) => void
+  readonly 删除所选: () => void
+  /** `undefined` = 收起改名输入框（Esc / 提交后），不产生操作。 */
+  readonly 重命名: (id: string | undefined) => void
+  readonly 锁定切换: (ids: readonly string[]) => void
+  readonly 对齐: (边: 对齐边, ids: readonly string[]) => void
+  readonly 等距: (轴: 等距轴, ids: readonly string[]) => void
+  readonly 自动布局: (模式?: 排列模式) => void
 }
 
 export interface 画布Props {
@@ -67,6 +84,8 @@ export interface 画布Props {
   readonly 模式: 模式
   readonly 坐标换算?: 坐标换算
   readonly 动作: 画布动作
+  /** 正在内联改名的节点 id；由编辑器的 `重命名` 动作设置。 */
+  readonly 重命名id?: string
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -115,6 +134,17 @@ type 指针态 =
   | { 类型: "框选"; 起点屏x: number; 起点屏y: number; 起点x: number; 起点y: number; 移动: boolean }
   | { 类型: "连线"; 从: string; 起点屏x: number; 起点屏y: number; 移动: boolean }
 
+/** 右键菜单的落点：四类入口（FR-025）；空白额外带内容坐标（加节点用）。 */
+type 菜单目标 =
+  | { readonly 类型: "节点" | "边" | "文字"; readonly id: string; readonly x: number; readonly y: number }
+  | {
+      readonly 类型: "空白"
+      readonly x: number
+      readonly y: number
+      readonly 内容x: number
+      readonly 内容y: number
+    }
+
 export function 画布(props: 画布Props): JSX.Element {
   let 容器: HTMLDivElement | undefined
   const [视口, set视口] = createSignal<视口变换>({ 缩放: 1, x: 0, y: 0 })
@@ -123,8 +153,66 @@ export function 画布(props: 画布Props): JSX.Element {
   const [连线落点, set连线落点] = createSignal<{ 从: string; x: number; y: number } | undefined>()
   const [编辑id, set编辑id] = createSignal<string | undefined>()
   const [编辑值, set编辑值] = createSignal("")
+  const [菜单, set菜单] = createSignal<菜单目标 | undefined>()
 
   let 指针: 指针态 | undefined
+  /** 改名输入的收尾锁：Enter 提交后移除输入框会再触发一次 blur，不能提交两遍。 */
+  let 改名收尾 = false
+  createEffect(() => {
+    props.重命名id
+    改名收尾 = false
+  })
+
+  const 提交改名 = (id: string, 值: string) => {
+    // 输入框被移除（Enter/Esc 已收尾）后浏览器可能再补一次 blur：此时编辑器里的
+    // `重命名id` 已经不是它了，不能再提交（否则 Esc 会变成保存）。
+    if (改名收尾 || props.重命名id !== id) return
+    改名收尾 = true
+    const 点 = props.文档.节点.find((行) => 行.id === id)
+    // 名称是必填键：清空不发 `null`（服务端会拒），只收起输入框。
+    if (点 !== undefined && 值.trim() !== "" && 值 !== (点.名称 ?? "")) {
+      props.动作.改字段("节点", id, { 名称: 值 })
+    }
+    props.动作.重命名(undefined)
+  }
+
+  const 取消改名 = () => {
+    if (改名收尾) return
+    改名收尾 = true
+    props.动作.重命名(undefined)
+  }
+
+  const 关闭菜单 = () => set菜单(undefined)
+
+  /** 右键：先把落点选中（节点/文字），菜单项只调动作表（FR-025）。 */
+  const 右键 = (事件: MouseEvent) => {
+    事件.preventDefault()
+    const 目标 = 事件.target
+    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    const 矩 = 容器?.getBoundingClientRect()
+    const 屏x = 事件.clientX - (矩?.left ?? 0)
+    const 屏y = 事件.clientY - (矩?.top ?? 0)
+
+    const 节点id = 读属性(目标, "data-node-id")
+    if (节点id !== undefined) {
+      if (!props.选中.includes(节点id)) props.动作.选择([节点id], false)
+      set菜单({ 类型: "节点", id: 节点id, x: 屏x, y: 屏y })
+      return
+    }
+    const 边id = 读属性(目标, "data-edge-id")
+    if (边id !== undefined) {
+      set菜单({ 类型: "边", id: 边id, x: 屏x, y: 屏y })
+      return
+    }
+    const 文字id = 读属性(目标, "data-text-id")
+    if (文字id !== undefined) {
+      if (!props.选中.includes(文字id)) props.动作.选择([文字id], false)
+      set菜单({ 类型: "文字", id: 文字id, x: 屏x, y: 屏y })
+      return
+    }
+    const 内容 = 到内容(事件)
+    set菜单({ 类型: "空白", x: 屏x, y: 屏y, 内容x: Math.round(内容.x), 内容y: Math.round(内容.y) })
+  }
 
   const 到内容 = (点: { readonly clientX: number; readonly clientY: number }, 用视口: 视口变换 = 视口()) =>
     props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
@@ -134,8 +222,11 @@ export function 画布(props: 画布Props): JSX.Element {
   const 文字位 = (行: 文字) => 拖影().get(行.id) ?? { x: 数(行.x), y: 数(行.y) }
 
   const 按下 = (事件: PointerEvent) => {
-    if (事件.button !== 0) return
     const 目标 = 事件.target
+    // 菜单内部的点击交给菜单项自己；点外面则收起菜单。
+    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    set菜单(undefined)
+    if (事件.button !== 0) return
     if (目标 instanceof Element && 目标.closest("button,input,textarea,select")) return
     if (目标 instanceof HTMLElement && 目标.isContentEditable) return
     容器?.focus()
@@ -337,20 +428,26 @@ export function 画布(props: 画布Props): JSX.Element {
       return
     }
     if (事件.key === "Delete") {
-      const 目标们: { 类别: "节点" | "文字"; id: string }[] = []
-      for (const id of props.选中) {
-        if (props.文档.节点.some((行) => 行.id === id)) 目标们.push({ 类别: "节点", id })
-        else if (props.文档.文字.some((行) => 行.id === id)) 目标们.push({ 类别: "文字", id })
-      }
-      if (目标们.length > 0) {
+      // 选中到类型的翻译归编辑器（同一个出口只认 `删除所选`）。
+      if (props.选中.length > 0) {
         事件.preventDefault()
-        props.动作.删对象(目标们)
+        props.动作.删除所选()
+      }
+      return
+    }
+    if (事件.key === "F2") {
+      const 节点们 = props.选中.filter((id) => props.文档.节点.some((行) => 行.id === id))
+      if (节点们.length === 1) {
+        事件.preventDefault()
+        props.动作.重命名(节点们[0])
       }
       return
     }
     if (事件.key === "Escape") {
+      set菜单(undefined)
       set框(undefined)
       set编辑id(undefined)
+      if (props.重命名id !== undefined) props.动作.重命名(undefined)
       指针 = undefined
       props.动作.选择([], false)
     }
@@ -366,12 +463,25 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 双击 = (事件: MouseEvent) => {
-    const 文字id = 读属性(事件.target, "data-text-id")
-    if (文字id === undefined) return
-    const 行 = props.文档.文字.find((文) => 文.id === 文字id)
-    if (行 === undefined) return
-    set编辑值(行.内容)
-    set编辑id(文字id)
+    const 目标 = 事件.target
+    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    const 文字id = 读属性(目标, "data-text-id")
+    if (文字id !== undefined) {
+      const 行 = props.文档.文字.find((文) => 文.id === 文字id)
+      if (行 === undefined) return
+      set编辑值(行.内容)
+      set编辑id(文字id)
+      return
+    }
+    const 节点id = 读属性(目标, "data-node-id")
+    if (节点id !== undefined) {
+      props.动作.重命名(节点id)
+      return
+    }
+    // 双击边不建节点（只有空白才是「在点处加节点」）。
+    if (读属性(目标, "data-edge-id") !== undefined) return
+    const 内容 = 到内容(事件)
+    props.动作.加节点({ x: Math.round(内容.x), y: Math.round(内容.y) })
   }
 
   const 提交文字 = () => {
@@ -386,6 +496,24 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 加文字 = () => props.动作.加文字(画布宽 / 2, 画布高 / 2 + props.文档.文字.length * 28)
+
+  const 菜单节点 = () => {
+    const 现 = 菜单()
+    return 现?.类型 === "节点" ? props.文档.节点.find((行) => 行.id === 现.id) : undefined
+  }
+  const 菜单边 = () => {
+    const 现 = 菜单()
+    return 现?.类型 === "边" ? props.文档.边.find((行) => 行.id === 现.id) : undefined
+  }
+  /** 边菜单的字段编辑：显式失焦/回车才提交（不逐字写）。 */
+  const 提交边字段 = (id: string, 键: "标签" | "性质", 值: string) => {
+    const 行 = props.文档.边.find((边) => 边.id === id)
+    if (行 === undefined || 行[键] === 值) return
+    props.动作.改字段("边", id, { [键]: 值 })
+  }
+
+  const 菜单项 =
+    "block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
 
   const 模式键 = (目标: 模式) =>
     `rounded border px-2 py-0.5 text-12-regular ${
@@ -409,6 +537,7 @@ export function 画布(props: 画布Props): JSX.Element {
       onKeyDown={按键}
       onWheel={滚轮}
       onDblClick={双击}
+      onContextMenu={右键}
     >
       <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1">
         <button
@@ -623,8 +752,186 @@ export function 画布(props: 画布Props): JSX.Element {
               )
             }}
           </Show>
+
+          <Show when={props.重命名id === undefined ? undefined : props.文档.节点.find((行) => 行.id === props.重命名id)}>
+            {(点) => {
+              const 位 = () => 节点位(点())
+              return (
+                <foreignObject x={位().x - 70} y={位().y - 44} width={180} height={30}>
+                  <input
+                    data-slot="hgraph-rename-editor"
+                    aria-label="重命名节点"
+                    class="w-full rounded border border-v2-border-border-strong px-1 text-13-regular"
+                    value={点().名称 ?? ""}
+                    ref={(元素) => 元素.focus()}
+                    onKeyDown={(事件) => {
+                      if (事件.key === "Enter") {
+                        事件.preventDefault()
+                        提交改名(点().id, 事件.currentTarget.value)
+                      } else if (事件.key === "Escape") {
+                        事件.preventDefault()
+                        取消改名()
+                      }
+                    }}
+                    onBlur={(事件) => 提交改名(点().id, 事件.currentTarget.value)}
+                  />
+                </foreignObject>
+              )
+            }}
+          </Show>
         </g>
       </svg>
+
+      <Show when={菜单()}>
+        {(现) => (
+          <div
+            data-slot="hgraph-menu"
+            role="menu"
+            aria-label="画布菜单"
+            class="absolute z-20 min-w-40 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
+            style={{ left: `${现().x}px`, top: `${现().y}px` }}
+          >
+            <Show when={菜单节点()}>
+              {(点) => (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-slot="hgraph-menu-rename"
+                    class={菜单项}
+                    onClick={() => {
+                      关闭菜单()
+                      props.动作.重命名(点().id)
+                    }}
+                  >
+                    重命名（F2）
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-slot="hgraph-menu-lock"
+                    class={菜单项}
+                    onClick={() => {
+                      关闭菜单()
+                      props.动作.锁定切换([点().id])
+                    }}
+                  >
+                    {点().锁定 === true ? "解锁" : "锁定"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-slot="hgraph-menu-delete"
+                    class={菜单项}
+                    onClick={() => {
+                      关闭菜单()
+                      props.动作.删除所选()
+                    }}
+                  >
+                    删除
+                  </button>
+                </>
+              )}
+            </Show>
+
+            <Show when={菜单边()}>
+              {(边) => (
+                <>
+                  <label class="flex items-center gap-1 px-2 py-1 text-12-regular text-v2-text-text-muted">
+                    标签
+                    <input
+                      data-slot="hgraph-menu-edge-label"
+                      aria-label="改标签"
+                      class="min-w-0 flex-1 rounded border border-v2-border-border-muted px-1 text-12-regular"
+                      value={边().标签 ?? ""}
+                      onKeyDown={(事件) => {
+                        if (事件.key === "Enter") {
+                          事件.preventDefault()
+                          提交边字段(边().id, "标签", 事件.currentTarget.value)
+                          关闭菜单()
+                        }
+                      }}
+                      onBlur={(事件) => 提交边字段(边().id, "标签", 事件.currentTarget.value)}
+                    />
+                  </label>
+                  <label class="flex items-center gap-1 px-2 py-1 text-12-regular text-v2-text-text-muted">
+                    性质
+                    <select
+                      data-slot="hgraph-menu-edge-kind"
+                      aria-label="改性质"
+                      class="rounded border border-v2-border-border-muted text-12-regular"
+                      value={边().性质}
+                      onChange={(事件) => {
+                        提交边字段(边().id, "性质", 事件.currentTarget.value)
+                        关闭菜单()
+                      }}
+                    >
+                      <option value="事实">事实</option>
+                      <option value="推断">推断</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-slot="hgraph-menu-delete"
+                    class={菜单项}
+                    onClick={() => {
+                      关闭菜单()
+                      props.动作.删对象([{ 类别: "边", id: 边().id }])
+                    }}
+                  >
+                    删除这条边
+                  </button>
+                </>
+              )}
+            </Show>
+
+            <Show when={现().类型 === "文字"}>
+              <button
+                type="button"
+                role="menuitem"
+                data-slot="hgraph-menu-delete"
+                class={菜单项}
+                onClick={() => {
+                  关闭菜单()
+                  props.动作.删除所选()
+                }}
+              >
+                删除
+              </button>
+            </Show>
+
+            <Show when={现().类型 === "空白"}>
+              <button
+                type="button"
+                role="menuitem"
+                data-slot="hgraph-menu-add-node"
+                class={菜单项}
+                onClick={() => {
+                  const 位 = 现()
+                  if (位.类型 !== "空白") return
+                  关闭菜单()
+                  props.动作.加节点({ x: 位.内容x, y: 位.内容y })
+                }}
+              >
+                加节点
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-slot="hgraph-menu-layout"
+                class={菜单项}
+                onClick={() => {
+                  关闭菜单()
+                  props.动作.自动布局()
+                }}
+              >
+                自动布局
+              </button>
+            </Show>
+          </div>
+        )}
+      </Show>
     </div>
   )
 }
