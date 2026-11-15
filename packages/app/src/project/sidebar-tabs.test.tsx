@@ -68,7 +68,6 @@ function 挂(初始: SidebarTabKey = "files", 接住 = true) {
       }}
       files={<探针 />}
       sessions={<探针 slot="probe-session" />}
-      entities={<探针 slot="probe-entity" />}
       capability={<探针 slot="probe-capability" />}
     />
   ))
@@ -176,7 +175,6 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
         onSelect={() => {}}
         sessions={<span />}
         files={<span />}
-        entities={<span />}
         capability={<span />}
       />
     ))
@@ -191,7 +189,6 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
         onSelect={() => {}}
         sessions={<span />}
         files={<span />}
-        entities={<span />}
         capability={<span />}
         capabilityCount={3}
       />
@@ -214,7 +211,6 @@ describe("SidebarTabs 左栏 tab 容器（设计 §2 ②）", () => {
         onSelect={() => {}}
         sessions={<span />}
         files={<span />}
-        entities={<span />}
         capability={<span />}
         capabilityCount={0}
       />

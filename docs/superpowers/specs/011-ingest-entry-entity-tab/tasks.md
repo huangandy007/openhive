@@ -233,7 +233,14 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T012
   - **验证**：`A: project/sidebar-tabs.test.tsx` 全绿
 
-- [ ] T014 [US3] 清理接线并下架面板：`packages/app/src/workspace/workspace-entry.tsx`（`:27-28` import、`:211` prop、`:2101-2116` `entities` 注入）、`packages/app/src/pages/layout-new.tsx`（`:55` import、`:68`、`:256`）；删除 `packages/app/src/project/entity-panel.tsx` 与 `entity-panel.test.tsx`
+- [x] T014 [US3] 清理接线并下架面板：`packages/app/src/workspace/workspace-entry.tsx`（`:27-28` import、`:211` prop、`:2101-2116` `entities` 注入）、`packages/app/src/pages/layout-new.tsx`（`:55` import、`:68`、`:256`）；删除 `packages/app/src/project/entity-panel.tsx` 与 `entity-panel.test.tsx`
+
+  > **红（2026-11-15 实测）**：先删 `sidebar-tabs.tsx` 的 `entities` prop，`cd packages/app && timeout 300 bun run typecheck` ⇒ **EXIT=1**，5 条错误全部为 `TS2322 ... Property 'entities' does not exist on type 'IntrinsicAttributes & SidebarTabsProps'`（`sidebar-tabs.test.tsx:71/179/194/217` ＋ `workspace-entry.tsx:2103`）。
+  > **绿（2026-11-15 实测）**：清掉四个 `entities=` 传参、`workspace-entry.tsx` 的 import/prop/注入块、`layout-new.tsx` 的 `createEntityApi`/`ENTITY_API`/`entityApi`，删掉 `entity-panel.tsx` 与 `entity-panel.test.tsx`，并去掉 `sidebar-tabs.stories.tsx` 的 `@ts-nocheck` ⇒ `cd packages/app && timeout 300 bun run typecheck` **EXIT=0**。
+  > 测试：`timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/workspace/workspace-entry.test.tsx` ⇒ **238 pass / 0 fail / 634 expect / 15.25s**，EXIT=0（stderr 有一条 teardown 期 happy-dom `removeChild` DOMException，不影响断言与退出码）；同参数跑 `./src/project/sidebar-tabs.test.tsx` ⇒ **21 pass / 0 fail / 47 expect**，EXIT=0。
+  > 变异验证：把 `entities={<探针 slot="probe-entity" />}` 加回 `sidebar-tabs.test.tsx` 一处调用点 ⇒ typecheck **EXIT=1**（`Property 'entities' does not exist`）；恢复后复跑 **EXIT=0**。
+  > 落点清查：`grep -rn "EntityPanel" packages/app/src` ⇒ **0 命中**；`grep -rn "\bentityApi\b" packages/app/src` ⇒ **0 命中**；`git diff --name-only b83409c399 -- packages/app/src/project/entity-api.ts` ⇒ **空**（一个字节未动）。
+  > 门禁：仓库根 `timeout 300 bun run lint` ⇒ EXIT=1，唯一 error 仍是既有的 `packages/session-ui/.../prompt-input/index.tsx` 八进制转义（与本任务无关）；本任务六个改动文件在 lint 输出中只有既有 warning（`entity-api.ts:76/84/88`、`layout-new.tsx:114/149`），无新增。
 
   - **入参**：T013 后的 `SidebarTabs` props（无 `entities`）
   - **出参**：app 包 typecheck EXIT=0；`entity-api.ts` **一个字节不动**；`实体路径` 若因此无引用则一并删 import（只删本改动造成的孤儿）

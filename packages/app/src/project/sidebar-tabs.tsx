@@ -62,13 +62,6 @@ export interface SidebarTabsProps {
    */
   files: JSX.Element
   /**
-   * 「实体」tab 的 body——**同样由调用方注入**（生产接 `@/project/entity-panel`）。
-   * 本组件不认识实体面板，正如它不认识文件树与会话列表。
-   *
-   * ⚠️ 页签已于 T013（2026-11-15）撤掉，本 prop 只作过渡保留；接线与 prop 本身在 T014 一并删除。
-   */
-  entities: JSX.Element
-  /**
    * 「会话」tab 的 body——**同样由调用方注入**（生产接的是 `@/ai-session/sidebar-sessions`
    * 那一具取数 ＋ 导航的壳，2026-10-08 接入）。本组件**不认识会话**，正如它不认识文件树。
    *
