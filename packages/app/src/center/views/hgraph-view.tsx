@@ -91,6 +91,8 @@ export function 创建HgraphView(
     // T015：导出标题块用的项目名 / 导出人（无 provider 时如实留空，不造假身份）。
     const 项目名 = currentProject()?.name ?? ""
     const 导出人 = useAuthSession()?.identity?.name
+    // 依赖里的回调先取出来：下面按 `undefined` 分支，不用非空断言。
+    const 打开 = 依赖?.打开档案
     const [状态] = createResource(
       () => props.path,
       (path) => 载入(api, 项目id, path),
@@ -150,9 +152,7 @@ export function 创建HgraphView(
                       实体api={依赖?.实体api}
                       详情api={依赖?.详情api}
                       打开档案={
-                        依赖?.打开档案 === undefined
-                          ? undefined
-                          : (实体id, 标题) => 依赖.打开档案!(id(), 实体id, 标题)
+                        打开 === undefined ? undefined : (实体id, 标题) => 打开(id(), 实体id, 标题)
                       }
                     />
                   )}

@@ -323,12 +323,22 @@ function 仍存在(文档: 图文件, id: string): boolean {
  *
  * 纯函数，导出供用例直接断言（不经过 DOM）。
  */
-export function 构图(文档: 图文件): 关系图结果 {
+/**
+ * 「两端都在节点表里」的边（悬空边剔除）。
+ *
+ * **唯一出处**（`#002-06`）：`构图` 的布局度数与编辑器的查找路径共用这一份前提。
+ * 自环不在本函数里判——「度数不计自环」是 `构图` 自己的布局前提（R99），查找路径照 BFS 走。
+ */
+function 两端齐全的边(文档: 图文件): readonly 边[] {
   const 存在 = new Set(文档.节点.map((点) => 点.id))
+  return 文档.边.filter((行) => 存在.has(行.从) && 存在.has(行.到))
+}
+
+export function 构图(文档: 图文件): 关系图结果 {
   const 布局度数 = new Map<string, number>(文档.节点.map((点) => [点.id, 0]))
   const 邻接 = new Map<string, string[]>(文档.节点.map((点) => [点.id, []]))
-  for (const 行 of 文档.边) {
-    if (行.从 === 行.到 || !存在.has(行.从) || !存在.has(行.到)) continue
+  for (const 行 of 两端齐全的边(文档)) {
+    if (行.从 === 行.到) continue
     布局度数.set(行.从, (布局度数.get(行.从) ?? 0) + 1)
     布局度数.set(行.到, (布局度数.get(行.到) ?? 0) + 1)
     邻接.get(行.从)!.push(行.到)
@@ -605,14 +615,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * 查找路径（R72）：本地 BFS；命中改选中为路径，未命中只写面板。
    *
    * 悬空边（端点不在节点表）不参与：否则一段「n1 → 鬼 → n2」的路径既画不出来、用户也点不
-   * 中那颗中转节点；与 `构图` 的布局度数同一前提（两端都在文档里，`#002-06`）。
+   * 中那颗中转节点；与 `构图` 的布局度数共用 `两端齐全的边`（`#002-06`）。
    */
   const 执行查找路径 = () => {
     const 节点ids = 选中().filter((id) => 文档().节点.some((点) => 点.id === id))
     if (节点ids.length !== 2) return
-    const 存在 = new Set(文档().节点.map((点) => 点.id))
-    const 边们 = 文档().边.filter((行) => 存在.has(行.从) && 存在.has(行.到))
-    const 结果 = 查找路径(边们, 节点ids[0]!, 节点ids[1]!)
+    const 结果 = 查找路径(两端齐全的边(文档()), 节点ids[0]!, 节点ids[1]!)
     if (结果 === null) {
       set路径面板({ 空: true })
       return
@@ -1252,6 +1260,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       舞台?.focus()
       // T011-M1：只有请求真的成立才记「曾进全屏」；被拒/不支持时顶栏全屏的
       // fullscreenchange 不能被当成退出演示的信号。
+      // R111：resolve 之前按 Esc 的窄窗口期，演示会关、但浏览器随后仍可能进全屏且不记标记
+      //（此窗口期按 Esc 不保证退回非全屏）——属已知取舍，本轮不为此加状态机。
       void 请求全屏(舞台).then((成) => {
         if (成 && 演示中()) 曾进全屏 = true
       })
@@ -1427,26 +1437,28 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 合并确认条当前保留者的名称（文案与下拉共用同一处取名）。 */
   const 合并保留名称 = () => 文档().节点.find((点) => 点.id === 合并保留())?.名称 ?? ""
 
+  /**
+   * 菜单「点外面就关」：指针与键盘两条路径共用这一份判定。
+   * 菜单内部的点击由菜单项自己收尾（跳过，避免双收）。
+   */
+  const 收起菜单事件 = (事件: PointerEvent | MouseEvent) => {
+    const 目标 = 事件.target
+    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    set收起菜单((旧) => 旧 + 1)
+  }
+
   return (
     <div
       data-slot="hgraph-editor"
       class="relative flex min-h-0 flex-1 flex-col"
       // 菜单「点外面就关」收口在这里（工具栏 / 画布 / 检查器的共同父容器）：
       // 画布自己的 pointerdown 只覆盖画布内部，工具栏与检查器上的点击收不到（I1）。
-      // 不用 window 监听（FR-040）；菜单内部的点击由菜单项自己收尾。
-      onPointerDown={(事件) => {
-        const 目标 = 事件.target
-        if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
-        set收起菜单((旧) => 旧 + 1)
-      }}
+      // 不用 window 监听（FR-040）。
+      onPointerDown={收起菜单事件}
       // T010 R33 / 复审 Minor：键盘激活（Tab 到按钮 + Enter/空格）只派发 `click`、没有
-      // `pointerdown`，上面的收菜单收不到 ⇒ 过期菜单留着，再点菜单项会作用到已换过的选中。
-      // 菜单内部的 click 由菜单项自己收尾（跳过，避免双收）；这里只补「click 路径」。
-      onClick={(事件) => {
-        const 目标 = 事件.target
-        if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
-        set收起菜单((旧) => 旧 + 1)
-      }}
+      // `pointerdown`，只挂上面那条收不到 ⇒ 过期菜单留着，再点菜单项会作用到已换过的选中。
+      // 同一判定再走一遍 click 路径。
+      onClick={收起菜单事件}
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>

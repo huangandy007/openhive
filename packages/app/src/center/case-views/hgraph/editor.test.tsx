@@ -2843,10 +2843,24 @@ describe("T014 · 从库加入接线", () => {
         分组: "核心",
         created_at: 0,
       },
+      {
+        id: "e2",
+        type: "人",
+        canonical_value: "李四",
+        trust_state: "已确认",
+        关联数: 0,
+        事件参与数: 0,
+        权重: 0,
+        分组: "核心",
+        created_at: 0,
+      },
     ])
-    const 详情 = 假详情(() => ({
+    const 详情 = 假详情((id) => ({
       kind: "ok",
-      value: 档案({ id: "e1", canonical_value: "张三", type: "人", subtype: "嫌疑人", attrs: { 开户行: "招商银行" } }),
+      value:
+        id === "e1"
+          ? 档案({ id: "e1", canonical_value: "张三", type: "人", subtype: "嫌疑人", attrs: { 开户行: "招商银行" } })
+          : 档案({ id, canonical_value: "李四", type: "人" }),
     }))
     挂详情({ api: 写.api, 初始文档: 一份图(), 实体api: 实体.api, 详情api: 详情.api })
     await flush()
@@ -2855,28 +2869,32 @@ describe("T014 · 从库加入接线", () => {
     await T014落定()
     expect(选择器面板()).not.toBeNull()
 
-    const 框 = 取("[data-slot='hgraph-picker-check'][data-entity-id='e1']") as HTMLInputElement
-    框.checked = true
-    框.dispatchEvent(new Event("change", { bubbles: true }))
+    for (const id of ["e1", "e2"]) {
+      const 框 = 取(`[data-slot='hgraph-picker-check'][data-entity-id='${id}']`) as HTMLInputElement
+      框.checked = true
+      框.dispatchEvent(new Event("change", { bubbles: true }))
+    }
     按钮("hgraph-picker-add").click()
     await T014落定()
     await 过防抖()
 
-    // 一次批量、一次撤销：写请求恰 1 次，里面只 1 条「加节点」。
+    // 一次批量、一次撤销：写请求恰 1 次，里面只 1 条「加节点」，且装了两颗。
     expect(写.写们.length).toBe(1)
     const 操作们 = 写.写们[0]!.操作
     expect(操作们.length).toBe(1)
     expect(操作们[0]!.操作).toBe("加节点")
     if (操作们[0]!.操作 !== "加节点") throw new Error("形状不对")
-    expect(操作们[0]!.节点.length).toBe(1)
+    expect(操作们[0]!.节点.length).toBe(2)
     expect(操作们[0]!.节点[0]).toMatchObject({ 名称: "张三", 类型: "人", 细类: "嫌疑人", 出处: [] })
+    expect(操作们[0]!.节点[1]).toMatchObject({ 名称: "李四", 类型: "人", 出处: [] })
 
-    // 面板收起，新节点被选中（检查器可编辑区显示它的名称）。
+    // 面板收起，两颗新节点都被选中（检查器是多选态）。
     expect(选择器面板()).toBeNull()
-    expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(4)
-    expect((取("[data-slot='hgraph-field-名称']") as HTMLInputElement).value).toBe("张三")
+    expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(5)
+    expect(document.body.textContent).toContain("已选 2 个")
 
-    // 一次撤销撤掉整批：撤销键随即变灰、重做键亮起 ⇒ 栈里**只压了一步**。
+    // 一次撤销撤掉**整批两颗**：节点数回 3、撤销键变灰、重做键亮起
+    //（若实现按节点各压一步，一次撤销只会退回 4 颗，这里会红）。
     const 撤销键 = 取("[data-slot='hgraph-undo']") as HTMLButtonElement
     const 重做键 = 取("[data-slot='hgraph-redo']") as HTMLButtonElement
     expect(撤销键.disabled).toBe(false)
