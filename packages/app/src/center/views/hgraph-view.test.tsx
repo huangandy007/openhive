@@ -24,14 +24,19 @@ afterEach(() => {
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+// 节点/边写全必填字段：T018 的标签几何会读 `名称`/`标签`，缺了就在渲染期崩
+//（HEAD 上本文件因此有 3 条既有红）。
 const 一份图 = JSON.stringify({
   格式: 1,
   标题: "张三资金流向",
   创建于: "2026-11-15T10:00:00+08:00",
   更新于: "2026-11-15T10:00:00+08:00",
   设置: {},
-  节点: [{ id: "n1" }, { id: "n2" }],
-  边: [{ id: "e1" }],
+  节点: [
+    { id: "n1", 名称: "甲", 类型: "人", 时间: { 首: "", 末: "" }, x: 100, y: 100 },
+    { id: "n2", 名称: "乙", 类型: "人", 时间: { 首: "", 末: "" }, x: 200, y: 100 },
+  ],
+  边: [{ id: "e1", 从: "n1", 到: "n2", 标签: "转账", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } }],
   文字: [],
 })
 
@@ -221,13 +226,16 @@ const 绑定图 = JSON.stringify({
   文字: [],
 })
 
-async function 挂绑定图(依赖: { 打开档案?: (实体id: string, 标题: string) => void } = {}) {
+async function 挂绑定图(
+  依赖: { 打开档案?: (项目id: string, 实体id: string, 标题: string) => void } = {},
+  取项目id: () => string | undefined = () => "p 1",
+) {
   const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 绑定图, 版本: "v1" } } })
   const host = document.createElement("div")
   document.body.appendChild(host)
   挂过的.push(
     render(() => {
-      const View = 创建HgraphView(api, () => "p 1", 依赖)
+      const View = 创建HgraphView(api, 取项目id, 依赖)
       return <View path="分析/绑定图.hgraph" />
     }, host),
   )
@@ -257,9 +265,9 @@ function 点选节点(id: string) {
 }
 
 describe("关系图视图 · T014 打开档案接线（R63）", () => {
-  test("工厂带回调 ⇒ 透传到检查器按钮；点一次收到 (实体id, 标题)", async () => {
-    const 收到: Array<[string, string]> = []
-    await 挂绑定图({ 打开档案: (id, 标题) => 收到.push([id, 标题]) })
+  test("工厂带回调 ⇒ 透传到检查器按钮；点一次收到 (挂载时项目id, 实体id, 标题)", async () => {
+    const 收到: Array<[string, string, string]> = []
+    await 挂绑定图({ 打开档案: (项目id, id, 标题) => 收到.push([项目id, id, 标题]) })
 
     点选节点("n1")
     await flush()
@@ -269,7 +277,22 @@ describe("关系图视图 · T014 打开档案接线（R63）", () => {
     expect(钮!.disabled).toBe(false)
     钮!.click()
 
-    expect(收到).toEqual([["e1", "张三 · 人"]])
+    expect(收到).toEqual([["p 1", "e1", "张三 · 人"]])
+  })
+
+  test("T019a 打开档案用**挂载时**的项目 id：之后切项目也不挪到新项目", async () => {
+    let 项目 = "p 1"
+    const 收到: Array<[string, string, string]> = []
+    await 挂绑定图({ 打开档案: (项目id, id, 标题) => 收到.push([项目id, id, 标题]) }, () => 项目)
+
+    点选节点("n1")
+    await flush()
+
+    // 视图还开着，用户切了项目；此时点「打开档案」仍应开到这张图所属的项目。
+    项目 = "p 2"
+    document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-open-archive']")!.click()
+
+    expect(收到).toEqual([["p 1", "e1", "张三 · 人"]])
   })
 
   test("工厂不带回调 ⇒ 视图照常渲染，但没有「打开档案」按钮", async () => {

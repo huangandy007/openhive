@@ -1082,7 +1082,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
     if (回.kind !== "ok") {
       删快照(id)
-      if (单个已绑()?.库id === id) set刷新提示("这条不在库里")
+      // 「这条不在库里」由快照区的空态说明一次就够；回执再写一遍是同一句话两处出现。
+      // 清空回执：也不让上一轮的「与库一致」留在旁边误导。
+      if (单个已绑()?.库id === id) set刷新提示(undefined)
       return
     }
 

@@ -247,6 +247,39 @@ describe("选择器 · 搜索", () => {
     expect(文本("hgraph-picker-row-e1")).toContain("张三")
   })
 
+  test("T019a 搜索竞态：先发的慢响应后到，不得覆盖后发的新结果", async () => {
+    const 待 = new Map<string, (回: Awaited<ReturnType<EntityApi["list"]>>) => void>()
+    const 器 = 挂选择器({
+      list: (输入) => {
+        if (输入.q === "") return Promise.resolve({ kind: "ok", value: { 行们, 总数: 行们.length, 缺口: [] } })
+        return new Promise((resolve) => 待.set(输入.q!, resolve))
+      },
+    })
+    await 落定()
+
+    const 框 = 取("[data-slot='hgraph-picker-q']") as HTMLInputElement
+    const 回车 = () => 框.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+
+    输入("慢")
+    回车()
+    await flush()
+    输入("快")
+    回车()
+    await flush()
+
+    // 「快」先回：新结果落地。
+    待.get("快")!({ kind: "ok", value: { 行们: [清单项({ id: "快1", canonical_value: "快结果" })], 总数: 1, 缺口: [] } })
+    await 落定()
+    // 「慢」后回：旧请求必须作废，不能把新结果顶掉。
+    待.get("慢")!({ kind: "ok", value: { 行们: [清单项({ id: "慢1", canonical_value: "慢结果" })], 总数: 1, 缺口: [] } })
+    await 落定()
+
+    expect(文本("hgraph-picker-row-快1")).toContain("快结果")
+    expect(勾选框("慢1")).toBeNull()
+    expect(行数()).toBe(1)
+    expect(器.list调用.map((入参) => 入参.q)).toEqual(["", "慢", "快"])
+  })
+
   test("#1b 搜索框回车也发起同一次搜索", async () => {
     const 器 = 挂选择器()
     await 落定()
@@ -444,6 +477,29 @@ describe("选择器 · 加入节点", () => {
     expect(点.y).toBe(201)
   })
 
+  test("T019a 加入在飞时点「收起」：回来的结果不得再 onAdd、也不得二次 onClose", async () => {
+    let 放: (回: Awaited<ReturnType<CaseDetailApi["profile"]>>) => void = () => {}
+    const 器 = 挂选择器({
+      profile: () => new Promise((resolve) => void (放 = resolve)),
+    })
+    await 落定()
+
+    勾选("e1")
+    点加入()
+    await flush()
+
+    // 请求还没回来，用户先收起面板。
+    ;(取("[data-slot='hgraph-picker-close']") as HTMLButtonElement).click()
+    await flush()
+    expect(器.关过()).toBe(1)
+
+    放({ kind: "ok", value: e1档案 })
+    await 落定()
+
+    expect(器.加过.length).toBe(0)
+    expect(器.关过()).toBe(1)
+  })
+
   test("全部失败 ⇒ 不调 onAdd，面板保留错误", async () => {
     const 器 = 挂选择器({
       profile: () => ({ kind: "error", message: "网络断了" }),
@@ -482,5 +538,9 @@ describe("选择器 · 纯函数", () => {
       { 键: "卡号数", 值: "2", 出处: [] },
     ])
     expect(属性们({})).toEqual([])
+  })
+
+  test("T019a 属性值为 null：与缺值同义，不进属性表（不写 \"null\"）", () => {
+    expect(属性们({ 开户行: "招商银行", 空: null })).toEqual([{ 键: "开户行", 值: "招商银行", 出处: [] }])
   })
 })

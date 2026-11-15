@@ -2641,6 +2641,64 @@ describe("T014 · 刷新此节点（R61）", () => {
     expect(写.写们.length).toBe(1)
     expect(文案("hgraph-refresh-note")).toBe("与库一致")
   })
+
+  test("T019a 刷新遇 404：只剩快照区一处「这条不在库里」，刷新回执不再复读", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三", type: "人" }),
+    }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+    expect(文案("hgraph-snapshot-值")).toBe("张三")
+
+    // 库里这条已被合并/删除。
+    详情.换回应(() => ({ kind: "error", message: "实体不存在", code: "NOT_FOUND" }))
+    按钮("hgraph-snapshot-refresh").click()
+    await T014落定()
+    await 过防抖()
+
+    expect(文案("hgraph-snapshot-empty")).toBe("这条不在库里")
+    // 快照区已经说明过一次；回执行不该把同一句再写一遍。
+    expect(取("[data-slot='hgraph-refresh-note']")).toBeNull()
+    expect(写.写们.length).toBe(0)
+  })
+
+  test("T019a 刷新：类型与细类一起变 ⇒ 一次改字段带两键；库没了细类 ⇒ 补丁写 null", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三", type: "账号", subtype: "银行卡" }),
+    }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    按钮("hgraph-snapshot-refresh").click()
+    await T014落定()
+    await 过防抖()
+
+    expect(写.写们.length).toBe(1)
+    expect(写.写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 类型: "账号", 细类: "银行卡" } }] },
+    ])
+
+    // 库里又把细类清空了：名称/类型已与文档一致 ⇒ 只写「细类: null」（删键，不是空串）。
+    详情.换回应(() => ({ kind: "ok", value: 档案({ id: "e1", canonical_value: "张三", type: "账号" }) }))
+    按钮("hgraph-snapshot-refresh").click()
+    await T014落定()
+    await 过防抖()
+
+    expect(写.写们.length).toBe(2)
+    expect(写.写们[1]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 细类: null } }] },
+    ])
+  })
 })
 
 describe("T014 修复轮 1 · 刷新按选中节点定位（R91）", () => {

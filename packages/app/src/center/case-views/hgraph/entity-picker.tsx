@@ -18,7 +18,7 @@
  * 取不到档案的实体列名字 +「取不到档案，未加入」，其余照加（R59 的「不拦、不伪造」）；
  * 全部失败才不调 `onAdd`，保留面板与错误。有失败项时面板不自动关，否则用户看不见谁没加进来。
  */
-import { For, Show, createMemo, createSignal, onMount, type JSX } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { 操作 } from "@/project/hgraph-api"
 import type { CaseDetailApi, 实体档案, 档案关系 } from "../../case-detail-api"
@@ -49,10 +49,14 @@ function 文本值(值: unknown): string {
   return JSON.stringify(值) ?? String(值)
 }
 
-/** `attrs` → 节点属性行。逐条 `{键, 值, 出处: []}`；出处恒空见文件头 R59。 */
+/**
+ * `attrs` → 节点属性行。逐条 `{键, 值, 出处: []}`；出处恒空见文件头 R59。
+ *
+ * `null` 与 `undefined` 同义（库中无值）：不写 `"null"` 这种把空值当成文字的做法。
+ */
 export function 属性们(attrs: Record<string, unknown>): 属性[] {
   return Object.entries(attrs).flatMap(([键, 值]) =>
-    值 === undefined ? [] : [{ 键, 值: 文本值(值), 出处: [] }],
+    值 === undefined || 值 === null ? [] : [{ 键, 值: 文本值(值), 出处: [] }],
   )
 }
 
@@ -138,10 +142,16 @@ export function 选择器(props: 选择器Props): JSX.Element {
   const 显示行们 = createMemo(() => 按类型筛(行们(), 类型()))
   const 可加入 = createMemo(() => 显示行们().filter((行) => 选中().has(行.id) && !已绑().has(行.id)))
 
+  // 请求代（`alerts.tsx` 同款失效守卫）：慢响应的 q 可能已经不是当前搜索词，
+  // 后到就整段作废，不覆盖新结果、不关掉新请求的「载入中」。
+  let 搜索代 = 0
+
   const 搜索 = async (q: string) => {
+    const 代 = ++搜索代
     set载入(true)
     set错误(undefined)
     const 回 = await props.实体api.list({ projectId: props.projectId, q, limit: 50 })
+    if (代 !== 搜索代) return
     set载入(false)
     if (回.kind === "error") {
       set错误(回.message)
@@ -156,6 +166,17 @@ export function 选择器(props: 选择器Props): JSX.Element {
   }
 
   onMount(() => void 搜索(""))
+
+  // 面板已收起（点「收起」或被编辑器卸载）：在飞的 `profile` 回来后就整段作废，
+  // 不再 `onAdd`（不能把用户已经放弃的加入偷偷落盘），也不再二次 `onClose`。
+  let 已关 = false
+  const 关闭 = () => {
+    已关 = true
+    props.onClose()
+  }
+  onCleanup(() => {
+    已关 = true
+  })
 
   const 切换 = (id: string, 勾: boolean) => {
     set选中((旧) => {
@@ -175,6 +196,7 @@ export function 选择器(props: 选择器Props): JSX.Element {
     const 结果 = await Promise.all(
       要加.map(async (行) => ({ 行, 回: await props.详情api.profile(props.projectId, 行.id) })),
     )
+    if (已关) return
     set加入中(false)
 
     const 成功: Array<{ readonly 行: 实体清单项; readonly 档案: 实体档案 }> = []
@@ -214,7 +236,7 @@ export function 选择器(props: 选择器Props): JSX.Element {
       <div class="flex items-center gap-1">
         <span class="text-13-medium text-v2-text-text-base">从库加入</span>
         <span class="min-w-0 flex-1" />
-        <button type="button" data-slot="hgraph-picker-close" class={按钮} onClick={() => props.onClose()}>
+        <button type="button" data-slot="hgraph-picker-close" class={按钮} onClick={关闭}>
           收起
         </button>
       </div>

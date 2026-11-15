@@ -62,11 +62,16 @@ function 文件名(path: string): string {
   return path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
 }
 
-/** T014 接缝：实体库 / 档案 / 打开档案（R63）。省略 = 这个壳没有库。 */
+/**
+ * T014 接缝：实体库 / 档案 / 打开档案（R63）。省略 = 这个壳没有库。
+ *
+ * `打开档案` 的 `项目id` 是**挂载时**读到的那个（不是点击时再读单例）：视图还开着、
+ * 用户切了项目时，「打开档案」仍应开到这张图所属项目，与读写同一条规矩（`#010-06`）。
+ */
 export interface HgraphView依赖 {
   readonly 实体api?: Pick<EntityApi, "list">
   readonly 详情api?: Pick<CaseDetailApi, "profile">
-  readonly 打开档案?: (实体id: string, 标题: string) => void
+  readonly 打开档案?: (项目id: string, 实体id: string, 标题: string) => void
 }
 
 /**
@@ -144,7 +149,11 @@ export function 创建HgraphView(
                       导出人={导出人}
                       实体api={依赖?.实体api}
                       详情api={依赖?.详情api}
-                      打开档案={依赖?.打开档案}
+                      打开档案={
+                        依赖?.打开档案 === undefined
+                          ? undefined
+                          : (实体id, 标题) => 依赖.打开档案!(id(), 实体id, 标题)
+                      }
                     />
                   )}
                 </Show>
@@ -174,9 +183,8 @@ export const HgraphView: ViewComponent = (props) => {
   const 组装 = 创建HgraphView(默认hgraphapi, () => currentProject()?.id, {
     实体api: (默认实体api ??= createEntityApi()),
     详情api: (默认详情api ??= createCaseDetailApi()),
-    打开档案: (实体id, 标题) => {
-      const projectId = currentProject()?.id
-      if (projectId === undefined || projectId === "") return
+    打开档案: (projectId, 实体id, 标题) => {
+      if (projectId === "") return
       center.open(
         {
           module: center.module() ?? "project",
