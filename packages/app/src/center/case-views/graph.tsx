@@ -41,9 +41,9 @@ const 宽一档 = (档: 关系图强度): 关系图强度 | undefined => {
   return 序 <= 0 ? undefined : 关系图强度们[序 - 1]
 }
 
-type 形 = "circle" | "rect" | "hexagon" | "diamond"
+export type 形 = "circle" | "rect" | "hexagon" | "diamond"
 
-function 形状(类型: string): 形 {
+export function 形状(类型: string): 形 {
   if (类型 === "号码" || 类型 === "组织") return "rect"
   if (类型 === "账户") return "hexagon"
   if (类型 === "地点") return "diamond"
@@ -94,7 +94,7 @@ function 边宽(次数: number): number {
 
 const 截断 = (值: string, 上限 = 12) => (值.length > 上限 ? `${值.slice(0, 上限)}…` : 值)
 
-function 多边形(点: 位点, 半径: number, 角数: number, 起始角: number): string {
+export function 多边形(点: 位点, 半径: number, 角数: number, 起始角: number): string {
   return Array.from({ length: 角数 }, (_, 序) => {
     const 角 = 起始角 + (Math.PI * 2 * 序) / 角数
     return `${(点.x + Math.cos(角) * 半径).toFixed(1)},${(点.y + Math.sin(角) * 半径).toFixed(1)}`

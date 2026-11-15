@@ -23,7 +23,7 @@
  * `Math.round`（四舍五入；`.5` 向 `+∞`，与 JS 语义一致）；`适配视口` 的 `缩放`
  * 是视图变换比例，保留小数，只有平移 `x` / `y` 取整。
  */
-import type { 边, 节点 } from "./file"
+import type { 边, 节点, 设置 } from "./file"
 
 /** 节点视觉半径；来源见文件头。 */
 const 节点半径 = 15
@@ -448,4 +448,109 @@ export function 标签取舍(节点们: readonly 节点[], 参数: 标签取舍�
     盒们.push(盒)
   }
   return 保留
+}
+
+// ---------------------------------------------------------------------------
+// T018（US8·R73）：视觉规格的算档纯函数
+//
+// 档 = 「阈值计数」：值 ≥ 第 k 个阈值就加一档，**上限 4**（数据模型 `线宽档 0..4`）。
+// 组件（`canvas.tsx`）只调这里，不自己算档（`#002-06`）。
+// ---------------------------------------------------------------------------
+
+/** 平行边之间的视觉间距（px）；设计无数值，协调者裁定（R73）。 */
+const 边间距 = 8
+/** 线宽像素表：档 0..4 ⇒ 1 / 1.5 / 2 / 3 / 4 px。 */
+const 线宽像素们: readonly number[] = [1, 1.5, 2, 3, 4]
+
+/** 档上限：数据模型把 `线宽档`/`外环档` 定死为 `0..4`。 */
+const 最大档 = 4
+
+/** 第 `档` 档的线宽像素（档越界按端点收口，调用方本来只传 0..4）。 */
+export function 线宽像素(档: number): number {
+  const 位 = Math.min(Math.max(Math.trunc(档), 0), 最大档)
+  return 线宽像素们[位]
+}
+
+/** 第 k 条平行边的偏移 = `序 × 8`；非有限 / 负数按 0 处理。 */
+export function 边偏移(序: number): number {
+  if (!Number.isFinite(序) || 序 < 0) return 0
+  return 序 * 边间距
+}
+
+/**
+ * 平行边编号：按**无向端点对** `(min(从,到), max(从,到))` 分组，组内按 `id` UTF-16
+ * 升序编号 `0..n−1`。**同向重复边也各自编号**（第 k 条偏移 k×8）；同输入同输出。
+ */
+export function 平行边序(边们: readonly 边[]): ReadonlyMap<string, number> {
+  const 组 = new Map<string, 边[]>()
+  for (const 行 of 边们) {
+    const 小 = 行.从 <= 行.到 ? 行.从 : 行.到
+    const 大 = 行.从 <= 行.到 ? 行.到 : 行.从
+    // NUL 不会出现在 id 里（文件 id 是非空字符串），做分隔符不会撞键。
+    const 键 = `${小}\u0000${大}`
+    const 已有 = 组.get(键)
+    if (已有 === undefined) 组.set(键, [行])
+    else 已有.push(行)
+  }
+  const 回 = new Map<string, number>()
+  for (const 行们 of 组.values()) {
+    ;[...行们].sort(按id升序).forEach((行, 序) => 回.set(行.id, 序))
+  }
+  return 回
+}
+
+/** `档 = clamp(阈值.filter(t => 值 >= t).length, 0, 4)`；非有限 / 负值 ⇒ 0。 */
+export function 线宽档(值: number, 阈值: readonly number[]): number {
+  if (!Number.isFinite(值) || 值 < 0) return 0
+  let 档 = 0
+  for (const 门 of 阈值) if (值 >= 门) 档++
+  return Math.min(档, 最大档)
+}
+
+/**
+ * 外环档：`手动` 存在且落在 `0..4` ⇒ 原样（冻结；连接数再涨也不变），否则同 `线宽档` 口径。
+ * 只设了颜色、没设档 ⇒ 手动为 `undefined`，仍走自动。
+ */
+export function 外环档(连接数: number, 阈值: readonly number[], 手动?: number): number {
+  if (手动 !== undefined && Number.isFinite(手动) && 手动 >= 0 && 手动 <= 最大档) return 手动
+  return 线宽档(连接数, 阈值)
+}
+
+/** 「按类型默认」时，标签里带这些词的边按金额度量（数据模型/设计 §5.6）。 */
+const 金额类标签 = ["转账", "资金"]
+
+/**
+ * 边档（T018）：① `边.线宽档` 在 `0..4` ⇒ 原样（手动优先）；② 度量按设置选金额/次数
+ * （`按类型默认` 时标签含「转账」「资金」走金额，否则次数）；③ 金额取 `|值|`（流出也算
+ * 量级），非有限当 0；次数缺省 0；④ 线宽档(值, 对应阈值数组)。
+ */
+export function 边档(行: 边, 设置值: 设置): number {
+  const 手动 = 行.线宽档
+  if (手动 !== undefined && Number.isFinite(手动) && 手动 >= 0 && 手动 <= 最大档) return 手动
+
+  const 用金额 =
+    设置值.线宽度量 === "按金额" ||
+    (设置值.线宽度量 === "按类型默认" && 金额类标签.some((词) => (行.标签 ?? "").includes(词)))
+  if (用金额) {
+    const 数 = Math.abs(Number(行.金额?.值))
+    return 线宽档(Number.isFinite(数) ? 数 : 0, 设置值.金额阈值)
+  }
+  return 线宽档(行.次数 ?? 0, 设置值.次数阈值)
+}
+
+/**
+ * 外环档表（T018 接线）：逐节点 `外环档(连接度数(...).get(id) ?? 0, 阈值, 节点.外环?.档)`。
+ *
+ * 这是自动外环档的**唯一出处**（R105）：画布算环与编辑器给 `标签取舍` 传 `档表` 都调它，
+ * 不再另写一份「度数 → 档」（`#002-06` 同一前提单一出处）。
+ */
+export function 外环档表(
+  节点们: readonly 节点[],
+  边们: readonly 边[],
+  阈值: readonly number[],
+): ReadonlyMap<string, number> {
+  const 度 = 连接度数(边们)
+  const 表 = new Map<string, number>()
+  for (const 点 of 节点们) 表.set(点.id, 外环档(度.get(点.id) ?? 0, 阈值, 点.外环?.档))
+  return 表
 }
