@@ -711,7 +711,7 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 「点下载」这一次到底作用于什么。
+   * 这一次菜单动作作用于什么（下载与解析共用）。
    *
    * 规则（设计 §4.1 / §7.1）：
    * - 右键的行**在选中集里**且选中集 > 1 ⇒ 整个选中集（`selection`）；
@@ -720,7 +720,7 @@ export function FileTree(props: FileTreeProps) {
    * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
    * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
    */
-  const 判下载目标 = (
+  const 判菜单目标 = (
     path: string,
   ):
     | { kind: "file"; path: string }
@@ -741,7 +741,7 @@ export function FileTree(props: FileTreeProps) {
   function 要下载() {
     const path = 菜单对象()
     if (!path) return true
-    if (判下载目标(path).kind === "file") return !props.onDownload
+    if (判菜单目标(path).kind === "file") return !props.onDownload
     return !props.onArchive
   }
 
@@ -1449,7 +1449,7 @@ export function FileTree(props: FileTreeProps) {
    */
   function 点下载(path: string | undefined) {
     if (!path) return
-    const 目标 = 判下载目标(path)
+    const 目标 = 判菜单目标(path)
     if (目标.kind === "file") {
       props.onDownload?.(目标.path)
       return

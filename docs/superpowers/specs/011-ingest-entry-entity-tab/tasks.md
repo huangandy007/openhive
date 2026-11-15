@@ -135,7 +135,13 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T006
   - **验证**：四条用例（混选去重 / 0 候选 / 已跳过排除 / 不可解析排除）先红后绿；变异「去掉已跳过排除」⇒ 对应用例必须红
 
-- [ ] T008 [P] [US2] 改名 `判下载目标` → `判菜单目标`：`packages/app/src/project/file-tree.tsx:723`，同步三处引用（`:737` 下载文案、`:744` 下载可用性、`:1452` 下载执行）
+- [x] T008 [P] [US2] 改名 `判下载目标` → `判菜单目标`：`packages/app/src/project/file-tree.tsx:723`，同步三处引用（`:737` 下载文案、`:744` 下载可用性、`:1452` 下载执行）
+
+  > **基线（2026-11-15 实测，改名前后各跑一次）**：`file-tree.test.tsx` **176 pass / 0 fail / 377 expect**（改名后同，断言一行未改）。
+  > **改名前 grep**：`packages/app/src` 内 `判下载目标` 3 处——`:723` 定义、`:744` 下载可用性、`:1452` 下载执行；brief 所称 `:737` 下载文案**已不引用**该函数（体内只剩 `是选中集`），故实际同步两处引用。
+  > **改名后 grep**：`grep -n '判下载目标' packages/app/src` **0 命中**；`判菜单目标` 落点 `:723` / `:744` / `:1452` 三处。
+  > **变异（纯改名，无新行为；钉住引用绑定）**：只把定义改回 `判下载目标`（调用点保持新名）⇒ typecheck 红两条 `file-tree.tsx(744,9)/(1452,16): error TS2552: Cannot find name '判菜单目标'`；恢复后退出 0。
+  > **门禁**：`packages/app` typecheck 退出 0；根 `bun run lint` 退出 1，唯一 error 在未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（既有），本文件仅命中既有 `consistent-return` 警告（`:687` 等，未触碰）。
 
   - **入参**：`path: string | undefined`
   - **出参**：`{ kind: "file", path } | { kind: "folder", paths } | { kind: "selection", paths }`（语义与今日完全一致）
