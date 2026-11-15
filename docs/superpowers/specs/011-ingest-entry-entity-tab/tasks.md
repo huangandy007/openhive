@@ -177,7 +177,13 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T007
   - **验证**：3 选 1 已解析 ⇒ N=2、M=1；全不可入队 ⇒ N=0 + 禁用；先红后绿
 
-- [ ] T011 [US2] 抽出批量执行器 + 失败不中断（先红后绿）：`file-tree.tsx:663-682` 抽成 `执行批量入队(候选)`，`break`（`:673`）改「继续 + 收集」；用例进 `file-tree.test.tsx`
+- [x] T011 [US2] 抽出批量执行器 + 失败不中断（先红后绿）：`file-tree.tsx:663-682` 抽成 `执行批量入队(候选)`，`break`（`:673`）改「继续 + 收集」；用例进 `file-tree.test.tsx`
+
+  > **红（2026-11-15 实测）**：既有 183 条 + 新增 6 条（另把旧「中途失败即停」改写为「失败不中断」）⇒ `file-tree.test.tsx` **186 pass / 3 fail / 189 tests**，三条全部红在旧 `break` 中断：① 文件夹失败不中断 `Expected` 3 条 `记.解析` / `Received` 2 条（缺 `资料/丙.csv`）；② 全失败 `Expected` 2 条 / `Received` 1 条（缺 `资料/乙.xlsx`）；③ 多选失败不中断 `Expected` 3 条 / `Received` 2 条（缺 `丙.csv`）。其余新增（全成功、A×2、B）实现前即绿——它们钉既有正确行为，红只来自 `break`（检查点：首跑时上一条红在半路、`toaster.clear()` 未执行导致 toast 串味，本组加 `beforeEach(() => toaster.clear())` 后得到上述干净基线）。
+  > **绿**：`file-tree.test.tsx` **189 pass / 0 fail / 439 expect**。
+  > **变异**：①「继续」改回 `break`（只在执行器一处）⇒ 3 条红（文件夹失败 / 全失败 / 多选），**186 pass / 3 fail**；② A 的变异：`入队不可用原因` 的 `if (b.多选)` 挪到 `rowsLoaded` 闸之前 ⇒ 2 条红（多选 + 还没读到 / 多选 + 读取失败，`Expected: true / Received: false`，即 `aria-disabled` 变亮），**187 pass / 2 fail**；③ B 的变异：`选中集入队范围` 的 M 判据改成 `本项候选.length === 0 || 文件 !== undefined` ⇒ B 红 `Expected: "将解析选中的 2 个文件" / Received: "将解析选中的 2 个文件；另有 1 个选中项不在本次范围"`（连带 T010 的 N/M 用例红，实得 `另有 3 个`），**187 pass / 2 fail**。三次恢复后均回 **189 pass / 0 fail / 439 expect**。
+  > **门禁**：`packages/app` `bun run typecheck` 退出 0；根 `bun run lint` 退出 1，唯一 error 仍是未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（既有，octal escape）；本次两个文件单独 lint **0 error**（2 条均为既有警告：`成功文案` 的 `consistent-return`、测试里剪贴板断言）。
+  > **落点核对（`#002-06`）**：全仓批量入队循环只剩 `执行批量入队` 一处（`file-tree.tsx:638` 起）；`确认解析文件夹` / `确认解析选中` 各一行调用（`:702` / `:752`）；成功/失败 toast 文案只在该执行器内。
 
   - **入参**：`候选: readonly string[]`、`状态.parse(path, "入队")`
   - **出参**：`{ 成功: number, 失败: { path, message }[] }`；逐份串行、失败继续；`状态.reload()` **恰好 1 次**；toast 成功/失败两类文案（失败含前 3 条原因与「重试只补没成功的、不会重复」）；`S + F = N`

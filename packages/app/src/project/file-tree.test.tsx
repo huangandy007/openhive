@@ -2962,6 +2962,11 @@ describe("FileTree 文件树（FR-005）", () => {
   })
 
   describe("解析子菜单（计划 3 · 设计 §8.1）", () => {
+    // toast store 是**模块级**的：某条用例红在半路时，末尾的 `toaster.clear()` 不会执行，
+    // 上一条的成功提示就会串成本条「实得值」（实测：全成功那条读到上一条的「1 个文件」）。
+    // 每条之前清一次，别让两条用例的 toast 互相污染。
+    beforeEach(() => toaster.clear())
+
     const 子菜单内容 = () => document.querySelector<HTMLElement>("[data-component='context-menu-sub-content']")
     const 子项 = (action: string) => 子菜单内容()?.querySelector<HTMLElement>(`[data-parse-action='${action}']`)
     // ⚠️ 元素缺失时**抛**，不是回 false（`#005-47`：默认值满足断言会假绿——`toBe(false)` 在
@@ -3004,6 +3009,31 @@ describe("FileTree 文件树（FR-005）", () => {
           new PointerEvent(类型, { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }),
         )
     }
+
+    /**
+     * 「解析入库 → 确认」这一整步——批量用例共用，别各写一遍点击序列（`#002-06`）。
+     *
+     * 弹窗没出来就**抛**：那说明前提（这次右键确实进了解析子菜单）不成立，红要红在前提上
+     * （`#004-14`），不要红在一条读空 DOM 的断言里。
+     */
+    const 确认入库 = async () => {
+      点子项("parse-enqueue")
+      const 弹了 = await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+      if (!弹了) throw new Error("确认框没弹出来——这条用例的前提不成立（#004-14）")
+      document.body
+        .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      await 歇一拍()
+    }
+
+    /**
+     * 现挂着的 toast 文案（legacy `ToastRegion` 把 `data-variant` 开在 Toast 根上）。
+     *
+     * 取 `document` 而非 host：toast 渲染在 Region 自己的 Portal 里，`data-slot` 那套
+     * 只覆盖树内部结构。
+     */
+    const 提示文案 = (variant: "success" | "error") =>
+      document.body.querySelector<HTMLElement>(`[data-variant='${variant}']`)?.textContent ?? ""
 
     const 挂带材料 = (
       paths: readonly string[],
@@ -3172,9 +3202,9 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(收到).toEqual(["话单.csv"])
     })
 
-    test("文件夹批量：中途失败即停（第三个不再发），已发的保留，仍重拉，toast 点名失败的那一份", async () => {
+    test("文件夹批量：中途失败不中断（第三份照发），收尾报告 S/F 并点名原因（契约 C5）", async () => {
       const 假 = 假材料状态({
-        parse: ({ path }) => (path === "资料/乙.xlsx" ? { kind: "error", message: "服务端拒了" } : { kind: "ok" }),
+        parse: ({ path }) => (path === "资料/乙.xlsx" ? { kind: "error", message: "网络断了" } : { kind: "ok" }),
       })
       // 这一条要读**真** toast 落点（同「文件路径」那组的观测面）⇒ 挂一棵带 ToastRegion 的树。
       const host = mount(() => (
@@ -3187,22 +3217,71 @@ describe("FileTree 文件树（FR-005）", () => {
       右键(行按路径(host, "资料"))
       await 歇一拍()
       await 开子菜单()
-      点子项("parse-enqueue")
-      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+      await 确认入库()
 
-      document.body
-        .querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      // 乙失败 ≠ 丙不发：候选顺序原样跑完，失败只收集不中断（一份坏文件不该拖住整批）。
+      expect(假.记.解析).toEqual([
+        { path: "资料/甲.csv", action: "入队" },
+        { path: "资料/乙.xlsx", action: "入队" },
+        { path: "资料/丙.csv", action: "入队" },
+      ])
+      // 不管成与败都按服务端真实状态重拉，且**只重拉一次**。
+      expect(假.记.重拉).toBe(1)
+      // S + F = N：2 + 1 = 3。
+      const 失败话 = 提示文案("error")
+      expect(失败话).toContain("成功 2 份；1 份未能入队")
+      expect(失败话).toContain("资料/乙.xlsx")
+      expect(失败话).toContain("网络断了")
+      expect(失败话).toContain("重试只补没成功的、不会重复")
+      // 有失败时**不再**额外来一句成功 toast（两句话会互相打架）。
+      expect(提示文案("success")).toBe("")
+      toaster.clear()
+    })
+
+    test("文件夹批量：全部成功 ⇒ 一句成功 toast，S=N、无失败项", async () => {
+      const 假 = 假材料状态()
+      const host = mount(() => (
+        <>
+          <ToastRegion v2={false} />
+          <FileTree paths={["资料/甲.csv", "资料/乙.xlsx", "资料/丙.csv"]} caseMaterials={假.状态} />
+        </>
+      ))
+
+      右键(行按路径(host, "资料"))
       await 歇一拍()
+      await 开子菜单()
+      await 确认入库()
 
-      // 甲成了、乙失败 ⇒ 丙一次都没发（`break` 那一行）。
+      expect(假.记.解析.length).toBe(3)
+      expect(假.记.重拉).toBe(1)
+      expect(提示文案("success")).toContain("已加入解析队列（3 个文件）")
+      expect(提示文案("error")).toBe("")
+      toaster.clear()
+    })
+
+    test("文件夹批量：全部失败也把每一份都发出——reload 仍恰一次、报告 成功 0 份", async () => {
+      const 假 = 假材料状态({ parse: ({ path }) => ({ kind: "error", message: `${path} 被拒` }) })
+      const host = mount(() => (
+        <>
+          <ToastRegion v2={false} />
+          <FileTree paths={["资料/甲.csv", "资料/乙.xlsx"]} caseMaterials={假.状态} />
+        </>
+      ))
+
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+      await 确认入库()
+
+      // 全失败与全成功走同一条收尾路径：每份都发、重拉一次、S/F 照实报。
       expect(假.记.解析).toEqual([
         { path: "资料/甲.csv", action: "入队" },
         { path: "资料/乙.xlsx", action: "入队" },
       ])
       expect(假.记.重拉).toBe(1)
-      const 错误话 = document.body.querySelector<HTMLElement>("[data-variant='error']")?.textContent ?? ""
-      expect(错误话).toContain("资料/乙.xlsx")
+      expect(提示文案("error")).toContain("成功 0 份；2 份未能入队")
+      expect(提示文案("error")).toContain("重试只补没成功的、不会重复")
+      expect(提示文案("success")).toBe("")
       toaster.clear()
     })
 
@@ -3457,6 +3536,92 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(
         document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
       ).toBe(true)
+    })
+
+    test("多选批量：与文件夹走同一个执行器——第二份失败，第三份照发并报 S/F", async () => {
+      // 这条钉「两处共用一份循环」：只把文件夹那条改好、多选仍 break 的话，这条会红。
+      const 假 = 假材料状态({
+        parse: ({ path }) => (path === "乙.csv" ? { kind: "error", message: "服务端拒了" } : { kind: "ok" }),
+      })
+      const host = mount(() => (
+        <>
+          <ToastRegion v2={false} />
+          <FileTree paths={["甲.csv", "乙.csv", "丙.csv"]} caseMaterials={假.状态} />
+        </>
+      ))
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      await 确认入库()
+
+      expect(假.记.解析).toEqual([
+        { path: "甲.csv", action: "入队" },
+        { path: "乙.csv", action: "入队" },
+        { path: "丙.csv", action: "入队" },
+      ])
+      expect(假.记.重拉).toBe(1)
+      const 失败话 = 提示文案("error")
+      expect(失败话).toContain("成功 2 份；1 份未能入队")
+      expect(失败话).toContain("乙.csv")
+      expect(失败话).toContain("服务端拒了")
+      expect(失败话).toContain("重试只补没成功的、不会重复")
+      toaster.clear()
+    })
+
+    /**
+     * T009 复审转来的 pin：多选**不能绕过**「材料行还没读到」这道闸。
+     *
+     * 多选只放行「解析入库」这条规则在 `入队不可用原因` 里写在 `多选` 判断之后——顺序是契约：
+     * 读不到行时候选集本身不可信（`rows` 为空会把已解析当未入队），先回 C3 原文，再谈多选。
+     * 变异：把 `if (b.多选)` 挪到 `rowsLoaded` 闸之前 ⇒ 这两条必须红（入队变可点）。
+     */
+    test("多选 + 材料还没读到 ⇒ 入队仍置灰，原因是「还在读」原文", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], { loaded: false })
+      选中(host, ["甲.csv", "乙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项原因("parse-enqueue")).toBe("解析状态还在读取，请稍候")
+    })
+
+    test("多选 + 材料读取失败 ⇒ 入队置灰，原因说「读取失败」而不是「请稍候」", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv"], { loaded: false, error: "加载解析状态失败" })
+      选中(host, ["甲.csv", "乙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项原因("parse-enqueue")).toBe("解析状态读取失败，请右键刷新重试")
+    })
+
+    /**
+     * T010 concern 转来的 pin：M 的单位是**选中项**，只数「自身一个候选都展不开」的项。
+     *
+     * 文件夹和它里面的文件同时选中时，文件确实带进来了候选（只是被目录去重了）——不能算排除。
+     * 变异：把「本项展开为空」改成「只要是文件就算排除」⇒ 正文多出「另有 1 个选中项不在本次范围」。
+     */
+    test("多选确认框：文件夹与其中文件同时选中 ⇒ 该文件不计入 M（N 仍按去重后的候选数）", async () => {
+      const { host } = 挂带材料(["资料/甲.csv", "资料/乙.xlsx"])
+      // 默认全收缩 ⇒ 深层文件行不在树上，选中它之前先展开（本文件 `行按路径` 的规矩）。
+      动作(host, "expand-all")?.click()
+      选中(host, ["资料", "资料/甲.csv"])
+      右键(行按路径(host, "资料/甲.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      // N = 2（目录展出的两份，文件自身那一次被去重）；M = 0 ⇒ 正文没有「另有 N 个选中项」。
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
+        "将解析选中的 2 个文件",
+      )
+      expect(
+        document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
+      ).toBe(false)
     })
 
     test("右键单个文件夹：确认框文案逐字不变（回归，folder 作用域不受多选改造影响）", async () => {

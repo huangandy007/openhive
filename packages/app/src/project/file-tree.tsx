@@ -626,7 +626,45 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 文件夹解析：先确认，再**逐个**发入队。
+   * 批量入队的**唯一**执行器（文件夹批量与多选共用，契约 C5；`#002-06`）。
+   *
+   * - 逐份**串行**、保持候选顺序：服务端一次收一个文件（与上传同一条约定）。
+   * - 一份失败**不中断**后面的候选：只收进 `失败`，继续发。一份坏文件不该让整批作废，
+   *   否则用户重试时还得自己找出漏了哪些。
+   * - 收尾 `状态.reload()` **恰好一次**：成与败都已产生服务端事实，界面必须按真实状态重拉。
+   * - toast 由这里统一发：`失败 = 0` 走成功文案；否则一条 error 报 `S / F`（`S + F = N`），
+   *   带前 3 条原因与固定尾句「重试只补没成功的、不会重复」。
+   */
+  async function 执行批量入队(
+    候选: readonly string[],
+    状态: CaseMaterials,
+  ): Promise<{ 成功: number; 失败: Array<{ path: string; message: string }> }> {
+    let 成功 = 0
+    const 失败: Array<{ path: string; message: string }> = []
+    for (const path of 候选) {
+      const 结果 = await 状态.parse(path, "入队")
+      if (结果.kind === "error") 失败.push({ path, message: 结果.message })
+      else 成功 += 1
+    }
+    状态.reload()
+    if (失败.length === 0) {
+      showToast({ variant: "success", title: `已加入解析队列（${成功} 个文件）` })
+    } else {
+      const 原因 = 失败
+        .slice(0, 3)
+        .map((项) => `${项.path}：${项.message}`)
+        .join("；")
+      showToast({
+        variant: "error",
+        title: `成功 ${成功} 份；${失败.length} 份未能入队`,
+        description: `${原因}。重试只补没成功的、不会重复`,
+      })
+    }
+    return { 成功, 失败 }
+  }
+
+  /**
+   * 文件夹解析：先确认，再由 `执行批量入队` 逐份发（失败不中断，见那里的契约）。
    *
    * ## 为什么没有批量接口
    *
@@ -634,9 +672,6 @@ export function FileTree(props: FileTreeProps) {
    * 成败在界面上好交代。**不要**为了省几个请求在服务端加批量出口——一旦有了批量接口，
    * 它迟早会被写成「按状态全集扫」，把「已跳过」也一起翻回来（候选口径在
    * `目录下待入队` 里，见那里的注释）。批量只活在前端这一层。
-   *
-   * 失败即中断：后面的文件不再发，已发出的不回滚（入队幂等），收尾统一 `reload()`，
-   * 界面按服务端的真实状态刷新，弹窗关闭、toast 说清。
    *
    * ## 候选为 0
    *
@@ -664,22 +699,7 @@ export function FileTree(props: FileTreeProps) {
         正文={`将解析这个文件夹下的 ${候选.length} 个文件`}
         确认文案="解析"
         onConfirm={async () => {
-          let 成 = 0
-          for (const path of 候选) {
-            const 结果 = await 状态.parse(path, "入队")
-            if (结果.kind === "error") {
-              showToast({
-                variant: "error",
-                title: "文件夹解析中断",
-                description: `第 ${成 + 1} 个文件（${path}）没能入队：${结果.message}`,
-              })
-              break
-            }
-            成 += 1
-          }
-          // 不管成与败都按服务端真实状态重拉：已发出的入队已经生效，界面不能停在旧快照上。
-          状态.reload()
-          if (成 > 0) showToast({ variant: "success", title: `已加入解析队列（${成} 个文件）` })
+          await 执行批量入队(候选, 状态)
           // 永远回 undefined：失败已经用 toast 说清，弹窗不该停在「再点一次会把已入队的重发」的状态
           return undefined
         }}
@@ -698,10 +718,10 @@ export function FileTree(props: FileTreeProps) {
    * 仍然弹窗：菜单在状态已读到时保持可点（控制器裁定 2026-11-15），0 候选的解释归这里。
    * 直接 `return` 就是「点下去没反应」。
    *
-   * ## 逐个发送与失败中断
+   * ## 逐个发送与失败不中断
    *
-   * 与文件夹那条同一条约定（服务端一次收一个文件、按文件分开交代成败）。T011 会把这段
-   * 循环抽成文件夹与多选共用的批量执行器；本任务只接弹窗与数字，不提前抽。
+   * 与文件夹那条**同一个**执行器（`执行批量入队`）：服务端一次收一个文件、按文件分开交代
+   * 成败，失败继续、收尾重拉一次、toast 报 S/F。别在这里再写一份循环（`#002-06`）。
    */
   function 确认解析选中() {
     const 状态 = 材料()
@@ -729,22 +749,8 @@ export function FileTree(props: FileTreeProps) {
         正文={正文}
         确认文案="解析"
         onConfirm={async () => {
-          let 成 = 0
-          for (const path of 候选) {
-            const 结果 = await 状态.parse(path, "入队")
-            if (结果.kind === "error") {
-              showToast({
-                variant: "error",
-                title: "选中的文件解析中断",
-                description: `第 ${成 + 1} 个文件（${path}）没能入队：${结果.message}`,
-              })
-              break
-            }
-            成 += 1
-          }
-          // 不管成与败都按服务端真实状态重拉：已发出的入队已经生效，界面不能停在旧快照上。
-          状态.reload()
-          if (成 > 0) showToast({ variant: "success", title: `已加入解析队列（${成} 个文件）` })
+          await 执行批量入队(候选, 状态)
+          // 永远回 undefined：失败已经用 toast 说清（同文件夹那条）。
           return undefined
         }}
       />
