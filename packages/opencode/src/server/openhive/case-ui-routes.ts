@@ -372,6 +372,9 @@ function handleMoney(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
       aggregate_money(
         { db: deps.pg(), 身份: { userId: 门.user.id, projectId: projectId! } },
         { 账户: 值, 起: 入参.起, 止: 入参.止 },
+        // 页面明细栏要「流水」与「人说的」并排（设计 §6）。界面是给人看的：未验证模板卡
+        // 也要显示（与 `/timeline` 同一约定，§11.2），故 `含未验证: true`。
+        { 含单笔最大: { 含未验证: true } },
       ).catch((错误: unknown) => {
         if (错误 instanceof 工具错误) return 错误
         throw 错误

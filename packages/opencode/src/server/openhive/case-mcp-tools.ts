@@ -2029,6 +2029,21 @@ export async function aggregate_money(
             行数: 余额行.length,
           }
 
+  // 资金页的明细栏要「流水」与「人说的」并排，而页面路由走的是本函数 ⇒ 内部选项额外取一份
+  // 单笔榜（默认关闭，AI 出口输出逐字不变）。取数与 `money_flow` 共用 `#002-06` 的同一份。
+  const 单笔最大 =
+    选项.含单笔最大 === undefined
+      ? undefined
+      : await 取单笔最大(
+          ctx,
+          单笔最大条件(ctx, 账户.id, args, {
+            ...(选项.对手id === undefined ? {} : { 对手id: 选项.对手id }),
+            ...(选项.含单笔最大.含未验证 === undefined
+              ? {}
+              : { 含未验证: 选项.含单笔最大.含未验证 }),
+          }).条件,
+        )
+
   // R5：对象不算空 ⇒ 无命中时 `数据` 返回 `null`，不返回一个全是空数组的对象。
   //
   // 【只有外币】本页明细里只有外币行（`外币行数 > 0`）、人民币余额走势为空，且汇总/对手方
@@ -2129,6 +2144,7 @@ export async function aggregate_money(
           首末,
           对手方: 对外对手方,
           人说的笔,
+          ...(单笔最大 === undefined ? {} : { 单笔最大 }),
           余额走势,
           外币行数,
           ...(账户汇总 === undefined ? {} : { 账户汇总 }),
@@ -2182,6 +2198,82 @@ export async function aggregate_money(
 
 const 资金流对手上限 = 20
 const 单笔最大上限 = 10
+
+/** 单笔榜的一行（`money_flow.数据.单笔最大` 与资金页 `数据.单笔最大` 同形）。 */
+type 单笔最大行 = {
+  readonly id: string
+  readonly 金额: string
+  readonly 时间: number | null
+  readonly 摘要: string | null
+}
+
+/**
+ * 单笔榜的条件：基础条件 + 时间窗 + 方向谓词。
+ *
+ * 拆出来是因为 `aggregate_money`（页面出口，内部选项 `含单笔最大`）与 `money_flow`（AI 出口）
+ * 都要用同一份（`#002-06`：两处各写一遍，迟早漂成「AI 的榜只算入、页面的榜算了全部」）。
+ * `基础` / `窗口` / `方向谓词` 一并返回：`money_flow` 的两条缺口计数要在基础条件上再算。
+ */
+function 单笔最大条件(
+  ctx: 工具上下文,
+  账户id: string,
+  窗口: { readonly 起?: number; readonly 止?: number },
+  选项: {
+    readonly 目标方向?: "入" | "出"
+    readonly 对手id?: string
+    readonly 含未验证?: boolean
+  },
+): { readonly 基础: SQL[]; readonly 窗口: SQL[]; readonly 方向谓词: SQL | undefined; readonly 条件: SQL[] } {
+  // 未验证模板产出的卡片默认对 AI 隐藏（§11.1）：单笔榜与两处缺口计数共用这份基础条件，
+  // 挂在这里就一并生效；`from auth.case_event` 未起别名，片段可直接用（`模板可见条件`）。
+  const 模板可见 = 模板可见条件(选项.含未验证)
+  const 基础: SQL[] = [
+    sql`project_id = ${ctx.身份.projectId}`,
+    sql`type = ${资金交易}`,
+    sql`currency = 'CNY'`,
+    sql`trust_state <> '已排除'`,
+    sql`amount is not null`,
+    ...(模板可见 === undefined ? [] : [模板可见]),
+    sql`${事件归属条件(ctx.身份.projectId, 账户id)}`,
+    // 对手与方向同源：基 1 的共享谓词（参与者表 ∈ 归属实体集 ∪ 文本回退 ∈ 归属值集），
+    // 不再手抄 unnest(participants)（`#002-06`）。
+    ...(选项.对手id === undefined ? [] : [事件归属条件(ctx.身份.projectId, 选项.对手id)]),
+  ]
+  const 窗口条件: SQL[] = []
+  if (窗口.起 !== undefined) 窗口条件.push(sql`occurred_at is not null and occurred_at >= ${窗口.起}`)
+  if (窗口.止 !== undefined) 窗口条件.push(sql`occurred_at is not null and occurred_at <= ${窗口.止}`)
+  const 方向谓词 =
+    选项.目标方向 === undefined
+      ? undefined
+      : 事件角色条件(ctx.身份.projectId, 账户id, 选项.目标方向 === "入" ? "收款方" : "付款方")
+  return {
+    基础,
+    窗口: 窗口条件,
+    方向谓词,
+    条件: [...基础, ...窗口条件, ...(方向谓词 === undefined ? [] : [方向谓词])],
+  }
+}
+
+/**
+ * 单笔榜的取数。排序写死在这里：输出别名不能叫 `amount`——`ORDER BY` 先绑输出别名，
+ * `order by amount` 会按 `amount::text` 做字符串降序（"9000.00" 排在 "100000.00" 前）。
+ */
+async function 取单笔最大(ctx: 工具上下文, 条件: readonly SQL[]): Promise<单笔最大行[]> {
+  return rowsOf(
+    await ctx.db.execute(sql`
+      select id, occurred_at, amount::text as amount_text, summary
+        from auth.case_event
+       where ${sql.join([...条件], sql` and `)}
+       order by amount desc, occurred_at asc nulls last, id asc
+       limit ${单笔最大上限}
+    `),
+  ).map((行) => ({
+    id: String(行.id),
+    金额: String(行.amount_text),
+    时间: 行.occurred_at === null || 行.occurred_at === undefined ? null : Number(行.occurred_at),
+    摘要: (行.summary as string | null) ?? null,
+  }))
+}
 
 /**
  * 某账户的资金流（09 §4.2）：汇总 / 收支分列 / 首末 / 对手排行 / 单笔最大 / 集中度。
@@ -2276,55 +2368,17 @@ export async function money_flow(
   const 解析 = await 解析账户(ctx, args.账户)
   if ("信封" in 解析) return 解析.信封
   const 账户 = 解析.实体
-  // 单笔最大的基础条件与汇总同源（时间窗 / 对手），方向另走共享谓词（C3）：
-  // `事件角色条件` 的参与者侧用归属实体集，不是裸账户 id；没有参与者行的老事件 fail-closed
-  // 排除，条数进缺口（不静默清空）。
-  // 未验证模板产出的卡片默认对 AI 隐藏（§11.1）：单笔最大与两处缺口计数共用这份基础条件，
-  // 挂在这里就一并生效；`from auth.case_event` 未起别名，片段可直接用（`模板可见条件`）。
-  const 模板可见 = 模板可见条件(args.含未验证)
-  const 单笔基础条件: SQL[] = [
-    sql`project_id = ${ctx.身份.projectId}`,
-    sql`type = ${资金交易}`,
-    sql`currency = 'CNY'`,
-    sql`trust_state <> '已排除'`,
-    sql`amount is not null`,
-    ...(模板可见 === undefined ? [] : [模板可见]),
-    sql`${事件归属条件(ctx.身份.projectId, 账户.id)}`,
-    // 对手与方向同源：基 1 的共享谓词（参与者表 ∈ 归属实体集 ∪ 文本回退 ∈ 归属值集），
-    // 不再手抄 unnest(participants)（`#002-06`）。
-    ...(对手id === undefined ? [] : [事件归属条件(ctx.身份.projectId, 对手id)]),
-  ]
-  const 单笔窗口条件: SQL[] = []
-  if (args.起 !== undefined)
-    单笔窗口条件.push(sql`occurred_at is not null and occurred_at >= ${args.起}`)
-  if (args.止 !== undefined)
-    单笔窗口条件.push(sql`occurred_at is not null and occurred_at <= ${args.止}`)
-  const 方向谓词 =
-    目标方向 === undefined
-      ? undefined
-      : 事件角色条件(ctx.身份.projectId, 账户.id, 目标方向 === "入" ? "收款方" : "付款方")
-  const 单笔条件 = [
-    ...单笔基础条件,
-    ...单笔窗口条件,
-    ...(方向谓词 === undefined ? [] : [方向谓词]),
-  ]
-  // 输出别名不能叫 `amount`：`ORDER BY` 先绑输出别名，`order by amount` 会按
-  // `amount::text` 做字符串降序（"9000.00" 排在 "100000.00" 前，Top-10 选错）。
-  // 别名改成 `amount_text`，`order by amount` 才落到基表的数值列。
-  const 单笔最大 = rowsOf(
-    await ctx.db.execute(sql`
-      select id, occurred_at, amount::text as amount_text, summary
-        from auth.case_event
-       where ${sql.join(单笔条件, sql` and `)}
-       order by amount desc, occurred_at asc nulls last, id asc
-       limit ${单笔最大上限}
-    `),
-  ).map((行) => ({
-    id: String(行.id),
-    金额: String(行.amount_text),
-    时间: 行.occurred_at === null || 行.occurred_at === undefined ? null : Number(行.occurred_at),
-    摘要: (行.summary as string | null) ?? null,
-  }))
+  // 单笔榜与 aggregate_money 的页面出口共用一份条件与取数（`#002-06`）；
+  // 两条缺口计数还要用 `基础` / `窗口` / `方向谓词`，所以都接出来。
+  const 单笔 = 单笔最大条件(ctx, 账户.id, args, {
+    ...(目标方向 === undefined ? {} : { 目标方向 }),
+    ...(对手id === undefined ? {} : { 对手id }),
+    ...(args.含未验证 === undefined ? {} : { 含未验证: args.含未验证 }),
+  })
+  const 单笔基础条件 = 单笔.基础
+  const 单笔窗口条件 = 单笔.窗口
+  const 方向谓词 = 单笔.方向谓词
+  const 单笔最大 = await 取单笔最大(ctx, 单笔.条件)
 
   const 统计条数 = async (条件: SQL[]): Promise<number> =>
     Number(

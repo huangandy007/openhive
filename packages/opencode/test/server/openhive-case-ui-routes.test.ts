@@ -366,12 +366,15 @@ describe("openhive 案件视图出口（计划 7）", () => {
     }),
   )
 
-  it("资金复用 aggregate_money：汇总出两笔入账", () =>
+  it("资金复用 aggregate_money：汇总两笔入账，并带回单笔榜（页面明细栏用）", () =>
     Effect.gen(function* () {
-      const 体 = yield* 读回<{ 数据: { 汇总: unknown[] } }>(
+      const 体 = yield* 读回<{ 数据: { 汇总: unknown[]; 单笔最大: unknown[] } }>(
         yield* 发(我, `/openhive/case/money?projectId=${项目}&id=e-路由账`),
       )
       expect(体.数据.汇总).toEqual([{ 方向: "入", 笔数: 2, 合计: "2000.00" }])
+      // 这个项目只有关系、没有资金交易事件 ⇒ 榜单为空；但**键必须在**（页面靠它区分
+      // 「没有流水笔」与「本次未返回」）。取数逻辑本身由 money_flow 的既有用例守着。
+      expect(体.数据.单笔最大).toEqual([])
     }),
   )
 
