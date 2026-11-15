@@ -483,7 +483,7 @@ const relativePath = (base: string, absolute: string) => relative(base, absolute
 export const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
 
 /** 碰到版本库元数据时回的那句话。各出口共用一句（同 `LINK_ESCAPE` 的理）。 */
-const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
+export const GIT_LOCKED = "项目里的 .git 是版本库的元数据，不许查看或改动"
 
 /**
  * 这个**已经过 `inside()`** 的项目内绝对路径，是不是落在**项目根的 `.git`** 里

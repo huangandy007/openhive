@@ -5,12 +5,12 @@ import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { User } from "@opencode-ai/core/user"
 import { createHash } from "node:crypto"
-import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises"
-import { basename, dirname, join } from "node:path"
+import { lstat, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { basename, dirname, join, resolve } from "node:path"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
-import { inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
+import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
 import { 应用操作, type 操作, type 应用结果 } from "./hgraph-edit"
 import { 必填字段, 空骨架, 解析图, 序列化图, 校验来源, type 图文件 } from "./hgraph-file"
 import { 串行 } from "./hgraph-lock"
@@ -56,13 +56,28 @@ import { 成员角色, 项目属主 } from "./project-actor"
 // 类型
 // ---------------------------------------------------------------------------
 
+/** 一次导出的留痕（data-model §10：人 / 项目 / 图路径 / 时间 / 文件名）。 */
+export interface 导出留痕 {
+  readonly userId: string
+  readonly projectId: string
+  readonly 路径: string
+  readonly 时间: string
+  readonly 文件名: string
+}
+
 /**
  * 核心依赖。`pg` 是**惰性闭包**（`OpenhivePg` 的约定：建连发生在请求期读 `process.env` 时，
  * 层构造期取客户端会锁死一份空配置）。
+ *
+ * `留痕` 是可注入的日志出口（同 `case-mcp-server.ts:95` 的 `CaseMcpDeps.留痕`）：生产默认写
+ * **stderr 一行 JSON**（内核日志通道，`logging.ts` 的 stderr logger 同一条出口）；测试注入
+ * 数组收集。**不再写 `console.info`**：那只是 stdout，不是内核日志，spy console 也证明不了
+ * 「进了日志」（`#006-29`）。
  */
 export interface 核心依赖 {
   readonly root: string
   readonly pg: () => ProjectMemberTarget
+  readonly 留痕?: (行: 导出留痕) => void
 }
 
 /** 核心失败码。HTTP 状态码由调用方映射（见本文件末尾的 `状态码`）。 */
@@ -79,6 +94,7 @@ export type 失败码 =
   | "BAD_SHAPE"
   | "BAD_OP"
   | "DANGLING_EDGE"
+  | "DUPLICATE_ID"
   | "FACTS_NEED_SOURCE"
   | "INFERENCE_NEEDS_BASIS"
   | "INFERENCE_NEEDS_CONFIDENCE"
@@ -128,11 +144,10 @@ export type 导出结果 = { ok: true; 允许: true; 文件名: string } | 核�
 const 话术 = {
   OUTSIDE_PROJECT: "路径越出项目目录",
   LINK_ESCAPE,
-  // `file.ts` 的 `GIT_LOCKED` 没导出（它是那个模块私有的措辞）；这里照抄同一句，
-  // 不为了复用一句话去动一个不在本任务范围里的导出（改 file.ts 的门只加 `.hgraph` 那一行）。
-  GIT_LOCKED: "项目里的 .git 是版本库的元数据，不许查看或改动",
+  GIT_LOCKED,
   NOT_HGRAPH: "只能改关系图文件（.hgraph）",
   NOT_FOUND: "图文件不存在",
+  PROJECT_GONE: "项目目录不在了",
   VERSION_CONFLICT: "这份图在你打开之后被改过。为避免覆盖别人的改动，请重新载入",
   WRITE_FAILED: "图没存上：写盘失败",
 } as const
@@ -204,12 +219,34 @@ interface 目标信息 {
   readonly 绝对: string
   readonly 目录: string
   readonly 类型: 目标类型
+  /** 串行锁与幂等表的键：**跨拼法归一**（见 `锁键`）。 */
+  readonly 锁键: string
 }
 
 async function 查目标(绝对: string): Promise<目标类型> {
   const 信息 = await lstat(绝对).catch(() => undefined)
   if (信息 === undefined) return "无"
   return 信息.isFile() ? "文件" : "非文件"
+}
+
+/**
+ * 串行锁 / 幂等表的键：**「解析后父目录 ＋ 小写 basename」**，不是 `resolve` 结果。
+ *
+ * ## 为什么不能直接用 `resolve` 结果
+ *
+ * 本机 win32 **大小写不敏感**，而后缀闸明确接受 `.HGRAPH`（与 `.hgraph` 是同一个文件）。
+ * 用 `resolve` 结果当 key ⇒ `图.hgraph` 与 `图.HGRAPH` 各拿一把锁，AI 不带 `版本` 的两路
+ * 增量写会同时「读同一份基线 → 各写各的」——最后一次 `rename` 静默覆盖，丢更新（`#008-03`
+ * 的反面：锁没串起来，await 之后写的仍是旧基线）。
+ *
+ * 父目录先 `realpath`：项目里允许链接目录（`realInside` 只要求真身仍在项目内），同一目录
+ * 经链接名与真实名也是同一个文件。`realpath` 失败（父目录还不存在）退回 `resolve`——那种
+ * 情况下文件一定不存在，各出口随后回 `NOT_FOUND`，不会真的并发写。
+ */
+export async function 锁键(绝对: string): Promise<string> {
+  const 父 = dirname(绝对)
+  const 真父 = await realpath(父).catch(() => resolve(父))
+  return join(真父, basename(绝对).toLowerCase())
 }
 
 /**
@@ -227,6 +264,13 @@ async function 解析目标(依赖: 核心依赖, 入参: 路径入参): Promise
   if (inGitOf(目录, 绝对)) return 拒("GIT_LOCKED")
   if (!basename(绝对).toLowerCase().endsWith(".hgraph")) return 拒("NOT_HGRAPH")
 
+  // 项目目录本身不在了 ⇒ 404 并说清是哪一种「不在」（「图文件不存在」对用户是误导：
+  // 他手里那个项目目录整个没了）。实测（2026-11-15）：不加这一步旧实现已是 404「图文件不存在」
+  // ——`dirname(绝对)` 不存在时 `realInside` 那一步本来就被跳过，**没有**复现出 LINK_ESCAPE；
+  // 这一步是为了话术准确，同时把顺序钉死：`realpath(目录)` 一旦在别处被调用，失败会回 false。
+  const 目录在 = await lstat(目录).then((信息) => 信息.isDirectory(), () => false)
+  if (!目录在) return 拒("NOT_FOUND", 话术.PROJECT_GONE)
+
   const 类型 = await 查目标(绝对)
   // 最后一段是链接 ⇒ 拒（同 `handleWrite` 用 `lstat` 而不是 `stat`：跟着看等于经链接写出项目）。
   if (类型 !== "无") {
@@ -242,7 +286,7 @@ async function 解析目标(依赖: 核心依赖, 入参: 路径入参): Promise
   )
   if (检查点在 && !(await Effect.runPromise(realInside(目录, 检查点)))) return 拒("LINK_ESCAPE")
 
-  return { ok: true, 目标: { 绝对, 目录, 类型 } }
+  return { ok: true, 目标: { 绝对, 目录, 类型, 锁键: await 锁键(绝对) } }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +338,13 @@ function 清理过期(现在: number): void {
   }
 }
 
-/** 幂等键按「人 ＋ 项目 ＋ 路径 ＋ 键」隔离：不同图的同一个客户端键不该互相命中。 */
-function 幂等索引(入参: 写入入参): string | undefined {
+/**
+ * 幂等键按「人 ＋ 项目 ＋ **归一路径** ＋ 键」隔离：不同图的同一个客户端键不该互相命中。
+ * 路径部分用 `锁键` 而不是客户端原文——同一个文件换个大小写拼法重试，重放必须命中同一行。
+ */
+function 幂等索引(入参: 写入入参, 键: string): string | undefined {
   if (入参.幂等键 === undefined) return undefined
-  return [入参.userId, 入参.projectId, 入参.path, 入参.幂等键].join("\u0000")
+  return [入参.userId, 入参.projectId, 键, 入参.幂等键].join("\u0000")
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +400,10 @@ function 校验全图(前: 图文件, 后: 图文件): 核心失败 | undefined 
 
   const 见过 = new Set<string>()
   for (const id of [...后.节点, ...后.边, ...后.文字].map((对象) => 对象.id)) {
-    if (见过.has(id)) return 拒("BAD_SHAPE", `id「${id}」在图上出现了两次（id 必须全图唯一）`)
+    // 契约 `hgraph-format.md:31`：`DUPLICATE_ID` 属**内部错误**（500），不是客户端的形状错误。
+    // 正常流程几乎走不到：解析会拒缺 id 的对象，`应用操作` 自己分配 id 时也按现有 id 去重；
+    // 这一支只接「盘上原有文件被手改出重复 id」这种坏账，仍要拦在写盘之前。
+    if (见过.has(id)) return 拒("DUPLICATE_ID", `id「${id}」在图上出现了两次（内部错误：请把这份图交给维护人员）`)
     见过.add(id)
   }
 
@@ -405,7 +455,7 @@ export async function 初始化文件(依赖: 核心依赖, 入参: 路径入参
   if (!结果.ok) return 结果
   if (结果.目标.类型 !== "文件") return 拒("NOT_FOUND")
 
-  return 串行(结果.目标.绝对, async () => {
+  return 串行(结果.目标.锁键, async () => {
     const 字节 = await readFile(结果.目标.绝对).catch(() => undefined)
     if (字节 === undefined) return 拒("NOT_FOUND")
     if (字节.length > 0) {
@@ -433,8 +483,8 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
   if (!结果.ok) return 结果
   if (结果.目标.类型 !== "文件") return 拒("NOT_FOUND")
 
-  const 索引 = 幂等索引(入参)
-  return 串行(结果.目标.绝对, async () => {
+  const 索引 = 幂等索引(入参, 结果.目标.锁键)
+  return 串行(结果.目标.锁键, async () => {
     const 现在 = Date.now()
     清理过期(现在)
     if (索引 !== undefined) {
@@ -447,6 +497,21 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
     const 当前版本 = 内容版本(原始)
     if (入参.版本 !== undefined && 入参.版本 !== 当前版本) {
       return { ok: false, code: "VERSION_CONFLICT", 话术: 话术.VERSION_CONFLICT, 最新版本: 当前版本 }
+    }
+
+    // 空操作不是一次「写入」：不刷新 `更新于`、不推进版本（否则撤销栈/轮询会看到一次假变更）。
+    // 仍过 CAS：前端拿着过期版本点「保存」时，409 比「静默成功」更诚实。幂等键也不登记
+    // （没有落盘，重放没有意义）。
+    if (入参.操作.length === 0) {
+      const 空: 操作结果 = {
+        映射: {},
+        复用: [],
+        新增: { 节点: 0, 边: 0, 文字: 0 },
+        更新: 0,
+        删除: { 节点: 0, 边: 0 },
+        ...(入参.批次 === undefined ? {} : { 批次: 入参.批次 }),
+      }
+      return { ok: true, 版本: 当前版本, 结果: 空, 重放: false }
     }
 
     const 原文 = new TextDecoder("utf-8").decode(原始)
@@ -483,9 +548,22 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
 }
 
 /**
+ * 留痕的**生产默认出口**：stderr 一行 JSON，与 `case-mcp-server.ts:109` 的 `默认留痕` 同形。
+ *
+ * 为什么是 stderr 而不是 `console.info`：内核日志的 stderr logger（`logging.ts` 的
+ * `stderrLogger = Logger.make((options) => process.stderr.write(...))`）走的就是 stderr；
+ * `console.info` 只是 stdout，全仓也没有把 console 补进内核日志的钩子。写 stderr 才与 MCP
+ * 留痕落在同一通道（`#006-29`：报告口径必须是「实得」，不能拿「调了 console」当「进了日志」）。
+ */
+const 默认留痕 = (行: 导出留痕): void => {
+  process.stderr.write(`${JSON.stringify({ 事件: "hgraph导出", ...行 })}\n`)
+}
+
+/**
  * `POST /hgraph/export` 的核心：门（成员）已在 HTTP 层过；这里只判路径与存在性，生成文件名
  * 并**写一行内核日志**（data-model §10：可追溯，不落文件、不落库、不新增审计表）。
  *
+ * 留痕出口可注入（`依赖.留痕`）：生产默认 stderr，测试注入数组收集——不再 spy 全局 console。
  * 服务端**不产图**——PNG 由前端 canvas 渲染后下载。
  */
 export async function 导出许可(依赖: 核心依赖, 入参: 路径入参): Promise<导出结果> {
@@ -499,17 +577,14 @@ export async function 导出许可(依赖: 核心依赖, 入参: 路径入参): 
   const 此刻 = new Date()
   const 文件名 = `${名字}-${图名(结果.目标.绝对)}-${文件时间(此刻)}.png`
 
-  // 内核日志：一行一个 JSON（键名照 data-model §10）。复用仓库既有出口（console），不新建日志系统。
-  console.info(
-    JSON.stringify({
-      事件: "hgraph导出",
-      userId: 入参.userId,
-      projectId: 入参.projectId,
-      路径: 入参.path,
-      时间: 现在ISO(此刻),
-      文件名,
-    }),
-  )
+  const 留痕 = 依赖.留痕 ?? 默认留痕
+  留痕({
+    userId: 入参.userId,
+    projectId: 入参.projectId,
+    路径: 入参.path,
+    时间: 现在ISO(此刻),
+    文件名,
+  })
 
   return { ok: true, 允许: true, 文件名 }
 }
@@ -569,6 +644,7 @@ const 状态码: Readonly<Record<失败码, number>> = {
   BAD_SHAPE: 400,
   BAD_OP: 400,
   DANGLING_EDGE: 400,
+  DUPLICATE_ID: 500,
   FACTS_NEED_SOURCE: 400,
   INFERENCE_NEEDS_BASIS: 400,
   INFERENCE_NEEDS_CONFIDENCE: 400,
@@ -658,8 +734,10 @@ function handleOps(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 操作们 = 体["操作"]
     if (!Array.isArray(操作们)) return fail(400, "`操作` 必须是数组", "BAD_REQUEST")
     const 版本 = 体["版本"]
-    if (版本 !== undefined && 版本 !== null && typeof 版本 !== "string")
-      return fail(400, "`版本` 必须是字符串", "BAD_REQUEST")
+    // `null` 不算「省略」：JSON 客户端把 `undefined` 序列化掉、把 `null` 明写出来。把 null 当
+    // 省略等于**静默丢掉 CAS**——前端以为自己带了版本，服务端却按 AI 路径覆盖写。
+    if (版本 === null) return fail(400, "`版本` 不能是 null（前端要带版本；AI 工具请省略该字段）", "BAD_REQUEST")
+    if (版本 !== undefined && typeof 版本 !== "string") return fail(400, "`版本` 必须是字符串", "BAD_REQUEST")
     const 批次 = 体["批次"]
     if (批次 !== undefined && 批次 !== null && typeof 批次 !== "string")
       return fail(400, "`批次` 必须是字符串", "BAD_REQUEST")

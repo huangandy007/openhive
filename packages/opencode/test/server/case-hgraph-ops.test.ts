@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, spyOn } from "bun:test"
+import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -11,6 +11,7 @@ import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
 import { 解析图 } from "../../src/server/openhive/hgraph-file"
+import { 导出许可, 锁键, type 导出留痕 } from "../../src/server/openhive/hgraph-ops"
 import { 串行 } from "../../src/server/openhive/hgraph-lock"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { UserIdentity } from "../../src/server/user-identity"
@@ -36,6 +37,8 @@ const 项目 = "p-hgraph-我的"
 const 别人的项目 = "p-hgraph-别人的"
 /** 通用写口那条用例要把它塞进 `x-openhive-project` 头——**头值必须 ASCII**（`#006-11` 旧账）。 */
 const 纯净项目 = "p-hgraph-ascii"
+/** 有成员行、**没有建目录**的项目：用来钉「项目目录不在了 ⇒ 404」而不是 LINK_ESCAPE。 */
+const 无目录项目 = "p-hgraph-nodir"
 
 const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-hgraph-"))
 const 数据根 = join(沙箱根, "data")
@@ -68,7 +71,8 @@ beforeAll(async () => {
     values (${项目}, ${我.id}, 'owner', 0),
            (${项目}, ${成员.id}, 'member', 0),
            (${别人的项目}, ${别人.id}, 'owner', 0),
-           (${纯净项目}, ${我.id}, 'owner', 0)
+           (${纯净项目}, ${我.id}, 'owner', 0),
+           (${无目录项目}, ${我.id}, 'owner', 0)
   `)
   // 导出文件名要项目名（`projectMetaOf`）；没有这一行 ⇒ 名字退化成 projectId。
   await pg.db.execute(sql`
@@ -299,6 +303,61 @@ describe("T006 · ops 的版本 CAS 与 AI 路径", () => {
       expect(图.文档.节点.map((点) => 点.名称).sort()).toEqual(["张三", "李四"])
     }),
   )
+
+  it("`版本: null` ⇒ 400（不静默丢 CAS），文件字节不变", () =>
+    Effect.gen(function* () {
+      const 相对 = "ops/版本null.hgraph"
+      const 绝对 = 摆图(相对, 空图("版本null"))
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({ path: 相对, 版本: null, 操作: [{ 操作: "加节点", 节点: [手写节点("张三")] }] })
+      expect(响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("BAD_REQUEST")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("空 `操作: []` ⇒ 200、版本不变、不写盘（空操作不是一次写入）", () =>
+    Effect.gen(function* () {
+      const 相对 = "ops/空操作.hgraph"
+      const 绝对 = 摆图(相对, 空图("空操作"))
+      const 前 = 字节哈希(绝对)
+      const 版本 = (yield* 读回<{ 版本: string }>(yield* 发(我, 读(相对)))).版本
+
+      const 响应 = yield* 操作({ path: 相对, 版本, 操作: [] })
+      expect(响应.status).toBe(200)
+      const 体 = yield* 读回<{ 版本: string; 结果: { 新增: { 节点: number }; 更新: number }; 重放: boolean }>(响应)
+      expect(体.版本).toBe(版本)
+      expect(体.结果.新增.节点).toBe(0)
+      expect(体.结果.更新).toBe(0)
+      expect(体.重放).toBe(false)
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("解析失败的文件（BAD_JSON / NEWER_VERSION）⇒ 拒写且字节不变", () =>
+    Effect.gen(function* () {
+      const 坏 = "ops/坏json.hgraph"
+      const 坏绝对 = join(我目录(), 坏)
+      mkdirSync(join(坏绝对, ".."), { recursive: true })
+      writeFileSync(坏绝对, "{ 这不是 json")
+      const 坏前 = 字节哈希(坏绝对)
+
+      const 坏响应 = yield* 操作({ path: 坏, 操作: [{ 操作: "加节点", 节点: [手写节点("张三")] }] })
+      expect(坏响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(坏响应)).code).toBe("BAD_JSON")
+      expect(字节哈希(坏绝对)).toBe(坏前)
+
+      const 新 = "ops/新版本.hgraph"
+      const 新绝对 = 摆图(新, { ...空图("新版本"), 格式: 2 })
+      const 新前 = 字节哈希(新绝对)
+
+      const 新响应 = yield* 操作({ path: 新, 操作: [{ 操作: "加节点", 节点: [手写节点("张三")] }] })
+      expect(新响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(新响应)).code).toBe("NEWER_VERSION")
+      expect(字节哈希(新绝对)).toBe(新前)
+    }),
+  )
 })
 
 describe("T006 · 路径闸与后缀", () => {
@@ -416,6 +475,41 @@ describe("T006 · 幂等键与整批原子", () => {
     }),
   )
 
+  it("必填字段兜底：缺 `时间` 的节点被改动 ⇒ BAD_SHAPE 点名 `时间`（data-model §3 是必填）", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/缺时间.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("缺时间"),
+        节点: [{ id: "n1", 名称: "甲", 类型: "人", 来源: { kind: "手写" }, x: 10, y: 20 }],
+      })
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [{ 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 备注: "补一句" } }] }],
+      })
+      expect(响应.status).toBe(400)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("BAD_SHAPE")
+      expect(体.error).toContain("时间")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("老图里已有重复 id ⇒ 500 DUPLICATE_ID（契约定为内部错误），不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/重复id.hgraph"
+      const 节点 = { id: "n1", 名称: "甲", 类型: "人", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" }, x: 10, y: 10 }
+      const 绝对 = 摆图(相对, { ...空图("重复id"), 节点: [节点, { ...节点, 名称: "乙" }] })
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({ path: 相对, 操作: [{ 操作: "加节点", 节点: [手写节点("丙")] }] })
+      expect(响应.status).toBe(500)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("DUPLICATE_ID")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
   it("悬空边兜底 ⇒ DANGLING_EDGE（两端必须指向存在的节点）", () =>
     Effect.gen(function* () {
       const 相对 = "原子/悬空.hgraph"
@@ -471,7 +565,7 @@ describe("T006 · 共享成员与导出", () => {
     }),
   )
 
-  it("非成员导出 ⇒ 403；成员导出 ⇒ 200 + 文件名格式 + 内核日志一行", () =>
+  it("非成员导出 ⇒ 403；成员导出 ⇒ 200 + 文件名格式", () =>
     Effect.gen(function* () {
       // 图名取**文件名**去后缀（data-model §11 ＋ §10 的日志示例：`分析/张三资金流向.hgraph`
       // ⇒ `专案A-张三资金流向-…png`），所以这里为导出单独摆一份同名文件。
@@ -481,31 +575,38 @@ describe("T006 · 共享成员与导出", () => {
       const 拒 = yield* 发体(别人, `${PREFIX}/export`, { projectId: 项目, path: 导出图 })
       expect(拒.status).toBe(403)
 
-      const 日志: unknown[][] = []
-      const 监听 = spyOn(console, "info").mockImplementation((...args: unknown[]) => {
-        日志.push(args)
-      })
-      try {
-        const 允许 = yield* 发体(成员, `${PREFIX}/export`, { projectId: 项目, path: 导出图 })
-        expect(允许.status).toBe(200)
-        const 体 = yield* 读回<{ 允许: boolean; 文件名: string }>(允许)
-        expect(体.允许).toBe(true)
-        expect(体.文件名).toMatch(/^专案A-张三资金流向-\d{8}-\d{4}\.png$/)
+      const 允许 = yield* 发体(成员, `${PREFIX}/export`, { projectId: 项目, path: 导出图 })
+      expect(允许.status).toBe(200)
+      const 体 = yield* 读回<{ 允许: boolean; 文件名: string }>(允许)
+      expect(体.允许).toBe(true)
+      expect(体.文件名).toMatch(/^专案A-张三资金流向-\d{8}-\d{4}\.png$/)
+    }),
+  )
 
-        const 行 = 日志
-          .map((args) => args[0])
-          .find((值): 值 is string => typeof 值 === "string" && 值.includes('"事件":"hgraph导出"'))
-        expect(行).toBeDefined()
-        const 记录 = JSON.parse(行!) as Record<string, unknown>
-        expect(记录.事件).toBe("hgraph导出")
-        expect(记录.userId).toBe(成员.id)
-        expect(记录.projectId).toBe(项目)
-        expect(记录.路径).toBe(导出图)
-        expect(记录.文件名).toBe(体.文件名)
-        expect(typeof 记录.时间).toBe("string")
-      } finally {
-        监听.mockRestore()
-      }
+  it("导出留痕走**注入出口**：字段齐全（不 spy 全局 console）", () =>
+    Effect.gen(function* () {
+      const 导出图 = "共享/留痕.hgraph"
+      摆图(导出图, 空图("留痕"))
+
+      const 行们: 导出留痕[] = []
+      const 结果 = yield* Effect.promise(() =>
+        导出许可(
+          { root: 沙箱根, pg: () => pg!.db, 留痕: (行) => 行们.push(行) },
+          { projectId: 项目, userId: 成员.id, path: 导出图 },
+        ),
+      )
+      expect(结果.ok).toBe(true)
+      if (!结果.ok) return
+
+      expect(行们).toHaveLength(1)
+      const 行 = 行们[0]
+      expect(行.userId).toBe(成员.id)
+      expect(行.projectId).toBe(项目)
+      expect(行.路径).toBe(导出图)
+      expect(行.文件名).toBe(结果.文件名)
+      expect(行.文件名).toMatch(/^专案A-留痕-\d{8}-\d{4}\.png$/)
+      // 带本地时区偏移的 ISO（data-model §1），不是 UTC `Z`。
+      expect(行.时间).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/)
     }),
   )
 
@@ -513,6 +614,103 @@ describe("T006 · 共享成员与导出", () => {
     Effect.gen(function* () {
       const 响应 = yield* 发体(我, `${PREFIX}/export`, { projectId: 项目, path: "共享/没有.hgraph" })
       expect(响应.status).toBe(404)
+    }),
+  )
+})
+
+describe("T006 · 门（401 / 400 / 403）", () => {
+  it("无身份 ⇒ 401；read 缺 projectId ⇒ 400；非成员读 / 写 / 初始化 ⇒ 403", () =>
+    Effect.gen(function* () {
+      const 无身份 = yield* 发(null, 读("read/一图.hgraph"))
+      expect(无身份.status).toBe(401)
+
+      const 缺项目 = yield* 发(我, `${PREFIX}/read?path=read/一图.hgraph`)
+      expect(缺项目.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(缺项目)).code).toBe("BAD_REQUEST")
+
+      const 别人的读 = yield* 发(别人, 读("read/一图.hgraph"))
+      expect(别人的读.status).toBe(403)
+      expect((yield* 读回<{ code: string }>(别人的读)).code).toBe("FORBIDDEN")
+
+      const 别人的写 = yield* 发体(别人, `${PREFIX}/ops`, {
+        projectId: 项目,
+        path: "read/一图.hgraph",
+        操作: [],
+      })
+      expect(别人的写.status).toBe(403)
+
+      const 别人的初始化 = yield* 发体(别人, `${PREFIX}/init`, { projectId: 项目, path: "read/一图.hgraph" })
+      expect(别人的初始化.status).toBe(403)
+    }),
+  )
+
+  it("共享成员**读**属主目录的图 ⇒ 200（读也要落属主目录）", () =>
+    Effect.gen(function* () {
+      const 相对 = "共享/成员读的图.hgraph"
+      const 正文 = JSON.stringify(空图("成员读的图"), null, 2) + "\n"
+      const 绝对 = 摆图(相对, 空图("成员读的图"))
+      expect(existsSync(join(沙箱根, 成员.id, 项目, 相对))).toBe(false)
+
+      const 响应 = yield* 发(成员, 读(相对))
+      expect(响应.status).toBe(200)
+      const 体 = yield* 读回<{ 内容: string; 版本: string }>(响应)
+      expect(体.内容).toBe(正文)
+      expect(体.版本).toBe(版(readFileSync(绝对)))
+    }),
+  )
+
+  it("项目目录不存在 ⇒ 404（不是 LINK_ESCAPE，话术说「项目目录不在了」）", () =>
+    Effect.gen(function* () {
+      const url = `${PREFIX}/read?${new URLSearchParams({ projectId: 无目录项目, path: "x.hgraph" })}`
+      const 响应 = yield* 发(我, url)
+      expect(响应.status).toBe(404)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("NOT_FOUND")
+      expect(体.error).toContain("项目目录不在了")
+    }),
+  )
+})
+
+/**
+ * 锁键归一的**单体**证据（I2）。
+ *
+ * ⚠️ 走 HTTP 造不出「同一文件两种大小写拼法」：`realInside` 比的是两个 `realpath` 的**字面**
+ * 结果，win32 上 `图.HGRAPH` 的真身回的是盘上的 `图.hgraph` ⇒ 路径闸先回 `LINK_ESCAPE`
+ * （2026-11-15 实测），请求根本到不了锁。所以归一是**防御性**的：今天靠 `projectDirectory`
+ * 恒按同一拼法拼目录，未来若放行跨拼法（或平台差异），锁与幂等表已经不会各拿一把。
+ */
+describe("T006 · 锁键归一", () => {
+  it("同一文件的大小写拼法得到同一把锁；不同文件不同锁", () =>
+    Effect.promise(async () => {
+      const 目录 = join(我目录(), "大小写")
+      mkdirSync(目录, { recursive: true })
+      const 小写 = await 锁键(join(目录, "图.hgraph"))
+      const 大写 = await 锁键(join(目录, "图.HGRAPH"))
+      const 别的 = await 锁键(join(目录, "另一张.hgraph"))
+      expect(小写).toBe(大写)
+      expect(小写).not.toBe(别的)
+      // 父目录真实名 + 小写 basename（win32 上 join 可能回 `\`，比较时只认「同不同」）。
+      expect(小写.endsWith("图.hgraph")).toBe(true)
+    }),
+  )
+
+  it("同一拼法的 8 个并发 ops ⇒ 全部串行落盘（不丢更新）", () =>
+    Effect.gen(function* () {
+      const 相对 = "并发/八条.hgraph"
+      const 绝对 = 摆图(相对, 空图("八条"))
+
+      const 请求们 = Array.from({ length: 8 }, (_, 序) =>
+        操作({ path: 相对, 操作: [{ 操作: "加节点", 节点: [手写节点(`并发${序}`)] }] }),
+      )
+      const 响应们 = yield* Effect.all(请求们, { concurrency: 8 })
+      for (const 响应 of 响应们) expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      expect(图.文档.节点.map((点) => 点.名称).sort()).toEqual(
+        Array.from({ length: 8 }, (_, 序) => `并发${序}`).sort(),
+      )
     }),
   )
 })

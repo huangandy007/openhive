@@ -564,7 +564,7 @@ export function 校验来源(对象: unknown): 校验结果 {
  * 白名单，刻意不强行合并（合并会让其中一边多出一个它不关心的 `id` 语义）。
  */
 export const 必填字段: Readonly<Record<"节点" | "边" | "文字", readonly string[]>> = Object.freeze({
-  节点: Object.freeze(["id", "名称", "类型", "来源", "x", "y"]),
+  节点: Object.freeze(["id", "名称", "类型", "来源", "x", "y", "时间"]),
   边: Object.freeze(["id", "从", "到", "标签", "性质", "方向", "来源", "时间"]),
   文字: Object.freeze(["id", "内容", "x", "y", "字号"]),
 })
