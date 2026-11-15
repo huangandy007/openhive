@@ -2,7 +2,7 @@
 
 - 分支：`feat-011-ingest-entry-entity-tab`（worktree 隔离，base `multi-tenant @ 2854447725`）
 - 日期：2026-11-15
-- 范围：tasks.md T001–T017 全部完成；三次复审（T009 / T010 / T011 / T014）与一条复审修复（T010-fix）记录见 `.superpowers/sdd/plan/progress.md`（gitignored）。
+- 范围：tasks.md T001–T017 全部完成；四次复审（T009 / T010 / T011 / T014）与两条复审修复（T010-fix / T011-fix）记录见 `.superpowers/sdd/plan/progress.md`（gitignored）。
 
 ---
 
@@ -90,7 +90,7 @@ D:/openhive-stack-state/
 | 实体详情页入口可达性 | 已下架 UI 入口 | T014 按 spec 下架；能力保留 | 直接 URL / 伪路径验证能力仍在（`entity-profile` / `case-route` 测试绿） |
 | 全仓 lint warning 基线 | **无基线数** | T001 只记录了测试基线，未记录 lint warning 数 | 以「改动文件逐个 lint 0 error、仅既有 warning」替代；**不写成「已与基线对比」** |
 | v2 toast 落屏 | 未覆盖 | 组件测试走 legacy `ToastRegion(v2={false})`；生产入口 `layout-new.tsx` 设 v2 | 文案参数同源，风险有限；真栈 M9 可覆盖外观 |
-| win32 目录行汇总（`汇总全部`） | **未修（预存在）** | `汇总全部` 仍按原始清单 `/` 切分；win32 清单带 `\` ⇒ 目录行汇总落不到目录 | 属 feature 010 既有缺陷，超出 011 范围；`目录展开` 已在 T010-fix 修真；建议另立条目 |
+| win32 目录行汇总（`汇总全部`） | **未修（预存在）** | `汇总全部` 仍按原始清单 `/` 切分；win32 下目录键、行状态（已解析被当未入队）、根进度计数三处都会错 | 属 feature 010 既有缺陷，超出 011 范围；`目录展开` 已在 T010-fix 修真；建议另立条目 |
 
 ---
 
@@ -128,4 +128,31 @@ D:/openhive-stack-state/
 3. **T008 虽标 [P]**，与 T009–T011 同改 `file-tree.tsx`，按序执行。
 4. **T010-fix**：`目录下待入队` / `选中集入队范围` 统一按归一分隔符比较、行表按归一键查、候选回写 posix 形。理由：win32 清单是 `\`、树节点是 `/`，不统一则文件夹展开恒为空（N=0）。
 5. **T011 串行 pin**：复审发现「逐份串行」无用例可区分并发，补事件序列用例。
-6. 任务级复审：T009 / T010 / T011 / T014 各派一次独立 reviewer，结论均 `VERDICT: PASS`；T010 复审的中等问题已由 T010-fix 修复，T011 复审的中等问题已由 T011-fix 修复。
+6. 任务级复审：T009 / T010 / T011 / T014 各派一次独立 reviewer，均 PASS；其中 T010 复审的中等问题由 T010-fix 关闭、T011 复审的中等问题由 T011-fix 关闭。
+
+### 5.7 终审修复轮（2026-11-15，D1–D7）
+
+终审结论 CHANGES_REQUESTED，**不改生产行为**；本轮只做文档/规格对齐与一条测试补齐（commit `docs(011): 终审对齐规格与契约，补 FR-011 截断用例`）。
+
+| 项 | 处置 | 落点 |
+|---|---|---|
+| D1 N 的位置 | spec 追加 2026-11-15 修正（标题＝动作名，N/M 在正文） | `spec.md` FR-010 下方、US2 场景 2；`contracts/ui-contracts.md` C4 表格与「数字契约」 |
+| D2 C3 与裁定相反 | C3 selection 行改为「`rowsLoaded` 且已接入即保持可点」；函数名改 `选中集入队范围` | `contracts/ui-contracts.md` C3 |
+| D3 入口表述 | 改为「材料行由 `case/parse`（`入队` 或 `跳过`）新建；作业只由 `入队` 新建」 | `contracts/ui-contracts.md` C7 后 |
+| D4 0 候选枚举 | C4 改为「正文概括说明，并至少点名已解析 / 已跳过」 | `contracts/ui-contracts.md` C4 |
+| D5 前 3 条原因无 pin | 新增 5 份全失败用例：只点名前 3 条、第 4/5 条不出现 | `packages/app/src/project/file-tree.test.tsx` |
+| D6 死导出 | `选中集待入队` JSDoc 标注「生产侧已改用 `选中集入队范围`，保留给 T007 用例」 | `case-materials-view.ts` |
+| D7 报告口径 | 复审次数、§5.6 结论、缺口表措辞修正 | 本文件 §开头 / §3 / §5.6；`tasks.md` T016 证据块 |
+
+D5 实测（2026-11-15）：
+
+```text
+$ cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/project/file-tree.test.tsx
+191 pass / 0 fail / 449 expect，EXIT=0   （新增 1 条）
+
+变异：去掉执行器里的 `.slice(0, 3)`
+1 fail / 190 filtered out，EXIT=1
+  Expected to not contain: "资料/四.xlsx"
+  Received: "成功 0 份；5 份未能入队资料/一.xlsx：…；资料/四.xlsx：…；资料/五.xlsx：…。重试只补没成功的、不会重复"
+恢复后全绿。
+```

@@ -282,6 +282,7 @@ L: cd <仓库根> && timeout 300 bun run lint
   > - `cd packages/app && timeout 300 bun test ./src/project/entity-api.test.ts` ⇒ **6 pass / 0 fail**，EXIT=0；`./src/center/case-route.test.ts` ⇒ **9 pass / 0 fail**，EXIT=0；`... ./src/center/case-views/entity-profile.test.tsx` ⇒ **56 pass / 0 fail**，EXIT=0。
   > - 仓库根 `timeout 300 bun run lint` ⇒ **EXIT=1；1 error / 6231 warnings**。唯一 error 为既有且未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163:19`（`'0'-prefixed octal literals`，`content-['\200B']`）。
   > **warning 基线口径（如实）**：T001 未记录全仓 warning 数，故无法逐数对比「不新增」。替代证据：本 feature 改动文件逐个单独 lint 均为 0 error、仅既有 warning（`layout-new.tsx:114/149`、测试剪贴板断言等，均出现在本 feature 之前）。此项作为 T016 的已知缺口登记，不写成「已对比基线」。
+  > **口径修正（终审 D7）**：下方出参原文写「`L` 0 errors」，实得 EXIT=1、1 个**既有** error ⇒ 判据按「**0 新增 error**」解读；commit subject「门禁全绿」指 typecheck / 测试全绿 ＋ lint 无新增 error。
 
   - **入参**：T002–T015 的改动
   - **出参**：`packages/app` `T` EXIT=0；`packages/opencode` `T` EXIT=0；受影响测试全绿；`L` 0 errors（warning 数与 T001 基线对比不新增）
@@ -298,6 +299,7 @@ L: cd <仓库根> && timeout 300 bun run lint
   > **真栈探测（非破坏性）**：`netstat`/`curl` 探测 3010、3011、4711、4712、4700、4096 全部无监听；无 bun 进程 ⇒ **真栈未运行，按 brief 不启动**。状态目录：`%TEMP%\openhive-real-stack-state` 不存在（未保留），`D:\openhive-stack-state`、`D:\assets` 存在且未删改。
   > **M1–M11**：全部登记为「本轮未执行（未启动真栈）」，逐条结论与组件测试依据见 [implementation-report.md](./implementation-report.md) §2；缺口表见其 §3（与 quickstart §3 对齐，另加 lint warning 基线、v2 toast、`汇总全部` win32 既有缺陷三条）。
   > **产出**：[implementation-report.md](./implementation-report.md)（静态检索、真栈结论、缺口表、TDD 证据索引 17 条 commit）。
+  > **终审修复**：2026-11-15 终审 D1–D7 的处置与证据见 [implementation-report.md](./implementation-report.md) §5.7（只做文档/规格对齐与 FR-011 截断用例，不改生产行为）。
 
   - **入参**：最终工作树 + 真栈
   - **出参**：前两条 0 命中；第三条只剩 `case-parse.ts:303`；M1–M11 结论逐条记录；本机验不了的写进缺口表（TR-007，不写成已覆盖）

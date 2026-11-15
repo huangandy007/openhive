@@ -3285,6 +3285,36 @@ describe("FileTree 文件树（FR-005）", () => {
       toaster.clear()
     })
 
+    test("文件夹批量：5 份全失败 ⇒ 只点名前 3 条原因，第 4/5 份不出现在报告里（FR-011 截断）", async () => {
+      // FR-011 的「前 3 条原因」是有意的截断：原因只用来指路，全列会把 toast 撑爆。
+      // 此前最多只造过 2 份失败，执行器里的 `slice(0, 3)` 删掉也全绿——拿 5 份把边界钉住。
+      const 路径们 = ["资料/一.xlsx", "资料/二.xlsx", "资料/三.xlsx", "资料/四.xlsx", "资料/五.xlsx"]
+      const 假 = 假材料状态({ parse: ({ path }) => ({ kind: "error", message: `${path} 被拒` }) })
+      const host = mount(() => (
+        <>
+          <ToastRegion v2={false} />
+          <FileTree paths={路径们} caseMaterials={假.状态} />
+        </>
+      ))
+
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+      await 确认入库()
+
+      // 5 份都发出去、重拉恰一次（截断只影响报告，不影响执行）。
+      expect(假.记.解析).toEqual(路径们.map((path) => ({ path, action: "入队" as const })))
+      expect(假.记.重拉).toBe(1)
+      const 报告 = 提示文案("error")
+      expect(报告).toContain("成功 0 份；5 份未能入队")
+      // 前 3 条按候选顺序（= 文件们原顺序）点名。
+      for (const path of 路径们.slice(0, 3)) expect(报告, path).toContain(path)
+      // 第 4/5 条必须被截掉——否则「前 3 条」只是碰巧，用例守不住 FR-011。
+      for (const path of 路径们.slice(3)) expect(报告, path).not.toContain(path)
+      expect(报告).toContain("重试只补没成功的、不会重复")
+      toaster.clear()
+    })
+
     test("文件夹批量：逐份串行——第 1 份结束前不发出第 2 份（契约 C5）", async () => {
       // 假 `parse` 在结束前让出一次事件循环：并发执行时两次「开始」会挤在两次「结束」之前。
       const 事件: string[] = []
