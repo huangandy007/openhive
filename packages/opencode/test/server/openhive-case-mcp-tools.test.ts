@@ -1275,6 +1275,11 @@ test("get_citation 事实id 形状不对 ⇒ bad_input", async () => {
   await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2#多余" })).rejects.toMatchObject({ code: "bad_input" })
   // 两段（缺行号）也要拒。
   await expect(get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1" })).rejects.toMatchObject({ code: "bad_input" })
+  // 区间是「出处汇总」的写法，不能用来定位某一行：`2-3` 与 `12-12` 都拒。
+  // 用 `.catch` 取抛出的错误（同文件 `:1619` 同法）：`rejects` 在 bun 的类型里被当成非 Promise。
+  const 拒绝 = (事实id: string) => get_citation(ctx(身份丁), { 事实类型: "row", 事实id }).catch((错: unknown) => 错)
+  expect(await 拒绝("m-甲#Sheet1#2-3")).toMatchObject({ code: "bad_input" })
+  expect(await 拒绝("m-甲#Sheet1#12-12")).toMatchObject({ code: "bad_input" })
 })
 
 test("get_citation 对「已排除」的实体照样能取到引用", async () => {

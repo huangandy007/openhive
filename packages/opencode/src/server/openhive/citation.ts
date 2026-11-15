@@ -7,12 +7,18 @@
  * 不许再写第二份（`#002-06`：同一前提单一出处）。
  */
 
-/** 一条行级出处：单行时 `起 === 末`。 */
+/**
+ * 一条行级出处：单行时 `起 === 末`。
+ *
+ * `是区间` 按**写法**判，不看起末是否相等：`12-40` 与 `12-12` 都是区间写法，`12` 不是。
+ * 调用方据此拒绝「本该单行」的场景（如 `get_citation` 定位某一行），而不是拿 `起 === 末` 猜。
+ */
 export interface 出处 {
   readonly 材料: string
   readonly 工作表: string
   readonly 起: number
   readonly 末: number
+  readonly 是区间: boolean
 }
 
 /**
@@ -31,13 +37,14 @@ export function 解析出处(串: string): 出处 | null {
   if (材料.trim() === "" || 工作表 === "" || 行号段.trim() === "") return null
   // 单行：`02` 与 `2` 是同一行，库里 `fact_id` 的写法是规范化数字。
   const 单 = Number(行号段)
-  if (Number.isInteger(单)) return { 材料, 工作表, 起: 单, 末: 单 }
-  // 区间 `起-末`：两端都必须是正整数，且起 ≤ 末；反向区间不是「换个写法」，是坏数据。
+  if (Number.isInteger(单)) return { 材料, 工作表, 起: 单, 末: 单, 是区间: false }
+  // 区间 `起-末`：两端都必须是非负整数（`\d+` 允许 0，与单行 `0` 的旧行为一致），且起 ≤ 末；
+  // 反向区间不是「换个写法」，是坏数据。`12-12` 仍算区间写法——由调用方决定是否接受。
   const 区间 = /^\s*(\d+)\s*-\s*(\d+)\s*$/.exec(行号段)
   if (区间 === null) return null
   const 起 = Number(区间[1])
   const 末 = Number(区间[2])
-  return 起 <= 末 ? { 材料, 工作表, 起, 末 } : null
+  return 起 <= 末 ? { 材料, 工作表, 起, 末, 是区间: true } : null
 }
 
 /** 同一材料的行数超过这么多时，出处只保留首末区间（明细回材料查，FR-003）。 */
@@ -45,26 +52,29 @@ export const 出处行上限 = 50
 
 /**
  * 把同一材料 / 工作表下的行号压成出处串：连续行合并为 `材料#表#起-末`，单点仍写
- * `材料#表#行`。**按输入顺序**输出（不排序）——调用方给的顺序就是显示顺序。
+ * `材料#表#行`。输入先按行号去重（保持输入顺序，重复值会产出重叠区间）。
  *
+ * **输入不保证升序；本函数只合并相邻，不重排**——调用方给的顺序就是显示顺序。
  * 超过 `出处行上限` 行时只留首末区间：`[1..51] ⇒ "材料#表#1-51"`，不再逐段列出。
  */
 export function 压缩出处(材料: string, 工作表: string, 行号: readonly number[]): string[] {
-  if (行号.length === 0) return []
+  // Set 保持插入顺序：去重不能顺手排序（排序会改变输出顺序）。
+  const 去重 = [...new Set(行号)]
+  if (去重.length === 0) return []
   const 头 = `${材料}#${工作表}#`
-  if (行号.length > 出处行上限) {
+  if (去重.length > 出处行上限) {
     // 用 min/max 而不是首尾元素：输入顺序不保证升序，区间必须起 ≤ 末。
-    const 首 = 行号.reduce((甲, 乙) => Math.min(甲, 乙))
-    const 末 = 行号.reduce((甲, 乙) => Math.max(甲, 乙))
+    const 首 = 去重.reduce((甲, 乙) => Math.min(甲, 乙))
+    const 末 = 去重.reduce((甲, 乙) => Math.max(甲, 乙))
     return [`${头}${首}-${末}`]
   }
   const 结果: string[] = []
-  let 起 = 行号[0]
+  let 起 = 去重[0]
   let 末 = 起
   const 收 = () => {
     结果.push(起 === 末 ? `${头}${起}` : `${头}${起}-${末}`)
   }
-  for (const 行 of 行号.slice(1)) {
+  for (const 行 of 去重.slice(1)) {
     if (行 === 末 + 1) {
       末 = 行
       continue
