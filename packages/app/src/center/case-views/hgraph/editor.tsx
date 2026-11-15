@@ -1430,6 +1430,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
         set收起菜单((旧) => 旧 + 1)
       }}
+      // T010 R33 / 复审 Minor：键盘激活（Tab 到按钮 + Enter/空格）只派发 `click`、没有
+      // `pointerdown`，上面的收菜单收不到 ⇒ 过期菜单留着，再点菜单项会作用到已换过的选中。
+      // 菜单内部的 click 由菜单项自己收尾（跳过，避免双收）；这里只补「click 路径」。
+      onClick={(事件) => {
+        const 目标 = 事件.target
+        if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+        set收起菜单((旧) => 旧 + 1)
+      }}
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>

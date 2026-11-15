@@ -1215,6 +1215,32 @@ describe("T010 · 修复轮 1", () => {
     expect(取("[data-slot='hgraph-menu']")).toBeNull()
   })
 
+  test("T010 R33 键盘激活工具栏按钮：菜单收起、动作恰 1 次（不留过期菜单）", async () => {
+    // 鼠标路径靠共同父容器的 `pointerdown` 收菜单；键盘激活只发 `click`（无 pointerdown），
+    // 旧实现菜单不关 ⇒ 用户接着点菜单「删除」会删到菜单所指的旧对象。happy-dom 不会从
+    // keydown 合成 click，所以这里手动补上真实浏览器里的那一次 click。
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    右键(节点组("n1")!)
+    await flush()
+    expect(取("[data-slot='hgraph-menu']")).not.toBeNull()
+
+    const 删除键 = 取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement
+    删除键.focus()
+    删除键.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))
+    删除键.click() // 真实浏览器里 Enter/Space 的默认动作就是这一次 click
+    await flush()
+
+    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+    await 过防抖()
+    // 动作恰一次：一次删除入选，一条批。
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n1" }] }])
+  })
+
   test("I1 复现：n1 菜单开着时从工具栏加节点 ⇒ 菜单已关、没有删错对象", async () => {
     const { api } = 假api({
       写: (输入) => {
