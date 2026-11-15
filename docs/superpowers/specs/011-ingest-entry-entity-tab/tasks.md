@@ -113,7 +113,10 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 ### Foundational for US2（判据单一出处）
 
-- [ ] T006 [US2] 抽出 `文件待入队`：`packages/app/src/project/case-materials-view.ts` 从 `目录下待入队`（`:162-185`，判据在 `:178-182`）抽文件级判定；`目录下待入队` 改为逐个调用
+- [x] T006 [US2] 抽出 `文件待入队`：`packages/app/src/project/case-materials-view.ts` 从 `目录下待入队`（`:162-185`，判据在 `:178-182`）抽文件级判定；`目录下待入队` 改为逐个调用
+
+  > **红（2026-11-15 实测）**：`Export named '文件待入队' not found`（0 pass / 1 fail）。
+  > **绿**：22 pass / 0 fail；`目录下待入队` 既有用例断言未改、原样全绿（TR-005）。
 
   - **入参**：`path: string`、`row: 材料视图 | undefined`、`extensions: readonly string[]`
   - **出参**：`boolean`（true = 这份文件可作为入队候选；`产物 / 已解析 / 已跳过 / 排队中 / 解析中 / 不可解析扩展名` 全为 false）

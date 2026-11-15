@@ -8,6 +8,7 @@ import {
   查看不可用原因,
   标记形状,
   汇总全部,
+  文件待入队,
   目录下待入队,
   悬停文案,
   跳过不可用原因,
@@ -110,6 +111,26 @@ test("目录下待入队：只收会被入队的（未入队 / 有问题 / 无�
   const 候选 = 目录下待入队("资料", 文件们, [...行们, 视图行({ path: "资料/产物.xlsx", kind: "产物" })], 扩展名)
   // 「已跳过」不在里面：跳过是人的意志（设计 §5.2），一次文件夹批量不该把它悄悄翻回来。
   expect([...候选].sort()).toEqual(["资料/有问题.xlsx", "资料/其他.xlsx", "资料/没行.xlsx"].sort())
+})
+
+test("文件待入队：候选判据只有这一份——未入队 / 有问题 / 无行可入，其余一律不可", () => {
+  // 可入队的三类。
+  expect(文件待入队("资料/未入队.xlsx", 视图行({ path: "资料/未入队.xlsx", status: "未入队" }), 扩展名)).toBe(true)
+  expect(文件待入队("资料/有问题.xlsx", 视图行({ path: "资料/有问题.xlsx", status: "有问题" }), 扩展名)).toBe(true)
+  // 没有材料行（还没登记过）也算候选。
+  expect(文件待入队("资料/没行.xlsx", undefined, 扩展名)).toBe(true)
+
+  // 不可入队：已解析 / 已跳过 / 排队中 / 解析中 / 产物 / 不可解析扩展名。
+  expect(文件待入队("资料/已解析.xlsx", 视图行({ path: "资料/已解析.xlsx", status: "已解析" }), 扩展名)).toBe(false)
+  expect(文件待入队("资料/跳过.xlsx", 视图行({ path: "资料/跳过.xlsx", status: "已跳过" }), 扩展名)).toBe(false)
+  expect(文件待入队("资料/排队.xlsx", 视图行({ path: "资料/排队.xlsx", status: "排队中" }), 扩展名)).toBe(false)
+  expect(文件待入队("资料/解析中.xlsx", 视图行({ path: "资料/解析中.xlsx", status: "解析中" }), 扩展名)).toBe(false)
+  expect(文件待入队("资料/产物.xlsx", 视图行({ path: "资料/产物.xlsx", status: "未入队", kind: "产物" }), 扩展名)).toBe(
+    false,
+  )
+  expect(文件待入队("资料/说明.pdf", 视图行({ path: "资料/说明.pdf", status: "未入队", parseable: false }), 扩展名)).toBe(
+    false,
+  )
 })
 
 test("可解析路径：只看扩展名，大小写不敏感", () => {

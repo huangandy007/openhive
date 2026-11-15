@@ -146,18 +146,28 @@ export function 汇总全部(
 }
 
 /**
- * 右键一个文件夹时**会真正入队**的文件（用户确认弹窗里的 N）。
+ * 单份文件是否可作为「解析入库」的候选——**批量与多选共用的唯一判据**（`#002-06`）。
  *
  * 候选 = 未入队 / 有问题 / 没有材料行（还没登记过）。
  *
  * ⚠️ **「已跳过」不进候选**（2026-11-06 裁定）：设计 §5.2 说跳过是人的意志、系统不再问；
- * 用户逐份跳过的文件，不该被一次「解析这个文件夹」悄悄翻回来。单文件右键仍可对「已跳过」
- * 点「解析入库」——那是对**这一份**的明确动作。因此本函数与服务端的「该走哪个动作」**故意
- * 不一致**：后者见到「已跳过」返回「入队」，这里不选它。服务端不提供批量出口也是这个原因，
- * 别在服务端加一个「按状态全集扫」的批量接口（见 Task 7 注释）。
+ * 用户逐份跳过的文件，不该被一次批量悄悄翻回来。单文件右键仍可对「已跳过」点「解析入库」
+ * ——那是对**这一份**的明确动作，所以单项可用性另走 `入队不可用原因`，不经过这里。
  *
  * 其余判据与「该走哪个动作」一致：已解析、排队中、解析中不排（`enqueueMaterial` 对它们
  * 返回 `enqueued: false`）。非表格与产物不排。
+ */
+export function 文件待入队(path: string, row: 材料视图 | undefined, extensions: readonly string[]): boolean {
+  if (!可解析路径(path, extensions)) return false
+  if (row?.kind === "产物") return false
+  if (row !== undefined && (row.status === "已解析" || row.status === "已跳过" || 运行中(row.status))) return false
+  return true
+}
+
+/**
+ * 右键一个文件夹时**会真正入队**的文件（用户确认弹窗里的 N）。
+ *
+ * 候选判据只有 `文件待入队` 一处；这里只负责「取这个目录下的文件 + 去重」。
  */
 export function 目录下待入队(
   目录: string,
@@ -175,10 +185,7 @@ export function 目录下待入队(
     if (path === 目录 || !path.startsWith(前缀)) continue
     if (见过.has(path)) continue
     见过.add(path)
-    if (!可解析路径(path, extensions)) continue
-    const row = 行表.get(path)
-    if (row?.kind === "产物") continue
-    if (row !== undefined && (row.status === "已解析" || row.status === "已跳过" || 运行中(row.status))) continue
+    if (!文件待入队(path, 行表.get(path), extensions)) continue
     结果.push(path)
   }
   return 结果
