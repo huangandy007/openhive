@@ -135,6 +135,7 @@ import { OpenhiveFile } from "@/server/openhive/file"
 import { OpenhiveCaseParse } from "@/server/openhive/case-parse"
 import { OpenhiveCaseFactRoutes } from "@/server/openhive/case-fact-routes"
 import { OpenhiveCaseUiRoutes } from "@/server/openhive/case-ui-routes"
+import { OpenhiveHgraphOps } from "@/server/openhive/hgraph-ops"
 import { OpenhiveModelConfig } from "@/server/openhive/model-config-routes"
 import { OpenhiveGovernanceAccounts } from "@/server/openhive/governance-accounts"
 import { OpenhiveGovernanceAssets } from "@/server/openhive/governance-assets"
@@ -437,6 +438,14 @@ export function createRoutes(
     // 时间线与资金**复用计划 6 的取数函数**，不复制 SQL。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 7）。
     OpenhiveCaseUiRoutes.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 关系图出口（012 T006）：读 / 初始化 / 操作（`.hgraph` 的**唯一写入者**）/ 导出许可。
+    // 沙箱根复用同一个 `AnchorWorkspace.Config`（项目目录恒为 `{root}/{属主}/{projectId}`）；
+    // 业务 PG 读成员名册与项目名，`Database.Service`（老项目回落）由 `app` 组供上。
+    // 【保留的定制 · 同步上游时不要丢】—— openhive 案件关系图（012）。
+    OpenhiveHgraphOps.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
     // openhive 模型槽位只读出口（2026-11-08，模型统一配置设计 §3.4）：设置页展示当前生效的
     // 聊天 / 后台模型。只返回 provider/model 与来源，**不返回** apiKey / baseURL。
     // 只读 `Config.Service`——它在 `app` 层已供上（与 `governance-assets.ts` 同一个先例）。

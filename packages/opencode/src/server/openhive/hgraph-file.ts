@@ -448,7 +448,12 @@ export function 序列化图(原文树: unknown, 文档: 图文件): string {
   return JSON.stringify(贴(原文树, 文档, 图文件形状), null, 2) + "\n"
 }
 
-export type 校验失败码 = "FACTS_NEED_SOURCE" | "INFERENCE_NEEDS_BASIS" | "INFERENCE_NEEDS_CONFIDENCE" | "BAD_CITATION"
+export type 校验失败码 =
+  | "FACTS_NEED_SOURCE"
+  | "INFERENCE_NEEDS_BASIS"
+  | "INFERENCE_NEEDS_CONFIDENCE"
+  | "BAD_CITATION"
+  | "BAD_SHAPE"
 
 export type 校验结果 = { ok: true } | { ok: false; code: 校验失败码; 话术: string }
 
@@ -457,6 +462,7 @@ const 校验话术: Readonly<Record<校验失败码, string>> = {
   INFERENCE_NEEDS_BASIS: "标了推断但没写依据：推断必须写明依据",
   INFERENCE_NEEDS_CONFIDENCE: "推断必须给可信度（高/中/低）",
   BAD_CITATION: "出处要写成 材料#工作表#行号，比如 mat_x#Sheet1#12",
+  BAD_SHAPE: "出处/证据的写法不对：出处要是数组，证据要是 {关系, 出处} 的数组",
 }
 
 function 拒(code: 校验失败码): 校验结果 {
@@ -486,18 +492,42 @@ function 出处们合法(值: unknown): boolean {
   return 值.every(出处合法)
 }
 
-/** `证据` 的元素是 `{ 关系, 出处 }`：只判 `出处`，元素不是对象属形状问题、不在本函数职责内。 */
+/**
+ * 形状闸（T004 审查遗留，2026-11-15）：`出处` 必须是数组或缺失；`证据` 必须是对象数组或缺失。
+ *
+ * 为什么排在图省事的地方：`证据: [null]` 曾经满足「`证据` 是数组且非空」⇒ **绕过**
+ * `FACTS_NEED_SOURCE`；`出处: "m#t#1"` 则从旧的 `出处们合法`（非数组一律 `true`）里混过去。
+ * 形状是那两条语义闸的**前提**，所以先判形状、再判语义（`BAD_SHAPE` 先于 FACTS/INFERENCE）。
+ */
+function 出处证据形状合法(出处: unknown, 证据: unknown): boolean {
+  if (出处 !== undefined && 出处 !== null && !Array.isArray(出处)) return false
+  if (证据 === undefined || 证据 === null) return true
+  if (!Array.isArray(证据)) return false
+  return 证据.every(是普通对象)
+}
+
+/**
+ * `证据` 的元素是 `{ 关系, 出处 }`：`出处` 必须是**单行**（data-model §5.3/§5.6：一条证据
+ * 对应一条库关系，出处单串、不做区间）。R9 的判据是「起 !== 末」——`12-12`（区间写法但两端
+ * 相等）与单行 `12` 等价，接受；反向区间已由 `解析出处` 返回 `null`。
+ */
 function 证据出处们合法(值: unknown): boolean {
   if (!Array.isArray(值)) return true
-  return 值.every((证据) => !是普通对象(证据) || 出处合法(证据.出处))
+  return 值.every((证据) => {
+    if (!是普通对象(证据)) return false
+    if (typeof 证据.出处 !== "string") return false
+    const 解析 = 解析出处(证据.出处)
+    return 解析 !== null && 解析.起 === 解析.末
+  })
 }
 
 /**
  * 写入前的来源硬闸（contracts/hgraph-format §2 / data-model §6 V-04、V-05、V-06、V-09）：
  * **全仓唯一实现**，HTTP 手工、AI 工具、检查器改性质三条入口都只调它，不各写一份。
  *
- * 检查顺序即契约 §2 表序，**首个不通过即返回**：
- * `FACTS_NEED_SOURCE` → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
+ * 检查顺序，**首个不通过即返回**：`BAD_SHAPE`（`出处`/`证据` 的形状）→ `FACTS_NEED_SOURCE`
+ * → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
+ * 形状排最前：它是后两条语义闸的前提（`证据: [null]` 否则能绕过事实闸）。
  * 节点、边、文字都能传（`文字` 没有来源字段，天然通过）。
  *
  * 只判「来源相关」：缺必填字段、id 唯一、悬空边、批量上限、路径都不在这里管（T005/T006）。
@@ -507,6 +537,8 @@ export function 校验来源(对象: unknown): 校验结果 {
   const 视图 = 是普通对象(对象) ? 对象 : {}
   const 出处 = 视图.出处
   const 证据 = 视图.证据
+
+  if (!出处证据形状合法(出处, 证据)) return 拒("BAD_SHAPE")
 
   // 只对边生效：节点没有 `性质` 字段；`事实` 的硬闸只压在标了事实的边上（V-04）。
   if (视图.性质 === "事实" && !(Array.isArray(出处) && 出处.length > 0) && !(Array.isArray(证据) && 证据.length > 0)) {
@@ -523,6 +555,19 @@ export function 校验来源(对象: unknown): 校验结果 {
   if (!出处们合法(出处) || !证据出处们合法(证据)) return 拒("BAD_CITATION")
   return { ok: true }
 }
+
+/**
+ * 写入时的**必填字段集**（data-model §3、§4.1、§4.2）——**只此一份**。
+ *
+ * 与 `hgraph-edit.ts` 的 `必填键` **不是**同一件事：那边管「`改字段` 的 `null` 补丁不许删这些
+ * 键」，所以不含 `id`；这边管「一个刚落盘的对象必须带哪些键」，所以含 `id`。两个概念各自一份
+ * 白名单，刻意不强行合并（合并会让其中一边多出一个它不关心的 `id` 语义）。
+ */
+export const 必填字段: Readonly<Record<"节点" | "边" | "文字", readonly string[]>> = Object.freeze({
+  节点: Object.freeze(["id", "名称", "类型", "来源", "x", "y"]),
+  边: Object.freeze(["id", "从", "到", "标签", "性质", "方向", "来源", "时间"]),
+  文字: Object.freeze(["id", "内容", "x", "y", "字号"]),
+})
 
 /** `init` 用的空骨架（contracts/hgraph-ops §4）：`创建于` 与 `更新于` 都写 `now`。 */
 export function 空骨架(标题: string, now: string): 图文件 {

@@ -523,6 +523,16 @@ function inGit(project: string, absolute: string): boolean {
 }
 
 /**
+ * `inGit` 的**薄导出**（2026-11-15，T006）：关系图的四个端点要过**同一道**版本库闸。
+ *
+ * 判据本身只此一份（上面那段注释里的全部理由都适用）；这里不复制逻辑、不改 `inGit` 的
+ * 可见性，免得另一个模块（`hgraph-ops.ts`）长出第二份「哪算 `.git`」的写法。
+ */
+export function inGitOf(project: string, absolute: string): boolean {
+  return inGit(project, absolute)
+}
+
+/**
  * `existing`（**词法上**已由 `inside` 判过在 `project` 里）的**真身**是否也还在项目里。
  *
  * ## 为什么 `inside` 不够（2026-10-07 实测，`LEARNINGS #003-04`）
@@ -1288,6 +1298,12 @@ function handleWrite(request: HttpServerRequest.HttpServerRequest, root: string)
     const target = inside(project, 路径)
     if (target === undefined) return badRequest("路径越出项目目录")
     if (inGit(project, target)) return badRequest(GIT_LOCKED)
+    // `.hgraph` 有**唯一写入者**（`/openhive/hgraph/ops`）：从这里改正文会绕过版本 CAS 与
+    // 写前全量校验，把「两人同时编辑」变回静默覆盖。契约 hgraph-ops §6 明写本口对关系图只读。
+    // 后缀按小写比（与 `hgraph-ops.ts` 的后缀闸同一口径：win32 上 `.HGRAPH` 是同一个文件）。
+    if (basename(target).toLowerCase().endsWith(".hgraph")) {
+      return badRequest("只能改关系图文件（.hgraph）", "HGRAPH_READONLY")
+    }
 
     const info = yield* Effect.promise(() => lstat(target).catch(() => undefined))
     if (info === undefined) return badRequest("文件不存在")
