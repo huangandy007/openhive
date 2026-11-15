@@ -200,7 +200,16 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 **Independent Test**：三页签 + 键盘 3 步环绕；实体详情伪路径仍渲染。
 
-- [ ] T012 [US3] 把页签测试改到红：`packages/app/src/project/sidebar-tabs.test.tsx`（`:71-72` 的 `entities` prop、`:82-86` 四 tab、`:172-175` 实体 pane、`:190/:206/:229` 文案断言、`:262-282` 键盘序列）、`packages/app/src/project/sidebar-tabs.stories.tsx`
+- [x] T012 [US3] 把页签测试改到红：`packages/app/src/project/sidebar-tabs.test.tsx`（`:71-72` 的 `entities` prop、`:82-86` 四 tab、`:172-175` 实体 pane、`:190/:206/:229` 文案断言、`:262-282` 键盘序列）、`packages/app/src/project/sidebar-tabs.stories.tsx`
+
+  > **红（2026-11-15 实测，先红）**：`cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/project/sidebar-tabs.test.tsx` ⇒ **15 pass / 6 fail / 44 expect / 21 tests**，EXIT=1；六条全部红在「多了一个实体」（组件仍是四 tab）：
+  > ① tab 列表 `Expected` `["session","files","capability"]` / `Received` 中间多出 `"entity"`（`- Expected  - 0` / `+ Received  + 1`）；
+  > ② 无计数文案 `Expected` `["会话","文件","能力"]` / `Received` 多出 `"实体"`；
+  > ③ 有计数文案 `Expected` `["会话","文件","能力 3"]` / `Received` 多出 `"实体"`；
+  > ④ 0 计数文案 `Expected` `["会话","文件","能力 0"]` / `Received` 多出 `"实体"`；
+  > ⑤ 正向环绕 `Expected: ["capability"]` / `Received: ["entity"]`（文件按 → 落到实体）；
+  > ⑥ 反向环绕 `Expected: ["files"]` / `Received: ["entity"]`（能力按 ← 落到实体）。
+  > 说明：本任务只改测试、**不要求转绿**；`sidebar-tabs.tsx` 一个字节未动。`entities` prop 仍按现接口传参（删 prop 归 T014），实体 pane 注入断言已删；`sidebar-tabs.stories.tsx` 删除 `EntityTab` / 实体 body / `entities` 传参，注释与说明改为三 tab。
 
   - **入参**：目标形态 `["session","files","capability"]`
   - **出参**：断言改为三 tab、文案 `["会话","文件","能力"]`、环绕 3 步、`entities` prop 不再被使用；本步跑 **FAIL**（组件仍是四个）
