@@ -48,6 +48,7 @@ import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
 import { 检查器, type 节点快照 } from "./inspector"
+import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
   可撤销,
@@ -84,6 +85,12 @@ export interface 编辑器Props {
   readonly 详情api?: Pick<CaseDetailApi, "profile">
   /** 打开实体档案（R63）：由上层注入；省略 = 检查器不渲染按钮。 */
   readonly 打开档案?: (实体id: string, 标题: string) => void
+  /** 导出（T015）标题块里的项目名；省略 = 空串（标题块默认关，不进图）。 */
+  readonly 项目名?: string
+  /** 导出人（标题块），上层传 `useAuthSession()?.identity.name`。 */
+  readonly 导出人?: string
+  /** 导出依赖缝（T015）：光栅化 / 下载 / 主题变量；happy-dom 没有 canvas/Image。 */
+  readonly 导出依赖?: 导出依赖
 }
 
 type 保存状态 = "已存" | "待发" | "发送中"
@@ -347,6 +354,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [重载提示, set重载提示] = createSignal(false)
   /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
   const [选择器开, set选择器开] = createSignal(false)
+  /** T015：导出选项面板（本地 UI 态，不写文件、不进撤销栈）。 */
+  const [导出面板开, set导出面板开] = createSignal(false)
+  const [导出尺寸, set导出尺寸] = createSignal<导出尺寸>("屏幕")
+  const [导出标题块, set导出标题块] = createSignal(false)
+  const [导出附附录, set导出附附录] = createSignal(false)
+  /** 导出回执：成功「已记录本次导出」（R67 逐字）或接口 message；与保存状态同一条状态栏。 */
+  const [导出提示, set导出提示] = createSignal<string | undefined>()
+  const [导出中, set导出中] = createSignal(false)
   /**
    * 库里现在（T014）：按**实体 id** 缓存快照，切选中不重复取；取不到就删行，
    * 检查器回落「这条不在库里」，「刷新此节点」可重试。
@@ -586,6 +601,40 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set最新版本(undefined)
     set状态("待发")
     排发()
+  }
+
+  // -------------------------------------------------------------------------
+  // T015 · 导出 PNG
+  // -------------------------------------------------------------------------
+
+  /**
+   * 点「导出」：选项 → `导出PNG`（许可 → 隐藏只读渲染 → 光栅化 → 下载，R64/R67）。
+   * 面板与提示都是本地 UI 态；**不写文件、不进撤销栈**。失败话术直接用接口 message。
+   */
+  const 执行导出 = async () => {
+    if (导出中()) return
+    set导出中(true)
+    set导出提示(undefined)
+    try {
+      const 选项: 导出选项 = { 尺寸: 导出尺寸(), 标题块: 导出标题块(), 附附录: 导出附附录() }
+      const 回 = await 导出PNG({
+        文档: 文档(),
+        选项,
+        项目名: props.项目名 ?? "",
+        导出人: props.导出人,
+        许可: () => props.api.导出许可({ projectId: props.projectId, path: props.path }),
+        依赖: props.导出依赖,
+      })
+      if (已卸载) return
+      if (回.kind === "error") {
+        set导出提示(回.message)
+        return
+      }
+      set导出提示("已记录本次导出")
+      set导出面板开(false)
+    } finally {
+      if (!已卸载) set导出中(false)
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -899,6 +948,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       }
       进入演示()
     },
+    // T015：只开/关选项面板；真正出图在「导出」按钮（`执行导出`）。
+    导出面板切换: () => {
+      set导出提示(undefined)
+      set导出面板开((旧) => !旧)
+    },
   }
 
   const 状态文案 = () => {
@@ -957,6 +1011,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         >
           {状态文案()}
         </span>
+        {/* T015：导出回执与保存状态同在一条状态栏（不新增第二套提示样式）。 */}
+        <Show when={导出提示()}>
+          <span data-slot="hgraph-export-status" role="status" class="text-12-regular text-v2-text-text-muted">
+            {导出提示()}
+          </span>
+        </Show>
       </div>
 
       {/* 有未发出改动 / 新内容解析失败：只问，不替用户选、不自动合并（FR-012）。 */}
@@ -998,6 +1058,67 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       </Show>
 
       <工具栏 选中={选中()} 文档={文档()} 动作表={动作} />
+
+      {/* T015：导出选项面板（本地 UI 态；「导出」才出图，取消只收起）。 */}
+      <Show when={导出面板开()}>
+        <div
+          data-slot="hgraph-export-panel"
+          role="dialog"
+          aria-label="导出 PNG"
+          class="flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <label class="text-12-regular text-v2-text-text-muted">
+            尺寸
+            <select
+              data-slot="hgraph-export-size"
+              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={导出尺寸()}
+              onChange={(事件) => {
+                const 值 = 事件.currentTarget.value
+                if (值 === "屏幕" || 值 === "A3") set导出尺寸(值)
+              }}
+            >
+              <option value="屏幕">屏幕</option>
+              <option value="A3">A3</option>
+            </select>
+          </label>
+          <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
+            <input
+              type="checkbox"
+              data-slot="hgraph-export-title-block"
+              checked={导出标题块()}
+              onChange={(事件) => set导出标题块(事件.currentTarget.checked)}
+            />
+            标题块
+          </label>
+          <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
+            <input
+              type="checkbox"
+              data-slot="hgraph-export-appendix"
+              checked={导出附附录()}
+              onChange={(事件) => set导出附附录(事件.currentTarget.checked)}
+            />
+            附证据附录（.md）
+          </label>
+          <button
+            type="button"
+            data-slot="hgraph-export-ok"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
+            disabled={导出中()}
+            onClick={() => void 执行导出()}
+          >
+            导出
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-export-cancel"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={() => set导出面板开(false)}
+          >
+            取消
+          </button>
+        </div>
+      </Show>
 
       <Show when={待确认布局()}>
         <div

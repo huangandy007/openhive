@@ -72,6 +72,10 @@ import { FileTransferDialog, type FileTransferState } from "@/project/file-trans
 import { TaskResultDialog, type TaskResult } from "@/project/task-result-dialog"
 import type { BackupPreview, RestoreDecision } from "@/project/openhive-backup"
 import { showToast } from "@/utils/toast"
+import { useAuthSession } from "@/auth/session-context"
+import { createHgraphApi, 没项目 } from "@/project/hgraph-api"
+import { 解析图 } from "@/center/case-views/hgraph/file"
+import { 导出PNG, 默认导出选项 } from "@/center/case-views/hgraph/export"
 
 export interface WorkspaceEntryProps {
   /** 会话能力位；省略 = 尚未接签发方，图标栏不设限（语义见 `rail/entries.ts`）。 */
@@ -288,6 +292,41 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     dialog: 问大文件,
     看见改过,
   })
+  /** T015：文件树右键「导出 PNG」——读 → 解析 → `导出PNG`（与工具栏入口同一个函数，R68）。 */
+  const 会话 = useAuthSession()
+  const 关系图api = createHgraphApi()
+  const 导出关系图 = async (path: string) => {
+    // `#010-06`：项目快照只读一次——await 之后再读可能已换项目，名与 id 会各说各话。
+    const 项目 = currentProject()
+    const id = 项目?.id
+    const 名称 = 项目?.name ?? ""
+    if (id === undefined || id === "") {
+      showToast({ variant: "error", title: "导出没办成", description: 没项目 })
+      return
+    }
+    const 读 = await 关系图api.读({ projectId: id, path })
+    if (读.kind === "error") {
+      showToast({ variant: "error", title: "导出没办成", description: 读.message })
+      return
+    }
+    const 解析 = 解析图(读.value.内容)
+    if (!解析.ok) {
+      showToast({ variant: "error", title: "导出没办成", description: 解析.说明 })
+      return
+    }
+    const 回 = await 导出PNG({
+      文档: 解析.文档,
+      选项: 默认导出选项,
+      项目名: 名称,
+      导出人: 会话?.identity?.name,
+      许可: () => 关系图api.导出许可({ projectId: id, path }),
+    })
+    if (回.kind === "error") {
+      showToast({ variant: "error", title: "导出没办成", description: 回.message })
+      return
+    }
+    showToast({ variant: "success", title: "已记录本次导出" })
+  }
   /**
    * 项目面板开没开。**放在这里而不是面板里**：面板是「滑出」的浮层，开关它的按钮在锚点行上
    * （`▾` / `＋`），两者分属两个组件 ⇒ 状态只能落在共同祖先（本组件）里。
@@ -2242,6 +2281,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                               }
                             : undefined
                         }
+                        // T015（R68）：`.hgraph` 行右键「导出 PNG」；没有项目时不接（该项不出现）。
+                        导出图={有项目() ? (path) => void 导出关系图(path) : undefined}
                         backups={minioBackups()}
                         open={dualOpen()}
                         onCollapse={() => setDualOpen(false)}

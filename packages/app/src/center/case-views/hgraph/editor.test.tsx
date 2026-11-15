@@ -16,7 +16,7 @@
  * 不注入「防抖毫秒」：那是规格（T009「500ms 防抖」）。用例等 650ms 取实得；另有一条
  * 在 400ms 时断言**一次都没发**，证明写不是立即发生的。
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
@@ -27,6 +27,7 @@ import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 构图, 布局目标 } from "./editor"
+import { 重置导出记录, type 导出依赖 } from "./export"
 
 const 挂过的: Array<() => void> = []
 
@@ -2470,5 +2471,166 @@ describe("T014 · 从库加入接线", () => {
     expect(选择器面板()).toBeNull()
     expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(4)
     expect((取("[data-slot='hgraph-field-名称']") as HTMLInputElement).value).toBe("张三")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T015 · 导出 PNG（工具栏入口 → 选项面板 → 导出PNG）
+// ---------------------------------------------------------------------------
+
+describe("T015 · 导出 PNG 面板", () => {
+  // 文件名去重记录是模块级会话状态：不重置，上一条用例的同名下载会让这条变成 `-2`。
+  beforeEach(() => 重置导出记录())
+
+  const 按钮 = (slot: string) => document.body.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)
+
+  /** 一个许可可用的 api：`写` 照常记账，`导出许可` 按剧本回。 */
+  function 导出api(
+    许可: HgraphApi["导出许可"] = async () => ({
+      kind: "ok",
+      value: { 允许: true, 文件名: "专案A-测试图-20261116-1003.png" },
+    }),
+  ) {
+    const 写们: 写入参[] = []
+    let 许可次数 = 0
+    const api: HgraphApi = {
+      读: async () => {
+        throw new Error("编辑器不该自己读文件")
+      },
+      初始化: async () => {
+        throw new Error("编辑器不该 init")
+      },
+      写: async (输入) => {
+        写们.push(输入)
+        return 成功("v2")
+      },
+      导出许可: async (输入) => {
+        许可次数 += 1
+        return await 许可(输入)
+      },
+    }
+    return { api, 写们, 许可次数: () => 许可次数 }
+  }
+
+  /** 记账依赖：happy-dom 没有 canvas/Image ⇒ 光栅化注入；下载只记文件名。 */
+  function 记账依赖() {
+    const 下载们: string[] = []
+    const 光栅化们: Array<{ readonly svg: string; readonly 宽: number; readonly 高: number }> = []
+    const 依赖: 导出依赖 = {
+      解析变量: () => "#111111",
+      根字体: () => "Test Sans",
+      现在: () => new Date("2026-11-16T10:03:00+08:00"),
+      光栅化: async (svg, 宽, 高) => {
+        光栅化们.push({ svg, 宽, 高 })
+        return new Blob(["png"], { type: "image/png" })
+      },
+      下载: (文件名) => 下载们.push(文件名),
+    }
+    return { 依赖, 下载们, 光栅化们 }
+  }
+
+  function 挂导出(api: HgraphApi, 依赖: 导出依赖) {
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    挂过的.push(
+      render(
+        () => (
+          <编辑器
+            path="分析/测试图.hgraph"
+            projectId="p 1"
+            api={api}
+            初始文档={一份图()}
+            初始版本="v1"
+            坐标换算={({ clientX, clientY }) => ({ x: clientX, y: clientY })}
+            项目名="专案A"
+            导出人="王警官"
+            导出依赖={依赖}
+          />
+        ),
+        host,
+      ),
+    )
+    return host
+  }
+
+  test("工具栏「导出 PNG」只开选项面板：零写、不进撤销栈；取消只收起", async () => {
+    const { api, 写们 } = 导出api()
+    const { 依赖, 下载们 } = 记账依赖()
+    挂导出(api, 依赖)
+
+    expect(取("[data-slot='hgraph-export-panel']")).toBeNull()
+    按钮("hgraph-toolbar-export")!.click()
+    expect(取("[data-slot='hgraph-export-panel']")).not.toBeNull()
+    expect(按钮("hgraph-undo")!.disabled).toBe(true)
+
+    await 过防抖()
+    expect(写们.length).toBe(0)
+    expect(下载们).toEqual([])
+
+    按钮("hgraph-export-cancel")!.click()
+    expect(取("[data-slot='hgraph-export-panel']")).toBeNull()
+    expect(下载们).toEqual([])
+  })
+
+  test("点「导出」⇒ 许可后光栅化并下载：文件名取许可值、提示「已记录本次导出」、面板收起、零写", async () => {
+    const { api, 写们, 许可次数 } = 导出api()
+    const { 依赖, 下载们, 光栅化们 } = 记账依赖()
+    挂导出(api, 依赖)
+
+    按钮("hgraph-toolbar-export")!.click()
+    按钮("hgraph-export-ok")!.click()
+    await flush()
+    await flush()
+
+    expect(许可次数()).toBe(1)
+    expect(光栅化们.length).toBe(1)
+    expect(下载们).toEqual(["专案A-测试图-20261116-1003.png"])
+    expect(文案("hgraph-export-status")).toBe("已记录本次导出")
+    expect(取("[data-slot='hgraph-export-panel']")).toBeNull()
+    expect(写们.length).toBe(0)
+  })
+
+  test("尺寸 A3 / 标题块 / 附附录 都传下去：宽高 3508×4961、标题含项目与导出人、第二个下载是 .md", async () => {
+    const { api } = 导出api()
+    const { 依赖, 下载们, 光栅化们 } = 记账依赖()
+    挂导出(api, 依赖)
+
+    按钮("hgraph-toolbar-export")!.click()
+    const 尺寸 = 取("[data-slot='hgraph-export-size']") as HTMLSelectElement
+    尺寸.value = "A3"
+    尺寸.dispatchEvent(new Event("change", { bubbles: true }))
+    const 标题块 = 取("[data-slot='hgraph-export-title-block']") as HTMLInputElement
+    标题块.checked = true
+    标题块.dispatchEvent(new Event("change", { bubbles: true }))
+    const 附录 = 取("[data-slot='hgraph-export-appendix']") as HTMLInputElement
+    附录.checked = true
+    附录.dispatchEvent(new Event("change", { bubbles: true }))
+
+    按钮("hgraph-export-ok")!.click()
+    await flush()
+    await flush()
+
+    expect(光栅化们.length).toBe(1)
+    expect(光栅化们[0]).toMatchObject({ 宽: 3508, 高: 4961 })
+    expect(光栅化们[0]!.svg).toContain("专案A")
+    expect(光栅化们[0]!.svg).toContain("测试图")
+    expect(光栅化们[0]!.svg).toContain("王警官")
+    expect(下载们).toEqual(["专案A-测试图-20261116-1003.png", "专案A-测试图-20261116-1003.md"])
+  })
+
+  test("许可失败 ⇒ 提示用接口 message、零光栅化零下载，面板仍开着", async () => {
+    const { api } = 导出api(async () => ({ kind: "error", message: "你不是这个项目的成员" }))
+    const { 依赖, 下载们, 光栅化们 } = 记账依赖()
+    挂导出(api, 依赖)
+
+    按钮("hgraph-toolbar-export")!.click()
+    按钮("hgraph-export-ok")!.click()
+    await flush()
+    await flush()
+
+    expect(文案("hgraph-export-status")).toBe("你不是这个项目的成员")
+    expect(光栅化们.length).toBe(0)
+    expect(下载们).toEqual([])
+    expect(取("[data-slot='hgraph-export-panel']")).not.toBeNull()
   })
 })

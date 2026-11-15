@@ -23,6 +23,7 @@
 import { createResource, Show, type JSX } from "solid-js"
 import type { ViewComponent } from "@/center/view-registry"
 import { currentProject } from "@/project/current-project"
+import { useAuthSession } from "@/auth/session-context"
 import { createHgraphApi, 没项目, type HgraphApi } from "@/project/hgraph-api"
 import { createEntityApi, type EntityApi } from "@/project/entity-api"
 import { createCaseDetailApi, type CaseDetailApi } from "@/center/case-detail-api"
@@ -82,6 +83,9 @@ export function 创建HgraphView(
   return (props): JSX.Element => {
     // 整个组件生命周期只读这一次：切项目不该把已打开的图挪走。
     const 项目id = 取项目id()
+    // T015：导出标题块用的项目名 / 导出人（无 provider 时如实留空，不造假身份）。
+    const 项目名 = currentProject()?.name ?? ""
+    const 导出人 = useAuthSession()?.identity?.name
     const [状态] = createResource(
       () => props.path,
       (path) => 载入(api, 项目id, path),
@@ -136,6 +140,8 @@ export function 创建HgraphView(
                       api={api}
                       初始文档={s.文档}
                       初始版本={s.版本}
+                      项目名={项目名}
+                      导出人={导出人}
                       实体api={依赖?.实体api}
                       详情api={依赖?.详情api}
                       打开档案={依赖?.打开档案}

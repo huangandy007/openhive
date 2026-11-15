@@ -3863,4 +3863,51 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(标记(host, "a.csv") === null).toBe(true)
     })
   })
+
+  /**
+   * T015（R68）· 关系图导出入口。
+   *
+   * 只加**一项**菜单 + **一个**可选 prop：`.hgraph` 文件行且调用方接了 `导出图` 才出现
+   * 「导出 PNG」（`data-action="export-png"`）；`.txt` 行与未接线的树，菜单里没有它。
+   */
+  describe("关系图导出入口（T015 / R68）", () => {
+    test(".hgraph 文件行右键出现「导出 PNG」；点它把该路径交给 导出图", () => {
+      const 收到: string[] = []
+      const host = mount(() => (
+        <FileTree paths={["分析/张三.hgraph", "笔记.txt"]} 导出图={(path) => 收到.push(path)} />
+      ))
+      动作(host, "expand-all")?.click()
+
+      右键(行按路径(host, "分析/张三.hgraph"))
+      expect(有菜单()).toBe(true)
+      expect(菜单项("export-png") === null).toBe(false)
+      expect(菜单文案()).toContain("导出 PNG")
+
+      点菜单项("export-png")
+      expect(收到).toEqual(["分析/张三.hgraph"])
+    })
+
+    test(".txt 行右键**没有**「导出 PNG」——后缀判定真的生效", () => {
+      const host = mount(() => (
+        <FileTree paths={["分析/张三.hgraph", "笔记.txt"]} 导出图={() => {}} />
+      ))
+      动作(host, "expand-all")?.click()
+
+      右键(行按路径(host, "笔记.txt"))
+      expect(有菜单()).toBe(true)
+      // 前提：菜单确实开着，且既有项在（否则「没有这一项」什么也没证明）。
+      expect(菜单项("open") === null).toBe(false)
+      expect(菜单项("export-png") === null).toBe(true)
+    })
+
+    test("没接 导出图 时，.hgraph 行也不出这一项（未接线不出按钮）", () => {
+      const host = mount(() => <FileTree paths={["分析/张三.hgraph"]} />)
+      动作(host, "expand-all")?.click()
+
+      右键(行按路径(host, "分析/张三.hgraph"))
+      expect(有菜单()).toBe(true)
+      expect(菜单项("open") === null).toBe(false)
+      expect(菜单项("export-png") === null).toBe(true)
+    })
+  })
 })

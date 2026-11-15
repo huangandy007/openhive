@@ -37,6 +37,7 @@ import { 就地改名输入 } from "@/components/inline-rename-input"
 import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
 import { 能落到 } from "./file-tree-dnd"
+import { extensionOf } from "@/center/view-registry"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
@@ -115,6 +116,11 @@ export type FileTreeMenuItem =
   | "restore"
   | "copy-path"
   | "refresh"
+  /**
+   * T015（R68）追加：`.hgraph` 文件行右键多一项「导出 PNG」（`data-action="export-png"`）。
+   * **只在**扩展名是 `.hgraph`、且调用方接了 `导出图` 时才渲染；其余行与既有项一字不动。
+   */
+  | "export-png"
 
 /** 每层缩进（设计 §6.4：16px 层级缩进）。 */
 const INDENT_STEP = 16
@@ -285,6 +291,15 @@ export interface FileTreeProps {
    * ——同「六个动作一律走 props」的口径：未接线即置灰。
    */
   onOpen?: (path: string) => void
+
+  /**
+   * 导出关系图（T015 / R68）：`path` 是**被右键的那个 `.hgraph` 文件**。
+   *
+   * 只在扩展名是 `.hgraph`（与视图注册共用 `extensionOf`）且本回调接上时，菜单第一组多一项
+   * 「导出 PNG」（`data-action="export-png"`）；其余行的菜单结构一字不动。生产实现见
+   * `workspace-entry.tsx`（读 → 解析 → `导出PNG`）。省略 = 不出这一项。
+   */
+  导出图?: (path: string) => void
 
   /**
    * 刷新文件清单（本仓加的，2026-10-10 用户下达）——重取一遍「这个项目里有哪些文件」。
@@ -588,6 +603,11 @@ export function FileTree(props: FileTreeProps) {
   const 菜单是文件 = () => {
     const path = 菜单对象()
     return path !== undefined && 节点表().get(path)?.type === "file"
+  }
+  /** T015（R68）：`.hgraph` 文件行 + 调用方接了导出，才出「导出 PNG」那一项。 */
+  const 菜单是关系图 = () => {
+    const path = 菜单对象()
+    return path !== undefined && 菜单是文件() && extensionOf(path) === ".hgraph" && props.导出图 !== undefined
   }
   const 菜单依据 = () =>
     依据(菜单对象() ?? "", 菜单对象() !== undefined, 菜单目标()?.kind === "selection")
@@ -1293,6 +1313,15 @@ export function FileTree(props: FileTreeProps) {
               禁用={要文件(props.onOpen)}
               onSelect={() => props.onOpen?.(菜单对象() ?? "")}
             />
+            {/* T015（R68）：`.hgraph` 文件才多这一项；`.txt` 等行不出现。 */}
+            <Show when={菜单是关系图()}>
+              <菜单项
+                action="export-png"
+                文案="导出 PNG"
+                禁用={false}
+                onSelect={() => props.导出图?.(菜单对象() ?? "")}
+              />
+            </Show>
             <ContextMenu.Separator />
             {/* 计划 3（设计 §8.1）：解析子菜单。它自成一组，紧跟「打开」——两者都是用户
                 对一份文件最常做的第一件事，且都不直接改盘（解析改的是库与作业队列）。 */}

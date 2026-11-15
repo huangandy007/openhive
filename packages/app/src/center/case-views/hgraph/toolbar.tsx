@@ -136,6 +136,18 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         自动布局
       </button>
 
+      {/* T015：打开导出选项面板（本地 UI 态，不写文件、不进撤销栈）。 */}
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-export"
+        aria-label="导出 PNG"
+        title="导出 PNG"
+        class={按钮}
+        onClick={() => props.动作表.导出面板切换?.()}
+      >
+        导出 PNG
+      </button>
+
       <button
         type="button"
         data-slot="hgraph-toolbar-present"
