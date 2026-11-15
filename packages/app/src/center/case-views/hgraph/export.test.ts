@@ -279,7 +279,14 @@ describe("主题变量内联（R65）", () => {
     expect(svg).toContain("#111111")
     expect(svg.includes("var(--v2-text-text-base)")).toBe(false)
     expect(svg).toContain("var(--v2-border-border-strong)")
-    expect(结果.缺口).toEqual(["--v2-border-border-strong"])
+    // T018：导出图含展开图例（R74），图例引入 3 个主题变量；本用例只注入了 2 个，
+    // 未注入的一律按序列化顺序记缺口。
+    expect(结果.缺口).toEqual([
+      "--v2-border-border-strong",
+      "--v2-background-bg-layer-01",
+      "--v2-border-border-muted",
+      "--v2-text-text-muted",
+    ])
   })
 
   test("替换函数本身：同一变量出现两次只记一条缺口", () => {

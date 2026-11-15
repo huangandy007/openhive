@@ -24,7 +24,7 @@
  * `#006-06`）。因此「屏幕坐标 → 画布坐标」是入参 `坐标换算`；默认实现读容器矩形 +
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import type { 边, 图文件, 节点, 文字 } from "./file"
 import {
   适配视口,
@@ -32,11 +32,18 @@ import {
   标签取舍,
   框选命中,
   连线目标,
+  边档,
+  边偏移,
+  平行边序 as 算平行边序,
+  线宽像素,
+  外环档表,
   type 矩形,
   type 视口变换,
   type 对齐边,
   type 等距轴,
 } from "./geometry"
+import { 图例 } from "./legend"
+import { 形状, 多边形, type 位点 } from "../graph"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -45,6 +52,13 @@ const 画布高 = 680
 const 节点半径 = 15
 /** 手抖 1px 不算拖动（同 `graph.tsx` 的死区），否则「点一下看选中」会变成「挪半步」。 */
 const 拖动阈值 = 3
+
+/**
+ * `多边形` 只读 `x/y`，但入参类型是完整 `位点`（`图节点` + 坐标）；节点组已平移到中心，
+ * 这里只需一个原点壳。`graph.tsx` 只加 export、不改签名（`#002-06`：形状映射唯一出处）。
+ */
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 多边形 只读 x/y；上游签名要完整 图节点，没有值可收窄
+const 原点壳 = { x: 0, y: 0 } as 位点
 
 export type 模式 = "指针" | "连线"
 
@@ -180,6 +194,17 @@ export interface 画布Props {
    * 测试缝：用真实计时会让用例等到 200ms 以上。
    */
   readonly 恢复毫秒?: number
+  /**
+   * 外环自动档表（T018 / R105）：节点 id → 档（0..4）。编辑器用 `外环档表` 算好传入；
+   * 不传则画布用同一个纯函数自算——导出 / 演示直接挂画布时也要有环。两条路径同一出处
+   * （`#002-06`），不要在这里另写「度数 → 档」。
+   */
+  readonly 档表?: ReadonlyMap<string, number>
+  /**
+   * 图例初始收起（T018 / R74）：编辑器演示态传 `true`（设计 §5.14 演示态隐藏图例）；
+   * T015 的隐藏只读渲染不传 ⇒ 导出永远含展开图例。
+   */
+  readonly 图例初始收起?: boolean
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -397,6 +422,33 @@ export function 画布(props: 画布Props): JSX.Element {
   const 可见边们 = createMemo(() =>
     props.可见 === undefined ? props.文档.边 : props.文档.边.filter((行) => props.可见!.边.has(行.id)),
   )
+  // --- T018：视觉规格（形状 / 边几何 / 外环） --------------------------------------------
+
+  /**
+   * 平行边编号（R73）：无向端点对分组、组内按 id 升序。同一份编号同时决定边的偏移
+   * 与「双向两条平行带」的次序；不按传入顺序编号（同输入同输出）。
+   */
+  const 平行序 = createMemo(() => 算平行边序(props.文档.边))
+  /** 自算的外环自动档表（只在调用方没传 `档表` 时被读）。 */
+  const 自动档表 = createMemo(() => 外环档表(props.文档.节点, props.文档.边, props.文档.设置.外环阈值))
+  const 档表 = () => props.档表 ?? 自动档表()
+  const 环档 = (点: 节点) => 档表().get(点.id) ?? 0
+
+  /**
+   * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
+   * 查不到（含空 / 自定义色名）⇒ 默认描边色，不猜用户意图。
+   */
+  const 外环色表: Readonly<Record<string, string>> = {
+    红: "var(--v2-state-border-danger)",
+    橙: "var(--v2-state-border-warning)",
+    黄: "var(--v2-state-border-warning)",
+    绿: "var(--v2-state-border-success)",
+    蓝: "var(--v2-state-border-info)",
+    金: "var(--v2-brand-gold-deep)",
+    灰: "var(--v2-text-text-muted)",
+  }
+  const 外环色 = (点: 节点) => 外环色表[点.外环?.颜色 ?? ""] ?? "var(--v2-border-border-strong)"
+
   /**
    * 标签分级（R71）：`标签取舍` 由画布调用——缩放只有这里知道；`选中` / `悬停` / `开` /
    * 边度数都从 props 传入。运动帧直接给空集：省掉每帧一次重叠取舍，也保证「运动中全隐」。
@@ -409,6 +461,8 @@ export function 画布(props: 画布Props): JSX.Element {
         选中: props.选中,
         悬停id: 悬停id(),
         开: props.标签开,
+        // T018 / R75：自动外环档不在文件里；不传档表时 0.3–0.6 缩放会把自动档节点误隐。
+        档表: 档表(),
         边们: props.文档.边,
       }),
     )
@@ -875,30 +929,77 @@ export function 画布(props: 画布Props): JSX.Element {
             {(行: 边) => {
               const 甲 = () => props.文档.节点.find((点) => 点.id === 行.从)
               const 乙 = () => props.文档.节点.find((点) => 点.id === 行.到)
+              const 偏移 = () => 边偏移(平行序().get(行.id) ?? 0)
+              const 档 = () => 边档(行, props.文档.设置)
+              const 线色 = () =>
+                行.性质 === "事实" ? "var(--v2-border-border-strong)" : "var(--v2-text-text-muted)"
+              /**
+               * 边几何（R73/R74）：中心到中心取方向，起终点退到节点边缘外
+               * （起 +17、终 −20，仿 `graph.tsx:1049-1095`），再沿法线错开平行带。
+               * 长度为 0（自环 / 两节点重合）⇒ 不画线（没有方向，箭头也没有意义）。
+               */
+              const 几何 = createMemo(() => {
+                const 甲点 = 甲()
+                const 乙点 = 乙()
+                if (甲点 === undefined || 乙点 === undefined) return undefined
+                const 甲位 = 节点位(甲点)
+                const 乙位 = 节点位(乙点)
+                const dx = 乙位.x - 甲位.x
+                const dy = 乙位.y - 甲位.y
+                const 长 = Math.hypot(dx, dy)
+                if (长 < 0.001) return undefined
+                const ux = dx / 长
+                const uy = dy / 长
+                const 法x = -uy
+                const 法y = ux
+                const 偏 = 偏移()
+                const 起 = { x: 甲位.x + ux * 17 + 法x * 偏, y: 甲位.y + uy * 17 + 法y * 偏 }
+                const 终 = { x: 乙位.x - ux * 20 + 法x * 偏, y: 乙位.y - uy * 20 + 法y * 偏 }
+                const 基 = { x: 终.x - ux * 9, y: 终.y - uy * 9 }
+                return {
+                  起,
+                  终,
+                  中: { x: (起.x + 终.x) / 2, y: (起.y + 终.y) / 2 },
+                  箭头: [
+                    `${终.x.toFixed(1)},${终.y.toFixed(1)}`,
+                    `${(基.x + 法x * 4.5).toFixed(1)},${(基.y + 法y * 4.5).toFixed(1)}`,
+                    `${(基.x - 法x * 4.5).toFixed(1)},${(基.y - 法y * 4.5).toFixed(1)}`,
+                  ].join(" "),
+                }
+              })
               return (
                 <Show when={甲() !== undefined && 乙() !== undefined}>
-                  <g data-slot="hgraph-edge" data-edge-id={行.id}>
-                    {(() => {
-                      const 起 = 节点位(甲()!)
-                      const 终 = 节点位(乙()!)
-                      return (
+                  {/* 组本身总在（边数/右键菜单按 id 找组）；零长度边只是不画线。 */}
+                  <g
+                    data-slot="hgraph-edge"
+                    data-edge-id={行.id}
+                    data-edge-offset={String(偏移())}
+                    data-edge-tier={String(档())}
+                  >
+                    <Show when={几何()}>
+                      {(几) => (
                         <>
                           <line
                             data-slot="hgraph-edge-line"
-                            x1={起.x}
-                            y1={起.y}
-                            x2={终.x}
-                            y2={终.y}
-                            stroke={行.性质 === "事实" ? "var(--v2-border-border-strong)" : "var(--v2-text-text-muted)"}
-                            stroke-width="1.5"
+                            x1={几().起.x}
+                            y1={几().起.y}
+                            x2={几().终.x}
+                            y2={几().终.y}
+                            stroke={线色()}
+                            stroke-width={线宽像素(档())}
+                            stroke-opacity={档() <= 1 ? "0.55" : undefined}
                             stroke-dasharray={行.性质 === "推断" ? "4 3" : undefined}
                           />
+                          {/* 只有有向边画箭头（方向是唯一被表达的信息；无向画了会误导）。 */}
+                          <Show when={行.方向 === "有向"}>
+                            <polygon data-slot="hgraph-edge-arrow" points={几().箭头} fill={线色()} />
+                          </Show>
                           {/* R71：边标签只在缩放 ≥ 0.8 显示（运动帧也隐）。 */}
                           <Show when={边标签可见()}>
                             <text
                               data-slot="hgraph-edge-label"
-                              x={(起.x + 终.x) / 2}
-                              y={(起.y + 终.y) / 2 - 4}
+                              x={几().中.x}
+                              y={几().中.y - 4}
                               text-anchor="middle"
                               font-size="11"
                               fill="var(--v2-text-text-muted)"
@@ -907,8 +1008,8 @@ export function 画布(props: 画布Props): JSX.Element {
                             </text>
                           </Show>
                         </>
-                      )
-                    })()}
+                      )}
+                    </Show>
                   </g>
                 </Show>
               )
@@ -919,10 +1020,17 @@ export function 画布(props: 画布Props): JSX.Element {
             {(点: 节点) => {
               const 位 = () => 节点位(点)
               const 选中 = () => props.选中.includes(点.id)
+              // 形状映射只此一份（`graph.tsx` 的 `形状`，R74/#002-06）。
+              const 形 = () => 形状(点.类型 ?? "")
+              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : "var(--v2-background-bg-layer-02)")
+              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : "var(--v2-border-border-strong)")
+              const 描边宽 = () => (选中() ? 3 : 1.5)
+              const 虚线 = () => (点.锁定 === true ? "3 2" : undefined)
               return (
                 <g
                   data-slot="hgraph-node"
                   data-node-id={点.id}
+                  data-node-shape={形()}
                   data-selected={选中() ? "true" : undefined}
                   data-locked={点.锁定 === true ? "true" : undefined}
                   transform={`translate(${位().x} ${位().y})`}
@@ -930,16 +1038,57 @@ export function 画布(props: 画布Props): JSX.Element {
                   onPointerEnter={() => set悬停id(点.id)}
                   onPointerLeave={() => set悬停id((旧) => (旧 === 点.id ? undefined : 旧))}
                 >
-                  <circle
-                    r={节点半径}
-                    fill={选中() ? "var(--v2-brand-gold)" : "var(--v2-background-bg-layer-02)"}
-                    stroke={选中() ? "var(--v2-brand-gold-deep)" : "var(--v2-border-border-strong)"}
-                    stroke-width={选中() ? 3 : 1.5}
-                    stroke-dasharray={点.锁定 === true ? "3 2" : undefined}
-                  />
-                  {/* 类型同时用形状/首字区分，颜色不是唯一通道（FR-048）。 */}
+                  {/* 外环（T018）：档 = 外环档表（自动 or 手动冻结）；先画环、形状盖在上面。 */}
+                  <Show when={环档(点) >= 1}>
+                    <circle
+                      data-slot="hgraph-node-ring"
+                      data-ring-tier={String(环档(点))}
+                      r={18}
+                      fill="none"
+                      stroke={外环色(点)}
+                      stroke-width={环档(点)}
+                    />
+                  </Show>
+                  {/* 类型用形状 + 首字双通道，颜色不是唯一通道（FR-048）。 */}
+                  <Switch fallback={<circle r={节点半径} fill={填充色()} stroke={描边色()} stroke-width={描边宽()} stroke-dasharray={虚线()} data-slot="hgraph-node-shape" />}>
+                    <Match when={形() === "rect"}>
+                      <rect
+                        data-slot="hgraph-node-shape"
+                        x={-14}
+                        y={-14}
+                        width={28}
+                        height={28}
+                        rx={6.75}
+                        fill={填充色()}
+                        stroke={描边色()}
+                        stroke-width={描边宽()}
+                        stroke-dasharray={虚线()}
+                      />
+                    </Match>
+                    <Match when={形() === "hexagon"}>
+                      <polygon
+                        data-slot="hgraph-node-shape"
+                        points={多边形(原点壳, 15, 6, -Math.PI / 2)}
+                        fill={填充色()}
+                        stroke={描边色()}
+                        stroke-width={描边宽()}
+                        stroke-dasharray={虚线()}
+                      />
+                    </Match>
+                    <Match when={形() === "diamond"}>
+                      <polygon
+                        data-slot="hgraph-node-shape"
+                        points={多边形(原点壳, 15, 4, -Math.PI / 2)}
+                        fill={填充色()}
+                        stroke={描边色()}
+                        stroke-width={描边宽()}
+                        stroke-dasharray={虚线()}
+                      />
+                    </Match>
+                  </Switch>
+                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。 */}
                   <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
-                    {(点.类型 ?? "").slice(0, 1)}
+                    {Array.from(点.类型 ?? "")[0] ?? ""}
                   </text>
                   {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
                   <Show when={保留标签().has(点.id)}>
@@ -1080,6 +1229,11 @@ export function 画布(props: 画布Props): JSX.Element {
             }}
           </Show>
         </g>
+        {/*
+          T018 图例：放 svg 内、viewport 之后（T015 只序列化这个 svg）——固定屏幕坐标，
+          不吃缩放/平移；演示态由「初始收起」收掉，导出（不传）永远含展开图例。
+        */}
+        <图例 初始收起={props.图例初始收起} />
       </svg>
 
       <Show when={菜单()}>

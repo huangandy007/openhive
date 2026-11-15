@@ -49,7 +49,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 临时id, 是临时id } from "./temp-id"
-import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置 } from "./geometry"
+import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
 import { 工具栏 } from "./toolbar"
 import { 检查器, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
@@ -554,6 +554,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   /** `标签取舍` 的 `开`：工具开关强制打开；>800 节点默认关；否则按缩放档位。 */
   const 标签开 = () => (全部标签() ? true : 文档().节点.length > 800 ? false : undefined)
+
+  /**
+   * 外环自动档表（T018 / R75）：`标签取舍` 在 0.3 ≤ 缩放 < 0.6 时按档放行标签。
+   * 自动档不在文件里（`节点.外环.档` 只存手动档），必须由文档实时算出后传给画布；
+   * 算法唯一定义在 `geometry.ts` 的 `外环档表`（`#002-06`）。
+   */
+  const 档表 = createMemo(() => 外环档表(文档().节点, 文档().边, 文档().设置.外环阈值))
 
   /** 隔离（R72）：选中节点 ∪ 1 跳邻居；再点并集扩展。 */
   const 只看邻居 = (ids: readonly string[]) => {
@@ -1835,6 +1842,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         {/*
           演示态复用**同一个画布实例**（只读 + 可见过滤），不另挂第二套渲染器：
           卸载画布会丢掉视口，而 FR-040 要求退出后视口保持进入前的样子（T011）。
+
+          T018 / R74：演示态收起图例（设计 §5.14），退出演示恢复展开；导出走 T015 的
+          隐藏只读渲染，不传 `图例初始收起` ⇒ 导出永远含展开图例。
         */}
         <画布
           文档={文档()}
@@ -1850,6 +1860,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           居中请求={演示中() ? undefined : 居中请求()}
           适配请求={适配请求()}
           标签开={标签开()}
+          档表={档表()}
+          图例初始收起={演示中()}
         />
         {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
         <Show when={!演示中() && 隐藏数() > 0}>
