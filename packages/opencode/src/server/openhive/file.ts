@@ -403,7 +403,7 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, pg, "copy"))
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, pg, "move"))
-    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root, pg))
+    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
     // 2026-10-12：读**前**问一句大小（前端闸门，表格 5 MB / 其余 10 MB）。
     yield* router.add("GET", PATH.stat, (request) => handleStat(request, root))
@@ -725,22 +725,22 @@ function 猜测文本类型(fileName: string): MaterialKind {
 }
 
 /**
- * 上传落盘后顺手入队（设计 §5.2 第 1 步）。
+ * 把一份盘上文件登记为材料并排入解析队列（右键「解析入库」的落库步骤）。
  *
  * 三条自我约束：
- * - **只认可解析扩展名（表格 ∪ 文本）**：产物与探索中间文件不经上传入口登记；即便经
+ * - **只认可解析扩展名（表格 ∪ 文本）**：产物与探索中间文件不经这里登记；即便经
  *   `入队材料` 进来的行，也由 `kind = 产物` 的硬边界拦住。
  * - **算不出项目就跳过**：项目目录恒为 `{根}/{userId}/{projectId}`（`project.ts:14` /
  *   `@opencode-ai/auth/workspace` 的 `projectDirectory`），**恰好两层**才算得清
  *   「哪个项目」与「沙箱内落点」。层数不对时宁可入不了队，也不猜。
- * - **不认识文件内容**：`bytes` 由调用方给（上传时已经在内存里），这里不读盘。
+ * - **不认识文件内容**：`bytes` 由调用方给，这里不读盘。
  *
  * 返回 `undefined` = 没入队（不是失败）。调用方据此什么都不做。
  */
 export async function 入队材料(
   db: Queryable,
   input: {
-    /** 沙箱根的**绝对路径**（同上，`handleUpload` 传的就是它）。 */
+    /** 沙箱根的**绝对路径**。 */
     root: string
     /** 项目目录的**绝对路径**。 */
     project: string
@@ -752,13 +752,13 @@ export async function 入队材料(
     /**
      * 强制重解析：右键「重新解析」传 `true`，已解析的材料也重新排队。
      *
-     * ⚠️ 不能把「已解析也排队」写进上传路径的默认值：上传是幂等的（重拖同一个文件不该
-     * 再跑一遍），强制重来是**用户显式点的**那一下。
+     * ⚠️ 默认值必须保持「幂等」：普通「解析入库」不重跑已解析的材料，
+     * 强制重来是**用户显式点的**那一下。
      */
     force?: boolean
     /**
      * 置顶优先：只有人工「解析入库」（`case-parse.ts` 的 `action === "入队"`）传。
-     * 上传自动入队不传——系统顺带做的事不该插到用户前面。
+     * 「重新解析」保持 FIFO——顺带重跑不该插到别人前面。
      */
     置顶?: boolean
     /** 人工指定的卡片模板；不传按表自动建议。 */
@@ -812,7 +812,7 @@ export async function 入队材料(
  * ⚠️ 中间件不会碰这个体：它只在 `content-type` 会被当 JSON 解时读体，而 multipart 不是
  * （`project-location.ts` 的 `isJsonRequest`）——两件事各归各的，别把「中间件不管」读成「没中间件」。
  */
-function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string, pg: OpenhivePg.Interface) {
+function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string) {
   return Effect.gen(function* () {
     const project = yield* gate(request, root)
     if (typeof project !== "string") return project
@@ -851,26 +851,8 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
       yield* Effect.die(failed)
     }
 
-    // 落盘即入队（设计 §5.2）。**入队失败不能把上传改成失败**：文件已经在盘上了，
-    // 为了一条排队记录回滚上传只会更糟——记一条 WARN，让人重拖一次（指纹幂等，不会重复）。
-    const user = yield* Effect.serviceOption(User.Service)
-    if (Option.isSome(user)) {
-      yield* Effect.promise(() =>
-        入队材料(pg.pg(), {
-          root,
-          project,
-          target,
-          bytes,
-          fileName: part.name,
-          by: user.value.id,
-        }),
-      ).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("上传后入队失败", { error: Cause.prettyErrors(cause).map((e) => e.name) }),
-        ),
-      )
-    }
-
+    // 上传只落盘（feature 011 / FR-001）：不再建材料行、不排作业。
+    // 入库的唯一入口是右键「解析入库」（`case-parse.ts` 的 `action === "入队"`）。
     return Made(relativePath(project, target))
   })
 }

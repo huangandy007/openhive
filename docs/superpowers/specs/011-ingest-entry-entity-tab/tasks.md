@@ -73,14 +73,18 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 ### Implementation
 
-- [ ] T003 [US1] 删除上传入队段并收口签名：`packages/opencode/src/server/openhive/file.ts:854-872` 整段删除；`handleUpload`（`:815`）去掉 `pg` 参数；路由注册（`:406`）同步
+- [x] T003 [US1] 删除上传入队段并收口签名：`packages/opencode/src/server/openhive/file.ts:854-872` 整段删除；`handleUpload`（`:815`）去掉 `pg` 参数；路由注册（`:406`）同步
+
+  > **绿（2026-11-15 实测）**：`openhive-file-ops` 117 pass / 0 fail（T002 的用例转绿）；`openhive-case-materials` 38 pass / 0 fail（唯一入口守门仍绿）。
 
   - **入参**：T002 的红用例
   - **出参**：`handleUpload(request, root)`；上传只写盘；T002 转绿；`openhive-case-materials.test.ts:452` 的入队用例仍绿（唯一入口没被改坏）
   - **依赖**：T002
   - **验证**：`S: openhive-file-ops` + `S: openhive-case-materials` 全绿
 
-- [ ] T004 [US1] 注释随事实改：`file.ts` 的 `入队材料` JSDoc（`:727-738`）、`:743`、`:752-756`、`:759-762`；`openhive-file-ops.test.ts:3134-3145` 的「接线真调了入队」段落
+- [x] T004 [US1] 注释随事实改：`file.ts` 的 `入队材料` JSDoc（`:727-738`）、`:743`、`:752-756`、`:759-762`；`openhive-file-ops.test.ts:3134-3145` 的「接线真调了入队」段落
+
+  > **绿（2026-11-15 实测）**：`grep '顺手入队\|上传自动入队\|handleUpload\` 传的就是它\|上传落盘后' file.ts` 0 命中；`file-ops` 117 pass、`file-upload-ingest` 14 pass，均 0 fail。
 
   - **入参**：T003 后的代码事实
   - **出参**：注释里不再出现「上传落盘后顺手入队」「上传自动入队不传」「`handleUpload` 传的就是它」「计划 4 起 `.txt` 也会入队」这类现已不成立的现在时；历史结论（扰动实测）保留但标明「2026-11-15 起上传不再触库」
