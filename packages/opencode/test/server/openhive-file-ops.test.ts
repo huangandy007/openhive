@@ -3139,12 +3139,15 @@ describe("打包下载（POST /openhive/file/archive）", () => {
  *
  * 修复轮 2（复审改判）：**接线**真的调了入队，不只是库函数本身。
  *
- * 上面的上传用例都用 `.txt`——计划 4 起 `.txt` 也会入队（文本材料），
- * 但它们断言的是文件操作本身，材料与作业行怎么变不影响结论。这条用真 `.xlsx`
- * 走完整条接线：落盘 → `入队材料` → `case_material` ＋ `case_ingest_job`
+ * 2026-11-15 起上传不再触库（feature 011 / FR-001）：落盘后不再调 `入队材料`，
+ * 所以上文「上传时 `enqueueMaterial` 扰动后续 app」只作为**历史事实**保留（当时实测），
+ * 现在这条用例反向钉住新契约：上传只落盘，材料行与作业行各为 0。
+ *
+ * 上面的上传用例都用 `.txt`——它们断言的是文件操作本身，材料与作业行怎么变不影响结论。
+ * 这条用真 `.xlsx` 走完整条接线：落盘 → 停（不再 `入队材料`）。
  */
 it.live(
-  "上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行（接线真调了入队）",
+  "上传只落盘，不建材料行、不排作业（上传不再触库）",
   () =>
     Effect.gen(function* () {
       yield* 就绪()
@@ -3169,7 +3172,7 @@ it.live(
         headers: { [PROJECT_HEADER]: ALPHA },
       })
 
-      // 判据是**库里真有两行**，先读副作用，再断状态码（`#004-14`）。
+      // 判据是**库里没有材料行**，先读副作用，再断状态码（`#004-14`）。
       const 材料 = rowsOf(
         yield* Effect.promise(() =>
           库.execute(
@@ -3178,19 +3181,17 @@ it.live(
           ),
         ),
       )
-      expect(材料.length).toBe(1)
-      expect(材料[0]?.path).toBe("sub/话单.xlsx")
+      expect(材料.length).toBe(0)
 
       const 作业 = rowsOf(
         yield* Effect.promise(() =>
           库.execute(
             sql`select source_path from auth.case_ingest_job
-                 where project_id = ${ALPHA} and material_id = ${String(材料[0]?.id)}`,
+                 where project_id = ${ALPHA} and source_path = ${`${ALICE.id}/${ALPHA}/sub/话单.xlsx`}`,
           ),
         ),
       )
-      expect(作业.length).toBe(1)
-      expect(作业[0]?.source_path).toBe(`${ALICE.id}/${ALPHA}/sub/话单.xlsx`)
+      expect(作业.length).toBe(0)
       expect(response.status).toBe(200)
     }),
   30_000,

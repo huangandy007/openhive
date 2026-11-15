@@ -62,7 +62,9 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 ### Tests first（先红）
 
-- [ ] T002 [US1] 反转上传断言为红：`packages/opencode/test/server/openhive-file-ops.test.ts:3146` 的「上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行」
+- [x] T002 [US1] 反转上传断言为红：`packages/opencode/test/server/openhive-file-ops.test.ts:3146` 的「上传真 .xlsx ⇒ 200，且 case_material / case_ingest_job 各落一行」
+
+  > **红（2026-11-15 实测）**：材料 `Expected 0 / Received 1`；作业 `Expected 0 / Received 1`；该文件 116 pass / 1 fail。
 
   - **入参**：现用例体（真 `.xlsx` + multipart 上传到 `sub`）
   - **出参**：用例改名「上传只落盘，不建材料行、不排作业」；断言改为材料 0 行、作业 0 条；本步跑 **FAIL**，实得「材料 1 / 作业 1」
