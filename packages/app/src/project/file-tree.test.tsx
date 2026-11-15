@@ -3401,6 +3401,79 @@ describe("FileTree 文件树（FR-005）", () => {
         expect(子项原因(action), action).toBe("多选时只支持解析入库")
       }
     })
+
+    /**
+     * T010（US2 / 契约 C4）：多选确认框的 **N** 与 **M** 是两个单位，不许互换。
+     *
+     * N = 候选集大小（**文件**数，目录会展开成里面的文件）；
+     * M = 被排除的选中项数（**选中项**数：自身一个候选都展不出来的项算 1 项）。
+     */
+    test("多选确认框：3 选（1 份已解析）⇒ 标题「解析选中的文件」、N=2、M=1", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [视图行({ path: "甲.csv", status: "已解析" })],
+      })
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      expect(
+        document.body.querySelector("[data-slot='dialog-header-title']")?.textContent?.trim(),
+      ).toBe("解析选中的文件")
+      const 正文 = document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent ?? ""
+      expect(正文).toContain("将解析选中的 2 个文件")
+      expect(正文).toContain("另有 1 个选中项不在本次范围")
+      // N > 0 ⇒ 确认键可点（与下一条「N=0 置灰」成对，钉住 disabled 挂在 N 上）。
+      expect(
+        document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
+      ).toBe(false)
+    })
+
+    test("多选确认框：全不可入队（3 份已解析）⇒ 仍弹窗、正文说清为什么、确认键置灰", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [
+          视图行({ path: "甲.csv", status: "已解析" }),
+          视图行({ path: "乙.csv", status: "已解析" }),
+          视图行({ path: "丙.csv", status: "已解析" }),
+        ],
+      })
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      // 弹窗仍出：菜单已放行到这一步，直接 return 就是「点了没反应」。
+      expect(
+        document.body.querySelector("[data-slot='dialog-header-title']")?.textContent?.trim(),
+      ).toBe("解析选中的文件")
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
+        "选中的文件里没有可入队的（已解析 / 已跳过的文件请用各自的单文件右键菜单恢复）",
+      )
+      // 置灰也把原因写进正文（上面那条），只灰不说用户会以为界面卡了。
+      expect(
+        document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
+      ).toBe(true)
+    })
+
+    test("右键单个文件夹：确认框文案逐字不变（回归，folder 作用域不受多选改造影响）", async () => {
+      const { host } = 挂带材料(["资料/甲.csv", "资料/乙.xlsx"])
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+      点子项("parse-enqueue")
+      await 等到(() => document.body.querySelector("[data-slot='parse-confirm-dialog']") !== null)
+
+      expect(
+        document.body.querySelector("[data-slot='dialog-header-title']")?.textContent?.trim(),
+      ).toBe("解析这个文件夹")
+      expect(document.body.querySelector("[data-slot='parse-confirm-body']")?.textContent).toBe(
+        "将解析这个文件夹下的 2 个文件",
+      )
+    })
   })
 
   describe("行尾标记与汇总（计划 3）", () => {

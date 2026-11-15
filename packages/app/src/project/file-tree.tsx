@@ -25,6 +25,7 @@ import {
   汇总全部,
   目录下待入队,
   悬停文案,
+  选中集入队范围,
   跳过不可用原因,
   重新解析不可用原因,
   状态文案,
@@ -686,6 +687,70 @@ export function FileTree(props: FileTreeProps) {
     ))
   }
 
+  /**
+   * 多选批量解析：先确认，再**逐个**发入队（契约 C4）。
+   *
+   * N（候选集大小）与 M（被排除的选中项数）都由 `选中集入队范围` 一次算出——它与
+   * `选中集待入队` 共用同一份展开逻辑（`#002-06`），三处各算一遍迟早只改一处。
+   *
+   * ## N = 0
+   *
+   * 仍然弹窗：菜单在状态已读到时保持可点（控制器裁定 2026-11-15），0 候选的解释归这里。
+   * 直接 `return` 就是「点下去没反应」。
+   *
+   * ## 逐个发送与失败中断
+   *
+   * 与文件夹那条同一条约定（服务端一次收一个文件、按文件分开交代成败）。T011 会把这段
+   * 循环抽成文件夹与多选共用的批量执行器；本任务只接弹窗与数字，不提前抽。
+   */
+  function 确认解析选中() {
+    const 状态 = 材料()
+    if (状态 === undefined) return
+    const { 候选, 被排除的选中项 } = 选中集入队范围([...选中集()], 全部(), 状态.rows(), 扩展名())
+    if (候选.length === 0) {
+      void dialog.show(() => (
+        <ParseConfirmDialog
+          标题="解析选中的文件"
+          正文="选中的文件里没有可入队的（已解析 / 已跳过的文件请用各自的单文件右键菜单恢复）"
+          确认文案="解析"
+          禁用
+          onConfirm={() => undefined}
+        />
+      ))
+      return
+    }
+    const 正文 =
+      被排除的选中项 > 0
+        ? `将解析选中的 ${候选.length} 个文件；另有 ${被排除的选中项} 个选中项不在本次范围`
+        : `将解析选中的 ${候选.length} 个文件`
+    void dialog.show(() => (
+      <ParseConfirmDialog
+        标题="解析选中的文件"
+        正文={正文}
+        确认文案="解析"
+        onConfirm={async () => {
+          let 成 = 0
+          for (const path of 候选) {
+            const 结果 = await 状态.parse(path, "入队")
+            if (结果.kind === "error") {
+              showToast({
+                variant: "error",
+                title: "选中的文件解析中断",
+                description: `第 ${成 + 1} 个文件（${path}）没能入队：${结果.message}`,
+              })
+              break
+            }
+            成 += 1
+          }
+          // 不管成与败都按服务端真实状态重拉：已发出的入队已经生效，界面不能停在旧快照上。
+          状态.reload()
+          if (成 > 0) showToast({ variant: "success", title: `已加入解析队列（${成} 个文件）` })
+          return undefined
+        }}
+      />
+    ))
+  }
+
   function 成功文案(action: 人工解析动作) {
     switch (action) {
       case "入队":
@@ -1257,11 +1322,12 @@ export function FileTree(props: FileTreeProps) {
                     onSelect={() => {
                       const path = 菜单对象()
                       if (path === undefined) return
-                      // TODO(T010)：selection 作用域接「选中集确认」弹窗——候选 =
-                      // `选中集待入队(目标.paths, 全部(), 状态.rows(), 扩展名())`，M = 被排除的选中项数，
-                      // N=0 仍弹窗、确认键置灰。T009 只做菜单亮灰与触发项文案，故这里先明确空转
-                      //（不是静默漏接：菜单仍亮着是控制器裁定，点下去的行为归 T010）。
-                      if (菜单目标()?.kind === "selection") return
+                      // 多选：作用对象是整个选中集（T010）。N/M 在 `确认解析选中` 里由
+                      // `选中集入队范围` 一次算出——别在这里先按右键行判一次（`#002-06`）。
+                      if (菜单目标()?.kind === "selection") {
+                        确认解析选中()
+                        return
+                      }
                       if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
                       else 直接解析(path, "入队")
                     }}

@@ -201,21 +201,25 @@ const 归一 = (path: string) => path.replaceAll("\\", "/").replace(/^\/+|\/+$/g
 const 尾分隔符 = /[\\/]$/
 
 /**
- * 多选（文件与目录混排）下**会真正入队**的候选——批量确认框里的 N（契约 C3–C5）。
+ * 多选（文件与目录混排）下**会真正入队**的候选（N）与被排除的选中项数（M）——契约 C4。
  *
  * 判据只有 `文件待入队` 一处（`#002-06`）：目录展开交给 `目录下待入队`，文件直接过它。
  * 一个 `见过` 跨全部选中项去重：同一份文件被目录和自身各选中一次也只入队一次。
  * 顺序 = `选中项` 输入顺序、目录内部保持 `文件们` 原顺序——候选顺序就是入队顺序。
  *
+ * **N 与 M 单位不同，不许互换**：N 是文件数（目录会展开成里面的文件）；M 是**选中项**数，
+ * 只数「自身一个候选都展不开」的项。被别的选中项覆盖、但自身有候选的项**不算**排除
+ * ——它确实带进来了文件，只是去重后没重复出现。
+ *
  * 形态判定：带尾分隔符 ⇒ 目录；否则在 `文件们` 里能找到同形文件条目 ⇒ 文件；
  * 都不是 ⇒ 按目录处理（空目录 / 还没出现在清单里的子目录），展开结果自然为空。
  */
-export function 选中集待入队(
+export function 选中集入队范围(
   选中项: readonly string[],
   文件们: readonly string[],
   行们: readonly 材料视图[],
   extensions: readonly string[],
-): readonly string[] {
+): { 候选: readonly string[]; 被排除的选中项: number } {
   const 行表 = new Map(行们.map((row) => [row.path, row]))
   const 文件映射 = new Map<string, string>()
   for (const path of 文件们) {
@@ -224,27 +228,40 @@ export function 选中集待入队(
     if (!文件映射.has(键)) 文件映射.set(键, path)
   }
 
-  const 结果: string[] = []
+  const 候选: string[] = []
   const 见过 = new Set<string>()
+  let 被排除的选中项 = 0
   for (const 项 of 选中项) {
     const 键 = 归一(项)
     if (键 === "") continue
     const 文件 = 尾分隔符.test(项) ? undefined : 文件映射.get(键)
-    const 候选 =
+    const 本项候选 =
       文件 !== undefined
         ? 文件待入队(文件, 行表.get(文件), extensions)
           ? [文件]
           : []
         : 目录下待入队(键, 文件们, 行们, extensions)
-    for (const path of 候选) {
+    // M 在**去重之前**按本项自己的展开结果数：被别的选中项覆盖 ≠ 这一项没东西可入队。
+    if (本项候选.length === 0) 被排除的选中项 += 1
+    for (const path of 本项候选) {
       // 去重按归一键：不同分隔符写法指向同一份文件也只出现一次。
       const 去重键 = 归一(path)
       if (见过.has(去重键)) continue
       见过.add(去重键)
-      结果.push(path)
+      候选.push(path)
     }
   }
-  return 结果
+  return { 候选, 被排除的选中项 }
+}
+
+/** 多选下的候选路径；与 `选中集入队范围(...).候选` 同一份展开逻辑（`#002-06`）。 */
+export function 选中集待入队(
+  选中项: readonly string[],
+  文件们: readonly string[],
+  行们: readonly 材料视图[],
+  extensions: readonly string[],
+): readonly string[] {
+  return 选中集入队范围(选中项, 文件们, 行们, extensions).候选
 }
 
 /**

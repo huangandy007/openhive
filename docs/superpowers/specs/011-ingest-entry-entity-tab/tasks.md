@@ -163,7 +163,14 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T006、T007、T008
   - **验证**：用例含「右键行已解析但选中集有未入队 ⇒ 仍亮」「右键行不在选中集 ⇒ 只对自身」；先红后绿
 
-- [ ] T010 [US2] 确认框 N / M（先红后绿）：`file-tree.tsx:642-685` 的 `确认解析文件夹` 分支改造；用例进 `file-tree.test.tsx`
+- [x] T010 [US2] 确认框 N / M（先红后绿）：`file-tree.tsx:642-685` 的 `确认解析文件夹` 分支改造；用例进 `file-tree.test.tsx`
+
+  > **基线（2026-11-15 实测）**：`file-tree.test.tsx` **180 pass / 0 fail / 405 expect**；`case-materials-view.test.tsx` **27 pass / 0 fail / 88 expect**。
+  > **红（2026-11-15 实测）**：新增 3 条后 `file-tree.test.tsx` **181 pass / 2 fail / 183 tests**，两条都红在 selection 分支缺失（弹窗不出现）：用例 1、2 均 `Expected: "解析选中的文件" / Received: undefined`（`等到` 1s 超时，弹窗始终未挂到 body）；用例 3（folder 回归）实现前即绿，符合预期。
+  > **绿**：`file-tree.test.tsx` **183 pass / 0 fail / 414 expect**（既有 180 + 新增 3）；`case-materials-view.test.tsx` **27 pass / 0 fail / 88 expect**（T007 既有断言一行未改）。
+  > **变异**：① `选中集入队范围` 的 M 计数由「本项展开为空才 +1」改成「`+= 本项候选.length`」（错误口径：按文件数算 M）⇒ 用例 1 红 `Expected to contain: "另有 1 个选中项不在本次范围" / Received: "将解析选中的 2 个文件；另有 2 个选中项不在本次范围"`，**182 pass / 1 fail**；② 拆掉 N=0 弹窗的 `禁用` ⇒ 用例 2 红 `Expected: true / Received: false`（`parse-confirm-ok` 的 `disabled`），**182 pass / 1 fail**。两次恢复后均回 **183 pass / 0 fail / 414 expect** + **27 pass / 0 fail / 88 expect**。
+  > **门禁**：`packages/app` `bun run typecheck` 退出 0（首次实跑暴露 `选中集()` 是 `ReadonlySet` ≠ `readonly string[]` 的 TS2740，改传 `[...选中集()]` 后通过）；根 `bun run lint` 退出 1，**唯一 error** 在未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（既有，octal escape），本任务三文件命中的三条 `consistent-return` 均为既有（`标记形状:12` / `悬停文案:43` / `成功文案:754`），新增行 0 诊断。
+  > **落点核对（`#002-06`）**：`选中集待入队` 改为调用 `选中集入队范围(...).候选`，全仓仅此一处展开逻辑；`目录下待入队` 调用点仍只有文件夹弹窗与 `选中集入队范围`；`确认解析选中` 仅由 `parse-enqueue` 的 selection 分支调用。
 
   - **入参**：`选中项`（用于算 M）、候选集（N）、被排除的选中项数（M）
   - **出参**：`selection` 作用域标题「解析选中的文件」、正文「将解析选中的 N 个文件」+「另有 M 个选中项不在本次范围」；N=0 ⇒ 弹窗仍出、确认键禁用；`folder` 文案不变
