@@ -141,8 +141,12 @@ const e2档案 = 档案({
 type 列表入参 = Parameters<EntityApi["list"]>[0]
 
 function 挂选择器(选项: {
-  list?: (input: 列表入参) => Awaited<ReturnType<EntityApi["list"]>>
-  profile?: (id: string) => Awaited<ReturnType<CaseDetailApi["profile"]>>
+  list?: (input: 列表入参) =>
+    | Awaited<ReturnType<EntityApi["list"]>>
+    | ReturnType<EntityApi["list"]>
+  profile?: (id: string) =>
+    | Awaited<ReturnType<CaseDetailApi["profile"]>>
+    | ReturnType<CaseDetailApi["profile"]>
   已有节点?: readonly 节点[]
   摆放?: (序号: number) => { readonly x: number; readonly y: number }
 } = {}) {
@@ -252,7 +256,7 @@ describe("选择器 · 搜索", () => {
     const 器 = 挂选择器({
       list: (输入) => {
         if (输入.q === "") return Promise.resolve({ kind: "ok", value: { 行们, 总数: 行们.length, 缺口: [] } })
-        return new Promise((resolve) => 待.set(输入.q!, resolve))
+        return new Promise<Awaited<ReturnType<EntityApi["list"]>>>((resolve) => 待.set(输入.q!, resolve))
       },
     })
     await 落定()
@@ -480,7 +484,7 @@ describe("选择器 · 加入节点", () => {
   test("T019a 加入在飞时点「收起」：回来的结果不得再 onAdd、也不得二次 onClose", async () => {
     let 放: (回: Awaited<ReturnType<CaseDetailApi["profile"]>>) => void = () => {}
     const 器 = 挂选择器({
-      profile: () => new Promise((resolve) => void (放 = resolve)),
+      profile: () => new Promise<Awaited<ReturnType<CaseDetailApi["profile"]>>>((resolve) => void (放 = resolve)),
     })
     await 落定()
 

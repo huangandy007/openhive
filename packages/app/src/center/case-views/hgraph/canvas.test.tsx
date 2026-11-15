@@ -114,7 +114,7 @@ function 挂(
     readonly 选中?: readonly string[]
     readonly 动作?: 画布动作
     readonly 只读?: true
-    readonly 模式?: "指针" | "连线" | "框选"
+    readonly 模式?: "指针" | "连线"
   } = {},
 ) {
   const host = document.createElement("div")
