@@ -78,14 +78,17 @@ export async function 清本材料翻译(tx: Queryable, projectId: string, mater
   // 「关系对迁移」：本材料贡献过的**旧对**必须在删事件之前取出——事件删完就查不到了。
   // 否则重放换了对手时，旧对没有卡片支持、却从没人传进 `重建关系`，页面上会留一笔
   // 聚合了已删事件的转账（比少一笔更危险：它看起来像真线索）。
-  // 角色前提与 `重建关系` 同用 `资金参与者基`，改一处必须改该基（`#002-06`）。
+  // 角色前提与 `重建关系` 同用 `资金对基`，改一处必须改该基（`#002-06`）。
   const 旧对们: 关系对[] = rowsOf(
     await tx.execute(sql`
-      select distinct 付.entity_id as from_id, 收.entity_id as to_id
-        ${资金参与者基(projectId)}
-           and e.id in (select fact_id from auth.case_citation
-                         where project_id = ${projectId} and material_id = ${materialId}
-                           and fact_type = 'event')
+      ${资金对基(projectId)}
+      select distinct 资金对.from_id, 资金对.to_id
+        from auth.case_event e
+        join 资金对 on 资金对.event_id = e.id
+       where e.project_id = ${projectId}
+         and e.id in (select fact_id from auth.case_citation
+                       where project_id = ${projectId} and material_id = ${materialId}
+                         and fact_type = 'event')
     `),
   ).map((r) => ({ fromId: String(r.from_id), toId: String(r.to_id) }))
 
@@ -325,48 +328,65 @@ export interface 关系对 {
   toId: string
 }
 
-/** 关系对一批多少对：18 列上限不适用，按 2 个参数/对留足余量。 */
-const INSERT_CHUNK_PAIRS = 500
+/**
+ * 关系对一批多少对：一个 chunk 一次物化 + 一次聚合，控制结果集大小。
+ *
+ * 500 → 5,000（2026-11-15）：对过滤改成两个数组参数后，一条语句的参数个数与对数无关，
+ * 分块只决定结果集大小；而**每条取数语句都要把本项目全部事件物化一遍**，再叠加一次
+ * 远端往返（实测 22ms/次）。5,000 对 → 单块发 2 条取数语句（原来 10 块 20 条），
+ * 物化次数从 10 次降到 1 次。再大的项目按 5,000 一对一块切，单条语句的工作量有界。
+ */
+const INSERT_CHUNK_PAIRS = 5000
 
 /**
- * 「事件有一个付款方和一个收款方」的取数基（`#002-06`）：角色前提只写这一处。
+ * 「本项目每笔事件 → (付款方, 收款方)」的取数基（`#002-06`）：角色前提只写这一处。
  *
  * 三个调用点共用：`清本材料翻译` 取旧对、`重建关系` 取匹配候选、`重建关系` 聚合。
  * 基里**只放**三处都成立的前提（项目、两个角色、两端非空）；`type` / `trust_state` /
- * 对过滤由各调用点自己追加——把它们塞进基里，「旧对」就查不到非转账事件，
+ * 引用过滤由各调用点自己追加——把它们塞进基里，「旧对」就查不到非转账事件，
  * 重放换对手时会静默留下一笔聚合了已删事件的转账（`#013-02`）。
+ *
+ * 为什么是「参与者表扫一遍、按事件聚成对」而不是 `case_event` 各 join 一次付款方 /
+ * 收款方（`#013-10` 之后仍存在的第二形态，2026-11-15 真栈事务内实测）：双 join 的形状
+ * 下规划器可以为每笔事件各探两次索引（`Index Scan loops=10010`、buffers 40,336、
+ * 执行 96ms）；先聚合再 hash join 事件，同数据同语句 buffers **1,821**、执行 **32ms**。
+ * 一笔资金事件按定义只有一个付款方、一个收款方，`max(…) filter` 即取那一行。
  */
-function 资金参与者基(projectId: string): SQL {
-  return sql`from auth.case_event e
-    join auth.case_event_participant 付
-      on 付.project_id = e.project_id and 付.event_id = e.id and 付.role = '付款方'
-    join auth.case_event_participant 收
-      on 收.project_id = e.project_id and 收.event_id = e.id and 收.role = '收款方'
-   where e.project_id = ${projectId}
-     and 付.entity_id is not null and 收.entity_id is not null`
+function 资金对基(projectId: string): SQL {
+  return sql`with 资金对 as materialized (
+    select event_id,
+           max(entity_id) filter (where role = '付款方') as from_id,
+           max(entity_id) filter (where role = '收款方') as to_id
+      from auth.case_event_participant
+     where project_id = ${projectId} and entity_id is not null
+     group by event_id
+    having max(entity_id) filter (where role = '付款方') is not null
+       and max(entity_id) filter (where role = '收款方') is not null
+  )`
 }
 
 /**
  * 「本项目资金事件 → (付款方, 收款方)」的物化事件对。
  *
- * 为什么必须物化：`(付.entity_id, 收.entity_id) in (values …)` 若直接写在同一层，
- * 规划器会把对过滤**下推到付款方一侧**（只按一列做 hash），再对每个候选行按
- * `(project_id, event_id)` 取收款方行只为比第二列。真栈 500 对 / 5,005 事件实测：
- * 中间结果 809,880 行、`Rows Removed by Join Filter: 809,379`、单条 2,633ms
- * （2026-11-15，`EXPLAIN (ANALYZE)`）；同一语句第 6 次起转通用计划后升到 5.6s。
- * 物化后规划器不许重排：先按事件算完对（受事件数约束），再做哈希半连接，
- * 同数据同语句 13.5ms。参数化重复执行 55–95ms（`exact.ts` 探针，8 轮）。
+ * 为什么必须物化：对过滤若与取数写在同一层，规划器会把 `(from_id, to_id) in (…)`
+ * **下推到付款方一侧**（只按一列做 hash），再对每个候选行按 `(project_id, event_id)`
+ * 取收款方行只为比第二列。真栈 500 对 / 5,005 事件实测：中间结果 809,880 行、
+ * `Rows Removed by Join Filter: 809,379`、单条 2,633ms（2026-11-15，
+ * `EXPLAIN (ANALYZE)`）；同一语句第 6 次起转通用计划后升到 5.6s。
+ * 物化后规划器不许重排：先按事件算完对（受事件数约束），再做哈希半连接。
  *
- * 角色 / 非空前提仍只在 `资金参与者基` 定义（`#002-06`）；`type` / `trust_state`
+ * 角色 / 非空前提仍只在 `资金对基` 定义（`#002-06`）；`type` / `trust_state`
  * 由两个调用点（② 取数、④ 聚合）共有，放在本 CTE 里，别在调用点各写一遍。
  */
 function 资金事件对CTE(projectId: string): SQL {
-  return sql`with 事件对 as materialized (
+  return sql`${资金对基(projectId)}, 事件对 as materialized (
     select e.id, e.amount, e.occurred_at, e.currency, e.precision,
-           付.entity_id as from_id, 收.entity_id as to_id
-      ${资金参与者基(projectId)}
-         and e.type = ${资金交易}
-         and e.trust_state <> '已排除'
+           资金对.from_id, 资金对.to_id
+      from auth.case_event e
+      join 资金对 on 资金对.event_id = e.id
+     where e.project_id = ${projectId}
+       and e.type = ${资金交易}
+       and e.trust_state <> '已排除'
   )`
 }
 
@@ -402,10 +422,9 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
   let written = 0
   for (let i = 0; i < 对们.length; i += INSERT_CHUNK_PAIRS) {
     const chunk = 对们.slice(i, i + INSERT_CHUNK_PAIRS)
-    const 值 = sql.join(
-      chunk.map((p) => sql`(${p.fromId}, ${p.toId})`),
-      sql`, `,
-    )
+    // 对过滤走两个数组（`unnest(付款方们, 收款方们)`）：500 对是 2 个参数而不是 1,000 个，
+    // 规划器按数组做哈希半连接；物化的「事件对」仍挡住下推（见 `资金事件对CTE`）。
+    const 对过滤 = sql`(select * from unnest(${文本数组(chunk.map((p) => p.fromId))}, ${文本数组(chunk.map((p) => p.toId))}))`
 
     // ① 该 chunk 的 human 转账关系（端点先对齐；对齐后落在本 chunk 的才算）。
     //    `#002-06`：别名前提只在 case-party.ts 定义；这里只负责 join 与行值过滤。
@@ -428,7 +447,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
         )
         select id, amount::text as amount, first_at, trust_state, from_代表, to_代表
           from 人类转账关系
-         where (from_代表, to_代表) in (values ${值})
+         where (from_代表, to_代表) in ${对过滤}
       `),
     )
     const 关系们: 关系候选[] = 关系行.map((行) => {
@@ -452,7 +471,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
         ${资金事件对CTE(projectId)}
         select id, amount::text as amount, occurred_at, currency, from_id, to_id
           from 事件对
-         where (from_id, to_id) in (values ${值})
+         where (from_id, to_id) in ${对过滤}
       `),
     )
     const 事件们: 事件候选[] = 事件行.map((行) => ({
@@ -494,7 +513,7 @@ export async function 重建关系(tx: Queryable, projectId: string, 对们: rea
                     when bool_or(precision = '到秒') then '到秒'
                     else null end as precision
           from 事件对
-         where (from_id, to_id) in (values ${值})
+         where (from_id, to_id) in ${对过滤}
            and id <> all(${文本数组(覆盖)})
          group by 1, 2
       `),
@@ -594,6 +613,8 @@ export async function 事实资金对(
       `),
     ).map((行) => ({ fromId: String(行.from_id), toId: String(行.to_id) }))
   }
+  // 单个事件的点查**不走** `资金对基`：聚合基会先把本项目全部参与者分一遍组，
+  // 这里按 `(project_id, event_id)` 两次索引探测即可（一笔事件一对参与者，前提同源）。
   return rowsOf(
     await tx.execute(sql`
       select distinct 付.entity_id as from_id, 收.entity_id as to_id

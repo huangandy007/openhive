@@ -503,7 +503,8 @@ describe("重建关系 · 取数前先刷新事务内统计", () => {
     const 分析位 = 语句们.findIndex((s) => s.trimStart().startsWith("analyze ") && s.includes("case_event_participant"))
     expect(分析位).toBeGreaterThanOrEqual(0)
     for (const s of 语句们) {
-      if (!(s.includes("from auth.case_event e") && s.includes("auth.case_event_participant 付"))) continue
+      // 取数语句 = 读资金对的两条（② 取数 + ④ 聚合）；`analyze` 也在语句们里但这个条件挡掉它。
+      if (!(s.includes("from auth.case_event e") && s.includes("from auth.case_event_participant"))) continue
       expect(语句们.indexOf(s)).toBeGreaterThan(分析位)
     }
   })
@@ -554,7 +555,7 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
     await 重建关系(记账库, 计划项目, [{ fromId, toId }])
 
     const 取数语句 = 语句们.filter(
-      (s) => s.includes("from auth.case_event e") && s.includes("auth.case_event_participant 付"),
+      (s) => s.includes("from auth.case_event e") && s.includes("from auth.case_event_participant"),
     )
     // ② 事件取数 + ④ 聚合：一条都不能漏（逐行实现时这里是 0 条带 materialized）。
     expect(取数语句.length).toBeGreaterThanOrEqual(2)
@@ -567,6 +568,98 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
     )
     expect(关系取数.length).toBeGreaterThanOrEqual(1)
     for (const s of 关系取数) expect(s).toContain("as materialized")
+  })
+})
+
+/**
+ * A13 遗留的第二形态（2026-11-15 真栈事务内实测，`EXPLAIN (ANALYZE, BUFFERS)`）：
+ * 物化「事件对」挡住了对过滤下推，但 CTE 内部仍是 `case_event` 各 join 一次付款方、
+ * 一次收款方 —— 规划器可以为每笔事件各探两次索引（`Index Scan loops=10010`、
+ * buffers 40,336）。改成「参与者表只扫一遍、按事件聚出 (付款方, 收款方) 再 hash join
+ * 事件」后：同数据同语句 buffers 40,336 → **1,821**、执行 96ms → **32ms**；
+ * 对过滤参数也从 2×500 个降到 3 个（`unnest($2::text[], $3::text[])`）。
+ *
+ * 这里钉的是形态：两条取数语句里参与者表**只出现一次**（不许自连接），且对过滤走
+ * `unnest` 数组而不是 `in (values …)` 逐对绑定。真实耗时仍以真栈基线为准（`#004-03`）。
+ */
+describe("重建关系 · 对先按事件聚合再筛（参与者表只扫一遍）", () => {
+  const 聚合项目 = "prj-rel-pair-agg"
+
+  test("两条取数语句：单次扫参与者 + 按事件分组 + unnest 对过滤", async () => {
+    const templateId = await 确保内置模板(db(), 聚合项目)
+    const 翻译 = 翻译资金({
+      projectId: 聚合项目,
+      materialId: "pa1",
+      rows: [{ ...行(), projectId: 聚合项目, materialId: "pa1" }],
+    })
+    await 写入翻译结果(db(), { projectId: 聚合项目, materialId: "pa1", templateId, 翻译 })
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select id, canonical_value from auth.case_entity where project_id = ${聚合项目}
+      `),
+    ).map((e) => ({ id: String(e.id), 值: String(e.canonical_value) }))
+    const 找 = (值: string) => 实体.find((e) => e.值 === 值)?.id ?? ""
+    const fromId = 找("6217001234567896514")
+    const toId = 找("6222021234567890123")
+    if (!fromId || !toId) throw new Error(`骨架实体没建出来：${JSON.stringify(实体)}`)
+
+    const 方言 = new PgDialect()
+    const 语句们: string[] = []
+    const 真库 = db()
+    const 记账库 = {
+      execute(query: SQL) {
+        语句们.push(方言.sqlToQuery(query).sql)
+        return 真库.execute(query)
+      },
+    }
+    await 重建关系(记账库, 聚合项目, [{ fromId, toId }])
+
+    const 归一 = (s: string) => s.replace(/\s+/g, " ")
+    // 只挑「从参与者表读行」的语句；`analyze` 也提到这张表，但不是取数。
+    const 取数语句 = 语句们.filter((s) => /(from|join) auth\.case_event_participant/.test(归一(s)))
+    // ② 事件取数 + ④ 聚合：两条都要在新形态里。
+    expect(取数语句.length).toBeGreaterThanOrEqual(2)
+    for (const s of 取数语句) {
+      const n = 归一(s)
+      // 参与者表只出现一次：旧形态是 `join … 付` + `join … 收` 各一次。
+      expect(n.match(/auth\.case_event_participant/g)?.length ?? 0).toBe(1)
+      // 每笔事件先聚成一个 (付款方, 收款方) 对（合并后自环也要留，`#7` 由写入侧打状态）。
+      expect(n).toContain("group by event_id")
+      // 必须带别名一并钉：只钉 `max(…) filter (… role = '付款方')` 会被 `having` 里的
+      // 同名字串满足 —— 去掉 select 一侧的角色过滤，断言照样过（`#005-18` 假绿四问）。
+      expect(n).toContain("max(entity_id) filter (where role = '付款方') as from_id")
+      expect(n).toContain("max(entity_id) filter (where role = '收款方') as to_id")
+      // 对过滤不再逐对绑 2 个参数（500 对 = 1000 个），改走两个数组。
+      expect(n).toContain("unnest(")
+      expect(n).not.toContain("in (values")
+    }
+  })
+})
+
+/**
+ * 分块大小原本是「2 个参数/对」的副产物（18 列上限不适用于对，但参数个数有限）。
+ * 对过滤改成 `unnest(付款方们, 收款方们)` 后，一条语句的参数恒为 2 个数组，
+ * 分块只决定**结果集大小**——每多一块就多一遍全表扫描 + 一次网络往返（`#013-09`
+ * 的同款：远端单次往返 22ms）。5,000 对必须一块走完：② 取数 + ④ 聚合各一条。
+ */
+describe("重建关系 · 取数按大块走（语句数不随对数线性增长）", () => {
+  test("5,000 对（= 5,000 行流水）只发 2 条取数语句", async () => {
+    const 大块项目 = "prj-rel-bigchunk"
+    const 对们 = Array.from({ length: 5000 }, (_, i) => ({ fromId: `5f${i}`, toId: `5t${i}` }))
+    const 方言 = new PgDialect()
+    const 语句们: string[] = []
+    const 真库 = db()
+    const 记账库 = {
+      execute(query: SQL) {
+        语句们.push(方言.sqlToQuery(query).sql)
+        return 真库.execute(query)
+      },
+    }
+    await 重建关系(记账库, 大块项目, 对们)
+
+    // ② 取数（`select id, amount::text …`）+ ④ 聚合（`select from_id, to_id, …`）
+    const 取数语句 = 语句们.filter((s) => s.includes("from 事件对"))
+    expect(取数语句.length).toBe(2)
   })
 })
 
