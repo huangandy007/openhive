@@ -11,14 +11,20 @@
  * - `文字` **不参与**（R35）：设计只对节点/边按 `出现序` 揭示；`演示步进` 的返回值也只有
  *   两个集合 ⇒ 文字块在演示态照常显示（标题/说明本来就是给人看的）。
  *
- * ## 覆盖层只做键盘 + 步号显示
+ * ## 覆盖层只做步号显示（键盘在舞台容器上）
  *
  * 渲染复用**同一个** `画布` 实例（`只读` + `可见`，R37）：编辑器进入演示时把画布切成只读并
- * 过滤渲染，本组件只是在它上面盖一层 `absolute inset-0` 的键盘容器。**刻意不在这里再挂一个
- * 画布**——那会让编辑态的视口（缩放/平移）随卸载丢失，而 FR-040 要求退出后视口保持进入前
- * 的样子。快捷键只挂本容器（`tabindex="0"`，进入即 `focus()`），**不挂 `window`**。
+ * 过滤渲染，本组件只是在它上面盖一层 `absolute inset-0` 的纯视觉提示层。**刻意不在这里再挂
+ * 一个画布**——那会让编辑态的视口（缩放/平移）随卸载丢失，而 FR-040 要求退出后视口保持进入前
+ * 的样子。
+ *
+ * R45：覆盖层是 `pointer-events-none` 的纯视觉层，**不抢焦点、不挂键盘、不做全屏目标**——
+ * 点击会穿透到下面的只读画布（滚轮缩放仍可用），但只读画布没有 `tabindex`，真浏览器里焦点会
+ * 掉到 body。所以键盘容器与全屏目标都收口到编辑器的共同父容器（`hgraph-stage`，R44）：它同时
+ * 包住画布与覆盖层，演示期间 `tabindex="0"` + `focus()`，并在 `pointerdown` 时把自己焦点收回。
+ * 按键处理只保留在 `处理演示按键` 这一份实现里（父容器调用它），不挂 `window`（FR-040）。
  */
-import { onCleanup, onMount, type JSX } from "solid-js"
+import type { JSX } from "solid-js"
 import type { 图文件 } from "./file"
 
 export interface 演示可见 {
@@ -66,8 +72,6 @@ export function 演示步进(文档: 图文件, 步号: number): 演示可见 {
 
 export interface 演示覆盖层Props {
   readonly 步号: number
-  readonly 设置步号: (步号: number) => void
-  readonly 关闭: () => void
 }
 
 type 可全屏元素 = { requestFullscreen?: () => Promise<unknown> }
@@ -78,7 +82,7 @@ type 可全屏文档 = { fullscreenElement?: unknown; exitFullscreen?: () => Pro
  * 返回的 Promise（用户拒绝、权限策略拒绝）一律吞掉——演示本身不依赖真全屏。
  * 同步抛错也按「不支持」处理（部分实现要求用户手势）。
  */
-function 请求全屏(元素: HTMLElement | undefined): void {
+export function 请求全屏(元素: HTMLElement | undefined): void {
   if (元素 === undefined) return
   const 方法 = (元素 as unknown as 可全屏元素).requestFullscreen
   if (typeof 方法 !== "function") return
@@ -89,69 +93,79 @@ function 请求全屏(元素: HTMLElement | undefined): void {
   }
 }
 
-/** R40：退出演示时只退出「我们自己进入的」全屏；不在全屏就没有可退的。 */
-function 退出全屏(): void {
+/**
+ * R40 / R46：退出「我们自己进入的」全屏，并**等它真正落地**再返回。
+ *
+ * - 归属校验（Minor）：`document.fullscreenElement` 必须就是我们这个目标；是别人的全屏
+ *   （或根本没有全屏）就不动。
+ * - `exitFullscreen` 是异步的：不等它落地就聚焦画布，画布此刻可能仍在全屏子树之外——
+ *   真浏览器会把 `focus()` 拒掉，I1 的症状就回来了。所以这里 `await`，失败也吞掉
+ *   （退出全屏失败不回滚演示态）。
+ */
+export async function 退出全屏(目标: HTMLElement | undefined): Promise<void> {
   const 宿主 = document as unknown as 可全屏文档
-  if (宿主.fullscreenElement === undefined || 宿主.fullscreenElement === null) return
+  const 当前 = 宿主.fullscreenElement
+  if (当前 === undefined || 当前 === null) return
+  if (当前 !== 目标) return
   const 方法 = 宿主.exitFullscreen
   if (typeof 方法 !== "function") return
   try {
-    void Promise.resolve(方法.call(宿主)).catch(() => {})
+    await Promise.resolve(方法.call(宿主))
   } catch {
     // 退出全屏失败不回滚演示态。
   }
 }
 
+export interface 演示按键控制 {
+  readonly 步号: number
+  readonly 设置步号: (步号: number) => void
+  readonly 关闭: () => void
+}
+
 /**
- * 演示覆盖层：盖在画布上的键盘容器 + 步号提示。
+ * 演示按键的**唯一实现**（R45）：舞台容器调用它，覆盖层不挂键盘。
  *
  * `空格` 下一步 / `Backspace` 上一步（到 0 为止，0 是合法起始态）/ `Esc` 退出。
  * 焦点在输入框时整段提前返回（沿用 `canvas.tsx` 的 `tagName` 判定：`foreignObject` 里的
  * input 是 SVG 命名空间节点，不能用 `instanceof HTMLElement`）。
  */
-export function 演示覆盖层(props: 演示覆盖层Props): JSX.Element {
-  let 容器: HTMLDivElement | undefined
-  onMount(() => {
-    容器?.focus()
-    请求全屏(容器)
-  })
-  onCleanup(退出全屏)
-
-  const 按键 = (事件: KeyboardEvent) => {
-    const 目标 = 事件.target
-    if (目标 !== null && "tagName" in 目标) {
-      const 名 = String(目标.tagName).toUpperCase()
-      const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-      if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
-    }
-    if (事件.key === " " || 事件.key === "Spacebar") {
-      事件.preventDefault()
-      props.设置步号(props.步号 + 1)
-      return
-    }
-    if (事件.key === "Backspace") {
-      事件.preventDefault()
-      // 步号是自然数：0 是起始态，不往负数走。
-      props.设置步号(Math.max(0, props.步号 - 1))
-      return
-    }
-    if (事件.key === "Escape") {
-      事件.preventDefault()
-      props.关闭()
-    }
+export function 处理演示按键(事件: KeyboardEvent, 控制: 演示按键控制): void {
+  const 目标 = 事件.target
+  if (目标 !== null && "tagName" in 目标) {
+    const 名 = String(目标.tagName).toUpperCase()
+    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
+    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
   }
+  if (事件.key === " " || 事件.key === "Spacebar") {
+    事件.preventDefault()
+    控制.设置步号(控制.步号 + 1)
+    return
+  }
+  if (事件.key === "Backspace") {
+    事件.preventDefault()
+    // 步号是自然数：0 是起始态，不往负数走。
+    控制.设置步号(Math.max(0, 控制.步号 - 1))
+    return
+  }
+  if (事件.key === "Escape") {
+    事件.preventDefault()
+    控制.关闭()
+  }
+}
 
-  // R41：覆盖层不吃指针/滚轮（`pointer-events-none`），事件落回下面的只读画布
-  //（滚轮缩放仍可用、点选无效）。
+/**
+ * 演示覆盖层：只显示步号的纯视觉层（R45）。
+ *
+ * 不抢焦点、不挂键盘、不做全屏目标——这些都收口在编辑器的 `hgraph-stage` 上。
+ * R41：`pointer-events-none` 让指针/滚轮穿透到下面的只读画布。
+ */
+export function 演示覆盖层(props: 演示覆盖层Props): JSX.Element {
   return (
     <div
-      ref={(元素) => (容器 = 元素)}
       data-slot="hgraph-present"
       role="dialog"
       aria-label="演示"
-      tabindex="0"
       class="pointer-events-none absolute inset-0 z-30 flex flex-col outline-none"
-      onKeyDown={按键}
     >
       <p
         data-slot="hgraph-present-step"

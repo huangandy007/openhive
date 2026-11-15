@@ -16,13 +16,12 @@
  * 真编辑器挂起来才能断言；纯函数与覆盖层单条用例在前半段。
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
 import type { 图文件, 边, 节点, 文字 } from "./file"
 import type { 画布动作 } from "./canvas"
 import { 画布 as 画布组件 } from "./canvas"
-import { 演示步进, 演示覆盖层 } from "./present"
+import { 处理演示按键, 演示步进, 演示覆盖层 } from "./present"
 import { 工具栏 } from "./toolbar"
 import { 编辑器 } from "./editor"
 
@@ -197,7 +196,7 @@ describe("演示步进 · 纯函数", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 覆盖层：键盘 / 焦点 / 输入框守卫
+// 覆盖层：纯视觉层（键盘/全屏/焦点都在编辑器的舞台容器上）
 // ---------------------------------------------------------------------------
 
 const 覆盖层 = () => document.body.querySelector("[data-slot='hgraph-present']") as HTMLElement | null
@@ -209,142 +208,64 @@ const 按键 = (目标: Element, 初始化: KeyboardEventInit) =>
 function 挂覆盖层(初 = 0) {
   const host = document.createElement("div")
   document.body.appendChild(host)
-  const [步号, set步号] = createSignal(初)
-  const [关闭次数, set关闭次数] = createSignal(0)
-  挂过的.push(
-    render(
-      () => (
-        <演示覆盖层 步号={步号()} 设置步号={set步号} 关闭={() => set关闭次数((旧) => 旧 + 1)} />
-      ),
-      host,
-    ),
-  )
-  return { 步号, 关闭次数 }
+  挂过的.push(render(() => <演示覆盖层 步号={初} />, host))
 }
 
-describe("演示覆盖层 · 快捷键只挂容器", () => {
-  test("#4 空格 +1 / Backspace −1（到 0 为止）/ Esc 关闭；挂载即聚焦", async () => {
-    const { 步号, 关闭次数 } = 挂覆盖层(0)
+describe("演示覆盖层 · 纯视觉层（R45）", () => {
+  test("只显示步号、带 pointer-events-none、不再抢焦点/不再挂键盘", async () => {
+    挂覆盖层(2)
     await flush()
 
     const 层 = 覆盖层()
     expect(层).not.toBeNull()
-    // 进入时 focus()：快捷键才有落点（FR-040 的容器归属）。
-    expect(document.activeElement).toBe(层)
-    expect(步骤文案()).toBe("第 0 步")
+    expect(步骤文案()).toBe("第 2 步")
     // R41：覆盖层不吃指针/滚轮，事件落回下面的只读画布（真实命中转发 happy-dom 测不到）。
     expect(层!.classList.contains("pointer-events-none")).toBe(true)
-
-    按键(层!, { key: " " })
-    await flush()
-    expect(步号()).toBe(1)
-    expect(步骤文案()).toBe("第 1 步")
-
-    按键(层!, { key: " " })
-    await flush()
-    expect(步号()).toBe(2)
-
-    按键(层!, { key: "Backspace" })
-    await flush()
-    expect(步号()).toBe(1)
-
-    按键(层!, { key: "Backspace" })
-    按键(层!, { key: "Backspace" })
-    await flush()
-    // 0 是合法起始态，不往负数走。
-    expect(步号()).toBe(0)
-
-    按键(层!, { key: "Escape" })
-    await flush()
-    expect(关闭次数()).toBe(1)
-    expect(步号()).toBe(0)
-  })
-
-  test("#4 只在容器 keydown 生效：window 上的同一按键不动步号", async () => {
-    const { 步号, 关闭次数 } = 挂覆盖层(0)
-    await flush()
-
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }))
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
-    await flush()
-
-    expect(步号()).toBe(0)
-    expect(关闭次数()).toBe(0)
-  })
-
-  test("#5 焦点在输入框：空格 / Backspace / Esc 都不生效", async () => {
-    const { 步号, 关闭次数 } = 挂覆盖层(0)
-    await flush()
-
-    const 层 = 覆盖层()!
-    const 输入 = document.createElement("input")
-    层.appendChild(输入)
-    输入.focus()
-    expect(document.activeElement).toBe(输入)
-
-    for (const key of [" ", "Backspace", "Escape"]) 按键(输入, { key })
-    await flush()
-
-    expect(步号()).toBe(0)
-    expect(关闭次数()).toBe(0)
+    // R45：键盘容器已收口到共同父容器（hgraph-stage），覆盖层不再需要 tabindex/焦点。
+    expect(层!.getAttribute("tabindex")).toBeNull()
+    expect(document.activeElement).not.toBe(层)
   })
 })
 
-describe("演示覆盖层 · 全屏（R40）", () => {
-  /** 临时在原型上挂方法；happy-dom 默认三者都没有（见下方 no-throw 用例）。 */
-  function 临时原型方法(名: string, 值: unknown): () => void {
-    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
-    const 原 = 原型[名]
-    原型[名] = 值
-    return () => {
-      if (原 === undefined) delete 原型[名]
-      else 原型[名] = 原
+describe("演示按键 · present.tsx 的唯一实现（R45）", () => {
+  /** 把导出的处理函数挂到目标上再派发，`事件.target` 才是真实元素（输入框守卫要用）。 */
+  function 派发(目标: EventTarget, key: string, 当前: number) {
+    let 步 = 当前
+    let 关 = 0
+    const 事件 = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+    const 监听 = (值: Event) => {
+      处理演示按键(值 as KeyboardEvent, {
+        步号: 当前,
+        设置步号: (新) => (步 = 新),
+        关闭: () => (关 += 1),
+      })
     }
+    目标.addEventListener("keydown", 监听)
+    try {
+      目标.dispatchEvent(事件)
+    } finally {
+      目标.removeEventListener("keydown", 监听)
+    }
+    return { 步, 关, 已阻止: 事件.defaultPrevented }
   }
 
-  test("I2 进入演示时对覆盖层容器调 requestFullscreen 恰 1 次", async () => {
-    let 调用 = 0
-    const 还原 = 临时原型方法("requestFullscreen", () => {
-      调用++
-      return Promise.resolve()
-    })
-    try {
-      挂覆盖层(0)
-      await flush()
-      expect(调用).toBe(1)
-    } finally {
-      还原()
-    }
+  test("#4 空格 +1 / Backspace −1（到 0 为止）/ Esc 关闭，且都 preventDefault", () => {
+    expect(派发(document.body, " ", 0)).toEqual({ 步: 1, 关: 0, 已阻止: true })
+    expect(派发(document.body, " ", 2)).toEqual({ 步: 3, 关: 0, 已阻止: true })
+    expect(派发(document.body, "Backspace", 2)).toEqual({ 步: 1, 关: 0, 已阻止: true })
+    // 0 是合法起始态，不往负数走。
+    expect(派发(document.body, "Backspace", 0)).toEqual({ 步: 0, 关: 0, 已阻止: true })
+    expect(派发(document.body, "Escape", 0)).toEqual({ 步: 0, 关: 1, 已阻止: true })
   })
 
-  test("I2 requestFullscreen 拒绝也不影响演示（Promise 有 catch，不抛到界面）", async () => {
-    const 还原 = 临时原型方法("requestFullscreen", () => Promise.reject(new Error("用户拒绝")))
-    try {
-      挂覆盖层(0)
-      await flush()
-      expect(覆盖层()).not.toBeNull()
-    } finally {
-      还原()
-    }
-  })
+  test("#5 焦点在输入框：空格 / Backspace / Esc 都不生效", () => {
+    const 输入 = document.createElement("input")
+    document.body.appendChild(输入)
+    输入.focus()
+    expect(document.activeElement).toBe(输入)
 
-  test("I2 元素没有 requestFullscreen（happy-dom 默认）时进入演示不抛错", async () => {
-    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
-    const 原 = 原型.requestFullscreen
-    delete 原型.requestFullscreen
-    try {
-      expect(原型.requestFullscreen).toBeUndefined()
-      let 错误: unknown
-      try {
-        挂覆盖层(0)
-        await flush()
-      } catch (抛) {
-        错误 = 抛
-      }
-      expect(错误).toBeUndefined()
-      expect(覆盖层()).not.toBeNull()
-    } finally {
-      if (原 !== undefined) 原型.requestFullscreen = 原
+    for (const key of [" ", "Backspace", "Escape"]) {
+      expect(派发(输入, key, 0)).toEqual({ 步: 0, 关: 0, 已阻止: false })
     }
   })
 })
@@ -462,6 +383,8 @@ function 挂编辑器(api: HgraphApi, 文档: 图文件 = 步进图()) {
 
 const 取 = (选择器: string) => document.body.querySelector(选择器)
 const 画布 = () => 取("[data-slot='hgraph-canvas']") as HTMLElement | null
+/** 舞台 = 同时包住画布与覆盖层的共同父容器（R44 的全屏目标 / R45 的键盘容器）。 */
+const 舞台 = () => 取("[data-slot='hgraph-stage']") as HTMLElement | null
 const 节点组 = (id: string) => 取(`[data-slot='hgraph-node'][data-node-id='${id}']`)
 const 文字行 = (id: string) => 取(`[data-slot='hgraph-text'][data-text-id='${id}']`)
 const 变换 = () => 取("[data-slot='hgraph-viewport']")?.getAttribute("transform")
@@ -505,8 +428,44 @@ const 点选 = (id: string, x: number, y: number) => {
   松开(x, y)
 }
 
-/** 进入演示：点工具栏「演示」并把焦点交给覆盖层。 */
+/** 进入演示：点工具栏「演示」；焦点与全屏目标都是 `hgraph-stage`（R44/R45）。 */
 const 进入演示 = () => (取("[data-slot='hgraph-toolbar-present']") as HTMLButtonElement).click()
+
+/** 临时全屏环境：happy-dom 三者都没有；只在用例内挂桩，finally 还原。 */
+function 临时全屏环境(选项: {
+  readonly request?: () => Promise<unknown>
+  readonly exit?: () => Promise<unknown>
+  readonly fullscreenElement?: unknown
+}): () => void {
+  const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
+  const 文档 = document as unknown as Record<string, unknown>
+  const 原请求 = 原型.requestFullscreen
+  const 原退出 = 文档.exitFullscreen
+  const 原全屏 = 文档.fullscreenElement
+  if (选项.request !== undefined) 原型.requestFullscreen = 选项.request
+  if (选项.exit !== undefined) 文档.exitFullscreen = 选项.exit
+  if ("fullscreenElement" in 选项) 文档.fullscreenElement = 选项.fullscreenElement
+  return () => {
+    if (原请求 === undefined) delete 原型.requestFullscreen
+    else 原型.requestFullscreen = 原请求
+    if (原退出 === undefined) delete 文档.exitFullscreen
+    else 文档.exitFullscreen = 原退出
+    if (原全屏 === undefined) delete 文档.fullscreenElement
+    else 文档.fullscreenElement = 原全屏
+  }
+}
+
+/** 记录 focus 落点，用来断言「exit 落地之后才 focus」（R46）。 */
+function 临时焦点探针(顺序: string[]): () => void {
+  const 原 = HTMLElement.prototype.focus
+  HTMLElement.prototype.focus = function (this: HTMLElement) {
+    顺序.push(`focus:${this.getAttribute("data-slot") ?? this.tagName.toLowerCase()}`)
+    return 原.call(this)
+  }
+  return () => {
+    HTMLElement.prototype.focus = 原
+  }
+}
 
 describe("编辑器 · 演示态", () => {
   test("#8 演示态：工具栏/检查器不在 DOM、画布 chrome 不渲染、选中描边没有、文字照常", async () => {
@@ -552,33 +511,36 @@ describe("编辑器 · 演示态", () => {
     expect(文字行("t1")).not.toBeNull()
   })
 
-  test("#4 空格 / Backspace 步进；Esc 退出后工具栏与检查器回来", async () => {
+  test("#4 空格 / Backspace 步进；Esc 退出后工具栏与检查器回来，焦点还给画布", async () => {
     const { api } = 假api()
     挂编辑器(api)
     await flush()
 
     进入演示()
     await flush()
-    const 层 = 取("[data-slot='hgraph-present']") as HTMLElement
-    expect(document.activeElement).toBe(层)
+    const 父 = 舞台()!
+    // R45：键盘容器/焦点落在共同父容器上（不是覆盖层）。
+    expect(document.activeElement).toBe(父)
+    expect(父.getAttribute("tabindex")).toBe("0")
     expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 0 步")
 
-    按键(层, { key: " " })
+    按键(父, { key: " " })
     await flush()
     expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 1 步")
     expect(节点组("n1")).not.toBeNull()
 
-    按键(层, { key: " " })
+    按键(父, { key: " " })
     await flush()
     expect(节点组("n2")).not.toBeNull()
     expect(取("[data-edge-id='e03']")).not.toBeNull()
 
-    按键(层, { key: "Backspace" })
+    按键(父, { key: "Backspace" })
     await flush()
     expect(节点组("n2")).toBeNull()
     expect(节点组("n1")).not.toBeNull()
 
-    按键(层, { key: "Escape" })
+    // Esc 走父容器（真实全屏里浏览器会先退全屏，这里用桩路径之外的普通 Esc）。
+    按键(父, { key: "Escape" })
     await flush()
     expect(取("[data-slot='hgraph-present']")).toBeNull()
     expect(取("[data-slot='hgraph-toolbar']")).not.toBeNull()
@@ -586,6 +548,46 @@ describe("编辑器 · 演示态", () => {
     // 编辑态的完整图回来（演示只过滤渲染，不改文档）。
     expect(节点组("n2")).not.toBeNull()
     expect(画布()!.getAttribute("data-readonly")).toBeNull()
+    // I1：退出后焦点回到画布容器，父容器的 tabindex 收回。
+    expect(document.activeElement).toBe(画布())
+    expect(父.getAttribute("tabindex")).toBeNull()
+  })
+
+  test("R45 演示中点画布：焦点留在舞台容器，空格仍能步进", async () => {
+    const { api } = 假api()
+    挂编辑器(api)
+    await flush()
+    进入演示()
+    await flush()
+
+    const 父 = 舞台()!
+    expect(document.activeElement).toBe(父)
+
+    // happy-dom 不做命中/焦点转移：先把焦点置回 body，模拟真浏览器点击只读画布后的状态。
+    // 父容器的 pointerdown 必须把焦点收回自己（否则空格/Backspace/Esc 全死）。
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+    按下(画布()!, 200, 100)
+    expect(document.activeElement).toBe(父)
+
+    按键(document.activeElement as Element, { key: " " })
+    await flush()
+    expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 1 步")
+  })
+
+  test("快捷键只在容器上：window 上派发空格 / Esc 不动步号、不关闭", async () => {
+    const { api } = 假api()
+    挂编辑器(api)
+    await flush()
+    进入演示()
+    await flush()
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }))
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+    await flush()
+
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 0 步")
   })
 
   test("#9/#10 演示中 Delete 不删节点、零写盘；Esc 把焦点还给画布，Delete 才删（快捷键真恢复）", async () => {
@@ -598,17 +600,17 @@ describe("编辑器 · 演示态", () => {
 
     进入演示()
     await flush()
-    const 层 = 取("[data-slot='hgraph-present']") as HTMLElement
-    expect(document.activeElement).toBe(层)
+    const 父 = 舞台()!
+    expect(document.activeElement).toBe(父)
     expect(节点组("n3")).not.toBeNull()
 
-    按键(层, { key: "Delete" })
+    按键(父, { key: "Delete" })
     await 过防抖()
     expect(节点组("n3")).not.toBeNull()
     expect(写们.length).toBe(0)
 
     // Esc 退出后编辑快捷键恢复：同一条用例里先后各按一次 Delete，中间那次零动作。
-    按键(层, { key: "Escape" })
+    按键(父, { key: "Escape" })
     await flush()
     expect(取("[data-slot='hgraph-present']")).toBeNull()
     // 选中在演示期间保持不变 ⇒ 退出后 Delete 仍有目标。
@@ -627,22 +629,14 @@ describe("编辑器 · 演示态", () => {
     expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n3" }] }])
   })
 
-  test("I2 进入演示请求全屏；Esc 时若处于全屏则退出全屏", async () => {
+  test("R44 全屏目标是包住画布与覆盖层的共同父容器，不是覆盖层", async () => {
     const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
     const 原请求 = 原型.requestFullscreen
-    const 文档 = document as unknown as Record<string, unknown>
-    const 原退出 = 文档.exitFullscreen
-    let 请求数 = 0
-    let 退出数 = 0
-    原型.requestFullscreen = () => {
-      请求数++
+    const 目标们: Element[] = []
+    原型.requestFullscreen = function (this: Element) {
+      目标们.push(this)
       return Promise.resolve()
     }
-    文档.exitFullscreen = () => {
-      退出数++
-      return Promise.resolve()
-    }
-    文档.fullscreenElement = document.body
     try {
       const { api } = 假api()
       挂编辑器(api)
@@ -650,45 +644,200 @@ describe("编辑器 · 演示态", () => {
 
       进入演示()
       await flush()
-      expect(请求数).toBe(1)
-      // 假值仍在 ⇒ 说明只是「查询后退出」，没被生产代码改写。
-      expect(document.fullscreenElement).toBe(document.body)
 
-      按键(取("[data-slot='hgraph-present']")!, { key: "Escape" })
-      await flush()
-      expect(退出数).toBe(1)
-      expect(取("[data-slot='hgraph-present']")).toBeNull()
+      const 父 = 舞台()!
+      expect(目标们.length).toBe(1)
+      expect(目标们[0]).toBe(父)
+      // Fullscreen 只渲染目标子树 ⇒ 目标必须同时包住画布与覆盖层。
+      expect(父.contains(画布()!)).toBe(true)
+      expect(父.contains(取("[data-slot='hgraph-present']")!)).toBe(true)
+      // 不是覆盖层自己（否则真全屏只剩「第 0 步」）。
+      expect(目标们[0]).not.toBe(取("[data-slot='hgraph-present']"))
     } finally {
-      文档.fullscreenElement = undefined
-      delete 文档.fullscreenElement
-      if (原退出 === undefined) delete 文档.exitFullscreen
-      else 文档.exitFullscreen = 原退出
       if (原请求 === undefined) delete 原型.requestFullscreen
       else 原型.requestFullscreen = 原请求
     }
   })
 
-  test("I2 不在全屏时退出演示不调用 exitFullscreen", async () => {
-    const 文档 = document as unknown as Record<string, unknown>
-    const 原退出 = 文档.exitFullscreen
+  test("R46 退出顺序：await exitFullscreen 落地之后才聚焦画布", async () => {
+    const 顺序: string[] = []
     let 退出数 = 0
-    文档.exitFullscreen = () => {
-      退出数++
-      return Promise.resolve()
-    }
+    const 还原全屏 = 临时全屏环境({
+      request: () => Promise.resolve(),
+      exit: () => {
+        退出数++
+        顺序.push("exit")
+        // 异步退全屏：真浏览器里 Promise 落地前画布还在惰性子树。
+        return new Promise<void>((解决) =>
+          setTimeout(() => {
+            顺序.push("exit-resolved")
+            解决()
+          }, 0),
+        )
+      },
+      fullscreenElement: undefined,
+    })
+    const 还原焦点 = 临时焦点探针(顺序)
     try {
       const { api } = 假api()
       挂编辑器(api)
       await flush()
       进入演示()
       await flush()
-      按键(取("[data-slot='hgraph-present']")!, { key: "Escape" })
+      // 进入后「我们在全屏里」：归属校验要求当前全屏元素就是舞台。
+      ;(document as unknown as Record<string, unknown>).fullscreenElement = 舞台()
+
+      按键(舞台()!, { key: "Escape" })
+      await 等(20)
+
+      expect(退出数).toBe(1)
+      const 退出位 = 顺序.indexOf("exit")
+      const 落地位 = 顺序.indexOf("exit-resolved")
+      const 画布焦位 = 顺序.indexOf("focus:hgraph-canvas", 落地位 + 1)
+      expect(退出位).toBeGreaterThanOrEqual(0)
+      expect(落地位).toBeGreaterThan(退出位)
+      // 焦点必须排在 exit 真正落地之后（否则画布可能仍在惰性区域，focus 被拒）。
+      expect(画布焦位).toBeGreaterThan(落地位)
+    } finally {
+      还原焦点()
+      还原全屏()
+    }
+  })
+
+  test("R47 浏览器 Esc 退全屏（fullscreenchange + 元素变 null）⇒ 关闭演示、不再调 exitFullscreen", async () => {
+    let 退出数 = 0
+    const 还原 = 临时全屏环境({
+      request: () => Promise.resolve(),
+      exit: () => {
+        退出数++
+        return Promise.resolve()
+      },
+      fullscreenElement: undefined,
+    })
+    try {
+      const { api, 写们 } = 假api()
+      挂编辑器(api)
+      await flush()
+      进入演示()
+      await flush()
+      ;(document as unknown as Record<string, unknown>).fullscreenElement = 舞台()
+
+      // 用户按浏览器保留手势：全屏元素变 null，浏览器派发 fullscreenchange。
+      ;(document as unknown as Record<string, unknown>).fullscreenElement = null
+      document.dispatchEvent(new Event("fullscreenchange"))
+      await flush()
+
+      expect(取("[data-slot='hgraph-present']")).toBeNull()
+      // 全屏已是浏览器退的：我们自己不再调 exitFullscreen。
+      expect(退出数).toBe(0)
+      expect(写们.length).toBe(0)
+      // 退出后焦点照样回画布。
+      expect(document.activeElement).toBe(画布())
+    } finally {
+      还原()
+    }
+  })
+
+  test("Minor 只退自己进入的全屏：fullscreenElement 是别的元素 ⇒ exitFullscreen 0 次", async () => {
+    let 退出数 = 0
+    const 还原 = 临时全屏环境({
+      request: () => Promise.resolve(),
+      exit: () => {
+        退出数++
+        return Promise.resolve()
+      },
+      fullscreenElement: document.body,
+    })
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+      进入演示()
+      await flush()
+
+      按键(舞台()!, { key: "Escape" })
+      await flush()
+      expect(退出数).toBe(0)
+      expect(取("[data-slot='hgraph-present']")).toBeNull()
+    } finally {
+      还原()
+    }
+  })
+
+  test("不在全屏（fullscreenElement 为空）⇒ 退出演示不调用 exitFullscreen", async () => {
+    let 退出数 = 0
+    const 还原 = 临时全屏环境({
+      exit: () => {
+        退出数++
+        return Promise.resolve()
+      },
+      fullscreenElement: undefined,
+    })
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+      进入演示()
+      await flush()
+      按键(舞台()!, { key: "Escape" })
       await flush()
       expect(退出数).toBe(0)
     } finally {
-      if (原退出 === undefined) delete 文档.exitFullscreen
-      else 文档.exitFullscreen = 原退出
+      还原()
     }
+  })
+
+  test("没有 requestFullscreen 时进入演示不抛错、步进照常", async () => {
+    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
+    const 原 = 原型.requestFullscreen
+    delete 原型.requestFullscreen
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+
+      let 错误: unknown
+      try {
+        进入演示()
+        await flush()
+      } catch (抛) {
+        错误 = 抛
+      }
+      expect(错误).toBeUndefined()
+      expect(document.activeElement).toBe(舞台())
+
+      按键(舞台()!, { key: " " })
+      await flush()
+      expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 1 步")
+    } finally {
+      if (原 !== undefined) 原型.requestFullscreen = 原
+    }
+  })
+
+  test("Minor 退出演示后紧接着的 Esc 不清编辑态选中（一次性抑制）", async () => {
+    const { api, 写们 } = 假api()
+    挂编辑器(api)
+    await flush()
+    点选("n1", 200, 100)
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    进入演示()
+    await flush()
+    按键(舞台()!, { key: "Escape" })
+    await flush()
+
+    const 布 = 画布()!
+    expect(document.activeElement).toBe(布)
+    // 退出那下之后的第一次 Esc（快速连按 / 按键重复）被吞掉，选中不变。
+    按键(布, { key: "Escape" })
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+    // 只抑制一次：再按一次 Esc 就恢复正常（清选中）。
+    按键(布, { key: "Escape" })
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBeNull()
+    expect(写们.length).toBe(0)
   })
 
   test("#5 演示零写盘、不进撤销栈；退出后选中与视口保持进入前的值", async () => {
@@ -710,16 +859,16 @@ describe("编辑器 · 演示态", () => {
 
     进入演示()
     await flush()
-    const 层 = 取("[data-slot='hgraph-present']") as HTMLElement
-    按键(层, { key: " " })
-    按键(层, { key: " " })
-    按键(层, { key: "Backspace" })
+    const 父 = 舞台()!
+    按键(父, { key: " " })
+    按键(父, { key: " " })
+    按键(父, { key: "Backspace" })
     await 过防抖()
 
     // 进入 / 步进：零写盘、撤销栈一步都没压。
     expect(写们.length).toBe(0)
     // 退出后：视口不变、选中恢复成进入前那个。
-    按键(层, { key: "Escape" })
+    按键(父, { key: "Escape" })
     await flush()
     expect(写们.length).toBe(0)
     expect(变换()).toBe("translate(20 30) scale(1)")

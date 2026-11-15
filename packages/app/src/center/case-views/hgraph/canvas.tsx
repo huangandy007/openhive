@@ -99,7 +99,7 @@ export interface 画布Props {
   readonly 收起菜单?: number
   /**
    * 只读（T011 演示态）：忽略 pointerdown / keydown / dblclick / contextmenu，且不渲染
-   * 画布 chrome 按钮。演示覆盖层自己拿键盘（FR-040：快捷键只挂容器）。
+   * 画布 chrome 按钮。演示键盘归舞台容器（`hgraph-stage`，FR-040：快捷键只挂容器）。
    */
   readonly 只读?: true
   /**
@@ -202,10 +202,16 @@ export function 画布(props: 画布Props): JSX.Element {
    * 只在请求值变化时执行，避免挂载时抢焦点；不挂 `window`（FR-040）。
    */
   let 上次聚焦 = props.聚焦请求
+  /**
+   * 退出演示后的第一次 Esc 可能是「退出那下」的按键重复 / 快速连按：此刻焦点刚回到画布，
+   * 照常走 Escape 分支会把进入演示前的编辑态选中清掉。一次性吞掉紧随其后的 Esc。
+   */
+  let 忽略退出键 = false
   createEffect(() => {
     const 请求 = props.聚焦请求
     if (请求 === undefined || 请求 === 上次聚焦) return
     上次聚焦 = 请求
+    忽略退出键 = true
     queueMicrotask(() => {
       if (props.只读 !== true) 容器?.focus()
     })
@@ -473,7 +479,7 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 按键 = (事件: KeyboardEvent) => {
-    // 演示态画布是只读的：编辑快捷键必须完全静默（空格/Backspace/Esc 归覆盖层）。
+    // 演示态画布是只读的：编辑快捷键必须完全静默（空格/Backspace/Esc 归舞台容器）。
     if (props.只读 === true) return
     // 输入框判定按 tagName 读，**不能**用 `instanceof HTMLElement`：画布内文字编辑框
     // 在 `<foreignObject>` 里，happy-dom 下它是 SVG 命名空间节点（HTMLElement 为 false），
@@ -484,6 +490,8 @@ export function 画布(props: 画布Props): JSX.Element {
       const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
       if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
     }
+    // 除 Esc 之外的任何键都解除「退出后首个 Esc 抑制」。
+    if (事件.key !== "Escape") 忽略退出键 = false
     const 主键 = 事件.ctrlKey || 事件.metaKey
     if (主键 && (事件.key === "z" || 事件.key === "Z")) {
       事件.preventDefault()
@@ -508,6 +516,11 @@ export function 画布(props: 画布Props): JSX.Element {
       return
     }
     if (事件.key === "Escape") {
+      if (忽略退出键) {
+        忽略退出键 = false
+        事件.preventDefault()
+        return
+      }
       set菜单(undefined)
       set框(undefined)
       set编辑id(undefined)

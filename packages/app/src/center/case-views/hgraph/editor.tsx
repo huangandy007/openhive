@@ -36,7 +36,7 @@
  * 子组件只调动作条目，`应用` 是唯一把 `操作[]` 交给 api 的地方。UI 发起的 `加节点`
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
-import { Show, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { 关系图结果 } from "../../case-detail-api"
 import { 自动位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
@@ -45,7 +45,7 @@ import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./can
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
 import { 检查器 } from "./inspector"
-import { 演示步进, 演示覆盖层 } from "./present"
+import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
   可撤销,
   可重做,
@@ -309,6 +309,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [演示步号, set演示步号] = createSignal(0)
   /** 退出演示时请求画布重新聚焦（I1）：递增即触发，不挂 window（FR-040）。 */
   const [聚焦请求, set聚焦请求] = createSignal(0)
+  /**
+   * 舞台容器（R44/R45）：同时包住画布与覆盖层，演示期间既是键盘容器/焦点落点，
+   * 也是全屏目标——Fullscreen 只渲染目标子树，打在覆盖层上会把画布挡在外面。
+   */
+  let 舞台: HTMLDivElement | undefined
+  /** R47：自己发起的退出（或浏览器已退全屏）在途时不再重入，避免双关。 */
+  let 正在退出 = false
 
   /** 演示态交给画布的可见集合；编辑态传 `undefined`（全显）。 */
   const 可见集 = createMemo(() => {
@@ -432,14 +439,54 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
   }
 
+  /** 进入演示：从第 0 步开始；焦点与全屏目标都落在共同父容器（R44/R45）。 */
+  const 进入演示 = () => {
+    set演示步号(0)
+    set演示中(true)
+    // tabindex 要等本轮属性更新落地后再 focus（R45）；全屏请求同在手势任务内（queueMicrotask）。
+    queueMicrotask(() => {
+      舞台?.focus()
+      请求全屏(舞台)
+    })
+  }
+
   /**
    * 退出演示的唯一出口：切回编辑态，并把焦点还给画布（I1）。
-   * Esc 与工具栏再次点「演示」都走这里；演示期间零写盘、不动撤销栈。
+   *
+   * R46：`exitFullscreen` 是异步的。先等它真正落地，再递增 `聚焦请求`——否则画布此刻还在
+   * 全屏子树之外（惰性区域），真浏览器会拒绝 `focus()`，I1 的症状会回来。
+   * R47：浏览器自己退全屏（用户按 Esc 的保留手势）时传 `已退全屏`，不再重复调 `exitFullscreen`。
    */
-  const 退出演示 = () => {
-    set演示中(false)
-    set聚焦请求((旧) => 旧 + 1)
+  const 退出演示 = async (选项: { 已退全屏?: boolean } = {}) => {
+    if (正在退出) return
+    正在退出 = true
+    try {
+      const 目标 = 舞台
+      set演示中(false)
+      if (选项.已退全屏 !== true) await 退出全屏(目标)
+      set聚焦请求((旧) => 旧 + 1)
+    } finally {
+      正在退出 = false
+    }
   }
+
+  /**
+   * R47：真全屏下 Esc 是浏览器保留手势（Chrome/Firefox 直接退全屏，通常不把 keydown 交给
+   * 页面）。监听 `fullscreenchange`（不是键盘，FR-040 不禁止）：演示仍开着而全屏元素变 null
+   * ⇒ 按「用户按了 Esc」处理，关闭演示。
+   */
+  const 全屏变化 = () => {
+    if (!演示中()) return
+    const 宿主 = document as unknown as { fullscreenElement?: unknown }
+    if (宿主.fullscreenElement !== null) return
+    void 退出演示({ 已退全屏: true })
+  }
+  onMount(() => document.addEventListener("fullscreenchange", 全屏变化))
+  onCleanup(() => {
+    document.removeEventListener("fullscreenchange", 全屏变化)
+    // 兜底清理：非正常卸载时别把全屏留在别人的页面上。
+    void 退出全屏(舞台)
+  })
 
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
@@ -534,11 +581,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // 演示是本地展示态：只切信号，不拼 `操作[]`、不调 `写`、不进撤销栈。
     演示切换: () => {
       if (演示中()) {
-        退出演示()
+        void 退出演示()
         return
       }
-      set演示步号(0)
-      set演示中(true)
+      进入演示()
     },
   }
 
@@ -630,7 +676,29 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       </Show>
       </Show>
 
-      <div class="relative flex min-h-0 flex-1">
+      {/*
+        舞台容器（R44/R45）：同时包住画布与覆盖层。演示期间它是键盘容器（tabindex + focus）
+        与全屏目标——Fullscreen 只渲染目标子树，目标必须同时含画布与提示层。
+        `pointer-events-none` 的覆盖层上点击会穿透到只读画布；只读画布没有 tabindex，
+        真浏览器会把焦点掉到 body，所以 `pointerdown` 冒泡到这里时把焦点收回自己。
+      */}
+      <div
+        ref={(元素) => (舞台 = 元素)}
+        data-slot="hgraph-stage"
+        class="relative flex min-h-0 flex-1 outline-none"
+        tabindex={演示中() ? "0" : undefined}
+        onKeyDown={(事件) => {
+          if (!演示中()) return
+          处理演示按键(事件, {
+            步号: 演示步号(),
+            设置步号: set演示步号,
+            关闭: () => void 退出演示(),
+          })
+        }}
+        onPointerDown={() => {
+          if (演示中()) 舞台?.focus()
+        }}
+      >
         {/*
           演示态复用**同一个画布实例**（只读 + 可见过滤），不另挂第二套渲染器：
           卸载画布会丢掉视口，而 FR-040 要求退出后视口保持进入前的样子（T011）。
@@ -651,7 +719,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
         </Show>
         <Show when={演示中()}>
-          <演示覆盖层 步号={演示步号()} 设置步号={set演示步号} 关闭={退出演示} />
+          <演示覆盖层 步号={演示步号()} />
         </Show>
       </div>
     </div>
