@@ -53,6 +53,16 @@ function 解事件们(数据: unknown): 时间线事件[] {
   })
 }
 
+/**
+ * 空原因里这两条**不是**「没有事件」：一条是「有事件、只是记不下时间」，一条是
+ * 「这个对象不在事件里」。其余空原因（含 `无事件`）是对数据的确定否证，照实说没有
+ * （`#012-02`：空证据按原始事实写，别把「判不了」说成「没有」）。
+ */
+const 空原因话表: Record<string, string> = {
+  时间全部缺失: "有事件，但都还没记下时间，时间轴画不出来",
+  对象未登记: "这个对象目前不在任何事件的参与方里",
+}
+
 const 周 = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
 /**
@@ -166,6 +176,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
   const 事件们 = createMemo(() => 解事件们(结果()?.数据))
   const 组们 = createMemo(() => 分组(事件们()))
+  /** 只有 `时间全部缺失` / `对象未登记` 命中话表；`无事件` 与老服务端（不带空原因）走「没有事件」。 */
+  const 空原因话 = () => {
+    const 值 = 结果()?.空原因
+    return typeof 值 === "string" ? 空原因话表[值] : undefined
+  }
 
   /** 页头：几条、覆盖到哪一天。范围只从时间戳算——原文可能是「去年冬天」这种不可比的说法。 */
   const 范围文本 = createMemo(() => {
@@ -225,7 +240,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
           <p class="text-[13px] text-v2-text-text-muted">正在读取事件…</p>
         </Show>
         <Show when={结果() && 事件们().length === 0 && 错误() === undefined}>
-          <p data-slot="timeline-empty" class="text-[13px] text-v2-text-text-muted">没有事件</p>
+          <p data-slot="timeline-empty" class="text-[13px] text-v2-text-text-muted">{空原因话() ?? "没有事件"}</p>
         </Show>
 
         <For each={组们()}>

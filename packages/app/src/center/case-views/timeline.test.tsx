@@ -92,7 +92,7 @@ function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
   }
 }
 
-const 线api = (数据: unknown, 其余: { 口径?: string; 缺口?: string[] } = {}) =>
+const 线api = (数据: unknown, 其余: { 口径?: string; 缺口?: string[]; 空原因?: string | null } = {}) =>
   假api({ timeline: async () => ({ kind: "ok", value: { 数据, ...其余 } }) })
 
 describe("时间线", () => {
@@ -220,6 +220,28 @@ describe("时间线", () => {
     const host = mount(() => <Timeline projectId="p" id="e-张" api={线api([])} />)
     await 等(() => host.textContent!.includes("没有事件"))
     expect(host.querySelectorAll("[data-slot='timeline-event']").length).toBe(0)
+  })
+
+  test("有事件但都没记时间 ⇒ 说清画不出来的原因，不谎称「没有事件」", async () => {
+    const host = mount(() => <Timeline projectId="p" id="e-张" api={线api(null, { 空原因: "时间全部缺失" })} />)
+    await 等(() => host.querySelector("[data-slot='timeline-empty']") !== null)
+    const 空态 = host.querySelector("[data-slot='timeline-empty']")!.textContent!
+    expect(空态).toContain("都还没记下时间")
+    expect(空态).not.toContain("没有事件")
+  })
+
+  test("对象不在任何事件的参与方里 ⇒ 说「未登记」，不谎称「没有事件」", async () => {
+    const host = mount(() => <Timeline projectId="p" id="e-张" api={线api(null, { 空原因: "对象未登记" })} />)
+    await 等(() => host.querySelector("[data-slot='timeline-empty']") !== null)
+    const 空态 = host.querySelector("[data-slot='timeline-empty']")!.textContent!
+    expect(空态).toContain("不在任何事件的参与方")
+    expect(空态).not.toContain("没有事件")
+  })
+
+  test("空原因就是「无事件」⇒ 仍说「没有事件」（对数据的确定否证，照实说）", async () => {
+    const host = mount(() => <Timeline projectId="p" id="e-张" api={线api([], { 空原因: "无事件" })} />)
+    await 等(() => host.querySelector("[data-slot='timeline-empty']") !== null)
+    expect(host.querySelector("[data-slot='timeline-empty']")!.textContent).toContain("没有事件")
   })
 
   test("数据不是数组（形状认不出）⇒ 也说「没有事件」，不抛", async () => {
