@@ -21,8 +21,9 @@ import {
  *
  * ## 只在有活的时候轮询
  *
- * 队列是单 worker、2 秒一拍；前端 3 秒拉一次够用。没有「排队中 / 解析中」就**不排下一拍**
- * ——空闲项目不该每 3 秒发一条请求。`轮询器` 可注入：测试用手动轮询，产品用 `setTimeout`。
+ * 队列是单 worker、半秒一拍；前端 1 秒拉一次（2026-11-15，原 3 秒）——解析只需 7–8 秒，
+ * 3 秒的刷新间隔会让「已解析」最多晚 3 秒才出现。没有「排队中 / 解析中」就**不排下一拍**
+ * ——空闲项目不该每秒发一条请求。`轮询器` 可注入：测试用手动轮询，产品用 `setTimeout`。
  */
 export interface 轮询器 {
   /** 安排一次；返回取消函数。 */
@@ -59,7 +60,7 @@ export function createCaseMaterials(
   options: CaseMaterialsOptions = {},
 ): CaseMaterials {
   const 轮询器 = options.轮询器 ?? 默认轮询器
-  const 间隔 = options.轮询间隔ms ?? 3000
+  const 间隔 = options.轮询间隔ms ?? 1000
 
   const [项目, set项目] = createSignal<string | undefined>()
   const [行们, set行们] = createSignal<readonly 材料视图[]>([])

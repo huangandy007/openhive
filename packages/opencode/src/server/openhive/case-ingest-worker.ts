@@ -17,8 +17,9 @@ import { OpenhivePg } from "./pg"
  *
  * ## 轮询而不是通知
  *
- * 入队发生在上传请求里、消费发生在后台，两者之间不必耦合。间隔 2 秒——人拖完文件到
- * 看见 ✓ 之间本来就有解析时间，2 秒延迟看不出来，而空转开销只有一条 SQL。
+ * 入队发生在上传请求里、消费发生在后台，两者之间不必耦合。间隔**半秒**（2026-11-15，
+ * 原 2 秒）：解析已压到 7–8 秒，2 秒的空等成了可感知的占比；空转开销只有一条带索引的
+ * SQL（`挤一个`），半秒一拍的代价可以忽略。
  *
  * ## 形状照 `mcp-config-sync.ts`
  *
@@ -30,7 +31,7 @@ import { OpenhivePg } from "./pg"
  * 项目目录恒为 `{root}/{userId}/{projectId}`，`source_path` 就是这一段相对路径 ——
  * 作业不必反查用户与项目，进程重启后照跑。
  */
-export const 轮询间隔ms = 2000
+export const 轮询间隔ms = 500
 
 /** `connect(env)` 拼连接串要的变量。缺任一 ⇒ 这台部署不接业务 PG。 */
 const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const
