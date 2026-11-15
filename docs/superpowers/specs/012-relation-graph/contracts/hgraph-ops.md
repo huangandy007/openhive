@@ -103,10 +103,24 @@
 |---|---|---|
 | 409 | `VERSION_CONFLICT` | 带了 `版本` 且 ≠ 当前；响应体另带 `最新版本` |
 | 400 | `FACTS_NEED_SOURCE` / `INFERENCE_NEEDS_BASIS` / `INFERENCE_NEEDS_CONFIDENCE` | 来源硬闸（与 AI 工具**同一个函数**） |
+| 400 | `BAD_REQUEST` | 请求形状不对（`projectId` 非法、`path` 为空、`操作` 不是数组、`版本`/`批次`/`幂等键` 类型不对、`版本: null`） |
+| 400 | `BAD_JSON` / `BAD_VERSION` / `BAD_SHAPE` | 文件解析失败 / 缺 `格式` / 结构不对（含缺必填字段） |
+| 400 | `NEWER_VERSION` | 文件 `格式` 高于本服务 ⇒ 只读，不写 |
 | 400 | `BAD_CITATION` / `DANGLING_EDGE` / `BAD_OP` | 操作不合法 |
-| 400 | `TOO_MANY` | 一次批量 > 50（工具入口） |
-| 404 | `NOT_FOUND` | 文件不存在 |
-| 500 | `WRITE_FAILED` / `BUSY` | 原子写失败 / 文件被占用（重试 3 次后） |
+| 400 | `TOO_MANY` | 一次批量 > 50（工具入口；T012 实现） |
+| 400 | `LINK_ESCAPE` / `GIT_LOCKED` | 路径越界（链接/junction 逃出项目目录） / 目标在 `.git` 内 |
+| 404 | `NOT_FOUND` | 图文件或项目目录不存在 |
+| 500 | `DUPLICATE_ID` | 图上 id 重复 —— **内部错误**（维护人员排查），不是用户输入问题 |
+| 500 | `WRITE_FAILED` | 原子写失败：`EBUSY/EPERM/EACCES` 按 50/150/450ms 退避重试后仍失败，临时文件已清理 |
+
+> `BUSY` **不单列**：进程内 per-path 串行不会产生「文件被占用」；跨进程占用在重试耗尽后同样落 `WRITE_FAILED`。
+> 单列一个永不出现的码只会让调用方去分支一条死路。
+
+**校验范围（关键）**：全量校验只作用于**本批新增或改过的对象**。文件里既有的、陈年不规范的对象
+不会因为一次「改备注」被挡死 —— 否则老图永远改不动。读路径仍按格式闸拒 `BAD_JSON` / `BAD_VERSION` / `NEWER_VERSION`。
+
+**空批**：`操作: []` ⇒ 返回当前版本、**不写文件**；因为不写，也不解析文件（`NEWER_VERSION` 或 `BAD_JSON`
+的文件带空批请求同样回 `200`）。前端据此可以在「没有待发」时安全地做一次版本探测。
 
 **版本语义（关键）**：
 
@@ -145,7 +159,7 @@
 
 | 既有出口 | 本契约的态度 |
 |---|---|
-| `PUT /openhive/file/write` | **不复用**：trim/CRLF/非原子/无锁/版本口径不同（research R1）。本 feature 让它对 `.hgraph` 返回 `HGRAPH_READONLY` |
+| `POST /openhive/file/write` | **不复用**：trim/CRLF/非原子/无锁/版本口径不同（research R1）。本 feature 让它对 `.hgraph` 返回 `HGRAPH_READONLY` |
 | `POST /openhive/file/create` | **复用**：新建先走它（`{flag:"wx"}`，不覆盖），再 `init` |
 | `GET /openhive/file/stat` | **复用**：轮询只比 `mtime/size`，变了才 `read` |
 | `GET /openhive/case/entities` / `entity` / `facts` / `graph` | **复用**：从库加入、快照、角标、关系页，全部只读调用，不新增检索接口 |

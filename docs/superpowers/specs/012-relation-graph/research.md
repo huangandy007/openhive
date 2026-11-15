@@ -8,7 +8,7 @@
 
 ## R1 · 写入通道：新建 `hgraph-ops`，并让通用写口拒绝 `.hgraph`
 
-**决定**：`.hgraph` 的唯一写入者是 `packages/opencode/src/server/openhive/hgraph-ops.ts`；`file.ts` 的 `handleWrite`（`PUT /openhive/file/write`）在路径闸之后加一道判据：后缀小写归一为 `.hgraph` ⇒ 拒绝（`400`，`code: "HGRAPH_READONLY"`，文案「关系图请在关系图视图里改」）。
+**决定**：`.hgraph` 的唯一写入者是 `packages/opencode/src/server/openhive/hgraph-ops.ts`；`file.ts` 的 `handleWrite`（`POST /openhive/file/write`）在路径闸之后加一道判据：后缀小写归一为 `.hgraph` ⇒ 拒绝（`400`，`code: "HGRAPH_READONLY"`，文案「关系图请在关系图视图里改」）。
 
 **理由**：通用写口（`file.ts:1254-1330` 实读）与本 feature 的语义有四处硬冲突——① `content.trim()` + BOM/CRLF「信封」还原会改 JSON 的形状；② 读→比→写之间有间隙且**无 per-path 串行锁**（文件头自己登记了这个缺口）；③ 写是非原子的单个 `writeFile`，没有 temp+rename，也没有 win32 占用重试；④ 版本口径是「trim 后文本」，不是内容哈希（同毫秒同大小互换会漏判）。把它改成兼顾 `.hgraph` = 为一个功能动共享写口，两种语义互相污染。
 

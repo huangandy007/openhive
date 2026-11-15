@@ -44,7 +44,7 @@
 - 300 节点：标签分级、隔离/筛选共用一个「已隐藏 N 个」口径
 
 **Constraints**:
-- **单一写路径**：`.hgraph` 只能经 `hgraph-ops` 写；通用文件写接口 `PUT /openhive/file/write` 必须拒绝 `.hgraph`（FR-011）
+- **单一写路径**：`.hgraph` 只能经 `hgraph-ops` 写；通用文件写接口 `POST /openhive/file/write` 必须拒绝 `.hgraph`（FR-011）
 - **零 DB 迁移、零新增检索接口**（FR-031 / SC-008）；从库加入只用既有 `entities` / `entity` / `facts` / `graph` 读口
 - **最小化上游冲突**：新文件全部落在 fork 自有目录（`server/openhive/`、`center/case-views/hgraph/`）；对既有文件的改动只有「注册一行 / 分发一条 / 类型胶囊一行」这类加法
 - 撤销栈 20 步、按标签页独立；AI 批次算一步
@@ -113,7 +113,7 @@
 
 | 既有通道 | 能不能直接用 | 结论 |
 |---|---|---|
-| `PUT /openhive/file/write`（`save` 接缝，带 `base` CAS） | **不能** | 它的语义与本 feature 冲突：① `content.trim()` + BOM/CRLF「信封」还原——JSON 的尾换行会被削；② 读→比→写之间有间隙、**无 per-path 串行锁**；③ 非原子写（无 temp+rename、无 win32 占用重试）；④ 版本用「读口 trim 后的文本」而非内容哈希，同毫秒同大小互换漏判。⇒ `.hgraph` **必须**走 `hgraph-ops`，且通用写口**拒绝** `.hgraph`（FR-011 的负向断言就钉这条） |
+| `POST /openhive/file/write`（`save` 接缝，带 `base` CAS） | **不能** | 它的语义与本 feature 冲突：① `content.trim()` + BOM/CRLF「信封」还原——JSON 的尾换行会被削；② 读→比→写之间有间隙、**无 per-path 串行锁**；③ 非原子写（无 temp+rename、无 win32 占用重试）；④ 版本用「读口 trim 后的文本」而非内容哈希，同毫秒同大小互换漏判。⇒ `.hgraph` **必须**走 `hgraph-ops`，且通用写口**拒绝** `.hgraph`（FR-011 的负向断言就钉这条） |
 | `LoadFileContent`（读） | 可以，但**不够** | 读口不返回「版本」。版本只能由服务端算（原始字节哈希）。⇒ 新增 `GET /openhive/hgraph/read` 返回 `{ 内容, 版本 }`；不用它做写入 |
 | 「新建文件」`POST /openhive/file/create`（`{flag:"wx"}`，不覆盖） | **用它建空文件**，不扩展它 | 08 §5.11.3 已裁定：不改通用 create 支持初始内容；create 成功后再调 `POST /openhive/hgraph/init` 写骨架（幂等：非空不覆盖） |
 | `GET /openhive/file/download` | 不用于导出 | 导出是「先授权后出图」：服务端只发许可 + 留痕，PNG 由前端 canvas 产出后按 blob 下载（08 §8.1 的定位是「可追溯」，不是「禁止」） |

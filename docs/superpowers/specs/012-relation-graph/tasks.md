@@ -68,7 +68,7 @@ timeout 300 bun test ./test/server/case-hgraph-ops.test.ts
 | T003 | `格式:2` 被当合法 ⇒ 实得 `ok:true` | `2` ⇒ `NEWER_VERSION` + 只读 |
 | T004 | 事实边无出处写入成功 ⇒ 实得 0 拒绝 | `FACTS_NEED_SOURCE` + 原话 |
 | T005 | 第二个节点 id 也叫 `n1` ⇒ 实得重复 | 全图 id 唯一、临时 id 有映射 |
-| T006 | 过期版本写入成功 ⇒ 实得 200 | 409 + 文件哈希不变；幂等重放 `版本` 相同；`PUT /file/write` 写 `.hgraph` ⇒ `HGRAPH_READONLY` |
+| T006 | 过期版本写入成功 ⇒ 实得 200 | 409 + 文件哈希不变；幂等重放 `版本` 相同；`POST /file/write` 写 `.hgraph` ⇒ `HGRAPH_READONLY` |
 
 **Checkpoint**：格式与写入者可信 —— 后续任何任务都只能经 `应用并写回` 改图。
 

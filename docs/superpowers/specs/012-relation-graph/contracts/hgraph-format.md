@@ -51,7 +51,7 @@
 
 ## 5. 负向不变量（每条必须有一条用例）
 
-- 通用写口 `PUT /openhive/file/write` 对 `.hgraph` 返回拒绝（`HGRAPH_READONLY`）。
+- 通用写口 `POST /openhive/file/write` 对 `.hgraph` 返回拒绝（`HGRAPH_READONLY`）。
 - 全仓 grep `writeFile` / `save` 对 `.hgraph` 的调用点只有 `hgraph-ops`。
 - 图文件**不产生任何数据库写入**（SC-008）。
 - 解析失败的文件：`hgraph/ops` 与 5 个 AI 工具都拒绝写。
