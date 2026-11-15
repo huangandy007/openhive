@@ -38,6 +38,20 @@ afterEach(() => {
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 const 等 = (毫秒: number) => new Promise<void>((resolve) => setTimeout(resolve, 毫秒))
+/**
+ * 等到条件成立（上限内每 10ms 试一次）。
+ *
+ * 轮询用例的 `setInterval` 在机器忙时会晚到，固定 `等(120)` 会把「轮询还没跑」误判成
+ * 「行为不对」（T013 解析失败用例的偶发红就是这类）。条件等待不掩盖失败：到上限仍未成立
+ * 就交给后面的断言红，而不是靠加大 sleep 蒙混。
+ */
+async function 等到条件(条件: () => boolean, 上限毫秒 = 2000): Promise<void> {
+  const 起 = Date.now()
+  while (!条件()) {
+    if (Date.now() - 起 > 上限毫秒) return
+    await 等(10)
+  }
+}
 /** 防抖 500ms 之后再多给一点：650ms 时那次写必已发出。 */
 const 过防抖 = () => 等(650)
 
@@ -1883,14 +1897,18 @@ describe("T013 · 页面接收 AI 改动", () => {
     await flush()
 
     服.设原文("{ 这不是 JSON", "bad1")
-    await 等(120)
+    // 条件等待代替固定 `等(120)`：轮询 25ms，机器忙时固定窗口会偶发假红。
+    await 等到条件(() => 取("[data-slot='hgraph-reload-ask']") !== null)
     expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
     expect(节点组("n1")).not.toBeNull()
     expect(文案("hgraph-reload-notice")).toBeUndefined()
 
     按钮("hgraph-reload-ask-keep").click()
-    await flush()
+    // 「保留」是同步收起；**下一 tick 读到同一份坏 JSON 会再问**（实现口径：不吞）。
+    // 因此收起必须在同一个同步步里断言——原先先 `await flush()` 再断言，正好把 25ms
+    // 轮询的再问窗口放进来，形成与本用例目的无关的偶发红。
     expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
+    await flush()
     expect(节点组("n1")).not.toBeNull()
   })
 

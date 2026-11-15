@@ -208,8 +208,26 @@ describe("隐藏只读渲染（R64）", () => {
     expect(svg.includes("hgraph-text-editor")).toBe(false)
     expect(svg.includes("hgraph-mode-pointer")).toBe(false)
     // 离屏渲染根与容器都清掉了（`#005-03`）。
+    // 口径：`容器.remove()` 已足以让下面两条 DOM 断言通过，**无法区分** Solid `释放?.()`
+    // 是否执行——dispose 本体在本环境没有可观察探针（报告缺口表如实记，不写成已覆盖）。
     expect(document.querySelectorAll('[data-slot="hgraph-export-offscreen"]').length).toBe(0)
     expect(document.querySelectorAll('[data-slot="hgraph-canvas"]').length).toBe(0)
+  })
+})
+
+describe("字体（R65）", () => {
+  test("注入根字体 ⇒ svg 根内联 font-family；空串 ⇒ 不设该属性", async () => {
+    const { 依赖, 账 } = 记账依赖()
+    const 回 = await 跑导出({ 依赖 })
+    expect(回.kind).toBe("ok")
+    const 串 = 账.光栅化们[0]!.svg
+    expect(串).toMatch(/<svg[^>]*\bfont-family="Test Sans"/)
+    expect(串).toContain('font-family="Test Sans"')
+
+    const 空账 = 记账依赖({ 根字体: () => "" })
+    const 空回 = await 跑导出({ 依赖: 空账.依赖 })
+    expect(空回.kind).toBe("ok")
+    expect(空账.账.光栅化们[0]!.svg.includes("font-family=")).toBe(false)
   })
 })
 
@@ -329,6 +347,42 @@ describe("许可与顺序（R67）", () => {
     expect(光栅化次数).toBe(0)
     expect(下载次数).toBe(0)
     expect(document.querySelectorAll('[data-slot="hgraph-export-offscreen"]').length).toBe(0)
+  })
+
+  test("许可() 抛出 ⇒ 按错误返回（「导出失败：」+ message），零渲染零下载", async () => {
+    let 光栅化次数 = 0
+    let 下载次数 = 0
+    const { 依赖 } = 记账依赖({
+      光栅化: async () => {
+        光栅化次数 += 1
+        return new Blob(["png"])
+      },
+      下载: () => {
+        下载次数 += 1
+      },
+    })
+    const 结果 = await 跑导出({
+      许可: async () => {
+        throw new Error("网络断了")
+      },
+      依赖,
+    })
+    expect(结果).toEqual({ kind: "error", message: "导出失败：网络断了" })
+    expect(光栅化次数).toBe(0)
+    expect(下载次数).toBe(0)
+  })
+
+  test("下载() 抛出 ⇒ 按错误返回（不冒泡成 unhandled rejection）", async () => {
+    let 下载次数 = 0
+    const { 依赖 } = 记账依赖({
+      下载: () => {
+        下载次数 += 1
+        throw new Error("被浏览器拦了")
+      },
+    })
+    const 结果 = await 跑导出({ 依赖 })
+    expect(结果).toEqual({ kind: "error", message: "导出失败：被浏览器拦了" })
+    expect(下载次数).toBe(1)
   })
 
   test("许可成功 ⇒ 顺序 许可→光栅化→下载；文件名取许可值；附附录再下同名 .md", async () => {

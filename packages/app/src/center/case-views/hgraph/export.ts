@@ -482,7 +482,14 @@ export async function 导出PNG(输入: 导出输入): Promise<导出结果> {
   const 依赖 = 输入.依赖 ?? {}
 
   // ① 许可：失败即停。零渲染、零下载；话术直接用接口 message。
-  const 许可 = await 输入.许可()
+  // 许可实现本身抛出（网络 / 客户端异常）也收成 error——编辑器以 `void 执行导出()`
+  // 调用，不兜底会变成没有提示的 unhandled rejection。
+  let 许可: 结果<{ readonly 允许: true; readonly 文件名: string }>
+  try {
+    许可 = await 输入.许可()
+  } catch (错误) {
+    return { kind: "error", message: `导出失败：${消息(错误)}` }
+  }
   if (许可.kind === "error") return { kind: "error", message: 许可.message }
 
   // ② 渲染与组装（离屏容器在 渲染SVG 的 finally 里清掉）。
@@ -512,8 +519,13 @@ export async function 导出PNG(输入: 导出输入): Promise<导出结果> {
     输入.选项.附附录
       ? new Blob([附录Markdown(输入.文档)], { type: "text/markdown;charset=utf-8" })
       : undefined
-  下载(文件名, png)
-  if (附录 !== undefined) 下载(记录导出名(`${文件名.replace(/\.png$/i, "")}.md`), 附录)
+  // 下载是 DOM 同步操作；浏览器拦截 / 用户取消可能抛出，同样收成 error（不冒泡）。
+  try {
+    下载(文件名, png)
+    if (附录 !== undefined) 下载(记录导出名(`${文件名.replace(/\.png$/i, "")}.md`), 附录)
+  } catch (错误) {
+    return { kind: "error", message: `导出失败：${消息(错误)}` }
+  }
 
   return { kind: "ok", png, 附录, 文件名, 缺口: 组装.缺口 }
 }
