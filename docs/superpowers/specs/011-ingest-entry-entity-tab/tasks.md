@@ -248,7 +248,13 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T013
   - **验证**：`T`（packages/app）+ `A: workspace/workspace-entry.test.tsx`
 
-- [ ] T015 [US3] 保留能力回归：`packages/app/src/project/entity-api.test.ts`、`packages/app/src/center/case-route.test.ts`、`packages/app/src/center/case-views/entity-profile.test.tsx`
+- [x] T015 [US3] 保留能力回归：`packages/app/src/project/entity-api.test.ts`、`packages/app/src/center/case-route.test.ts`、`packages/app/src/center/case-views/entity-profile.test.tsx`
+
+  > **实测（2026-11-15，只跑不改）**：
+  > - `cd packages/app && timeout 300 bun test ./src/project/entity-api.test.ts` ⇒ **6 pass / 0 fail / 13 expect**，EXIT=0。
+  > - `cd packages/app && timeout 300 bun test ./src/center/case-route.test.ts` ⇒ **9 pass / 0 fail / 20 expect**，EXIT=0。
+  > - `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/center/case-views/entity-profile.test.tsx` ⇒ **56 pass / 0 fail / 206 expect**，EXIT=0。
+  > 结论：实体详情页、`case://` 伪路径、取数底座仍可用（FR-014）。本任务未改任何源码/测试。
 
   - **入参**：不做改动，只跑
   - **出参**：三个文件全绿 —— 实体详情页、`case://` 伪路径、取数底座仍可用（FR-014）
