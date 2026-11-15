@@ -601,11 +601,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set搜索收起(true)
   }
 
-  /** 查找路径（R72）：本地 BFS；命中改选中为路径，未命中只写面板。 */
+  /**
+   * 查找路径（R72）：本地 BFS；命中改选中为路径，未命中只写面板。
+   *
+   * 悬空边（端点不在节点表）不参与：否则一段「n1 → 鬼 → n2」的路径既画不出来、用户也点不
+   * 中那颗中转节点；与 `构图` 的布局度数同一前提（两端都在文档里，`#002-06`）。
+   */
   const 执行查找路径 = () => {
     const 节点ids = 选中().filter((id) => 文档().节点.some((点) => 点.id === id))
     if (节点ids.length !== 2) return
-    const 结果 = 查找路径(文档().边, 节点ids[0]!, 节点ids[1]!)
+    const 存在 = new Set(文档().节点.map((点) => 点.id))
+    const 边们 = 文档().边.filter((行) => 存在.has(行.从) && 存在.has(行.到))
+    const 结果 = 查找路径(边们, 节点ids[0]!, 节点ids[1]!)
     if (结果 === null) {
       set路径面板({ 空: true })
       return

@@ -113,6 +113,8 @@ function 挂(
     readonly 档表?: ReadonlyMap<string, number>
     readonly 选中?: readonly string[]
     readonly 动作?: 画布动作
+    readonly 只读?: true
+    readonly 模式?: "指针" | "连线" | "框选"
   } = {},
 ) {
   const host = document.createElement("div")
@@ -123,11 +125,12 @@ function 挂(
         <画布
           文档={文档}
           选中={额外.选中 ?? []}
-          模式="指针"
+          模式={额外.模式 ?? "指针"}
           动作={额外.动作 ?? 幽灵动作表()}
           图例初始收起={图例初始收起}
           适配请求={额外.适配请求}
           档表={额外.档表}
+          只读={额外.只读}
         />
       ),
       host,
@@ -415,6 +418,58 @@ describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () =>
     拖一下(图例!, { x: 20, y: 24 }, { x: 160, y: 164 })
 
     expect(视口!.getAttribute("transform")).toBe(前)
+  })
+})
+
+describe("T019a · 悬空边（端点不在节点表）", () => {
+  test("不渲染：两端缺一颗的边不进 DOM（组与线都没有）", () => {
+    // 端点 n2 不在 `节点` 里 ⇒ 这条边画不出方向与端点，必须整条不渲染。
+    挂(造图([造节点("n1", 100, 100)], [造边("悬空", "n1", "n2")]))
+    expect(边组们().length).toBe(0)
+    expect(取("[data-edge-id='悬空']")).toBeNull()
+  })
+
+  test("自环与正常边照旧：悬空边不影响其它边的渲染", () => {
+    挂(造图([造节点("n1", 100, 100), 造节点("n2", 300, 100)], [造边("正常", "n1", "n2"), 造边("悬空", "n2", "n9")]))
+    expect(边组们().length).toBe(1)
+    expect(取("[data-edge-id='正常']")).not.toBeNull()
+    expect(取("[data-edge-id='悬空']")).toBeNull()
+  })
+})
+
+describe("T019a · 只读态（动作层 mode）不派发写动作", () => {
+  test("指针模式：拖动节点、双击空白、右键、Delete / F2 / Ctrl+Z 全部零动作", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("n1", 100, 100), 造节点("n2", 300, 100)], [造边("e1", "n1", "n2")]), undefined, {
+      动作,
+      只读: true,
+    })
+    const 布 = 取("[data-slot='hgraph-canvas']") as HTMLElement
+
+    拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 200, y: 200 })
+    取("[data-slot='hgraph-svg']")!.dispatchEvent(
+      new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: 500, clientY: 500 }),
+    )
+    节点组("n1")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }))
+    for (const key of ["Delete", "F2", "z", "v"]) {
+      布.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: key === "z" || key === "v", bubbles: true, cancelable: true }))
+    }
+
+    expect(Object.keys(计数)).toEqual([])
+    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+  })
+
+  test("连线模式：从节点拖到节点也不加边（模式不影响只读闸）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("n1", 100, 100), 造节点("n2", 300, 100)], []), undefined, {
+      动作,
+      只读: true,
+      模式: "连线",
+    })
+
+    拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 300, y: 100 })
+
+    expect(Object.keys(计数)).toEqual([])
   })
 })
 

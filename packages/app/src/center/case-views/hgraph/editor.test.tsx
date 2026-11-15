@@ -28,6 +28,7 @@ import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 构图, 布局目标 } from "./editor"
 import { 适配视口 } from "./geometry"
+import { 阶梯位置 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
 
 const 挂过的: Array<() => void> = []
@@ -1477,6 +1478,25 @@ describe("T010 · 修复轮 1", () => {
     expect(表三.get("n2")!.度数).toBe(0)
   })
 
+  test("T019a 构图：悬空边（端点不在节点表）不计度数、不参与 BFS 跳数", () => {
+    const 图 = 一份图()
+    图.节点 = [造节点("n1", 100, 100), 造节点("n2", 300, 100)]
+    图.边 = [
+      { id: "真", 从: "n1", 到: "n2", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+      { id: "悬空", 从: "n1", 到: "鬼", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+    ]
+
+    const 表 = new Map(构图(图).节点.map((点) => [点.id, 点]))
+    // 悬空边不给 n1 加度数：两边都是 1 ⇒ 并列取 id 小的 n1 为中心。
+    expect(表.get("n1")!.度数).toBe(1)
+    expect(表.get("n2")!.度数).toBe(1)
+    expect(表.get("n1")!.中心).toBe(true)
+    expect(表.get("n1")!.跳数).toBe(0)
+    // 鬼不在节点表 ⇒ 不会被 BFS 收进层。
+    expect(表.has("鬼")).toBe(false)
+    expect(表.get("n2")!.跳数).toBe(1)
+  })
+
   test("T011 #6 检查器改出现序 2 后失焦：恰一条写、一步撤销（T016a：撤销写回 null）", async () => {
     const { api, 写们 } = 假api()
     挂上(api)
@@ -2855,6 +2875,16 @@ describe("T014 · 从库加入接线", () => {
     expect(选择器面板()).toBeNull()
     expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(4)
     expect((取("[data-slot='hgraph-field-名称']") as HTMLInputElement).value).toBe("张三")
+
+    // 一次撤销撤掉整批：撤销键随即变灰、重做键亮起 ⇒ 栈里**只压了一步**。
+    const 撤销键 = 取("[data-slot='hgraph-undo']") as HTMLButtonElement
+    const 重做键 = 取("[data-slot='hgraph-redo']") as HTMLButtonElement
+    expect(撤销键.disabled).toBe(false)
+    撤销键.click()
+    await flush()
+    expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(3)
+    expect(撤销键.disabled).toBe(true)
+    expect(重做键.disabled).toBe(false)
   })
 })
 
@@ -3705,6 +3735,31 @@ describe("T017b · 查找路径（R72）", () => {
     expect(写们.length).toBe(0)
   })
 
+  test("T019a 悬空边不能当桥：两条边的公共端点不在节点表 ⇒ 仍判不连通", async () => {
+    // 悬空边（端点不在 `节点` 里）渲染不出、布局也不算（`构图` 同口径）；查找路径若只看
+    // 边，会把「鬼」当成中转站给出一段用户点不选、画布也看不见的路径。
+    const 图: 图文件 = {
+      ...一份图(),
+      节点: [造节点("n1", 100, 100), 造节点("n2", 300, 100)],
+      边: [造边("e1", "n1", "鬼"), 造边("e2", "鬼", "n2")],
+      文字: [],
+    }
+    const { api, 写们 } = 假api()
+    挂上(api, 图)
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n2", 300, 100, { shiftKey: true })
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-path']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(文案("hgraph-path-panel")).toContain("这两个节点之间没有连通的路径")
+    expect(升序(已选节点id们())).toEqual(["n1", "n2"])
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
   test("#16 不连通：面板明说没有路径，选中不变、零写", async () => {
     const { api, 写们 } = 假api()
     挂上(api, { ...三点图(), 边: [] })
@@ -4072,5 +4127,34 @@ describe("T017b · 修复轮 1（R102–R104 / 覆盖补强）", () => {
     expect(取("[data-slot='hgraph-search-results']")).toBeNull()
     await 过防抖()
     expect(写们.length).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T019a · 阶梯位置（R29）：公式直断言
+// ---------------------------------------------------------------------------
+
+describe("T019a · 阶梯位置（R29）", () => {
+  test("围绕画布中心、按 %5 / %4 错开 28：前 5 颗逐颗可算", () => {
+    // 画布 760×680 ⇒ 中心 (380, 340)。
+    expect([
+      阶梯位置(0),
+      阶梯位置(1),
+      阶梯位置(2),
+      阶梯位置(3),
+      阶梯位置(4),
+    ]).toEqual([
+      { x: 380 + ((0 % 5) - 2) * 28, y: 340 + ((0 % 4) - 2) * 28 },
+      { x: 380 + ((1 % 5) - 2) * 28, y: 340 + ((1 % 4) - 2) * 28 },
+      { x: 380 + ((2 % 5) - 2) * 28, y: 340 + ((2 % 4) - 2) * 28 },
+      { x: 380 + ((3 % 5) - 2) * 28, y: 340 + ((3 % 4) - 2) * 28 },
+      { x: 380 + ((4 % 5) - 2) * 28, y: 340 + ((4 % 4) - 2) * 28 },
+    ])
+    // 硬编码一组实得值，防止「公式两边一起改」的假绿（x/y 各自独立周期）。
+    expect([阶梯位置(0), 阶梯位置(5), 阶梯位置(6)]).toEqual([
+      { x: 324, y: 284 },
+      { x: 324, y: 312 },
+      { x: 352, y: 340 },
+    ])
   })
 })
