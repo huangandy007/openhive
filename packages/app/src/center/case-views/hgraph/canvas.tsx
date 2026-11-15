@@ -120,6 +120,8 @@ export interface 画布动作 {
    * 这一条，画布不自己算可见集合。
    */
   readonly 只看邻居?: (ids: readonly string[]) => void
+  /** 退出隔离（R103）：隔离覆盖全图时角落条（N=0）不渲染，工具栏是唯一退出入口。 */
+  readonly 退出隔离?: () => void
   /** 查找路径（T017b / R72）：选中恰 2 节点时本地 BFS，结果只改选中与面板，不写盘。 */
   readonly 查找路径?: () => void
   /** 适配全部（T017b / R70）：递增 `适配请求`，视口仍在画布里落地。 */
@@ -148,9 +150,10 @@ export interface 画布Props {
    */
   readonly 只读?: true
   /**
-   * 演示态可见集合（`演示步进` 的输出）：**只保证渲染过滤，不保证命中 / 框选**——
-   * `框选命中` 仍按整份文档计算；当前唯一调用方是只读演示态（指针/框选在只读闸处返回）。
-   * 不传 = 全显。`文字` 不参与（R35）——这个集合只过滤节点与边。
+   * 可见集合（`演示步进` / 编辑器隔离·筛选的输出）：渲染按它过滤；编辑态的框选
+   * **也按它求交**（R72/T017b 修复轮 1）——否则隔离后能框选到几何上落在框内但不可见
+   * 的节点，随后 Delete/对齐会作用到用户看不见的对象。命中与连线目标仍按文档计算
+   * （点在节点的可见几何上，隐藏节点不参与命中）。不传 = 全显。`文字` 不参与（R35）。
    */
   readonly 可见?: { readonly 节点: ReadonlySet<string>; readonly 边: ReadonlySet<string> }
   /**
@@ -636,7 +639,8 @@ export function 画布(props: 画布Props): JSX.Element {
       set框(undefined)
       if (现.移动 && 框现 !== undefined) {
         // `框选命中` 已经把 `已选` 取并集（Shift 追加口径），这里直接落成新选集。
-        props.动作.选择(框选命中(框现, props.文档.节点, props.选中), false)
+        // 只框可见节点：隔离/筛选后不可见的节点不能被选中（否则 Delete/对齐会作用到看不见的对象）。
+        props.动作.选择(框选命中(框现, 可见节点们(), props.选中), false)
       } else {
         props.动作.选择([], false)
       }
@@ -819,6 +823,7 @@ export function 画布(props: 画布Props): JSX.Element {
       onPointerDown={按下}
       onPointerMove={移动中}
       onPointerUp={松开}
+      onPointerCancel={松开}
       onKeyDown={按键}
       onWheel={滚轮}
       onDblClick={双击}

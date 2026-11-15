@@ -3551,6 +3551,10 @@ describe("T017b · 搜索（R72）", () => {
     expect(已选节点id们()).toEqual(["n2"])
     // 画布宽高 760×680、缩放不变（1）⇒ n2(200,100) 落在中心：translate(180 240)。
     expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(180 240) scale(1)")
+    // 验收 #13「触发 1 次」：一次 Enter 只推进一次序号（`data-center-seq` 是可观测口径）。
+    expect(取("[data-slot='hgraph-search-wrap']")!.getAttribute("data-center-seq")).toBe("1")
+    // 命中后下拉收起（Minor-5 / 修复轮 1）。
+    expect(取("[data-slot='hgraph-search-results']")).toBeNull()
     await 过防抖()
     expect(写们.length).toBe(0)
   })
@@ -3719,5 +3723,211 @@ describe("T017b · 视口请求（R70）", () => {
     expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe(
       `translate(${预期.x} ${预期.y}) scale(${预期.缩放})`,
     )
+  })
+})
+
+describe("T017b · 修复轮 1（R102–R104 / 覆盖补强）", () => {
+  test("R102 检查器「只看邻居」：选中 n1 → 点检查器按钮 ⇒ n3 隐藏 + 角落条 1 + 零写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    const 按钮 = 取("[data-slot='hgraph-inspector-neighbors']") as HTMLButtonElement | null
+    expect(按钮).not.toBeNull()
+    按钮!.click()
+    await flush()
+
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n2")).not.toBeNull()
+    expect(节点组("n3")).toBeNull()
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 1 个节点")
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("框选与可见集求交：隔离后框住隐藏节点 ⇒ 选中不包含它", async () => {
+    const { api } = 假api()
+    挂上(api, 三点图())
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement).click()
+    await flush()
+    expect(节点组("n3")).toBeNull()
+
+    // 框 (300,300)-(500,500) 几何上覆盖隐藏的 n3(400,400)；n1/n2 在框外。
+    拖(画布()!, 300, 300, 500, 500, { shiftKey: true })
+    await flush()
+
+    expect(已选节点id们()).toContain("n1")
+    expect(已选节点id们()).not.toContain("n3")
+    // 选中集合不能只看 DOM：被隔离的节点即使被选中也可能不渲染。查找路径按钮只按
+    // 「选中里的节点数 === 2」启用，是选中集合的独立观测口（`#005-18` 假绿四问）。
+    expect((取("[data-slot='hgraph-toolbar-path']") as HTMLButtonElement).disabled).toBe(true)
+    expect(节点组("n3")).toBeNull()
+  })
+
+  test("居中保留当前缩放：先放大到 ≈1.52 再居中 ⇒ scale 不变、目标落中心", async () => {
+    const { set居中请求 } = 挂画布(三点图())
+    await flush()
+
+    // 滚轮向上 3 次：1 × 1.15³ ≈ 1.5208749999999999（居中若重置为 1 会红）。
+    for (let 序 = 0; 序 < 3; 序++) 滚轮(-100)
+    await 等(80)
+
+    const 视口元素 = 取("[data-slot='hgraph-viewport']")!
+    const 变换 = 视口元素.getAttribute("transform")!
+    const 匹配 = /scale\(([^)]+)\)/.exec(变换)
+    expect(匹配).not.toBeNull()
+    const 缩放 = Number(匹配![1])
+    expect(缩放).toBeGreaterThan(1.5)
+
+    set居中请求({ id: "n2", 序号: 1 })
+    await flush()
+
+    // n2(200,100)、画布 760×680：translate(380-200·s, 340-100·s)，scale 保持 s。
+    expect(视口元素.getAttribute("transform")).toBe(
+      `translate(${380 - 200 * 缩放} ${340 - 100 * 缩放}) scale(${缩放})`,
+    )
+  })
+
+  test("pointercancel 收尾：拖动中取消后 40ms 恢复标签（不是永远隐藏）", async () => {
+    挂画布(三点图(), { 恢复毫秒: 40 })
+    await flush()
+    expect(节点标签个数()).toBe(3)
+
+    按下(节点组("n1")!, 100, 100)
+    for (let 序 = 1; 序 <= 6; 序++) 指针移动(100 + 序 * 10, 100)
+    expect(节点标签个数()).toBe(0)
+
+    画布()!.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 160,
+        clientY: 100,
+        pointerId: 1,
+      }),
+    )
+    await flush()
+    expect(节点标签个数()).toBe(0)
+    await 等(80)
+    expect(节点标签个数()).toBe(3)
+  })
+
+  test("搜索 ↑/↓：两条结果 ↓ 后 Enter 选第二条、↑ 后 Enter 回第一条", async () => {
+    const { api } = 假api()
+    const 图: 图文件 = {
+      ...三点图(),
+      节点: [
+        造节点("n1", 100, 100, { 名称: "张三" }),
+        造节点("n2", 200, 100, { 名称: "张四" }),
+        造节点("n3", 400, 400, { 名称: "王五" }),
+      ],
+    }
+    挂上(api, 图)
+    await flush()
+
+    const 输入 = 输入搜索词("张")
+    await flush()
+    expect(document.querySelectorAll("[data-slot='hgraph-search-result']").length).toBe(2)
+
+    按键(输入, { key: "ArrowDown" })
+    按键(输入, { key: "Enter" })
+    await flush()
+    expect(已选节点id们()).toEqual(["n2"])
+
+    按键(输入, { key: "ArrowUp" })
+    按键(输入, { key: "Enter" })
+    await flush()
+    expect(已选节点id们()).toEqual(["n1"])
+  })
+
+  test("隔离并集：隔离 n1 后对 n3 再隔离 ⇒ 并集保留 n1（不是替换）", async () => {
+    const { api } = 假api()
+    挂上(api, 三点图())
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement).click()
+    await flush()
+    expect(节点组("n3")).toBeNull()
+
+    // 搜索能选中被隔离的 n3（R104：选中始终渲染），再按只看邻居。
+    const 输入 = 输入搜索词("n3")
+    await flush()
+    按键(输入, { key: "Enter" })
+    await flush()
+    expect(节点组("n3")).not.toBeNull()
+
+    ;(取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement).click()
+    await flush()
+
+    // 并集 {n1,n2,n3}：n1 仍在（替换实现会只剩 {n3}），角落条 N=0 消失。
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n2")).not.toBeNull()
+    expect(取("[data-slot='hgraph-hidden-badge']")).toBeNull()
+  })
+
+  test("R103 隔离覆盖全图（N=0）时工具栏可退出隔离（角落条不可及的空档）", async () => {
+    const { api } = 假api()
+    挂上(api, 三点图())
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    const 按钮 = 取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement
+    按钮.click()
+    await flush()
+    // 隔离启用后「只看邻居」仍是并集扩展入口（R72）；退出按钮独立出现。
+    expect(按钮.textContent?.trim()).toBe("只看邻居")
+    expect(取("[data-slot='hgraph-toolbar-exit-isolation']")).not.toBeNull()
+
+    const 输入 = 输入搜索词("n3")
+    await flush()
+    按键(输入, { key: "Enter" })
+    await flush()
+    按钮.click()
+    await flush()
+    // 并集 = 全集 ⇒ 隐藏数 0，角落条不渲染；退出入口只能来自工具栏。
+    expect(取("[data-slot='hgraph-hidden-badge']")).toBeNull()
+    const 退出 = 取("[data-slot='hgraph-toolbar-exit-isolation']") as HTMLButtonElement | null
+    expect(退出).not.toBeNull()
+    expect(退出!.getAttribute("aria-label")).toBe("退出隔离")
+
+    退出!.click()
+    await flush()
+    expect(取("[data-slot='hgraph-toolbar-exit-isolation']")).toBeNull()
+
+    // 退出后从新集合开始：选中仍是 n3 ⇒ 只显示 {n3}，隐藏 n1/n2。
+    按钮.click()
+    await flush()
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 2 个节点")
+    expect(节点组("n1")).toBeNull()
+  })
+
+  test("R104 隔离后搜索命中隐藏节点：该节点渲染、选中 1 个、隐藏计数减 1、下拉收起", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 链图())
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement).click()
+    await flush()
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 2 个节点")
+
+    const 输入 = 输入搜索词("王五")
+    await flush()
+    按键(输入, { key: "Enter" })
+    await flush()
+
+    expect(已选节点id们()).toEqual(["n3"])
+    expect(节点组("n3")).not.toBeNull()
+    // 可见 = 隔离 ∩ 筛选 ∪ 选中 ⇒ n3 计入可见，隐藏数 2 → 1。
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 1 个节点")
+    expect(取("[data-slot='hgraph-search-results']")).toBeNull()
+    await 过防抖()
+    expect(写们.length).toBe(0)
   })
 })

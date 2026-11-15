@@ -23,6 +23,11 @@ export interface 工具栏Props {
    * `undefined` = 未过 800（不关）。只用于「显示全部标签」的 aria-pressed。
    */
   readonly 标签开?: boolean
+  /**
+   * 是否处于隔离态（R103）：角落条在 N=0（隔离恰好覆盖全图）时不渲染，
+   * 此时工具栏同一个按钮变为「退出隔离」，作为唯一退出入口。
+   */
+  readonly 隔离中?: boolean
 }
 
 const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
@@ -193,13 +198,27 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         type="button"
         data-slot="hgraph-toolbar-neighbors"
         aria-label="只看邻居"
-        title="只看邻居（1 跳）"
+        title="只看邻居（1 跳，可再点扩展）"
         class={按钮}
         disabled={!可隔离()}
         onClick={() => props.动作表.只看邻居?.(props.选中)}
       >
         只看邻居
       </button>
+
+      {/* R103：隔离覆盖全图（N=0）时角落条不渲染，这里是唯一可见的退出入口。 */}
+      <Show when={props.隔离中 === true}>
+        <button
+          type="button"
+          data-slot="hgraph-toolbar-exit-isolation"
+          aria-label="退出隔离"
+          title="退出隔离"
+          class={按钮}
+          onClick={() => props.动作表.退出隔离?.()}
+        >
+          退出隔离
+        </button>
+      </Show>
 
       <button
         type="button"

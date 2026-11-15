@@ -474,6 +474,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** T017b（R72）：搜索框的词与结果光标（结果顺序 = 文档顺序）。 */
   const [搜索词, set搜索词] = createSignal("")
   const [搜索光标, set搜索光标] = createSignal(0)
+  /** 命中后收起下拉（保留查询词；再输入即重新展开）。 */
+  const [搜索收起, set搜索收起] = createSignal(false)
   /** T017b（R70）：视口请求——画布消费，编辑器只递增序号，不持有视口。 */
   const [居中请求, set居中请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
   // 初值 `undefined`（不是 0）：挂载时不能自动适配——没有用户请求就不动视口（R70）。
@@ -499,6 +501,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /**
    * 交给画布的可见集合（R72）：演示中 ⇒ 演示步进结果（现状不变）；编辑态 ⇒
    * `隔离集 ∩ 筛选集`，两者都未启用就是全集（传 `undefined`）。只过滤渲染，不改文档。
+   *
+   * R104（修复轮 1 裁定，对 R72 的最小扩展）：可见 = `隔离 ∩ 筛选` **∪ 选中节点**。
+   * 选中始终渲染——搜索 / 查找路径可以选中被隔离或筛掉的节点，否则用户会居中到一块空白
+   * 且看不见自己刚选中的对象；隐藏计数随之把选中算作可见（同一口径）。
    */
   const 可见集 = createMemo(() => {
     if (演示中()) {
@@ -514,6 +520,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       if (隔离 !== undefined && !隔离.has(点.id)) continue
       if (类型.size > 0 && !类型.has(点.类型 ?? "未分类")) continue
       节点.add(点.id)
+    }
+    // R104：选中始终渲染（选中里可能混着文字 id，只收节点）。
+    for (const id of 选中()) {
+      if (文档().节点.some((点) => 点.id === id)) 节点.add(id)
     }
     const 边 = new Set<string>()
     for (const 行 of 文档().边) {
@@ -570,10 +580,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const 当前光标 = () => Math.min(搜索光标(), Math.max(0, 搜索结果().length - 1))
   const 请求居中 = (id: string) =>
     set居中请求((旧) => ({ id, 序号: (旧?.序号 ?? 0) + 1 }))
-  /** Enter / 点结果行：选中该节点并请求画布居中（零写）。 */
+  /** Enter / 点结果行：选中该节点并请求画布居中（零写）；命中后下拉收起。 */
   const 选中搜索结果 = (id: string) => {
     set选中([id])
     请求居中(id)
+    set搜索收起(true)
   }
 
   /** 查找路径（R72）：本地 BFS；命中改选中为路径，未命中只写面板。 */
@@ -1366,6 +1377,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     复制所选,
     // T017b：以下都是本地展示态 / 本地算法，零写盘、不进撤销栈。
     只看邻居,
+    退出隔离,
     查找路径: 执行查找路径,
     适配全部: () => set适配请求((旧) => (旧 ?? 0) + 1),
     显示全部标签切换: () => set全部标签((旧) => !旧),
@@ -1400,7 +1412,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           T017b（R72）：搜索框在编辑器左上。名称子串、大小写不敏感，结果顺序 = 文档顺序；
           Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
         */}
-        <div data-slot="hgraph-search-wrap" class="relative">
+        {/* `data-center-seq` 是验收 #13「一次 Enter 只推进一次序号」的可观测口径。 */}
+        <div data-slot="hgraph-search-wrap" data-center-seq={居中请求()?.序号 ?? 0} class="relative">
           <input
             data-slot="hgraph-search"
             aria-label="搜索节点"
@@ -1410,6 +1423,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             onInput={(事件) => {
               set搜索词(事件.currentTarget.value)
               set搜索光标(0)
+              set搜索收起(false)
             }}
             onKeyDown={(事件) => {
               if (事件.key === "Enter") {
@@ -1429,7 +1443,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               }
             }}
           />
-          <Show when={搜索词().trim() !== ""}>
+          <Show when={搜索词().trim() !== "" && !搜索收起()}>
             <div
               data-slot="hgraph-search-results"
               class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
@@ -1561,7 +1575,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </p>
       </Show>
 
-      <工具栏 选中={选中()} 文档={文档()} 动作表={动作} 标签开={标签开()} />
+      <工具栏
+        选中={选中()}
+        文档={文档()}
+        动作表={动作}
+        标签开={标签开()}
+        隔离中={隔离集() !== undefined}
+      />
 
       {/*
         T017b（R71 / §5.10）：>300 提示拆图；>1000 只提示性能风险，**不拦、不截断**。

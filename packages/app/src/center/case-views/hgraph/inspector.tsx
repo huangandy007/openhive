@@ -379,6 +379,20 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   </span>
                 </Show>
               </div>
+              {/* R102：隔离的第三入口。检查器拿到的就是画布动作表，直接走同一出口。 */}
+              <div class={行}>
+                <span class={标签}>隔离</span>
+                <button
+                  type="button"
+                  data-slot="hgraph-inspector-neighbors"
+                  aria-label="只看邻居"
+                  title="只看邻居（1 跳）"
+                  class={按钮}
+                  onClick={() => props.动作表.只看邻居?.([点().id])}
+                >
+                  只看邻居
+                </button>
+              </div>
             </section>
 
             <section data-slot="hgraph-inspector-readonly" class="flex flex-col border-t border-v2-border-border-muted pt-1">
