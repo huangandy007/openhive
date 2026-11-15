@@ -30,7 +30,14 @@ viewRegistry.register({
 
 **文件**：`packages/app/src/project/hgraph-api.ts`（新）
 
-复用 `entity-api.ts` 的范式：`默认发送` / `请求`（带错误体）/ `TIMEOUT_MS` / 超时重试一次；`PREFIX = "/openhive/hgraph"`；**项目 id 在调用时读 `currentProject()`**（同 `openhive-file-saver.ts`）。
+复用 `entity-api.ts` 的范式：`默认发送` / `请求`（带错误体）/ `TIMEOUT_MS`；`PREFIX = "/openhive/hgraph"`。
+**项目 id 由调用方显式传入**（`projectId: string`）：视图在**挂载时读一次** `currentProject()?.id` 再传下去；
+`projectId` 为空 ⇒ **不发请求**，直接回 `{ kind: "error" }`（带空 id 发出去，服务端会退回沙箱根，
+读写的可能是别的项目的同名文件）。
+
+**不自动重试**：`请求` / `请求带错误体` 本身只打一次；`entity-api` 里的 `超时再打一次` 是私有函数、
+只服务计数链。写操作尤其不能自动重试 —— 没有 `幂等键` 时重打就是重复写入。超时按 `code: "timeout"`
+回给调用方，由视图决定提示还是重试。
 
 ```ts
 export interface HgraphApi {
