@@ -288,7 +288,16 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T002–T015
   - **验证**：命令与实得输出逐条记录（不写「已通过」了事）
 
-- [ ] T017 收尾检索 + 真栈手工 + 缺口登记：`grep 'EntityPanel' packages/app/src`、`grep '\bentityApi\b' packages/app/src`、`grep '入队材料(' packages/opencode/src`；按 [quickstart.md](./quickstart.md) §2 M1–M11 手工验收
+- [x] T017 收尾检索 + 真栈手工 + 缺口登记：`grep 'EntityPanel' packages/app/src`、`grep '\bentityApi\b' packages/app/src`、`grep '入队材料(' packages/opencode/src`；按 [quickstart.md](./quickstart.md) §2 M1–M11 手工验收
+
+  > **静态检索（2026-11-15 实测）**：
+  > - `rg -n 'EntityPanel' packages/app/src` ⇒ **OK: 0 命中**。
+  > - `rg -n '\bentityApi\b' packages/app/src` ⇒ **OK: 0 命中**。
+  > - `rg -n '入队材料\(' packages/opencode/src` ⇒ 只剩 `case-parse.ts:303`（调用）；`file.ts:740` 为定义。
+  > - 附加：`rg -n '判下载目标' packages/app/src` ⇒ **OK: 0 命中**。
+  > **真栈探测（非破坏性）**：`netstat`/`curl` 探测 3010、3011、4711、4712、4700、4096 全部无监听；无 bun 进程 ⇒ **真栈未运行，按 brief 不启动**。状态目录：`%TEMP%\openhive-real-stack-state` 不存在（未保留），`D:\openhive-stack-state`、`D:\assets` 存在且未删改。
+  > **M1–M11**：全部登记为「本轮未执行（未启动真栈）」，逐条结论与组件测试依据见 [implementation-report.md](./implementation-report.md) §2；缺口表见其 §3（与 quickstart §3 对齐，另加 lint warning 基线、v2 toast、`汇总全部` win32 既有缺陷三条）。
+  > **产出**：[implementation-report.md](./implementation-report.md)（静态检索、真栈结论、缺口表、TDD 证据索引 17 条 commit）。
 
   - **入参**：最终工作树 + 真栈
   - **出参**：前两条 0 命中；第三条只剩 `case-parse.ts:303`；M1–M11 结论逐条记录；本机验不了的写进缺口表（TR-007，不写成已覆盖）
