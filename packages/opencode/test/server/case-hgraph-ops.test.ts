@@ -758,7 +758,8 @@ describe("T006 · 锁键归一", () => {
       const 父 = join(沙箱根, "posix")
       expect(锁键(父, "A.hgraph", "linux")).not.toBe(锁键(父, "a.hgraph", "linux"))
       expect(锁键(父, "A.hgraph", "darwin")).not.toBe(锁键(父, "a.hgraph", "darwin"))
-      expect(锁键(父, "a.hgraph", "linux")).toBe(锁键(父, "a.hgraph", "linux"))
+      // 非 win32 原样返回 `join(父, 名字)`：不折小写、不改写路径（不是「自己等于自己」的哑绿）。
+      expect(锁键(父, "a.hgraph", "linux")).toBe(join(父, "a.hgraph"))
     }),
   )
 
