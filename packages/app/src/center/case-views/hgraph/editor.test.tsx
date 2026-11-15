@@ -3713,7 +3713,7 @@ describe("T018 修复轮 1 · 图例与档表（R75 / R108）", () => {
     expect(写们.length).toBe(0)
   })
 
-  test("演示中 ⇒ 画布图例收起；退出后同一画布实例恢复展开", async () => {
+  test("演示中 ⇒ 画布图例收起；退出演示恢复展开", async () => {
     const { api } = 假api()
     挂上(api)
     await flush()

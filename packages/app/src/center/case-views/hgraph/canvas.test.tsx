@@ -394,6 +394,16 @@ describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () =>
     expect(计数.加节点).toBeUndefined()
   })
 
+  test("右键图例 ⇒ 不弹「空白画布」菜单（无写入口）", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    expect(图例).not.toBeNull()
+
+    图例!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 24 }))
+
+    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+  })
+
   test("从图例上按下拖动 ⇒ 画布 transform 不变（不平移）", () => {
     挂(造图([造节点("a", 100, 100)], []))
     const 视口 = 取("[data-slot='hgraph-viewport']")

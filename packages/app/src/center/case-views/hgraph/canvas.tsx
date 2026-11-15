@@ -397,7 +397,8 @@ export function 画布(props: 画布Props): JSX.Element {
     if (props.只读 === true) return
     上次边提交 = undefined
     const 目标 = 事件.target
-    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    // 菜单 / 图例 / 内嵌控件上右键不弹「空白画布」菜单：那里的「加节点 / 加文字」是写入口。
+    if (落在内嵌界面(目标)) return
     const 矩 = 容器?.getBoundingClientRect()
     const 屏x = 事件.clientX - (矩?.left ?? 0)
     const 屏y = 事件.clientY - (矩?.top ?? 0)
