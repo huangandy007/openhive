@@ -139,6 +139,9 @@ export function 画布(props: 画布Props): JSX.Element {
     if (目标 instanceof Element && 目标.closest("button,input,textarea,select")) return
     if (目标 instanceof HTMLElement && 目标.isContentEditable) return
     容器?.focus()
+    // 指针捕获：拖出 overflow-hidden 容器后仍在画布上收到 move/up（FR-040 只禁键盘的
+    // window 监听；指针用捕获，不用全局监听）。
+    容器?.setPointerCapture(事件.pointerId)
 
     const 内容 = 到内容(事件)
     const 节点id = 读属性(目标, "data-node-id")
@@ -160,8 +163,9 @@ export function 画布(props: 画布Props): JSX.Element {
         已选中 && 可拖
           ? props.文档.节点
               .filter((行) => props.选中.includes(行.id) && 行.锁定 !== true)
-              .map((行) => ({ id: 行.id, x: 行.x, y: 行.y }))
-          : [{ id: 点.id, x: 点.x, y: 点.y }]
+              // 读放宽：缺 x/y 的行按 0 起算，否则整组会拖出 NaN。
+              .map((行) => ({ id: 行.id, x: 数(行.x), y: 数(行.y) }))
+          : [{ id: 点.id, x: 数(点.x), y: 数(点.y) }]
       指针 = {
         类型: "对象",
         类别: "节点",
@@ -194,7 +198,7 @@ export function 画布(props: 画布Props): JSX.Element {
         shift: 事件.shiftKey,
         已选中,
         可拖: !事件.shiftKey,
-        组: [{ id: 行.id, x: 行.x, y: 行.y }],
+        组: [{ id: 行.id, x: 数(行.x), y: 数(行.y) }],
         移动: false,
       }
       return
@@ -219,6 +223,12 @@ export function 画布(props: 画布Props): JSX.Element {
   const 移动中 = (事件: PointerEvent) => {
     const 现 = 指针
     if (现 === undefined) return
+    // 捕获失效 / 浏览器在容器外松手：move 的 buttons 已经是 0，按松手收尾，别把这次拖动
+    // 永远挂在半路（指针残留会让下次进入画布不按键也继续拖）。
+    if (事件.buttons === 0) {
+      松开(事件)
+      return
+    }
     const 屏距 = Math.hypot(事件.clientX - 现.起点屏x, 事件.clientY - 现.起点屏y)
 
     if (现.类型 === "对象") {
@@ -266,6 +276,7 @@ export function 画布(props: 画布Props): JSX.Element {
   const 松开 = (事件: PointerEvent) => {
     const 现 = 指针
     指针 = undefined
+    if (容器 !== undefined && 容器.hasPointerCapture?.(事件.pointerId)) 容器.releasePointerCapture(事件.pointerId)
     if (现 === undefined) return
 
     if (现.类型 === "对象") {

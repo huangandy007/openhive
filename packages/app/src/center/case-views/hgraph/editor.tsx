@@ -150,6 +150,31 @@ function 换id(文档: 图文件, 映射: Readonly<Record<string, string>>): 图
   }
 }
 
+/**
+ * 应答 `映射` 也要作用到**仍在待发**的操作上：请求飞行中新加的对象还带着临时 id
+ * （例如加文字后立刻拖动），下一批如果原样发出去，服务端不认识那个临时 id。
+ */
+function 换操作id(操作: 操作, 映射: Readonly<Record<string, string>>): 操作 {
+  const 换 = (id: string) => 映射[id] ?? id
+  if (操作.操作 === "移动") return { ...操作, 目标: 操作.目标.map((目标) => ({ ...目标, id: 换(目标.id) })) }
+  if (操作.操作 === "改字段") return { ...操作, 目标: 操作.目标.map((目标) => ({ ...目标, id: 换(目标.id) })) }
+  if (操作.操作 === "删对象") return { ...操作, 目标: 操作.目标.map((目标) => ({ ...目标, id: 换(目标.id) })) }
+  if (操作.操作 === "合并节点") {
+    return { ...操作, 保留: 换(操作.保留), 并入: 操作.并入.map(换) }
+  }
+  const 换行 = (行: Record<string, unknown>) => {
+    const 新 = { ...行 }
+    for (const 键 of ["id", "从", "到"] as const) {
+      const 值 = 新[键]
+      if (typeof 值 === "string") 新[键] = 换(值)
+    }
+    return 新
+  }
+  if (操作.操作 === "加边") return { ...操作, 边: 操作.边.map(换行) }
+  if (操作.操作 === "加文字") return { ...操作, 文字: 操作.文字.map(换行) }
+  return { ...操作, 节点: 操作.节点.map(换行) }
+}
+
 let 批次序号 = 0
 
 export function 编辑器(props: 编辑器Props): JSX.Element {
@@ -175,6 +200,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 批 = 待发
     待发 = []
     const 批次 = `批-${++批次序号}`
+    // 发送时快照 = 已存基线 + 本批；它才是「服务端接受这一批之后」的文档。
+    // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
+    const 快照 = 文档()
     const 前 = 已存文档()
     set状态("发送中")
 
@@ -188,18 +216,23 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     正在发 = false
 
     if (回.kind === "ok") {
-      const 新 = 换id(文档(), 回.value.结果.映射)
-      set文档(新)
-      set已存文档(新)
+      const 映射 = 回.value.结果.映射
+      const 基 = 换id(快照, 映射)
+      // 飞行中新增的待发操作：临时 id 换成正式 id，再折到新基线之上（不丢用户改动）。
+      待发 = 待发.map((操作) => 换操作id(操作, 映射))
+      set文档(待发.reduce(应用本地, 基))
+      set已存文档(基)
       set版本(回.value.版本)
       // 逆操作生成归 T016；本轮先压一个带空逆操作的空步（批次边界现在就钉住）。
       set撤销栈(压入(撤销栈(), { 批次, 逆操作: [] }))
       set错误(undefined)
       set最新版本(undefined)
-      set状态("已存")
+      // 还有没发出去的改动就不算「已保存」。
+      set状态(待发.length > 0 ? "待发" : "已存")
     } else {
-      // 两类失败都回改前值、停在「待发」、只说「没存上」；不自动重试、不替用户合并。
-      set文档(前)
+      // 失败的批丢弃（回改到服务端已接受值）；飞行中新增、从未发出的待发重折回来。
+      // 两类失败都停在「待发」、只说「没存上」；不自动重试、不替用户合并。
+      set文档(待发.reduce(应用本地, 前))
       set已存文档(前)
       set错误("没存上")
       set最新版本(回.code === "VERSION_CONFLICT" ? 回.最新版本 : undefined)

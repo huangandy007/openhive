@@ -20,6 +20,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
 import type { 图文件, 节点, 文字 } from "./file"
+import type { 坐标换算 } from "./canvas"
 import { 编辑器 } from "./editor"
 
 const 挂过的: Array<() => void> = []
@@ -102,7 +103,35 @@ function 假api(剧本: { 写?: (输入: 写入参) => 写应答 | Promise<写�
   return { api, 写们 }
 }
 
-function 挂上(api: HgraphApi, 初始文档: 图文件 = 一份图(), 初始版本 = "v1") {
+/** 每次 `写` 都挂起，由用例逐次 `解(序, 应答)`——覆盖「请求飞行中再操作」。 */
+function 闸门api() {
+  const 写们: 写入参[] = []
+  const 闸们: Array<{ 解: (回: 写应答) => void }> = []
+  const api: HgraphApi = {
+    读: async () => {
+      throw new Error("编辑器不该自己读文件")
+    },
+    初始化: async () => {
+      throw new Error("编辑器不该 init")
+    },
+    写: async (输入) => {
+      写们.push(输入)
+      return await new Promise<写应答>((解) => 闸们.push({ 解 }))
+    },
+    导出许可: async () => {
+      throw new Error("编辑器不该导出")
+    },
+  }
+  const 解 = (序: number, 回: 写应答) => 闸们[序]!.解(回)
+  return { api, 写们, 解 }
+}
+
+function 挂上(
+  api: HgraphApi,
+  初始文档: 图文件 = 一份图(),
+  初始版本 = "v1",
+  换算: 坐标换算 = ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
+) {
   const host = document.createElement("div")
   document.body.appendChild(host)
   挂过的.push(
@@ -114,7 +143,7 @@ function 挂上(api: HgraphApi, 初始文档: 图文件 = 一份图(), 初始版
           api={api}
           初始文档={初始文档}
           初始版本={初始版本}
-          坐标换算={({ clientX, clientY }) => ({ x: clientX, y: clientY })}
+          坐标换算={换算}
         />
       ),
       host,
@@ -140,6 +169,7 @@ function 按下(元素: Element, x: number, y: number, 修饰: PointerEventInit 
       clientX: x,
       clientY: y,
       button: 0,
+      buttons: 1,
       pointerId: 1,
       ...修饰,
     }),
@@ -148,7 +178,14 @@ function 按下(元素: Element, x: number, y: number, 修饰: PointerEventInit 
 
 function 指针移动(x: number, y: number) {
   画布()!.dispatchEvent(
-    new PointerEvent("pointermove", { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1 }),
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      buttons: 1,
+      pointerId: 1,
+    }),
   )
 }
 
@@ -259,6 +296,92 @@ describe("编辑器 · 保存状态机", () => {
     expect(写们.length).toBe(1)
   })
 
+  // ```text
+  // 方向 A：飞行中再拖一次，第一批**失败** ⇒ 失败的批丢弃，但飞行中那次从未发出，
+  // 必须折回可见文档并继续发；不能出现「第二批成功、界面却停在回改值」。
+  // ```
+  test("飞行中再拖：第一批失败 ⇒ 只丢失败的批，飞行中的待发重折后继续发", async () => {
+    const { api, 写们, 解 } = 闸门api()
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    // 请求还在飞行中，画布已是乐观值 180；从这里再拖到 260。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    拖(节点组("n1")!, 180, 100, 260, 100)
+    await flush()
+
+    解(0, { kind: "error", message: "网络断了", code: "network" })
+    await flush()
+    await flush()
+
+    // 失败的批（→180）丢弃；飞行中那一批（→260）从未发出，重折后仍可见。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(260 100)")
+    expect(文案("hgraph-save-status")).toContain("没存上")
+    expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
+    expect(写们.length).toBe(1)
+
+    // 第二批只含飞行中那条，不是重试失败批。
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 260, y: 100 }] },
+    ])
+    解(1, 成功("v2"))
+    await flush()
+    await flush()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(260 100)")
+    expect(文案("hgraph-save-status")).toBe("已保存")
+  })
+
+  // ```text
+  // 方向 B：飞行中拖 n2，第一批**成功** ⇒ 新基线只能含已发批（n2 还在 200）；
+  // 若拿当前乐观文档当基线，n2 的 300 会被误当成「服务端已接受」。
+  // ```
+  test("飞行中拖 n2：第一批成功 ⇒ 基线不含未发操作；第二批失败回改到已接受值", async () => {
+    const { api, 写们, 解 } = 闸门api()
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    拖(节点组("n2")!, 200, 100, 300, 100)
+    await flush()
+    expect(节点组("n2")!.getAttribute("transform")).toBe("translate(300 100)")
+
+    解(0, 成功("v2"))
+    await flush()
+    await flush()
+
+    // 第一批只含 n1；n2 的 300 仍在待发 ⇒ 可见 300，但状态必须是「待发」。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    expect(节点组("n2")!.getAttribute("transform")).toBe("translate(300 100)")
+    expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
+
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n2", x: 300, y: 100 }] },
+    ])
+    解(1, { kind: "error", message: "写不进去", code: "INTERNAL" })
+    await flush()
+    await flush()
+
+    // n2 回到服务端真正接受过的 200；n1 停在已接受的 180。
+    expect(节点组("n2")!.getAttribute("transform")).toBe("translate(200 100)")
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    expect(文案("hgraph-save-status")).toContain("没存上")
+
+    // 失败批不自动重试。
+    await 过防抖()
+    expect(写们.length).toBe(2)
+  })
+
   test("保存成功 ⇒ 压一步撤销；Ctrl+Z 弹一步（只在画布容器上生效）", async () => {
     const { api } = 假api()
     挂上(api)
@@ -343,6 +466,10 @@ describe("画布 · 模式与选择", () => {
     expect(操作.边.length).toBe(1)
     expect(操作.边[0]!.从).toBe("n1")
     expect(操作.边[0]!.到).toBe("n2")
+    // 服务端必填（V-04：事实边要有出处/证据；手画边标推断 + 来源「手写」才过闸）。
+    expect(操作.边[0]!.标签).toBe("")
+    expect(操作.边[0]!.性质).toBe("推断")
+    expect(操作.边[0]!.来源).toEqual({ kind: "手写" })
   })
 
   test("连线模式拖到空白 ⇒ 不成边（一次写都没有）", async () => {
@@ -415,6 +542,120 @@ describe("画布 · 模式与选择", () => {
 
     expect(写们.length).toBe(0)
     expect(节点组("n3")!.getAttribute("transform")).toBe("translate(300 100)")
+  })
+
+  test("整组拖动：缺坐标的节点按 0 起算（不发 NaN / null）", async () => {
+    const { api, 写们 } = 假api()
+    const 图 = 一份图()
+    // 解析图是读放宽的：缺 x/y 也能打开。这里模拟那种行（类型要求 x/y，故断言成节点）。
+    图.节点.push({ id: "n4", 名称: "n4", 类型: "人", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } } as unknown as 节点)
+    挂上(api, 图)
+    await flush()
+
+    expect(节点组("n4")!.getAttribute("transform")).toBe("translate(0 0)")
+    // 选中 n4，再 Shift 选中 n1；从 n1 按下即整组拖动。
+    按下(节点组("n4")!, 0, 0)
+    松开(0, 0)
+    await flush()
+    按下(节点组("n1")!, 100, 100, { shiftKey: true })
+    松开(100, 100)
+    await flush()
+    expect(节点组("n4")!.getAttribute("data-selected")).toBe("true")
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    拖(节点组("n1")!, 100, 100, 120, 130)
+    await flush()
+    expect(节点组("n4")!.getAttribute("transform")).toBe("translate(20 30)")
+
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      {
+        操作: "移动",
+        目标: [
+          { 类别: "节点", id: "n1", x: 120, y: 130 },
+          { 类别: "节点", id: "n4", x: 20, y: 30 },
+        ],
+      },
+    ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 视口与指针捕获
+// ---------------------------------------------------------------------------
+
+describe("画布 · 视口与指针捕获", () => {
+  test("拖空白 = 平移画布；按下捕获指针、松手释放", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    按下(画布()!, 10, 10)
+    expect(画布()!.hasPointerCapture(1)).toBe(true)
+    for (let 序 = 1; 序 <= 10; 序++) 指针移动(10 + 序 * 2, 10 + 序 * 3)
+    松开(30, 40)
+    await flush()
+
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(20 30) scale(1)")
+    expect(画布()!.hasPointerCapture(1)).toBe(false)
+    // 平移是视口操作，不写文件。
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("滚轮缩放 ×1.15 / ÷1.15，夹在 0.5..3；不写文件", async () => {
+    const { api, 写们 } = 假api()
+    // 锚点固定为内容原点：happy-dom 的 WheelEvent.clientX 不可靠，本用例只钉公式与夹取。
+    挂上(api, 一份图(), "v1", () => ({ x: 0, y: 0 }))
+    await flush()
+
+    const 滚 = (deltaY: number) =>
+      画布()!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY }))
+    const 变换 = () => 取("[data-slot='hgraph-viewport']")!.getAttribute("transform")
+
+    滚(-100)
+    await flush()
+    expect(变换()).toBe("translate(0 0) scale(1.15)")
+
+    for (let 次 = 0; 次 < 20; 次++) 滚(-100)
+    await flush()
+    expect(变换()).toBe("translate(0 0) scale(3)")
+
+    for (let 次 = 0; 次 < 40; 次++) 滚(100)
+    await flush()
+    expect(变换()).toBe("translate(0 0) scale(0.5)")
+
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("pointerup 丢失（move 的 buttons=0）⇒ 按松手收尾，不丢这次移动", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    按下(节点组("n1")!, 100, 100)
+    指针移动(150, 130)
+    // 浏览器在容器外松手：后续 move 的 buttons === 0。
+    画布()!.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 150,
+        clientY: 130,
+        buttons: 0,
+        pointerId: 1,
+      }),
+    )
+    await flush()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 150, y: 130 }] },
+    ])
   })
 })
 
@@ -507,6 +748,7 @@ describe("画布 · 文字块", () => {
     if (加.操作 !== "加文字") throw new Error("不是加文字")
     expect(加.文字.length).toBe(1)
     expect(加.文字[0]!.内容).toBe("文字")
+    expect(加.文字[0]!.字号).toBe("中")
     expect(typeof 加.文字[0]!.x).toBe("number")
     expect(typeof 加.文字[0]!.y).toBe("number")
 
