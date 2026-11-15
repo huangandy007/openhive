@@ -35,6 +35,14 @@ export interface ProjectEnablement {
   readonly autoDelivery: () => boolean
   readonly autoDeliveryBusy: () => boolean
   readonly setAutoDelivery: (enabled: boolean) => void
+  /**
+   * 当前调用者能不能改这个项目的技能（2026-11-15 裁定：只有项目属主能，成员只读）。
+   *
+   * `false` 才置灰；`true` 与「服务端没给」（`undefined`）**同一处置**——置灰只是省一次
+   * 必然 403 的往返，权限在服务端（`handleToggle` / `handleAutoDelivery` 各有一道属主闸）。
+   * 换项目先复位为 `true`：新项目的读还没回来，不能拿上一个项目的「只读」替它回答。
+   */
+  readonly canManage: () => boolean
   readonly error: () => string | undefined
   readonly busy: () => string | undefined
   /**
@@ -75,6 +83,9 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
   const [自动, set自动] = createSignal<ReadonlySet<string>>(new Set())
   // 首帧占位「开」与服务端同口径（无行 = 开）；每次 bind 必发一次 read，拿到回包就被覆盖。
   const [自动开关, set自动开关] = createSignal(true)
+  // 首帧占位「可管理」：老服务端不带 `canManage`，界面不置灰，由服务端 403 兜底
+  // （见 `EnablementState.canManage` 的注释）。每次 bind 必发一次 read，拿到回包就覆盖。
+  const [可管理, set可管理] = createSignal(true)
   const [开关忙, set开关忙] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
   const [忙, set忙] = createSignal<string | undefined>()
@@ -90,6 +101,8 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set上限(状态.limit)
     set自动(new Set(状态.auto))
     set自动开关(状态.autoDelivery)
+    // 键缺席 ⇒ 可管理（见信号初始值的注释）：不拿 `undefined` 直接当假。
+    set可管理(状态.canManage ?? true)
     // ⚠️ **无论有没有 `skills` 键都覆盖**：键缺席（`解析状态` 保证「不知道」= 键缺席）⇒
     // 清单作废成 `undefined`。`skills() === undefined` ＋ `已读 === true` = 「这次没读到」，
     // 面板据此走「暂时读不到 + 重试」——不会卡在「正在读取…」，所以作废不再等于死路。
@@ -114,6 +127,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     set上限(默认上限)
     set自动(new Set<string>())
     set自动开关(true)
+    set可管理(true)
     set开关忙(false)
     set错误(undefined)
     set忙(undefined)
@@ -259,6 +273,7 @@ export function createProjectEnablement(api: EnableApi = createEnableApi()): Pro
     autoDelivery: 自动开关,
     autoDeliveryBusy: 开关忙,
     setAutoDelivery: 设自动送达,
+    canManage: 可管理,
     error: 错误,
     busy: 忙,
     skills: 技能,

@@ -58,6 +58,24 @@ describe("enable-api", () => {
     expect(await api.read("p1")).toEqual({ kind: "ok", value: 回包 })
   })
 
+  // 2026-11-15 裁定（共享项目里只有属主能启用/停用）：`canManage` 是服务端给的**唯一判据**，
+  // 前端不自己比成员名单（`#002-06`）。缺席 ⇒ 不带这个键（老服务端仍会用 403 兜底，界面不误锁）；
+  // 给了但不是布尔 ⇒ **整份判错**，不把「说不清」降级成「可管理」或「只读」（`#002-02`）。
+  test("read：canManage 原样解析；缺席不造键；非布尔 ⇒ 整份判错", async () => {
+    const 带 = { ...成功态, canManage: false }
+    expect(await createEnableApi(假发送([{ status: 200, body: 带 }], [])).read("p1")).toEqual({
+      kind: "ok",
+      value: 带,
+    })
+    // 缺席：回包原样，不多一个 `canManage: true`（否则「老服务端」与「属主」长得一模一样）。
+    expect(await createEnableApi(假发送([{ status: 200, body: 成功态 }], [])).read("p1")).toEqual({
+      kind: "ok",
+      value: 成功态,
+    })
+    const 坏 = await createEnableApi(假发送([{ status: 200, body: { ...成功态, canManage: "no" } }], [])).read("p1")
+    expect(坏.kind).toBe("error")
+  })
+
   test("enable：POST JSON 体，声明 content-type", async () => {
     const 记录: Array<{ url: string; init?: RequestInit }> = []
     const api = createEnableApi(假发送([{ status: 200, body: 成功态 }], 记录))

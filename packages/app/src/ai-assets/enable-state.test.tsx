@@ -49,6 +49,29 @@ test("bind：项目一换就重拉，没项目时清空", async () => {
   })
 })
 
+// 2026-11-15 裁定：共享项目里只有属主能启用/停用。`canManage` 每次读都以服务端为准；
+// 缺席（老服务端 / 老回包）按「可管理」——前端置灰只是省一次往返，服务端才是权限
+// （置灰的不变式若反过来，一次版本错配就能把所有人锁成只读）。
+test("canManage：回包说了算（false ⇒ 只读），换项目复位为可管理", async () => {
+  const { api } = 假api({
+    "read:p1": [{ kind: "ok", value: { ...空, canManage: false } }],
+    "read:p2": [{ kind: "ok", value: 空 }],
+  })
+  await createRoot(async (dispose) => {
+    const [项目, 设项目] = createSignal<string | undefined>("p1")
+    const 状态 = createProjectEnablement(api)
+    状态.bind(项目)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.canManage()).toBe(false)
+    // 换项目：新项目的读还没回来，不能拿上一个项目的「只读」替它回答。
+    设项目("p2")
+    expect(状态.canManage()).toBe(true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(状态.canManage()).toBe(true)
+    dispose()
+  })
+})
+
 test("toggle：启用成功后以服务端回包为准（不自己算）", async () => {
   const { api } = 假api({
     "read:p1": [{ kind: "ok", value: 空 }],

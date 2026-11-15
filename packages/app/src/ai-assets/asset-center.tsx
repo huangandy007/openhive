@@ -122,15 +122,18 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
 
   /**
    * 启用按钮不可用的原因（非空 ⇒ 卡片把它写进 `title` 并禁用）：
-   * **没选项目** / **已达上限**。
+   * **没选项目** / **不是项目属主** / **已达上限**。
    *
    * **按资产算**（`AssetGrid.enableHintOf`）：达上限只禁「还没启用」的那些——已启用的那张必须
    * 仍能点「停用」，否则 20/20 时用户一个也停不掉（整网格一个值会让功能自锁）。
+   *
+   * 「不是属主」排在达上限之前：成员看到的第一个原因必须是**权力**，不是配额（配额他改不了）。
    */
   const 启用提示 = (asset: AssetMetadata) => {
     const 状态 = props.enablement
     if (状态 === undefined) return undefined
     if (状态.projectId() === undefined) return "请先在左侧选择项目"
+    if (!状态.canManage()) return "只有项目属主能启用或停用技能"
     if (状态.enabledCount() >= 状态.limit() && !状态.enabled().has(asset.id))
       return `每个项目最多启用 ${状态.limit()} 个，请先停用一个`
     return undefined
@@ -176,11 +179,13 @@ export function AssetCenter(props: AssetCenterProps): JSX.Element {
               data-enabled={props.enablement?.autoDelivery() === true}
               aria-pressed={props.enablement?.autoDelivery() === true}
               aria-busy={props.enablement?.autoDeliveryBusy() === true}
-              disabled={props.enablement?.autoDeliveryBusy() === true}
+              disabled={props.enablement?.autoDeliveryBusy() === true || props.enablement?.canManage() === false}
               title={
-                props.enablement?.autoDelivery() === true
-                  ? "关闭后，后续审核通过并共享给您的 skill 不再自动装入本项目（已装入与固定安装的不受影响）"
-                  : "打开后，审核通过并共享给您的 skill 会自动装入本项目（最多 20 个，手动安装优先）"
+                props.enablement?.canManage() === false
+                  ? "只有项目属主能改自动送达"
+                  : props.enablement?.autoDelivery() === true
+                    ? "关闭后，后续审核通过并共享给您的 skill 不再自动装入本项目（已装入与固定安装的不受影响）"
+                    : "打开后，审核通过并共享给您的 skill 会自动装入本项目（最多 20 个，手动安装优先）"
               }
               onClick={() => {
                 const 状态 = props.enablement

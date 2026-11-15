@@ -102,7 +102,7 @@ import nodePath, { join } from "node:path"
 import { 记治理 } from "./audit"
 import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhivePg } from "./pg"
-import { 成员角色 as 成员角色共享 } from "./project-actor"
+import { 成员角色 as 成员角色共享, 项目属主 } from "./project-actor"
 
 export const PREFIX = "/openhive/project/assets"
 
@@ -638,12 +638,19 @@ function 读名字(target: string) {
 function 对账并读(deps: Deps, userId: string, projectId: string) {
   return Effect.gen(function* () {
     const state = yield* Effect.promise(() => enablementOf(deps.pg(), projectId))
-    const 目录 = 项目目录(deps, userId, projectId)
+    // 落点＝**项目属主**的沙箱（2026-11-15 用户裁定：共享项目里只有属主能动项目技能，
+    // 成员只读）。共享项目的文件住在属主那份目录里，内核也只扫那一份 `.opencode/skill`；
+    // 按调用者拼落点有两个后果，都实测过：① 成员启用写进一棵没人扫的树 ⇒ 对谁都不生效；
+    // ② 对账第一步就 `mkdir` ⇒ **凭空建出 `{根}/{成员}/{项目}`**，归档时被当数据备份走。
+    // `可写` 是**唯一**的授权判据（属主本人才能改），下面三处写盘/写库都挂在它上面。
+    const 属主 = yield* Effect.promise(() => 项目属主(deps.pg(), userId, projectId))
+    const 可写 = 属主 === userId
+    const 目录 = 项目目录(deps, 属主, projectId)
     const 根 = assetsRoot(process.env)
     const 部门 = yield* 取部门(deps, userId)
-    // 「启用」是项目级事实（库里的行），「送达」是读者级授权：每个读者只把**自己读得到**的资产
-    // 链进自己的沙箱。否则甲部门发布的 skill 会被乙部门成员的 GET 顺手对账进乙的沙箱，
-    // 且 `enabled` 还会泄露项目启用了哪些 id。故这里先按读者判可见性，再建链接。
+    // 「启用」是项目级事实（库里的行），「看得见哪些」仍是读者级授权：`enabled` 只回**调用者
+    // 读得到**的 id，否则会泄露项目启用了哪些。⚠️ 但**落盘不是读者级的**（2026-11-15 起）：
+    // 共享项目的链接全链在**属主**那一份目录里，由属主的对账写（见 `可写`）。
     const viewer = { userId, department: 部门 }
     // R6：授权组（「指定人员」档）的读权**只**来自授权行。不把读者命中的 grant 传进
     // `canReadAsset()`，就会「列表看得见、送达/启用全无」——判据仍只有那一份。
@@ -667,6 +674,8 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
         asset.visibility === "personal" ||
         !SHARED_STATUSES.has(asset.status)
       ) {
+        // 收回是**写项目级事实**：成员只读 ⇒ 不替他改库（连审计都不写）。
+        if (!可写) continue
         const 删了 = yield* Effect.promise(() => disableAsset(deps.pg(), { projectId, assetId })).pipe(
           Effect.catchCause((cause) =>
             Effect.logError("收回不可送达的启用行失败，配额待下次自愈", { projectId, assetId, cause }).pipe(
@@ -707,9 +716,12 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     //
     // 预算 = 20 − 该项目已手动启用的条数（**项目真相**，不是「我看得见几个」）：
     // 手动装满就不再自动送，避免「自动一送就超 20」。
-    const 自动开关 = yield* Effect.promise(() => autoDeliveryOf(deps.pg(), { userId, projectId }))
+    // 开关按「人 × 项目」记，但共享项目里只有**属主**那一行有意义（成员改不了，见 `handleAutoDelivery`）。
+    // 成员的 `auto` 恒空：「自动送达**给我**了什么」的答案是「没有」——他们共用的就是属主那份目录，
+    // 那里的链接由属主的对账负责，成员面板通过 `skills` 照样看得见它们。
+    const 自动开关 = yield* Effect.promise(() => autoDeliveryOf(deps.pg(), { userId: 属主, projectId }))
     const auto: string[] = []
-    if (自动开关.enabled) {
+    if (自动开关.enabled && 可写) {
       const 预算 = ENABLEMENT_LIMIT - 最新.enabledCount
       if (预算 > 0) {
         // 候选集读失败不能把 GET 变成 500：手动那部分状态仍要能读出来。
@@ -747,13 +759,19 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     }
 
     // 对账失败不能把整个 GET 变成 500：库里的启用状态仍要能读出来，目录留到下次自愈。
-    const 结果 = yield* Effect.promise(() => reconcileSkillLinks(目录, desired, 根)).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logError("对账失败，目录状态待下次修复", { projectId, 目录, cause }).pipe(
-          Effect.as(undefined),
-        ),
-      ),
-    )
+    //
+    // ⚠️ **成员只读 ⇒ 不对账**，而且这不是省一次 IO：`desired` 是按**调用者**的可见性算的，
+    // 拿它去对账属主目录会把「属主读得到、成员读不到」的链接当成多余项**删掉**。
+    // 给一个成功的空结果而不是 `undefined`——后者在半分钟后被读成「对账失败」，整个内核清单缺席。
+    const 结果 = !可写
+      ? { created: 0, removed: 0, skipped: [] as string[] }
+      : yield* Effect.promise(() => reconcileSkillLinks(目录, desired, 根)).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("对账失败，目录状态待下次修复", { projectId, 目录, cause }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        )
     if (结果 !== undefined && 结果.skipped.length > 0) {
       yield* Effect.logWarning("项目目录里有不是链接的 skill 目录，未动", { skipped: 结果.skipped })
     }
@@ -801,7 +819,13 @@ function 对账并读(deps: Deps, userId: string, projectId: string) {
     const 被覆盖 = 内核 === undefined ? undefined : yield* 找被覆盖(内核, desired, 目录)
     // 两条定制的交叉点：`auto` / `autoDelivery` 来自 5a（自动送达），`带内核清单` 来自
     // 能力面板。两者都长在同一份回包上，所以合成一个 return，谁都不许吞掉另一边。
-    return 带内核清单({ ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled }, 内核?.项目内, 被覆盖)
+    // `canManage`：面板据此把启用/停用/自动送达置灰（成员只读）。判据是服务端这一份
+    // `可写`，前端不再自己比对成员名单——同一个「谁说了算」不许两处各判一次（`#002-06`）。
+    return 带内核清单(
+      { ...最新, enabled: 可见, auto, autoDelivery: 自动开关.enabled, canManage: 可写 },
+      内核?.项目内,
+      被覆盖,
+    )
   })
 }
 
@@ -839,6 +863,10 @@ function handleAutoDelivery(request: HttpServerRequest.HttpServerRequest, deps: 
 
     if ((yield* 成员角色(deps, userId, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
+    // 自动送达也是**往项目目录里写链接**，同一份权力（2026-11-15 裁定）。开关按属主那一行记
+    // （`对账并读` 里已经这么读了），成员没有自己那一行可关。
+    if ((yield* Effect.promise(() => 项目属主(deps.pg(), userId, projectId))) !== userId)
+      return fail(403, "只有项目属主能改自动送达", "forbidden")
 
     yield* Effect.promise(() => setAutoDelivery(deps.pg(), { userId, projectId, enabled }))
     const state = yield* 对账并读(deps, userId, projectId)
@@ -867,6 +895,11 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
     if (!是合法段(projectId) || !是合法段(assetId)) return fail(400, "projectId / assetId 非法", "bad_request")
 
     if ((yield* 成员角色(deps, userId, projectId)) === undefined) return fail(403, "不是该项目成员", "forbidden")
+    // 一份目录一份权力（2026-11-15 用户裁定）：共享项目的技能目录只有属主那一份、内核也只扫它，
+    // 所以「启用 / 停用」只有属主能按。成员在这里被**服务端**拒——前端置灰只是省一次往返，
+    // 不是权限（Anti-Pattern：用隐藏资源替代校验）。
+    if ((yield* Effect.promise(() => 项目属主(deps.pg(), userId, projectId))) !== userId)
+      return fail(403, "只有项目属主能启用或停用技能", "forbidden")
 
     if (动作 === "enable") {
       const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))

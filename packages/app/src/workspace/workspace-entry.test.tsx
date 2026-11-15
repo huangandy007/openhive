@@ -1964,6 +1964,8 @@ describe("项目数据接线（T018 出参）", () => {
     error?: string
     /** 默认按「清单到了就算读完了」：本组夹具里 `skills` 有值都表示一次成功的读。 */
     readDone?: boolean
+    /** 2026-11-15：共享项目里只有属主能启用/停用；默认属主视角（可管理）。 */
+    canManage?: boolean
     toggle?: (assetId: string) => void
     reload?: () => void
   } = {}): ProjectEnablement {
@@ -1978,6 +1980,8 @@ describe("项目数据接线（T018 出参）", () => {
       autoDelivery: () => true,
       autoDeliveryBusy: () => false,
       setAutoDelivery: () => {},
+      // 2026-11-15 裁定：本组不读这个字段，补默认值只为满足形状（属主视角 = 可管理）。
+      canManage: () => 选项.canManage ?? true,
       error: () => 选项.error,
       busy: () => undefined,
       skills: () => 选项.skills,
@@ -6823,6 +6827,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
       autoDelivery: () => true,
       autoDeliveryBusy: () => false,
       setAutoDelivery: () => {},
+      canManage: () => true,
       error: () => undefined,
       busy: () => undefined,
       skills: () => undefined,

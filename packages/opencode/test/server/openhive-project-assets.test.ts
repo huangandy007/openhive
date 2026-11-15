@@ -93,6 +93,11 @@ const AUTO = "/openhive/project/assets/auto-delivery"
 
 const 我的项目 = "proj_enable_1"
 const 别人的项目 = "proj_enable_2"
+/**
+ * 「一份目录一份权力」那一组专用的共享项目（2026-11-15）：
+ * 我＝属主，乙部门同事＝member。单开一个 id，免得与上面那些用例共用启用行。
+ */
+const 共享项目 = "proj_enable_shared"
 const 已发布资产 = "asset_skill_ok"
 const 草稿资产 = "asset_skill_draft"
 const 个人资产 = "asset_skill_personal"
@@ -306,6 +311,9 @@ beforeAll(async () => {
   await addMember(pg.db, { projectId: 我的项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 别人的项目, userId: 别人.id, role: "owner", timeCreated: 1_000 })
   await addMember(pg.db, { projectId: 我的项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
+  // 「一份目录一份权力」那组：共享项目里我＝属主、乙部门同事＝member。
+  await addMember(pg.db, { projectId: 共享项目, userId: 我.id, role: "owner", timeCreated: 1_000 })
+  await addMember(pg.db, { projectId: 共享项目, userId: 乙部门同事.id, role: "member", timeCreated: 1_000 })
   for (const projectId of [
     迭代项目,
     归档项目,
@@ -1565,6 +1573,113 @@ describe("项目级 skill 启用（真应用）", () => {
         } finally {
           GlobalBus.off("event", 监听)
         }
+      }),
+    30_000,
+  )
+
+  /**
+   * 共享项目 · **一份目录一份权力**（2026-11-15 用户裁定：只有属主能启用，成员只读）。
+   *
+   * 共享项目的文件住**属主**的沙箱，内核也只扫那一份 `.opencode/skill`。旧实现按**调用者**
+   * 拼落点 ⇒ 成员点「启用」会写进一棵没人扫的树（`{根}/{成员}/{项目}`），同时 `对账并读`
+   * 的第一步就 `mkdir` ⇒ **凭空建出一个成员名下的项目目录**，归档时还会被 `filesUnder`
+   * 当数据备份走。属主启用、成员停用同样会摘掉**属主**面板里的东西。
+   *
+   * 四条用例各钉一个出口：启用的写、停用的删、只读的读、自动送达的开关。
+   */
+  it.live(
+    "成员调启用 ⇒ 403，且库、属主目录、成员目录三方一个字节都不动",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* post(乙部门同事, ENABLE, { projectId: 共享项目, assetId: 已发布资产 })
+        expect(response.status).toBe(403)
+        expect((yield* json(错误, response)).code).toBe("forbidden")
+
+        // 库：没有启用行（裸 SQL 读，不经被测对象）。
+        expect(
+          rowsOf(
+            yield* Effect.promise(() =>
+              pg!.db.execute(sql`
+                select asset_id from auth.project_asset_enablement
+                 where project_id = ${共享项目} and asset_id = ${已发布资产}
+              `),
+            ),
+          ),
+        ).toEqual([])
+        // 属主的目录里没有链接。
+        expect(existsSync(链接路径(共享项目, 已发布资产, 我.id))).toBe(false)
+        // ⚠️ 被测属性：成员名下**不该**凭空长出项目目录（旧实现会建出来）。
+        expect(existsSync(projectDirectory(沙箱根, 乙部门同事.id, 共享项目))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "属主启用后，成员调停用 ⇒ 403，属主的链接与库行都还在",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* post(我, ENABLE, { projectId: 共享项目, assetId: 已发布资产 })).status).toBe(200)
+        expect(existsSync(链接路径(共享项目, 已发布资产, 我.id))).toBe(true)
+
+        const response = yield* post(乙部门同事, DISABLE, { projectId: 共享项目, assetId: 已发布资产 })
+        expect(response.status).toBe(403)
+        expect((yield* json(错误, response)).code).toBe("forbidden")
+
+        expect(
+          rowsOf(
+            yield* Effect.promise(() =>
+              pg!.db.execute(sql`
+                select asset_id from auth.project_asset_enablement
+                 where project_id = ${共享项目} and asset_id = ${已发布资产}
+              `),
+            ),
+          ),
+        ).toEqual([{ asset_id: 已发布资产 }])
+        expect(existsSync(链接路径(共享项目, 已发布资产, 我.id))).toBe(true)
+        expect(existsSync(链接路径(共享项目, 已发布资产, 乙部门同事.id))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "成员打开面板是只读的：内核清单取属主目录，auto 恒空，不建成员目录",
+    () =>
+      Effect.gen(function* () {
+        // 前置承接上一条：属主已启用 `已发布资产`（共享项目里此刻只有这一份）。
+        const response = yield* as(乙部门同事, `${STATE}?projectId=${共享项目}`)
+        const body = yield* json(状态, response)
+        expect(response.status).toBe(200)
+
+        // 读盘面取**属主**目录 ⇒ 内核清单里真有那份（旧实现读成员目录 ⇒ 恒空）。
+        expect(body.skills === undefined).toBe(false)
+        expect((body.skills ?? []).some((skill) => skill.assetId === 已发布资产)).toBe(true)
+        // 「自动送达给我了什么」：成员的答案是没有——他们共用的就是属主那份目录。
+        expect(body.auto).toEqual([])
+        // 只读 ⇒ 不存在任何一次为成员落盘的对账。
+        expect(existsSync(projectDirectory(沙箱根, 乙部门同事.id, 共享项目))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it.live(
+    "成员改自动送达开关 ⇒ 403，开关位仍是属主的那一份",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* post(乙部门同事, AUTO, { projectId: 共享项目, enabled: false })
+        expect(response.status).toBe(403)
+        expect((yield* json(错误, response)).code).toBe("forbidden")
+
+        // 库层：开关按「人 × 项目」记，成员那一行不该被写出来。
+        expect(
+          rowsOf(
+            yield* Effect.promise(() =>
+              pg!.db.execute(sql`
+                select user_id from auth.project_asset_auto_delivery
+                 where project_id = ${共享项目} and user_id = ${乙部门同事.id}
+              `),
+            ),
+          ),
+        ).toEqual([])
       }),
     30_000,
   )

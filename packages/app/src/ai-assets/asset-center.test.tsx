@@ -303,6 +303,8 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       auto: over.auto ?? (() => new Set<string>()),
       // 需求 5a：默认「开」与服务端同口径（无行 = 开）。用例要测关闭态就显式传 false。
       autoDelivery: over.autoDelivery ?? (() => true),
+      // 2026-11-15 裁定：默认「可管理」（属主视角），只读用例显式传 `() => false`。
+      canManage: over.canManage ?? (() => true),
       autoDeliveryBusy: over.autoDeliveryBusy ?? (() => false),
       setAutoDelivery: over.setAutoDelivery ?? (() => {}),
       error: over.error ?? 空,
@@ -379,6 +381,26 @@ describe("AssetCenter · 项目级启用（2026-10-27）", () => {
       // ⚠️ 达上限时**已启用**的那张必须仍可点「停用」，否则 20/20 时用户一个也停不掉（2026-10-27 实现者提出的坑）
       const 已启用的 = host.querySelector<HTMLButtonElement>('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!
       expect(已启用的.disabled).toBe(false)
+    } finally {
+      卸()
+    }
+  })
+
+  // 2026-11-15 裁定：共享项目里只有属主能启用/停用、改自动送达。成员拿到 `canManage=false` 时，
+  // 两处入口都必须**置灰并说明原因**——置灰只是省一次必然 403 的往返，不是权限本身
+  // （服务端 `handleToggle` / `handleAutoDelivery` 各自还有一道属主闸）。
+  test("成员视角（canManage=false）：启用按钮与自动送达开关都禁用，并说明只有属主能改", async () => {
+    const 假 = 假启用({ projectId: () => "p1", canManage: () => false })
+    const { host, 卸 } = 挂中栏({ enablement: 假 })
+    try {
+      const 启用 = host.querySelector<HTMLButtonElement>('[data-asset-id="a1"] [data-slot="asset-card-enable"]')!
+      expect(启用.disabled).toBe(true)
+      expect(启用.title).toContain("属主")
+      // 只读不是「看不见」：计数条仍要在，成员要能知道本项目启用了几个。
+      expect(host.querySelector('[data-slot="asset-enable-count"]')!.textContent).toContain("已启用 0/20")
+      const 开关 = host.querySelector<HTMLButtonElement>('[data-slot="asset-auto-delivery"]')!
+      expect(开关.disabled).toBe(true)
+      expect(开关.title).toContain("属主")
     } finally {
       卸()
     }

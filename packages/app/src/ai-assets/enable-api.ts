@@ -97,6 +97,16 @@ export interface EnablementState {
    */
   readonly auto: readonly string[]
   readonly autoDelivery: boolean
+  /**
+   * 【保留的定制 · 同步上游时不要丢】2026-11-15 裁定：共享项目里**只有项目属主**能启用/停用
+   * 技能、改自动送达；成员只读。这是服务端给的**唯一判据**（`对账并读` 的 `可写`），
+   * 前端不自己比成员名单（`#002-06`）。
+   *
+   * `undefined` = 回包没带（老服务端）⇒ 界面**不置灰**，让服务端用 403 兜底。这条方向不能反：
+   * 置灰只是省一次必然失败的往返，不是权限；反过来把「不知道」当成「只读」会让版本错配
+   * 把所有人锁死（`#002-02`：不知道 ≠ 某个具体结论）。
+   */
+  readonly canManage?: boolean
   readonly skills?: readonly 内核技能[]
   /**
    * 已启用却被同名技能盖掉的资产（2026-10-28）。**键缺席** = 没有被盖的（或这次没读到内核），
@@ -155,6 +165,8 @@ function 解析状态(body: unknown): EnablementState | undefined {
   if (!Array.isArray(自动)) return undefined
   if (!自动.every((item): item is string => typeof item === "string")) return undefined
   if (typeof 值["autoDelivery"] !== "boolean") return undefined
+  // 同一条严格度：给了就必须是布尔；**缺席**是合法形状（老服务端），但不在回包上补默认值。
+  if (值["canManage"] !== undefined && typeof 值["canManage"] !== "boolean") return undefined
   // 不能整体当作「可选、解析失败就丢掉」：那会把「服务端说了一条」悄悄改成「一条都没有」。
   // 形状不对就整份回包判错（`#002-02`：不知道 ≠ 空）。
   const 技能原 = 值["skills"]
@@ -213,6 +225,8 @@ function 解析状态(body: unknown): EnablementState | undefined {
     limit: 值["limit"],
     auto: 自动,
     autoDelivery: 值["autoDelivery"],
+    // 键缺席不补值（同 `skills`）：说不清就是说不清，由消费侧按「不知道」处理。
+    ...(值["canManage"] === undefined ? {} : { canManage: 值["canManage"] }),
     // 键整个缺席 = 不知道；不写 `skills: undefined`（那会让「有键但值为 undefined」也成立，
     // 区分靠的是键在不在，与后端 `带内核清单` 对齐）。
     ...(技能 === undefined ? {} : { skills: 技能 }),
