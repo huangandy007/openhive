@@ -221,7 +221,12 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：无
   - **验证**：`A: project/sidebar-tabs.test.tsx` 红，红在「多了一个实体」
 
-- [ ] T013 [US3] 删页签实现：`packages/app/src/project/sidebar-tabs.tsx`（`:8` 键、`:12-16` 文案、`:20` 顺序、`:198-210` pane、`:3-6` 与 `:17-20` 的「四个 tab」注释）
+- [x] T013 [US3] 删页签实现：`packages/app/src/project/sidebar-tabs.tsx`（`:8` 键、`:12-16` 文案、`:20` 顺序、`:198-210` pane、`:3-6` 与 `:17-20` 的「四个 tab」注释）
+
+  > **绿（2026-11-15 实测）**：`cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/project/sidebar-tabs.test.tsx` ⇒ **21 pass / 0 fail / 47 expect / 21 tests**，EXIT=0。
+  > 变异验证：把 `entity` 临时加回 `SidebarTabKey` / `TAB_LABEL` / `TAB_ORDER` ⇒ **15 pass / 6 fail**，EXIT=1，红点与 T012 完全一致（6 条全部是 `Received` 多出 `"entity"`）；恢复后复跑回到 21 pass / 0 fail。
+  > 门禁：`cd packages/app && timeout 300 bun run typecheck` ⇒ EXIT=0；仓库根 `timeout 300 bun run lint` ⇒ EXIT=1，唯一 error 是既有的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163` 八进制转义（与本任务无关，本文件 0 告警）。
+  > 说明：`entities` prop **保留**（接口与注释标注「T013 撤页签，T014 删接线」），未触发 TS 未使用报错。
 
   - **入参**：T012 的红用例
   - **出参**：`SidebarTabKey` 三值；`TAB_ORDER` 三项；无 entity pane；注释改成「三个」
