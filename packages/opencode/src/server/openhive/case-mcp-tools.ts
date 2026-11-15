@@ -1711,6 +1711,17 @@ export async function aggregate_money(
     对手id?: string
     含首末?: boolean
     含账户汇总?: boolean
+    /**
+     * 「人说的笔」的方向过滤（内部选项，不暴露给 MCP 入参；只有 `money_flow` 传）：
+     * 只作用于人说的笔的 SQL 与截断，汇总 / 对手方不受影响。
+     */
+    方向?: "入" | "出"
+    /**
+     * 额外回一份单笔榜（内部选项，默认关闭 ⇒ 输出逐字不变）。
+     * 资金页的明细栏要「流水」与「人说的」并排，而页面路由走的是本函数；
+     * 取数与 `money_flow` 共用 `单笔最大条件` / `取单笔最大`（`#002-06`）。
+     */
+    含单笔最大?: { 含未验证?: boolean }
   } = {},
 ): Promise<工具结果> {
   const 对手方上限 = 选项.对手方上限 ?? 默认对手方上限
@@ -1910,6 +1921,58 @@ export async function aggregate_money(
   const 歧义条数 = 对手方.filter((行) => 行._候选数 >= 2).length
   const 对外对手方 = 对手方.map(({ _候选数, ...行 }) => 行)
 
+  // 人说的笔（设计 §4）：同一份 `汇总条件` 上再筛 `source_kind='human'` 与人民币笔数。
+  // 条件包在**子查询**里：`汇总条件` 的列名不带表别名，直接 join `case_entity` 会让
+  // `project_id` / `trust_state` 变成有歧义列（`aggregate_money` 的既有注释已踩过一次）。
+  // 对手展示与 `对手方` 同优先序（人/组织取规范值 → 账户取唯一户名对齐代表名 → 规范值）；
+  // 那边按对手分组取 `min`，这边逐行，聚合形态不同、优先序必须一致。
+  const 人说的笔上限 = 20
+  const 人说的条件: SQL[] = [...汇总条件, sql`source_kind = 'human'`, 人民币笔数]
+  if (选项.方向 !== undefined)
+    人说的条件.push(sql`(case when from_id in ${归属集} then '出' else '入' end) = ${选项.方向}`)
+  const 人说的笔 = rowsOf(
+    await ctx.db.execute(sql`
+      select 行.id as id,
+             行.方向 as 方向,
+             coalesce(case when 对手.type in ('人', '组织') then 对手.canonical_value end,
+                      账户户名.代表值,
+                      对手.canonical_value) as 对手,
+             行.金额 as 金额,
+             行.首 as 首,
+             行.末 as 末,
+             行.精度 as 精度,
+             行.次数 as 次数
+        from (
+          select id,
+                 case when from_id in ${归属集} then '出' else '入' end as 方向,
+                 case when from_id in ${归属集} then to_id else from_id end as 对手id,
+                 amount::text as 金额,
+                 first_at as 首,
+                 last_at as 末,
+                 precision as 精度,
+                 times as 次数
+            from auth.case_relation
+           where ${sql.join(人说的条件, sql` and `)}
+        ) 行
+        join auth.case_entity 对手
+          on 对手.project_id = ${ctx.身份.projectId}
+         and 对手.id = 行.对手id
+         and 对手.trust_state <> '已排除'
+        left join lateral ${账户展示名(ctx.身份.projectId, sql`对手.id`)} 账户户名 on true
+       order by coalesce(行.末, 行.首) desc nulls last, 行.id asc
+       limit ${人说的笔上限}
+    `),
+  ).map((行) => ({
+    id: String(行.id),
+    方向: String(行.方向),
+    对手: String(行.对手),
+    金额: typeof 行.金额 === "string" ? 行.金额 : null,
+    首: typeof 行.首 === "number" ? 行.首 : null,
+    末: typeof 行.末 === "number" ? 行.末 : null,
+    精度: typeof 行.精度 === "string" ? 行.精度 : null,
+    次数: typeof 行.次数 === "number" ? 行.次数 : null,
+  }))
+
   // 明细行（余额走势 / 外币行数）共用「账户精确匹配 + 时间窗」这一份基础条件（`#002-06`）：
   // 两条查询只差币种那一条，复制两遍迟早漂成「余额含外币、缺口数不含」。
   const 明细基础条件: SQL[] = [
@@ -1997,6 +2060,7 @@ export async function aggregate_money(
     余额走势截断缺口,
   ]
   // 与 `截断缺口` 同口径：命中上限才说「可能还有更多」，没满就不制造假警报。
+  if (人说的笔.length === 人说的笔上限) 缺口.push(`人说的笔已截到前 ${人说的笔上限} 条，可能还有更多`)
   if (对手方.length === 对手方上限) 缺口.push(`对手方已截到前 ${对手方上限} 条，可能还有更多`)
   // 这条只在**确实一行都没有**时成立：有外币行时「没有该账户的流水」与下一条外币缺口
   // 自相矛盾（窗口里明明有流水，只是不计入人民币口径）。
@@ -2064,6 +2128,7 @@ export async function aggregate_money(
           汇总,
           首末,
           对手方: 对外对手方,
+          人说的笔,
           余额走势,
           外币行数,
           ...(账户汇总 === undefined ? {} : { 账户汇总 }),
@@ -2076,7 +2141,11 @@ export async function aggregate_money(
       "余额走势与外币行数都按明细行的 counterparty/counterparty_name/owner_account/caller/callee 精确匹配账户的实体规范值；" +
       "余额走势只取 currency = 'CNY' 的明细行（行数为参与走势的人民币行数），外币行数按 currency <> 'CNY' 计数。" +
       "账户归属按户名唯一对齐：恰好一端落在「本账户 ∪ 唯一户名对齐到它的人/组织」里的转账才算本账户；" +
-      "首末是该口径下最早 first_at 与最晚 last_at（不受方向影响；first_at 缺失时回退 last_at）。" + 身份口径,
+      "首末是该口径下最早 first_at 与最晚 last_at（不受方向影响；first_at 缺失时回退 last_at）。" +
+      "人说的笔只列 source_kind=human 的转账关系（笔录 / 人工认定）：按关系行各列一条，一行可能已聚合多次（看 次数）；" +
+      "同一笔可能同时有流水事件与人工关系，两栏各列一条（汇总与对手方已去重）；" +
+      "人说的笔的对手展示与对手方同优先序（人/组织取规范值，账户取唯一户名对齐代表名，取不到用规范值）。" +
+      身份口径,
     // 有外币行时这句「也无明细流水」是假话（外币行只是不计入）——改由上面的外币缺口说明。
     缺口:
       空 && 外币行数 === 0

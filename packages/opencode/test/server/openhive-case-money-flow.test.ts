@@ -7,6 +7,7 @@ import {
   aggregate_money,
   money_flow,
   余额走势截断缺口,
+  解析实体,
   type 工具上下文,
 } from "../../src/server/openhive/case-mcp-tools"
 import {
@@ -17,12 +18,14 @@ import {
 } from "../../src/server/openhive/case-fact-store"
 import {
   种P3数据集,
+  种人说话数据集,
   种多对手数据集,
   种无参与者数据集,
   种他者参与者数据集,
   种无时间数据集,
   种金额乱序数据集,
   type P3数据集,
+  type 人说话数据集,
   type 多对手数据集,
   type 老数据数据集,
   type 他者参与者数据集,
@@ -46,6 +49,7 @@ let 老数据: 老数据数据集
 let 他者: 他者参与者数据集
 let 无时间: 无时间数据集
 let 金额乱序: 金额乱序数据集
+let 人说: 人说话数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-资金流"
 
@@ -59,6 +63,7 @@ beforeAll(async () => {
   他者 = await 种他者参与者数据集(db(), 文件)
   无时间 = await 种无时间数据集(db(), 文件)
   金额乱序 = await 种金额乱序数据集(db(), 文件)
+  人说 = await 种人说话数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -94,6 +99,114 @@ type 流数据 = {
   集中度: Record<string, string>
   外币行数: number
 }
+
+/** 人说的笔的行形状（契约：`aggregate_money` / `money_flow` 同形）。 */
+type 人说行 = {
+  id: string
+  方向: string
+  对手: string
+  金额: string | null
+  首: number | null
+  末: number | null
+  精度: string | null
+  次数: number | null
+}
+
+describe("aggregate_money 的人说的笔", () => {
+  test("笔录转账按关系行列出：方向 / 对手 / 金额 / 首末 / 精度 / 次数", async () => {
+    const 数据 = (await aggregate_money(ctx(), { 账户: 数据集.账号.A })).数据 as { 人说的笔: 人说行[] }
+    // 末降序：A→B 的笔录（04-02）在前，A→李四 的笔录（04-01）在后。
+    // 对手都是「李四」：A→B 那条的对手是账户 B，展示名按唯一户名对齐到人「李四」
+    //（与「对手方」的 coalesce 同优先序）。
+    expect(数据.人说的笔).toEqual([
+      {
+        id: expect.any(String),
+        方向: "出",
+        对手: "李四",
+        金额: "5000.00",
+        首: expect.any(Number),
+        末: expect.any(Number),
+        精度: "到日",
+        次数: null,
+      },
+      {
+        id: expect.any(String),
+        方向: "出",
+        对手: "李四",
+        金额: "10000.00",
+        首: expect.any(Number),
+        末: expect.any(Number),
+        精度: "到日",
+        次数: null,
+      },
+    ])
+  })
+
+  test("数据关系一条都不进人说的笔（A→B 机器合计 30000 不许出现）", async () => {
+    const 数据 = (await aggregate_money(ctx(), { 账户: 数据集.账号.A })).数据 as { 人说的笔: 人说行[] }
+    expect(数据.人说的笔.map((行) => 行.金额)).toEqual(["5000.00", "10000.00"])
+    expect(数据.人说的笔.map((行) => 行.金额)).not.toContain("30000.00")
+  })
+
+  test("内部选项 方向：只作用于人说的笔，汇总与对手方不变", async () => {
+    const 入 = await aggregate_money(ctx(), { 账户: 数据集.账号.B }, { 方向: "入" })
+    const 入数据 = 入.数据 as { 人说的笔: 人说行[]; 汇总: { 方向: string; 笔数: number; 合计: string }[] }
+    // B 的归属集 = {B, 李四}（李四经未撤销户名唯一对齐到 B），A→李四 的笔录也算 B 的入账
+    // ⇒ 两条入向：A→B 5000（04-02）在前，A→李四 10000（04-01）在后（末降序）。
+    // 这与下面的汇总 3 笔 35000 是同一口径——brief 原稿写 1 条与它自己的 SQL / 设计 §4 冲突，
+    // 实得 2 条，按设计与既有 `money_flow` 用例（B 入 3 笔 35000）据实修正。
+    expect(入数据.人说的笔.map((行) => [行.方向, 行.金额])).toEqual([
+      ["入", "5000.00"],
+      ["入", "10000.00"],
+    ])
+    // 汇总仍是全账户口径（方向只是明细栏的过滤，不是汇总的过滤）。
+    expect(入数据.汇总).toEqual([{ 方向: "入", 笔数: 3, 合计: "35000.00" }])
+
+    const 出 = await aggregate_money(ctx(), { 账户: 数据集.账号.B }, { 方向: "出" })
+    expect((出.数据 as { 人说的笔: 人说行[] }).人说的笔).toEqual([])
+  })
+
+  test("上限 20：先按方向过滤再截断；命中上限才加缺口", async () => {
+    const 全部 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号 })
+    const 全部数据 = 全部.数据 as { 人说的笔: 人说行[] }
+    expect(全部数据.人说的笔).toHaveLength(20)
+    // 最新的一笔是「入」（07-22）：排在第一位，同时它是最容易被「先截断」吃掉的那条。
+    expect(全部数据.人说的笔[0]!.方向).toBe("入")
+    expect(全部.缺口).toContain("人说的笔已截到前 20 条，可能还有更多")
+
+    const 入 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号 }, { 方向: "入" })
+    const 入数据 = 入.数据 as { 人说的笔: 人说行[] }
+    expect(入数据.人说的笔.map((行) => [行.方向, 行.对手])).toEqual([["入", "人说入账人"]])
+    expect(入.缺口).not.toContain("人说的笔已截到前 20 条，可能还有更多")
+
+    // 21 条出向、上限 20 ⇒ 20 条 + 截断缺口。若实现是「先 limit 20 再过滤」，
+    // 入向那条会占掉一个名额，这里只能拿到 19 条。
+    const 出 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号 }, { 方向: "出" })
+    expect((出.数据 as { 人说的笔: 人说行[] }).人说的笔).toHaveLength(20)
+  })
+
+  test("对手过滤同口径：带对手时只剩与它的往来", async () => {
+    const 对手 = await 解析实体(ctx(人说.项目), 人说.对手人名们[0]!, "对手")
+    const 结果 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号 }, { 对手id: 对手.id })
+    const 数据 = 结果.数据 as { 人说的笔: 人说行[] }
+    expect(数据.人说的笔.map((行) => [行.方向, 行.对手, 行.金额])).toEqual([
+      ["出", 人说.对手人名们[0]!, "101.00"],
+    ])
+  })
+
+  test("时间窗同口径：窗口外的笔录不出现", async () => {
+    const 全部 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号 })
+    const 入行 = (全部.数据 as { 人说的笔: 人说行[] }).人说的笔.find((行) => 行.方向 === "入")!
+    const 窗 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号, 止: 入行.首! - 1 })
+    expect((窗.数据 as { 人说的笔: 人说行[] }).人说的笔.map((行) => 行.对手)).not.toContain("人说入账人")
+  })
+
+  test("口径写明两栏各列一条、人说的笔按关系行", async () => {
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect(结果.口径).toContain("人说的笔只列 source_kind=human 的转账关系")
+    expect(结果.口径).toContain("两栏各列一条")
+  })
+})
 
 describe("money_flow", () => {
   test("B：入 3 笔 35000、收支分列、首末、对手排行（含首末）、单笔最大、集中度", async () => {
@@ -387,14 +500,14 @@ describe("money_flow", () => {
       expect(结果.空原因).toBeNull()
       return 次
     }
-    // 默认：aggregate_money 11 + 账户再解析 1 + 单笔最大 1 = 13。
-    expect(await 计次({ 账户: 数据集.账号.B })).toBe(13)
-    // C3：方向多一条「无参与者行」计数 ⇒ 14。
-    expect(await 计次({ 账户: 数据集.账号.B, 方向: "收" })).toBe(14)
-    // C1：时间窗多一条「无 occurred_at」计数 ⇒ 14。
-    expect(await 计次({ 账户: 数据集.账号.B, 止: 1775059199 })).toBe(14)
-    // C2/N1：解析对手 1 + 账户全量汇总 1 ⇒ 15（对手谓词换共享函数后不再读归属值）。
-    expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(15)
+    // 默认：aggregate_money 12（人说的笔 +1）+ 账户再解析 1 + 单笔最大 1 = 14。
+    expect(await 计次({ 账户: 数据集.账号.B })).toBe(14)
+    // C3：方向多一条「无参与者行」计数 ⇒ 15。
+    expect(await 计次({ 账户: 数据集.账号.B, 方向: "收" })).toBe(15)
+    // C1：时间窗多一条「无 occurred_at」计数 ⇒ 15。
+    expect(await 计次({ 账户: 数据集.账号.B, 止: 1775059199 })).toBe(15)
+    // C2/N1：解析对手 1 + 账户全量汇总 1 ⇒ 16（对手谓词换共享函数后不再读归属值）。
+    expect(await 计次({ 账户: 数据集.账号.B, 对手: "张三" })).toBe(16)
   })
 })
 
