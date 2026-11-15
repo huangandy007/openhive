@@ -193,9 +193,12 @@ function 文件时间(时刻: Date): string {
   )
 }
 
-/** 图名 = 文件名去 `.hgraph`（大小写不敏感，与后缀闸同一口径）。 */
-function 图名(绝对: string): string {
-  return basename(绝对).replace(/\.hgraph$/i, "")
+/**
+ * 图名 = 文件名去 `.hgraph`（大小写不敏感，与后缀闸同一口径）。
+ * 接受绝对或相对路径——`graph_list` 用相对路径取标题，与导出文件名同一个判据（`#002-06`）。
+ */
+export function 图名(路径: string): string {
+  return basename(路径).replace(/\.hgraph$/i, "")
 }
 
 function 错误码(值: unknown): string {

@@ -1,10 +1,10 @@
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { readdir, readFile, stat } from "node:fs/promises"
-import { basename, join, relative, sep } from "node:path"
+import { join, relative, sep } from "node:path"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "./case-mcp-tools"
 import type { 类别, 边草稿, 操作, 改字段目标, 节点草稿, 删对象目标 } from "./hgraph-edit"
 import { 解析图 } from "./hgraph-file"
-import { 应用并写回, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 核心失败, type 失败码 } from "./hgraph-ops"
+import { 应用并写回, 图名, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 核心失败, type 失败码 } from "./hgraph-ops"
 import { 项目属主 } from "./project-actor"
 
 /**
@@ -12,9 +12,11 @@ import { 项目属主 } from "./project-actor"
  *
  * ## 工具层不写盘
  *
- * 全部转调 `hgraph-ops.ts` 的 `应用并写回` / `读文件`——那两个是**唯一写入者 / 唯一读取者**
- * （`#002-06`：同一前提单一出处）。这里只做三件工具层的事：路径省略的三态解析、批量上限、
- * 把工具入参翻译成 `操作` 数组。
+ * 全部转调 `hgraph-ops.ts`：`应用并写回` 是**唯一写入者**；`读文件` 是**四条按路径取图的
+ * 工具**（read / add / update / remove）的唯一读取者（`#002-06`：同一前提单一出处）。
+ * 例外只有 `graph_list`：它做的是目录遍历 + 逐文件读字节取 `mtime` / 解析节点数，
+ * 且坏文件要**照列**（`读文件` 的失败码没有「打不开也列出来」这个语义），**不是一次文档读**。
+ * 这里只做三件工具层的事：路径省略的三态解析、批量上限、把工具入参翻译成 `操作` 数组。
  *
  * ## 不套七字段信封
  *
@@ -172,17 +174,15 @@ async function 列图(目录: string): Promise<图条目[]> {
   return 结果.sort((甲, 乙) => (甲.相对 < 乙.相对 ? -1 : 甲.相对 > 乙.相对 ? 1 : 0))
 }
 
-function 图名(路径: string): string {
-  return basename(路径).replace(/\.hgraph$/i, "")
-}
-
 /** 路径省略三态（5 个工具共用；只写这一份）。 */
 async function 定路径(ctx: 工具上下文, 路径: string | undefined): Promise<string> {
   if (路径 !== undefined) return 路径
   const 图们 = await 列图(await 项目目录(ctx))
   if (图们.length === 1) return 图们[0]!.相对
   if (图们.length === 0) throw new 工具错误("not_found", "这个项目里还没有关系图")
-  throw new 工具错误("ambiguous_path", `项目里有 ${图们.length} 张图，请先调 graph_list 并点名要改哪一张`)
+  // 话术照 `contracts/mcp-tools.md` §6 的「原话」（R86 #14）；契约 §2 的表格是同一规则的另一种
+  // 措辞，以 §6 为准，实现只保留这一句。
+  throw new 工具错误("ambiguous_path", `项目里有 ${图们.length} 张图，请先 graph_list 再点名`)
 }
 
 // ---------------------------------------------------------------------------

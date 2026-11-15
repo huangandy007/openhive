@@ -297,11 +297,13 @@ describe("graph_read", () => {
     摆图("二图.hgraph", 空图("二图"), 多图项目)
     const 歧义 = await 取工具错误(() => graph_read(ctx(多图项目), {}))
     expect(歧义.code).toBe("ambiguous_path")
-    expect(歧义.message).toContain("2 张图")
+    // 契约 §6 的「原话」逐字（R86 #14）；数量按实际图数填。
+    expect(歧义.message).toBe("项目里有 2 张图，请先 graph_list 再点名")
 
     // 5 个工具共用同一份解析：写工具也不许猜。
     const 加歧义 = await 取工具错误(() => graph_add(ctx(多图项目), { 节点: [手写节点("张三")] }))
     expect(加歧义.code).toBe("ambiguous_path")
+    expect(加歧义.message).toBe("项目里有 2 张图，请先 graph_list 再点名")
     // 单图项目下省略路径 ⇒ 落到那唯一一张。
     const 加单图 = await graph_add(ctx(单图项目), { 节点: [手写节点("张三")] })
     expect(加单图.路径).toBe("只有这一张.hgraph")
