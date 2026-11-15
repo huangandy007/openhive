@@ -12,6 +12,7 @@ import {
   type 空原因值,
 } from "./case-envelope"
 import { getMaterial, type Queryable } from "./case-store"
+import { 解析出处 } from "./citation"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 批量引用, 引用们, type 引用视图 } from "./case-fact-read"
 import {
@@ -1422,30 +1423,23 @@ export async function get_citation(
   args: { 事实类型: "entity" | "relation" | "event" | "row"; 事实id: string },
 ): Promise<工具结果> {
   if (args.事实类型 === "row") {
-    // 首 `#` 结束材料（材料 id 不含 `#`），末 `#` 开始行号，中间的整段都是工作表名（可含 `#`）。
-    // `case-store.ts:423-432` 的契约：Excel 工作表名可以合法含 `#`，按固定段数拆是错的。
-    const 首 = args.事实id.indexOf("#")
-    const 末 = args.事实id.lastIndexOf("#")
-    if (首 <= 0 || 末 === 首) {
+    // 解析只有一份：`citation.ts` 的 `解析出处`（首 `#` 结束材料、末 `#` 开始行号，
+    // 中间整段是工作表名，可含 `#`）。这里只负责「单行」与错误翻译。
+    const 出 = 解析出处(args.事实id)
+    // 区间是「出处汇总」的写法，定位某一行只能是单行（起 = 末）。
+    if (出 === null || 出.起 !== 出.末) {
       throw new 工具错误("bad_input", `明细行 id 形状应为「材料#工作表#行号」，收到 ${args.事实id}`)
     }
-    const 材料 = args.事实id.slice(0, 首)
-    const 工作表 = args.事实id.slice(首 + 1, 末)
-    const 行号 = args.事实id.slice(末 + 1)
-    if (材料.trim() === "" || 工作表 === "" || 行号.trim() === "") {
-      throw new 工具错误("bad_input", `明细行 id 形状应为「材料#工作表#行号」，收到 ${args.事实id}`)
-    }
-    if (!Number.isInteger(Number(行号))) {
-      throw new 工具错误("bad_input", `行号必须是整数，收到 ${行号}`)
-    }
+    const 材料 = 出.材料
+    const 工作表 = 出.工作表
     // 引用按**规范化键**查：`"…#Sheet1#02"` 能命中明细行，但原始的 `02` 不是库里 `fact_id` 的写法。
-    const 规范键 = `${材料}#${工作表}#${Number(行号)}`
+    const 规范键 = `${材料}#${工作表}#${出.起}`
     // 一行的读回／解码只有一处（`case-row-query.ts` 的 `读明细行`）。
     // 原来这里内联一份 SQL，等于给「金额读成字符串还是数字、extras 怎么解」开第二个出处（`#002-06`）。
     const 行 = await 读明细行(ctx.db, ctx.身份.projectId, {
       materialId: 材料,
       sheet: 工作表,
-      rowNo: Number(行号),
+      rowNo: 出.起,
     })
     if (行 === undefined) throw new 工具错误("not_found", `本项目里没有这条明细行：${args.事实id}`)
     // `引用们` 的第三参类型是 `留痕类型`（entity/relation/event），但 `case_citation.fact_type`
@@ -1464,10 +1458,10 @@ export async function get_citation(
     if (材料行 === undefined) 缺口.push("材料已不在本项目的材料表里，给不出材料定位")
     const 原文表 = await 读原文表(ctx, 引用)
     return {
-      摘要: `明细行原文：${材料}#${工作表}#${行号}`,
+      摘要: `明细行原文：${材料}#${工作表}#${出.起}`,
       数据: {
         材料定位:
-          材料行 === undefined ? null : { path: 材料行.path, sheet: 工作表, rowNo: Number(行号) },
+          材料行 === undefined ? null : { path: 材料行.path, sheet: 工作表, rowNo: 出.起 },
         明细行: {
           project_id: 行.projectId,
           material_id: 行.materialId,
@@ -1501,7 +1495,7 @@ export async function get_citation(
       缺口,
       // 查不到抛 not_found ⇒ 这个分支的数据永不为空，`空原因` 恒 null。
       空原因: null,
-      出处: [{ 事实: `明细行定位 ${材料}#${工作表}#${行号}`, 代表: `${材料}#${工作表}#${行号}`, 可下钻: null }],
+      出处: [{ 事实: `明细行定位 ${材料}#${工作表}#${出.起}`, 代表: `${材料}#${工作表}#${出.起}`, 可下钻: null }],
       下一步: [{ 工具: "query_rows", 参数: { 材料 }, 为什么: "在同一份材料里按时间或账户继续翻明细" }],
     }
   }
