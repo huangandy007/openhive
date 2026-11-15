@@ -68,6 +68,24 @@ const 数据 = {
   余额走势: { 首: "1000.00", 末: "800.00", 最高: "1100.00", 最低: "800.00", 行数: 4 },
 }
 
+/** 带明细的回包：流水两笔（一笔无时间、一笔无摘要）+ 人说的两笔（一笔缺金额与时间、聚合 3 次）。 */
+const 带明细 = {
+  ...数据,
+  单笔最大: [
+    { id: "ev-1", 金额: "50000.00", 时间: 1773300000, 摘要: "转账-货款" },
+    { id: "ev-2", 金额: "120.00", 时间: null, 摘要: null },
+  ],
+  人说的笔: [
+    { id: "r-1", 方向: "出", 对手: "李四", 金额: "50000.00", 首: 1773300000, 末: 1773300000, 精度: "到日", 次数: null },
+    { id: "r-2", 方向: "入", 对手: "王五", 金额: null, 首: null, 末: null, 精度: null, 次数: 3 },
+  ],
+}
+
+const 明细api = (数据段: unknown) =>
+  假api({
+    money: async () => ({ kind: "ok", value: { 数据: 数据段, 口径: "只统计已抽成关系的转账", 缺口: [] } }),
+  })
+
 function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
   return {
     profile: async () => ({ kind: "error", message: "未用" }),
@@ -194,5 +212,58 @@ describe("资金", () => {
     expect(载荷.split("\n").length).toBe(5)
     expect(载荷).toContain("出 3 笔 · 300.00")
     expect(载荷).toContain("李四")
+  })
+
+  test("明细两段都渲染：流水在前、人说的在后，缺失段照实写", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-human']").length === 2)
+    const 流水 = [...host.querySelectorAll<HTMLElement>("[data-slot='money-flow']")]
+    expect(流水).toHaveLength(2)
+    expect(流水[0]!.textContent).toContain("50000.00 元")
+    expect(流水[0]!.textContent).toContain("转账-货款")
+    expect(流水[1]!.textContent).toContain("时间未知")
+    expect(流水[1]!.textContent).toContain("无摘要")
+    const 人说 = [...host.querySelectorAll<HTMLElement>("[data-slot='money-human']")]
+    expect(人说[0]!.textContent).toContain("出 → 李四")
+    expect(人说[0]!.textContent).toContain("50000.00 元")
+    // 缺失照实（`#002-02`）：不补 0、不写空串。
+    expect(人说[1]!.textContent).toContain("金额未记")
+    expect(人说[1]!.textContent).toContain("时间未记")
+    expect(人说[1]!.textContent).toContain("3 次")
+  })
+
+  test("两段各有自己的空态（不共用一句「没有明细」）", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api({ ...数据, 单笔最大: [], 人说的笔: [] })} />)
+    await 等(() => host.textContent!.includes("没有流水笔"))
+    expect(host.textContent).toContain("没有人说的笔")
+  })
+
+  test("服务端没返回明细（老版本）⇒ 两段都说「本次未返回」，不说成「没有」", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={假api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-flow-empty']").length === 1)
+    expect(host.textContent).toContain("本次未返回")
+    expect(host.textContent).not.toContain("没有流水笔")
+    expect(host.textContent).not.toContain("没有人说的笔")
+  })
+
+  test("人说的笔形状不对（方向认不出）⇒ 整段判错，不半份显示", async () => {
+    const 坏 = {
+      ...带明细,
+      人说的笔: [...带明细.人说的笔, { id: "r-坏", 方向: "x", 对手: "某人", 金额: null, 首: null, 末: null, 精度: null, 次数: null }],
+    }
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(坏)} />)
+    await 等(() => host.textContent!.includes("本次未返回"))
+    expect(host.querySelectorAll("[data-slot='money-human']").length).toBe(0)
+  })
+
+  test("人说的行能带走：data-copy 与双击发进右栏", async () => {
+    const 收到: string[] = []
+    订阅会话输入((文本) => void 收到.push(文本))
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-human']").length === 2)
+    const 行 = host.querySelector<HTMLElement>("[data-slot='money-human']")!
+    expect(行.getAttribute("data-copy")).toContain("出 → 李四")
+    行.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))
+    expect(收到).toEqual([行.getAttribute("data-copy")!])
   })
 })

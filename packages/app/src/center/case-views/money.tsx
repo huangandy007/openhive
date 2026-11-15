@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "soli
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
-import { 金额文本 } from "./format"
+import { 金额文本, 时间文本 } from "./format"
 
 export interface MoneyProps {
   readonly projectId: string
@@ -14,6 +14,59 @@ interface 汇总行 { readonly 方向: string; readonly 笔数: number; readonly
 interface 对手方行 { readonly 对手方: string; readonly 方向: string; readonly 笔数: number; readonly 合计: string }
 interface 余额 { readonly 首: string | null; readonly 末: string | null; readonly 最高: string | null; readonly 最低: string | null; readonly 行数: number }
 
+interface 流水行 { readonly id: string; readonly 金额: string; readonly 时间: number | null; readonly 摘要: string | null }
+interface 人说行 {
+  readonly id: string
+  readonly 方向: "出" | "入"
+  readonly 对手: string
+  readonly 金额: string | null
+  readonly 首: number | null
+  readonly 末: number | null
+  readonly 精度: string | null
+  readonly 次数: number | null
+}
+/** 明细的一段：`未返回` = 服务端没给这个键（老版本）或形状不对——**不是**「空」（`#002-02`）。 */
+type 明细段<T> = { readonly 状态: "有"; readonly 行们: T[] } | { readonly 状态: "未返回" }
+
+const 可空数 = (值: unknown): number | null | undefined => (值 === null ? null : 是数(值) ? 值 : undefined)
+const 可空串 = (值: unknown): string | null | undefined => (值 === null ? null : 是串(值) ? 值 : undefined)
+
+const 解单笔 = (条: unknown): 流水行 | undefined => {
+  if (条 === null || typeof 条 !== "object") return undefined
+  const 行 = 条 as Record<string, unknown>
+  const 时间 = 可空数(行.时间)
+  const 摘要 = 可空串(行.摘要)
+  if (!是串(行.id) || !是串(行.金额) || 时间 === undefined || 摘要 === undefined) return undefined
+  return { id: 行.id, 金额: 行.金额, 时间, 摘要 }
+}
+
+const 解人说 = (条: unknown): 人说行 | undefined => {
+  if (条 === null || typeof 条 !== "object") return undefined
+  const 行 = 条 as Record<string, unknown>
+  const 金额 = 可空串(行.金额)
+  const 首 = 可空数(行.首)
+  const 末 = 可空数(行.末)
+  const 精度 = 可空串(行.精度)
+  const 次数 = 可空数(行.次数)
+  if (!是串(行.id) || !是串(行.对手)) return undefined
+  if (行.方向 !== "出" && 行.方向 !== "入") return undefined
+  if (金额 === undefined || 首 === undefined || 末 === undefined || 精度 === undefined || 次数 === undefined)
+    return undefined
+  return { id: 行.id, 方向: 行.方向, 对手: 行.对手, 金额, 首, 末, 精度, 次数 }
+}
+
+/** 一行形状不对 ⇒ 整份判错：不静默降级成「只显示认得的那几行」（`#002-02`）。 */
+function 解段<T>(原: unknown, 解一: (条: unknown) => T | undefined): 明细段<T> {
+  if (!Array.isArray(原)) return { 状态: "未返回" }
+  const 行们: T[] = []
+  for (const 条 of 原) {
+    const 行 = 解一(条)
+    if (行 === undefined) return { 状态: "未返回" }
+    行们.push(行)
+  }
+  return { 状态: "有", 行们 }
+}
+
 const 是数 = (值: unknown): 值 is number => typeof 值 === "number"
 const 是串 = (值: unknown): 值 is string => typeof 值 === "string"
 
@@ -23,8 +76,15 @@ const 对手方行文本 = (行: 对手方行) => `${行.对手方} · ${行.方
 const 余额文本 = (余额: 余额) =>
   `首 ${金额文本(余额.首)} · 末 ${金额文本(余额.末)} · 最高 ${金额文本(余额.最高)} · 最低 ${金额文本(余额.最低)} · 共 ${余额.行数} 行`
 
-function 解资金(数据: unknown): { 汇总: 汇总行[]; 对手方: 对手方行[]; 余额: 余额 | null } {
-  if (数据 === null || typeof 数据 !== "object") return { 汇总: [], 对手方: [], 余额: null }
+function 解资金(数据: unknown): {
+  汇总: 汇总行[]
+  对手方: 对手方行[]
+  余额: 余额 | null
+  流水: 明细段<流水行>
+  人说的: 明细段<人说行>
+} {
+  if (数据 === null || typeof 数据 !== "object")
+    return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "未返回" }, 人说的: { 状态: "未返回" } }
   const 记 = 数据 as Record<string, unknown>
   const 汇总 = Array.isArray(记.汇总)
     ? 记.汇总.flatMap((条) => {
@@ -53,8 +113,16 @@ function 解资金(数据: unknown): { 汇总: 汇总行[]; 对手方: 对手方
           最低: 是串((原余额 as Record<string, unknown>).最低) ? ((原余额 as Record<string, string>).最低 ?? null) : null,
           行数: 是数((原余额 as Record<string, unknown>).行数) ? ((原余额 as Record<string, number>).行数 ?? 0) : 0,
         }
-  return { 汇总, 对手方, 余额 }
+  return { 汇总, 对手方, 余额, 流水: 解段(记.单笔最大, 解单笔), 人说的: 解段(记.人说的笔, 解人说) }
 }
+
+const 有段落 = <T,>(段: 明细段<T>): T[] | undefined => (段.状态 === "有" ? 段.行们 : undefined)
+
+const 流水行文本 = (行: 流水行) => `${金额文本(行.金额)} · ${时间文本(行.时间)} · ${行.摘要 ?? "无摘要"}`
+const 人说行文本 = (行: 人说行) =>
+  `${行.方向} → ${行.对手} · ${行.金额 === null ? "金额未记" : 金额文本(行.金额)} · ${
+    行.首 === null ? "时间未记" : 时间文本(行.首)
+  }` + (行.次数 !== null && 行.次数 > 1 ? ` · ${行.次数} 次` : "")
 
 /** 资金概览。汇总 / 对手方 / 余额都来自 `aggregate_money` 的**同一次**返回，前端不再分头取数。 */
 export function Money(props: MoneyProps): JSX.Element {
@@ -166,6 +234,64 @@ export function Money(props: MoneyProps): JSX.Element {
             </div>
           )}
         </Show>
+
+        <h2 class="mt-3 text-[13px] font-semibold text-v2-text-text-base">明细</h2>
+        <div class="flex items-start gap-4">
+          <section class="flex min-w-0 flex-1 flex-col">
+            <div class="text-[12px] text-v2-text-text-muted">流水（单笔最大前 10）</div>
+            <Show when={解().流水.状态 === "未返回"}>
+              <p data-slot="money-flow-empty" class="text-[13px] text-v2-text-text-muted">本次未返回</p>
+            </Show>
+            <Show when={有段落(解().流水)}>
+              {(行们) => (
+                <>
+                  <Show when={行们().length === 0}>
+                    <p data-slot="money-flow-empty" class="text-[13px] text-v2-text-text-muted">没有流水笔</p>
+                  </Show>
+                  <For each={行们()}>
+                    {(行) => (
+                      <div
+                        data-slot="money-flow"
+                        data-copy={流水行文本(行)}
+                        onDblClick={() => 发到会话(流水行文本(行))}
+                        class="border-b border-v2-border-border-muted py-0.5 text-[13px] text-v2-text-text-base"
+                      >
+                        {流水行文本(行)}
+                      </div>
+                    )}
+                  </For>
+                </>
+              )}
+            </Show>
+          </section>
+          <section class="flex min-w-0 flex-1 flex-col">
+            <div class="text-[12px] text-v2-text-text-muted">人说的（笔录 / 人工）</div>
+            <Show when={解().人说的.状态 === "未返回"}>
+              <p data-slot="money-human-empty" class="text-[13px] text-v2-text-text-muted">本次未返回</p>
+            </Show>
+            <Show when={有段落(解().人说的)}>
+              {(行们) => (
+                <>
+                  <Show when={行们().length === 0}>
+                    <p data-slot="money-human-empty" class="text-[13px] text-v2-text-text-muted">没有人说的笔</p>
+                  </Show>
+                  <For each={行们()}>
+                    {(行) => (
+                      <div
+                        data-slot="money-human"
+                        data-copy={人说行文本(行)}
+                        onDblClick={() => 发到会话(人说行文本(行))}
+                        class="border-b border-v2-border-border-muted py-0.5 text-[13px] text-v2-text-text-base"
+                      >
+                        {人说行文本(行)}
+                      </div>
+                    )}
+                  </For>
+                </>
+              )}
+            </Show>
+          </section>
+        </div>
       </Show>
 
       <Show when={结果()?.口径}>
