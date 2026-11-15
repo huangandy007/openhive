@@ -36,7 +36,7 @@ function db() {
 
 // 路径用**绝对**形态构造（函数 JSDoc 的契约就是绝对路径，`handleUpload` 传的也是绝对路径）：
 // `inside()` 的 `base` 是绝对路径，相对 `base` 会让 `resolve(base, input)` 拼到 cwd 上，
-// 归属闸因此失真。不落盘、不碰文件系统：这个函数只算路径与入队，不读文件。
+// 归属闸因此失真。不落盘、不碰文件系统：这里只验 `入队材料` 的路径归属与落库，不读文件。
 const root = resolve("ws")
 const project = join(root, "u1", "proj-1")
 const 落点 = (文件: string) => join(project, "材料", 文件)

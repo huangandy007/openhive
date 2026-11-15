@@ -3,8 +3,8 @@ export * as OpenhiveCaseParseable from "./case-parseable"
 /**
  * 可解析材料的扩展名白名单——**全仓唯一一份**。
  *
- * 计划 2 只有表格；计划 4 增加文本类（AI 抽取 harness）。上传自动入队（`file.ts`）、
- * 右键入队（`case-parse.ts`）、材料视图的 `parseable`（`case-materials.ts`）三处问的是
+ * 计划 2 只有表格；计划 4 增加文本类（AI 抽取 harness）。系统侧入队（`file.ts` 的
+ * `入队材料`）、右键入队（`case-parse.ts`）、材料视图的 `parseable`（`case-materials.ts`）三处问的是
  * 同一个问题，三处各写一份 `.endsWith` 就是 `LEARNINGS #002-06` 那种「同一前提两处各判，
  * 然后只改一处」的老账。
  *
