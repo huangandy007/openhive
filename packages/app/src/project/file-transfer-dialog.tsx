@@ -153,9 +153,17 @@ function 完成态(props: { state: FileTransferState }): JSX.Element {
       <span data-slot="file-transfer-icon" aria-hidden="true" class="mt-0.5 shrink-0 text-v2-state-fg-success">
         <Icon name="circle-check" size="small" class="[--icon-base:currentColor]" />
       </span>
-      <p data-slot="file-transfer-summary" class="min-w-0 flex-1 break-all text-v2-text-text-base">
-        {摘要()}
-      </p>
+      <div class="min-w-0 flex-1">
+        <p data-slot="file-transfer-summary" class="break-all text-v2-text-text-base">
+          {摘要()}
+        </p>
+        {/* 上传只落盘（feature 011 / FR-002）：入库的唯一入口是右键，完成态负责把下一步说清。 */}
+        <Show when={props.state.kind === "done" && props.state.action === "上传"}>
+          <p data-slot="file-transfer-ingest-hint" class="mt-1 text-[11px] text-v2-text-text-muted">
+            文件已保存到项目。要解析入库，请右键文件或文件夹，选择「解析入库」。
+          </p>
+        </Show>
+      </div>
     </div>
   )
 }

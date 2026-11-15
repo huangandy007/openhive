@@ -25,6 +25,7 @@ import {
   汇总全部,
   目录下待入队,
   悬停文案,
+  选中集入队范围,
   跳过不可用原因,
   重新解析不可用原因,
   状态文案,
@@ -517,7 +518,7 @@ export function FileTree(props: FileTreeProps) {
   /** 这份文件在服务端视图里的那一行；没有 = 还没入队（或清单没读到）。 */
   const 视图行 = (path: string) => 行表().get(path)
 
-  const 依据 = (path: string, 有对象 = true): 亮灯依据 => ({
+  const 依据 = (path: string, 有对象 = true, 多选 = false): 亮灯依据 => ({
     path,
     isFile: 节点表().get(path)?.type === "file",
     row: 视图行(path),
@@ -528,6 +529,7 @@ export function FileTree(props: FileTreeProps) {
     接入: 材料() !== undefined,
     有对象,
     hasReview: props.onReviewParse !== undefined,
+    多选,
   })
 
   /** 行尾标记（只对三种有形状的状态返回；未入队 / 已跳过不画）。 */
@@ -587,7 +589,8 @@ export function FileTree(props: FileTreeProps) {
     const path = 菜单对象()
     return path !== undefined && 节点表().get(path)?.type === "file"
   }
-  const 菜单依据 = () => 依据(菜单对象() ?? "", 菜单对象() !== undefined)
+  const 菜单依据 = () =>
+    依据(菜单对象() ?? "", 菜单对象() !== undefined, 菜单目标()?.kind === "selection")
 
   /** 单文件 / 单目录的解析动作。回一句字符串 = 没办成（弹窗就地显示）。 */
   async function 执行解析(path: string, action: 人工解析动作): Promise<string | undefined> {
@@ -623,7 +626,45 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 文件夹解析：先确认，再**逐个**发入队。
+   * 批量入队的**唯一**执行器（文件夹批量与多选共用，契约 C5；`#002-06`）。
+   *
+   * - 逐份**串行**、保持候选顺序：服务端一次收一个文件（与上传同一条约定）。
+   * - 一份失败**不中断**后面的候选：只收进 `失败`，继续发。一份坏文件不该让整批作废，
+   *   否则用户重试时还得自己找出漏了哪些。
+   * - 收尾 `状态.reload()` **恰好一次**：成与败都已产生服务端事实，界面必须按真实状态重拉。
+   * - toast 由这里统一发：`失败 = 0` 走成功文案；否则一条 error 报 `S / F`（`S + F = N`），
+   *   带前 3 条原因与固定尾句「重试只补没成功的、不会重复」。
+   */
+  async function 执行批量入队(
+    候选: readonly string[],
+    状态: CaseMaterials,
+  ): Promise<{ 成功: number; 失败: Array<{ path: string; message: string }> }> {
+    let 成功 = 0
+    const 失败: Array<{ path: string; message: string }> = []
+    for (const path of 候选) {
+      const 结果 = await 状态.parse(path, "入队")
+      if (结果.kind === "error") 失败.push({ path, message: 结果.message })
+      else 成功 += 1
+    }
+    状态.reload()
+    if (失败.length === 0) {
+      showToast({ variant: "success", title: `已加入解析队列（${成功} 个文件）` })
+    } else {
+      const 原因 = 失败
+        .slice(0, 3)
+        .map((项) => `${项.path}：${项.message}`)
+        .join("；")
+      showToast({
+        variant: "error",
+        title: `成功 ${成功} 份；${失败.length} 份未能入队`,
+        description: `${原因}。重试只补没成功的、不会重复`,
+      })
+    }
+    return { 成功, 失败 }
+  }
+
+  /**
+   * 文件夹解析：先确认，再由 `执行批量入队` 逐份发（失败不中断，见那里的契约）。
    *
    * ## 为什么没有批量接口
    *
@@ -631,9 +672,6 @@ export function FileTree(props: FileTreeProps) {
    * 成败在界面上好交代。**不要**为了省几个请求在服务端加批量出口——一旦有了批量接口，
    * 它迟早会被写成「按状态全集扫」，把「已跳过」也一起翻回来（候选口径在
    * `目录下待入队` 里，见那里的注释）。批量只活在前端这一层。
-   *
-   * 失败即中断：后面的文件不再发，已发出的不回滚（入队幂等），收尾统一 `reload()`，
-   * 界面按服务端的真实状态刷新，弹窗关闭、toast 说清。
    *
    * ## 候选为 0
    *
@@ -661,23 +699,58 @@ export function FileTree(props: FileTreeProps) {
         正文={`将解析这个文件夹下的 ${候选.length} 个文件`}
         确认文案="解析"
         onConfirm={async () => {
-          let 成 = 0
-          for (const path of 候选) {
-            const 结果 = await 状态.parse(path, "入队")
-            if (结果.kind === "error") {
-              showToast({
-                variant: "error",
-                title: "文件夹解析中断",
-                description: `第 ${成 + 1} 个文件（${path}）没能入队：${结果.message}`,
-              })
-              break
-            }
-            成 += 1
-          }
-          // 不管成与败都按服务端真实状态重拉：已发出的入队已经生效，界面不能停在旧快照上。
-          状态.reload()
-          if (成 > 0) showToast({ variant: "success", title: `已加入解析队列（${成} 个文件）` })
+          await 执行批量入队(候选, 状态)
           // 永远回 undefined：失败已经用 toast 说清，弹窗不该停在「再点一次会把已入队的重发」的状态
+          return undefined
+        }}
+      />
+    ))
+  }
+
+  /**
+   * 多选批量解析：先确认，再**逐个**发入队（契约 C4）。
+   *
+   * N（候选集大小）与 M（被排除的选中项数）都由 `选中集入队范围` 一次算出——它与
+   * `选中集待入队` 共用同一份展开逻辑（`#002-06`），三处各算一遍迟早只改一处。
+   *
+   * ## N = 0
+   *
+   * 仍然弹窗：菜单在状态已读到时保持可点（控制器裁定 2026-11-15），0 候选的解释归这里。
+   * 直接 `return` 就是「点下去没反应」。
+   *
+   * ## 逐个发送与失败不中断
+   *
+   * 与文件夹那条**同一个**执行器（`执行批量入队`）：服务端一次收一个文件、按文件分开交代
+   * 成败，失败继续、收尾重拉一次、toast 报 S/F。别在这里再写一份循环（`#002-06`）。
+   */
+  function 确认解析选中() {
+    const 状态 = 材料()
+    if (状态 === undefined) return
+    const { 候选, 被排除的选中项 } = 选中集入队范围([...选中集()], 全部(), 状态.rows(), 扩展名())
+    if (候选.length === 0) {
+      void dialog.show(() => (
+        <ParseConfirmDialog
+          标题="解析选中的文件"
+          正文="选中的文件里没有可入队的（已解析 / 已跳过的文件请用各自的单文件右键菜单恢复）"
+          确认文案="解析"
+          禁用
+          onConfirm={() => undefined}
+        />
+      ))
+      return
+    }
+    const 正文 =
+      被排除的选中项 > 0
+        ? `将解析选中的 ${候选.length} 个文件；另有 ${被排除的选中项} 个选中项不在本次范围`
+        : `将解析选中的 ${候选.length} 个文件`
+    void dialog.show(() => (
+      <ParseConfirmDialog
+        标题="解析选中的文件"
+        正文={正文}
+        确认文案="解析"
+        onConfirm={async () => {
+          await 执行批量入队(候选, 状态)
+          // 永远回 undefined：失败已经用 toast 说清（同文件夹那条）。
           return undefined
         }}
       />
@@ -711,7 +784,7 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 「点下载」这一次到底作用于什么。
+   * 这一次菜单动作作用于什么（下载与解析共用）。
    *
    * 规则（设计 §4.1 / §7.1）：
    * - 右键的行**在选中集里**且选中集 > 1 ⇒ 整个选中集（`selection`）；
@@ -720,7 +793,7 @@ export function FileTree(props: FileTreeProps) {
    * ⚠️ 判据是「右键行在不在选中集里」，不是「选中集大小」：选中两项后右键第三行，
    * 用户要的是**第三行**，不是那两项（`#006-31` 同族：别拿另一份状态替换这一次的对象）。
    */
-  const 判下载目标 = (
+  const 判菜单目标 = (
     path: string,
   ):
     | { kind: "file"; path: string }
@@ -729,6 +802,17 @@ export function FileTree(props: FileTreeProps) {
     if (是选中集(path)) return { kind: "selection", paths: [...选中集()] }
     if (节点表().get(path)?.type === "file") return { kind: "file", path }
     return { kind: "folder", paths: [path] }
+  }
+
+  /**
+   * 这一次右键菜单的**作用域**（T009）——没有对象时 `undefined`。
+   *
+   * 算一次、三处共用（`菜单依据` / 触发项文案 / 入队分支）：三处各写一遍判据，迟早只改一处
+   * （`#002-06`）。
+   */
+  const 菜单目标 = () => {
+    const path = 菜单对象()
+    return path === undefined ? undefined : 判菜单目标(path)
   }
 
   /** 菜单文案：只有「右键行在选中集里且多选」时才带 N。 */
@@ -741,7 +825,7 @@ export function FileTree(props: FileTreeProps) {
   function 要下载() {
     const path = 菜单对象()
     if (!path) return true
-    if (判下载目标(path).kind === "file") return !props.onDownload
+    if (判菜单目标(path).kind === "file") return !props.onDownload
     return !props.onArchive
   }
 
@@ -1230,6 +1314,7 @@ export function FileTree(props: FileTreeProps) {
                     path: 菜单对象() ?? "",
                     extensions: 扩展名(),
                     readFailed: 材料()?.error() !== undefined,
+                    选中集大小: 菜单目标()?.kind === "selection" ? 选中集().size : undefined,
                   })}
                 </span>
                 <Icon name="chevron-right" size="small" />
@@ -1243,6 +1328,12 @@ export function FileTree(props: FileTreeProps) {
                     onSelect={() => {
                       const path = 菜单对象()
                       if (path === undefined) return
+                      // 多选：作用对象是整个选中集（T010）。N/M 在 `确认解析选中` 里由
+                      // `选中集入队范围` 一次算出——别在这里先按右键行判一次（`#002-06`）。
+                      if (菜单目标()?.kind === "selection") {
+                        确认解析选中()
+                        return
+                      }
                       if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
                       else 直接解析(path, "入队")
                     }}
@@ -1449,7 +1540,7 @@ export function FileTree(props: FileTreeProps) {
    */
   function 点下载(path: string | undefined) {
     if (!path) return
-    const 目标 = 判下载目标(path)
+    const 目标 = 判菜单目标(path)
     if (目标.kind === "file") {
       props.onDownload?.(目标.path)
       return

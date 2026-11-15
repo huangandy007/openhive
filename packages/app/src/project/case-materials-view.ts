@@ -76,9 +76,13 @@ export function 状态文案(input: {
   extensions?: readonly string[]
   /** 读取失败过（`error()` 有值）：与 `亮灯依据.readFailed` 同名同义。 */
   readFailed?: boolean
+  /** 多选作用的项数（`选中集().size`）：> 1 时右边写「已选 K 项」。 */
+  选中集大小?: number
 }): string {
   if (!input.接入) return "未接入"
   if (!input.有对象) return ""
+  // 多选动作的对象是整批，不是右键那一行 ⇒ 先于 isFile / 行状态回答「带了几项」。
+  if (input.选中集大小 !== undefined && input.选中集大小 > 1) return `已选 ${input.选中集大小} 项`
   if (!input.isFile) return "文件夹"
   // 首拉失败与「还在读」是两种话：五个解析子项已经按 `readFailed` 分开说，
   // 触发项右边不能永远停在「读取中」（终审 F3）。
@@ -146,18 +150,33 @@ export function 汇总全部(
 }
 
 /**
- * 右键一个文件夹时**会真正入队**的文件（用户确认弹窗里的 N）。
+ * 单份文件是否可作为「解析入库」的候选——**批量与多选共用的唯一判据**（`#002-06`）。
  *
  * 候选 = 未入队 / 有问题 / 没有材料行（还没登记过）。
  *
  * ⚠️ **「已跳过」不进候选**（2026-11-06 裁定）：设计 §5.2 说跳过是人的意志、系统不再问；
- * 用户逐份跳过的文件，不该被一次「解析这个文件夹」悄悄翻回来。单文件右键仍可对「已跳过」
- * 点「解析入库」——那是对**这一份**的明确动作。因此本函数与服务端的「该走哪个动作」**故意
- * 不一致**：后者见到「已跳过」返回「入队」，这里不选它。服务端不提供批量出口也是这个原因，
- * 别在服务端加一个「按状态全集扫」的批量接口（见 Task 7 注释）。
+ * 用户逐份跳过的文件，不该被一次批量悄悄翻回来。单文件右键仍可对「已跳过」点「解析入库」
+ * ——那是对**这一份**的明确动作，所以单项可用性另走 `入队不可用原因`，不经过这里。
  *
  * 其余判据与「该走哪个动作」一致：已解析、排队中、解析中不排（`enqueueMaterial` 对它们
  * 返回 `enqueued: false`）。非表格与产物不排。
+ */
+export function 文件待入队(path: string, row: 材料视图 | undefined, extensions: readonly string[]): boolean {
+  if (!可解析路径(path, extensions)) return false
+  if (row?.kind === "产物") return false
+  if (row !== undefined && (row.status === "已解析" || row.status === "已跳过" || 运行中(row.status))) return false
+  return true
+}
+
+/**
+ * 右键一个文件夹时**会真正入队**的文件（用户确认弹窗里的 N）。
+ *
+ * 候选判据只有 `文件待入队` 一处；这里只负责「取这个目录下的文件 + 去重」。
+ *
+ * ⚠️ 比较**必须用归一键**：`目录` 来自树节点（已被 `normalizeFileTreeV2Path` 归一成 `资料`），
+ * 而 `文件们` 是 `fs.list` 原样（win32 带反斜杠 `资料\甲.csv`）。混着比会在 win32 下恒为空，
+ * 让文件夹展开 N=0、多选 M 偏大。返回值也统一成归一形（`/` 分隔、无首尾分隔符）：服务端解析
+ * 入口按 `split("/")` 切段并拒收 `\`，行与上传同样是 `/`。
  */
 export function 目录下待入队(
   目录: string,
@@ -165,23 +184,97 @@ export function 目录下待入队(
   行们: readonly 材料视图[],
   extensions: readonly string[],
 ): readonly string[] {
-  const 前缀 = 目录 === "" ? "" : `${目录}/`
-  const 行表 = new Map(行们.map((row) => [row.path, row]))
+  const 归目录 = 归一(目录)
+  const 前缀 = 归目录 === "" ? "" : `${归目录}/`
+  // 行表按归一键：候选（归一形）查行时不能拿原始 `row.path` 建键。
+  const 行表 = new Map(行们.map((row) => [归一(row.path), row]))
   const 结果: string[] = []
   const 见过 = new Set<string>()
 
-  for (const path of 文件们) {
-    if (path.endsWith("/")) continue
-    if (path === 目录 || !path.startsWith(前缀)) continue
+  for (const 原 of 文件们) {
+    if (尾分隔符.test(原)) continue // 目录条目（`/` 与 `\` 两种尾分隔符都认）
+    const path = 归一(原)
+    if (path === 归目录 || !path.startsWith(前缀)) continue
     if (见过.has(path)) continue
     见过.add(path)
-    if (!可解析路径(path, extensions)) continue
-    const row = 行表.get(path)
-    if (row?.kind === "产物") continue
-    if (row !== undefined && (row.status === "已解析" || row.status === "已跳过" || 运行中(row.status))) continue
+    if (!文件待入队(path, 行表.get(path), extensions)) continue
     结果.push(path)
   }
   return 结果
+}
+
+// 归一与树节点同款（`normalizeFileTreeV2Path`：`\`→`/`、去首尾 `/`、折叠 `//`）。
+// 本文件是纯规则层，不 import 上游组件模块——同一套归一规则在这里写一份局部实现。
+const 归一 = (path: string) => path.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").replace(/\/{2,}/g, "/")
+const 尾分隔符 = /[\\/]$/
+
+/**
+ * 多选（文件与目录混排）下**会真正入队**的候选（N）与被排除的选中项数（M）——契约 C4。
+ *
+ * 判据只有 `文件待入队` 一处（`#002-06`）：目录展开交给 `目录下待入队`，文件直接过它。
+ * 一个 `见过` 跨全部选中项去重：同一份文件被目录和自身各选中一次也只入队一次。
+ * 顺序 = `选中项` 输入顺序、目录内部保持 `文件们` 原顺序——候选顺序就是入队顺序。
+ *
+ * **N 与 M 单位不同，不许互换**：N 是文件数（目录会展开成里面的文件）；M 是**选中项**数，
+ * 只数「自身一个候选都展不开」的项。被别的选中项覆盖、但自身有候选的项**不算**排除
+ * ——它确实带进来了文件，只是去重后没重复出现。
+ *
+ * 形态判定：带尾分隔符 ⇒ 目录；否则在 `文件们` 里能找到同形文件条目 ⇒ 文件；
+ * 都不是 ⇒ 按目录处理（空目录 / 还没出现在清单里的子目录），展开结果自然为空。
+ */
+export function 选中集入队范围(
+  选中项: readonly string[],
+  文件们: readonly string[],
+  行们: readonly 材料视图[],
+  extensions: readonly string[],
+): { 候选: readonly string[]; 被排除的选中项: number } {
+  // 行表与文件映射都按归一键；映射的值也存归一形——候选最终要交给按 `/` 切段的服务端。
+  const 行表 = new Map(行们.map((row) => [归一(row.path), row]))
+  const 文件映射 = new Map<string, string>()
+  for (const path of 文件们) {
+    if (尾分隔符.test(path)) continue
+    const 键 = 归一(path)
+    if (!文件映射.has(键)) 文件映射.set(键, 键)
+  }
+
+  const 候选: string[] = []
+  const 见过 = new Set<string>()
+  let 被排除的选中项 = 0
+  for (const 项 of 选中项) {
+    const 键 = 归一(项)
+    if (键 === "") continue
+    const 文件 = 尾分隔符.test(项) ? undefined : 文件映射.get(键)
+    const 本项候选 =
+      文件 !== undefined
+        ? 文件待入队(文件, 行表.get(文件), extensions)
+          ? [文件]
+          : []
+        : 目录下待入队(键, 文件们, 行们, extensions)
+    // M 在**去重之前**按本项自己的展开结果数：被别的选中项覆盖 ≠ 这一项没东西可入队。
+    if (本项候选.length === 0) 被排除的选中项 += 1
+    for (const path of 本项候选) {
+      // 去重按归一键：不同分隔符写法指向同一份文件也只出现一次。
+      const 去重键 = 归一(path)
+      if (见过.has(去重键)) continue
+      见过.add(去重键)
+      候选.push(path)
+    }
+  }
+  return { 候选, 被排除的选中项 }
+}
+
+/**
+ * 多选下的候选路径；与 `选中集入队范围(...).候选` 同一份展开逻辑（`#002-06`）。
+ *
+ * ⚠️ 生产侧已改用 `选中集入队范围`；本函数保留给 T007 的纯规则用例，别在新代码里调用。
+ */
+export function 选中集待入队(
+  选中项: readonly string[],
+  文件们: readonly string[],
+  行们: readonly 材料视图[],
+  extensions: readonly string[],
+): readonly string[] {
+  return 选中集入队范围(选中项, 文件们, 行们, extensions).候选
 }
 
 /**
@@ -199,7 +292,18 @@ export interface 亮灯依据 {
   readonly 接入: boolean
   readonly 有对象: boolean
   readonly hasReview: boolean
+  /**
+   * 这一次菜单作用于**多选**（右键行 ∈ 选中集且选中集 > 1）。
+   *
+   * 只有「解析入库」放行：其余四项对一批文件说不清作用对象，统一灰掉并写同一句原因。
+   * 「解析入库」**不看行状态**（右键行已解析而选中集里有候选 ⇒ 仍亮）；已读到状态就保持可点，
+   * 0 候选交给确认框解释（控制器裁定 2026-11-15）。
+   */
+  readonly 多选?: boolean
 }
+
+/** 多选时其余四项共用的唯一一句原因（单一出处，`#002-06`）。 */
+export const 多选只支持入库 = "多选时只支持解析入库"
 
 const 未接入 = "解析状态还没接上"
 const 无对象 = "右键一个文件或文件夹再用"
@@ -217,6 +321,9 @@ export function 入队不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选：**不看右键行状态**（右键行已解析而选中集里有候选 ⇒ 仍亮）；候选 0 也保持可点，
+  // 交给确认框解释（控制器裁定 2026-11-15，spec US2 场景 4 要这条可达）。
+  if (b.多选) return undefined
   // 目录一律放行到确认弹窗：候选为 0 时由弹窗正文解释、确认键置灰。
   // 不在菜单项上直接灰掉——灰项的说明用户看不到，看起来就像「菜单坏了」。
   if (!b.isFile) return undefined
@@ -232,6 +339,8 @@ export function 重新解析不可用原因(b: 亮灯依据): string | undefined
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (!可解析路径(b.path, b.extensions)) return 后续计划
@@ -246,6 +355,8 @@ export function 取消不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (!运行中(b.row?.status)) return "这份文件现在没有在排队或解析"
   return undefined
@@ -256,6 +367,8 @@ export function 跳过不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (运行中(b.row?.status)) return "正在排队或解析中，先取消再跳过"
@@ -269,6 +382,8 @@ export function 查看不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (!b.hasReview) return "抽取结果面板在后续计划"
   if (b.row === undefined || (b.row.status !== "已解析" && b.row.status !== "有问题"))

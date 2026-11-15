@@ -117,6 +117,22 @@ describe("FileTransferDialog 传输弹窗", () => {
     expect(槽("file-transfer-done")?.getAttribute("role")).toBe("status")
   })
 
+  test("上传完成态：摘要下方有「右键…解析入库」提示（上传只落盘，下一步在右键）", async () => {
+    开({ kind: "done", action: "上传", files: 1, bytes: 1024 })
+    await 等到(() => 槽("file-transfer-done") !== null)
+
+    const 提示 = 文本("file-transfer-ingest-hint")
+    expect(提示).toContain("右键")
+    expect(提示).toContain("解析入库")
+  })
+
+  test("下载完成态：没有「解析入库」提示", async () => {
+    开({ kind: "done", action: "下载", files: 1, bytes: 1024 })
+    await 等到(() => 槽("file-transfer-done") !== null)
+
+    expect(槽("file-transfer-ingest-hint")).toBeNull()
+  })
+
   test("完成态点「关闭」⇒ 只调 onClose，不调 onCancel", async () => {
     let 取消 = 0
     let 关闭 = 0

@@ -1870,7 +1870,7 @@ describe("人工入库置顶（设计：强制入队，置顶优先）", () => {
     expect(下一条?.materialId).toBe(人工.materialId)
   })
 
-  test("对照：不传置顶（上传自动入队口径）⇒ 排在队尾，不是队首", async () => {
+  test("对照：不传置顶（系统侧入队口径）⇒ 排在队尾，不是队首", async () => {
     await 清空队列()
     const 项目 = "pq-队尾"
     const 先 = await 种一条(项目, "先.xlsx", 秒() - 10)

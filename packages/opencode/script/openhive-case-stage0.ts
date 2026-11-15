@@ -43,7 +43,7 @@ function 文本(值: unknown): string {
 
 /**
  * 只留表格材料（R36）：判据复用全仓唯一的 `可解析表格`，不在这里再写一份后缀表
- * （`#002-06`）——脚本的分母与上传 / 入队 / 视图问的是同一个问题。
+ * （`#002-06`）——脚本的分母与系统侧入队 / 右键入队 / 视图问的是同一个问题。
  */
 export function 表格材料们(材料们: readonly Record<string, unknown>[]): Record<string, unknown>[] {
   return 材料们.filter((材料) => 可解析表格(文本(材料.path)))
