@@ -341,6 +341,23 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   onBlur={(事件) => 提交外环颜色(点(), 事件.currentTarget.value)}
                 />
               </div>
+              {/*
+                R75：手动档是「冻结」，节点边数再涨也不变；删掉 `外环` 整键即恢复自动。
+                走同一个 `改字段` 出口，算一步撤销（不另写删键逻辑）。
+              */}
+              <Show when={点().外环 !== undefined}>
+                <div class={行}>
+                  <span class={标签} />
+                  <button
+                    type="button"
+                    data-slot="hgraph-ring-auto"
+                    class={按钮}
+                    onClick={() => props.动作表.改字段("节点", 点().id, 外环补丁(undefined, undefined))}
+                  >
+                    恢复自动
+                  </button>
+                </div>
+              </Show>
               <div class={行}>
                 <label class={标签} for="hgraph-field-备注">
                   备注

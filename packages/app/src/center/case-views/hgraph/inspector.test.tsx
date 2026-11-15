@@ -466,3 +466,26 @@ describe("检查器 · 打开档案（R63）", () => {
     expect(取("[data-slot='hgraph-open-archive']")).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// T018 · 外环「恢复自动」（R75）
+// ---------------------------------------------------------------------------
+
+describe("检查器 · 恢复自动（外环手动档删键）", () => {
+  test("有 `外环` 时按钮在；点击 ⇒ 改字段(\"节点\", id, {外环:null})，算一步撤销", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
+    const 钮 = 取("[data-slot='hgraph-ring-auto']")
+    expect(钮).not.toBeNull()
+    expect(钮?.textContent?.trim()).toBe("恢复自动")
+
+    钮?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+    expect(幽.计数.改字段).toBe(1)
+    expect(幽.参数.改字段[0]).toEqual(["节点", "n1", { 外环: null }])
+  })
+
+  test("没有 `外环` 时不渲染按钮（自动档下没有「恢复」可言）", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+    expect(取("[data-slot='hgraph-ring-auto']")).toBeNull()
+  })
+})
