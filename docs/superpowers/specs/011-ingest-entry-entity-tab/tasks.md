@@ -35,7 +35,9 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 **Purpose**: 留基线，后面每条「红」都要和它对得上。
 
-- [ ] T001 记录改动前基线：跑四个既有测试文件并记下通过数（`packages/opencode/test/server/openhive-file-ops.test.ts`、`openhive-case-materials.test.ts`、`openhive-file-upload-ingest.test.ts`；`packages/app/src/project/file-tree.test.tsx`）
+- [x] T001 记录改动前基线：跑四个既有测试文件并记下通过数（`packages/opencode/test/server/openhive-file-ops.test.ts`、`openhive-case-materials.test.ts`、`openhive-file-upload-ingest.test.ts`；`packages/app/src/project/file-tree.test.tsx`）
+
+  > **实测基线（2026-11-15）**：file-ops 117 pass / 0 fail；case-materials 38 pass / 0 fail；file-upload-ingest 14 pass / 0 fail；file-tree 176 pass / 0 fail。
 
   - **入参**：无（只读）
   - **出参**：四条命令各自的「N pass / 0 fail」实数，记在实现笔记或提交信息里；任何一条本就不绿 ⇒ 停下，先报告，不动代码
