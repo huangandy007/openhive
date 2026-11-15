@@ -4,6 +4,125 @@
 T017 已交付。**tasks.md T001–T017 全部完成**（17/17），等待用户审阅。
 剩余工作都在「阻塞项」里：资产 HTTP 接口 / 真栈接线 / `opencode.json` 写入器 / RLS（仓外）。
 
+## 2026-11-15 · 项目级 skill「只有属主能启用」真栈验收（A/B/C + 20 上限演练）
+
+计划：`docs/superpowers/plans/2026-10-27-project-skill-enablement.md` Task 9；裁定与代码见提交
+`a02d619ca7`（2026-11-15 用户裁定：共享项目里只有项目属主能启用/停用技能、改自动送达，成员只读）。
+
+### 环境与夹具
+
+- 真栈：内核 4711 / 前门 3010 / 远端 PG `openhive_dev`（`STACK_READY` 带 `db` 字段实测）。
+- 共享项目 `88524a5a-dce7-4e39-bffd-423159ca2358`「技能启用验收-1115」：属主张三（020601）、
+  成员李四（020600）。迁移 0021 / 0022 / 0023 均已落库（`auth._migration.version` 存**全文件名**）。
+
+### A/B/C 实得（API 与界面都跑）
+
+| 判据 | 实得 |
+|---|---|
+| 属主基线 | GET `canManage:true`、`enabled:[]`、`enabledCount:0`、`limit:20` |
+| A 属主启用 | POST `enable` 200；`enabledCount:1`；`skills[]` 含 `writing-skills`，`location` = `…\workspaces\550e8400-…0000\88524a5a-…\.opencode\skill\asset_cfba4d04-…\SKILL.md`（**属主**沙箱） |
+| A 界面 | 资产中心「已启用 1/20 · 下一条消息生效」；「技能编写指南」卡片按钮变「已启用」（`aria-label=停用资产：技能编写指南`、`aria-pressed=true`） |
+| B 成员可读 | 成员 GET 200，`canManage:false`、`enabledCount:1`，`skills[]` 同一属主路径；界面同样显示「已启用 1/20」与「已启用」态 |
+| B 真送达 | `GET /skill`（instance API，带 `x-openhive-project` 头）：属主与成员都返回 `writing-skills`。⚠️ **2026-11-15 补测更正：这条证据只证明「清单里有它」，不能证明「靠项目链接送达」**——同一份 `SKILL.md` 同时被「项目沙箱链接」与「发布根」两棵树收录（`location` 指沙箱是因为项目副本 `tier=4` 压过 `skills.paths` 的 `tier=2`），停用后它仍从发布根进来。送达判据换成**执行探针**，见下一节 |
+| C 成员被拒 | 成员 POST `enable` / `disable` → **403** `{"error":"只有项目属主能启用或停用技能","code":"forbidden"}`；`auto-delivery` → **403** `{"error":"只有项目属主能改自动送达","code":"forbidden"}` |
+| C 界面置灰 | 成员视角 7 个启用/停用按钮全部 `disabled`、`title` = 「只有项目属主能启用或停用技能」；自动送达开关 `disabled`、`title` = 「只有项目属主能改自动送达」 |
+| 落库 | `project_asset_enablement`：`asset_cfba4d04-…` / `enabled_by=550e8400-…0000`（张三）/ `enabled_at=1794720055`；审计 `asset.enable` actor 张三 result ok detail `{"projectId":"88524a5a-…"}` |
+| 盘上 | 属主目录 `.opencode/skill/asset_cfba4d04-…` 存在（junction → `D:/assets/global/skills/asset_cfba4d04-…`）；**成员的项目目录不存在**（fail-closed） |
+
+### Task 9 Step 4：20 上限演练（真栈 + 真库）
+
+库里的 skill 资产只有 7 份已发布 ⇒ 直接灌 20 行需要造数。做法（可复现、已清理）：
+
+1. 临时插 14 份资产（`asset_temp_limit_1115_01..14`，`skill` / `global` / `published` / owner 张三）；
+   只给第 14 份建发布目录 `D:/assets/global/skills/asset_temp_limit_1115_14/SKILL.md`
+   （启用前会做「资产文件缺失」检查，没有目录就到不了上限守卫）。
+2. 灌 20 行启用：7 份真资产 + 临时 01..13，落在 `f77bb723-…`（张三自己的验收项目，原为 0 行）。
+3. 属主 GET ⇒ `200`、`enabledCount:20`、`limit:20`、`enabled` 20 条（对账没把临时行收回）。
+4. 属主 POST `enable asset_temp_limit_1115_14` ⇒ **409** `{"error":"每个项目最多启用 20 个 skill，请先停用一个","code":"enablement_limit"}`；
+   随后查库**仍 20 行**（第 21 行没插进去）。
+5. 清理并复核：20 条全部 `disable` 200 ⇒ 计数 0；删 14 份临时资产 ⇒ `project_asset_enablement` 0 行、
+   临时资产 0 行；`D:/assets/global/skills/asset_temp_limit_1115_14` 已删；项目 `.opencode/skill/` 空；
+   验收项目 `88524a5a` 的 1 行启用未受影响。
+   （演练留下的 `asset.disable` 审计行按审计表只追加的规矩保留。）
+
+### 现场笔记（不是缺陷，别再追一次）
+
+**「项目管理」页里点项目卡片不切当前项目**——它只把该行高亮/展开；`openhive_project` cookie 不变。
+切项目必须走**左栏「切换项目」**（`[data-slot='project-anchor-toggle']` 同族入口），点面板里的项目行才
+触发 `setCurrentProject`。本次先按错误入口点，看到资产中心一直请求旧项目 `f77bb723`，用正确入口复跑后
+cookie 变 `88524a5a`、计数变 1/20。**资产中心的 enablement 跟随当前项目是好的**（`enable-state.ts` 绑定
+`currentProject`）。
+
+### 缺口（没跑/测不了，不算已覆盖）
+
+1. ~~**真会话问答未跑**~~ ⇒ **2026-11-15 补测已跑并通过**（见下一节，改用**执行探针**：启用时
+   `skill` 工具加载成功、停用后同一会话失败）。⚠️ 原计划的「再问一次清单里必须消失」这个判据
+   **不成立**，理由是模型会复述会话历史。
+2. ~~**停用后「丢缓存生效」真栈未复验**~~（计划已知未覆盖 #1）⇒ **2026-11-15 已复验**：停用后
+   `GET /skill` **未重启内核**就只剩 `<built-in>`；同一会话的下一条消息里 `skill` 工具即加载失败。
+   第一轮「清单不变」不是没重扫，而是发布根照旧供着（根因见下一节）。
+3. **跨机器成员视角未验**：B 是在同一浏览器里换账号登录，不是成员自己的机器 / 自己的内核实例。
+4. **Linux 容器链接未验**（计划已知未覆盖 #2）：只验了 Windows junction。
+5. **上限是软上限**（计划已知未覆盖 #6）：本次是串行演练，并发两次启用停在 21 行的窗口没测。
+6. 演练期间临时资产曾短暂出现在资产中心列表（全局已发布），已全部删除并复核为 0。
+
+### 2026-11-15 补测 · 真会话送达（先红后绿；根因是部署配置，用户裁定后已改）
+
+**判据（用户选定）**：同一会话里问一次 skill 清单 → 能看到 `writing-skills`；停用该技能 → **同一会话**
+下一条消息它必须不可用；最后恢复成 1/20。依据是界面文案承诺「下一条消息生效」。
+
+#### 第一轮：旧部署配置下**未通过**
+
+| 步 | 动作 | 实得 |
+|---|---|---|
+| 1 | 问「你现在可以调用哪些 skill？只列名称」 | `archify html-ppt MD转Word web-access word-format-proofread write-as-huzhou-gongan writing-skills`（7 条） |
+| 2 | POST `/openhive/project/assets/disable` | `200`、`enabledCount:0`、`limit:20`；盘上 `…/88524a5a-…/.opencode/skill/` **已空**（junction 摘除生效） |
+| 3 | **同一会话**再问同一句 | **同一份 7 条，`writing-skills` 仍在** ⇒ 判据未通过 |
+
+**根因（用 `location` 定，不猜）**：
+
+- 真栈内核配置 `D:\openhive-stack-state\config\opencode\opencode.jsonc` 有手写静态一行
+  `"skills": ["D:/assets/global/skills"]`。
+- `GET /skill` 里 `writing-skills` 的 `location` = `D:\assets\global\skills\asset_cfba4d04-…\SKILL.md`
+  ——**发布根**，不是项目沙箱链接。停用只摘掉沙箱 junction，发布根照旧被 `skills.paths` 扫。
+- 带 `x-openhive-project` 头与不带头，`/skill` 返回**逐字相同的 123 条**（排序后比对 `identical:true`）。
+- 123 条构成：**113** 条来自 `C:\Users\Administrator\.claude\skills`（本机研发技能，内核默认根）、
+  **8** 条来自 `D:/assets/global/skills`（发布根，在 `skills.paths`）、2 条为 `<built-in>` 与 `.agents`。
+  来自沙箱 `.opencode` 的 **0** 条。
+- 同名优先级（`packages/opencode/src/skill/index.ts` 的 `TIER`）：项目副本 = 4 压过
+  `skills.paths` = 2 与外部兼容目录 = 1 ⇒ 启用时 `location` 指沙箱链接、停用后落回发布根。
+  **送达面不变**才是问题所在；启停本身写盘/写库都正确。
+
+#### 用户裁定与改动（2026-11-15）
+
+裁定：**去掉静态挂载**——项目启用是唯一送达渠道。两处部署改动，**不动核心源码**：
+
+1. `opencode.jsonc` 删掉 `"skills": ["D:/assets/global/skills"]`（备份 `opencode.jsonc.bak-20261115`）。
+2. 启动内核带 `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`（现成环境变量，`effect/runtime-flags.ts:21`），
+   否则操作员机器 `~/.claude/skills` 的研发技能（本机 113 条）照样进每个会话。
+
+#### 第二轮：改后**通过**（执行探针，不用清单问答）
+
+| 步 | 动作 | 实得 |
+|---|---|---|
+| 1 | 启用态 `GET /skill` | 恰好 **2 条**：`<built-in>` + 沙箱链接 `…\88524a5a-…\.opencode\skill\asset_cfba4d04-…\SKILL.md` |
+| 2 | 同一会话：请模型调 `skill` 工具加载 `writing-skills` | **成功** |
+| 3 | POST `disable` ⇒ `enabledCount:0`；紧接着 `GET /skill`（**未重启内核**） | 只剩 **`<built-in>`** ⇒ 丢缓存当场生效 |
+| 4 | **同一会话**再发同一句执行探针 | **失败** |
+| 5 | POST `enable` 恢复 | `200`、`enabledCount:1`，`/skill` 又回到 2 条 |
+
+**探针教训（写下来防下次再踩）**：「同一会话再问『你有哪些 skill』」这个判据**本身不成立**——
+改后模型仍照抄它上一轮的 7 条答案（会话历史污染，`LEARNINGS #005-34`），清单问答是**有损且会复述
+历史**的投影。能判「下一条消息生效」的只有**执行面**：`skill` 工具调得动 / 调不动。第一轮之所以
+看起来像「送达失败」，一半是配置，一半是这个探针根本测不出差别。
+
+#### 仍未验
+
+- `dept` / `targeted` 档 skill 资产**真库里一份都没有**（7 份全 `global`）⇒「项目启停对非
+  `global` 档是否有效」**仍未验**；按 `TIER`，它们不在 `skills.paths` 里，理应只经项目链接送达。
+- 上面第 2 条环境变量只是**本次启动命令**带上的；它要进生产启动脚本才算落地（见 `deploy-todo.md`
+  D-18），否则换台机器重新起栈又回到 113 条研发技能。
+
 ## 2026-11-01 · skill 版本迭代（P1）
 
 设计稿：`docs/superpowers/specs/2026-11-01-skill版本迭代-design.md`。
@@ -818,5 +937,9 @@ B 天数硬编码 30 ⇒ 3 红；C 拆网格透传 ⇒ 2 红；**我方另做一
   ——中栏资产列表还没接真源，详情页今天在真栈上只到空态（同下条）。
 
 ## 最后更新
-2026-11-01（堵写工具顺着项目链接改到共享发布库的洞：闸门按真实路径判、接在 write/edit/apply_patch 三处，
-`#005-24` / `#002-06`；重启后拿真栈 17 条真实 junction 复验 5/5 通过；残留：`shell` 仍可绕过、版本升级仍无入口）
+2026-11-15（项目级 skill「只有属主能启用」A/B/C 真栈验收 + 20 上限演练全过；真会话送达补测
+**先红后绿**：旧部署下停用后技能仍可见（根因＝`opencode.jsonc` 静态挂了发布根，全局资产对每个
+会话恒可见），用户裁定「去掉静态挂载」后删该行 + 启动带 `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`，
+复跑 **`skill` 工具：启用=成功 / 停用后同一会话=失败**，丢缓存当场生效。仍未验：跨机器成员视角、
+Linux 容器链接、并发软上限、非 global 资产的启停送达；启动环境变量要进生产脚本才算落地，见
+`deploy-todo.md` D-18）
