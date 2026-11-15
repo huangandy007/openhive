@@ -91,10 +91,29 @@ function 幽灵动作表(): 画布动作 {
   }
 }
 
+function 记动作表() {
+  const 计数: Record<string, unknown[][]> = {}
+  const 记 = (名: string, 参: unknown[]) => {
+    ;(计数[名] ??= []).push(参)
+  }
+  const 动作: 画布动作 = {
+    ...幽灵动作表(),
+    选择: (ids, 追加) => 记("选择", [ids, 追加]),
+    加节点: (位置) => 记("加节点", [位置]),
+    移动: (目标) => 记("移动", [目标]),
+  }
+  return { 动作, 计数 }
+}
+
 function 挂(
   文档: 图文件,
   图例初始收起?: boolean,
-  额外: { readonly 适配请求?: number; readonly 档表?: ReadonlyMap<string, number> } = {},
+  额外: {
+    readonly 适配请求?: number
+    readonly 档表?: ReadonlyMap<string, number>
+    readonly 选中?: readonly string[]
+    readonly 动作?: 画布动作
+  } = {},
 ) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -103,9 +122,9 @@ function 挂(
       () => (
         <画布
           文档={文档}
-          选中={[]}
+          选中={额外.选中 ?? []}
           模式="指针"
-          动作={幽灵动作表()}
+          动作={额外.动作 ?? 幽灵动作表()}
           图例初始收起={图例初始收起}
           适配请求={额外.适配请求}
           档表={额外.档表}
@@ -125,6 +144,68 @@ const 点 = (选择器: string) => {
   const 元素 = 取(选择器)
   expect(元素).not.toBeNull()
   元素!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+}
+
+/** 按一次完整指针序列（down → up），目标元素上的事件会冒泡到画布容器。 */
+const 按一下 = (元素: Element, 起: { readonly x: number; readonly y: number }) => {
+  元素.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 1,
+      clientX: 起.x,
+      clientY: 起.y,
+    }),
+  )
+  元素.dispatchEvent(
+    new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 0,
+      clientX: 起.x,
+      clientY: 起.y,
+    }),
+  )
+}
+
+/** 指针拖动序列（down → move → up），全部冒泡到画布容器。 */
+const 拖一下 = (元素: Element, 起: { readonly x: number; readonly y: number }, 止: { readonly x: number; readonly y: number }) => {
+  元素.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 1,
+      clientX: 起.x,
+      clientY: 起.y,
+    }),
+  )
+  元素.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      buttons: 1,
+      clientX: 止.x,
+      clientY: 止.y,
+    }),
+  )
+  元素.dispatchEvent(
+    new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      buttons: 0,
+      clientX: 止.x,
+      clientY: 止.y,
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +255,10 @@ describe("T018 · 画布边几何", () => {
     expect(线们[0].getAttribute("stroke-opacity")).toBe("0.55")
     expect(线们[1].getAttribute("stroke-opacity")).toBeNull()
     expect(边组们().map((元素) => 元素.getAttribute("data-edge-tier"))).toEqual(["1", "4"])
+    // M-2：档 ⇒ 像素必须真的落到 stroke-width。R73 的表是 [1,1.5,2,3,4]，
+    // 所以 1 档 = 1.5px（不是 1px）、4 档 = 4px。
+    expect(线们[0].getAttribute("stroke-width")).toBe("1.5")
+    expect(线们[1].getAttribute("stroke-width")).toBe("4")
   })
 })
 
@@ -260,6 +345,66 @@ describe("T018 · 图例挂载", () => {
     挂(造图([造节点("a", 100, 100)], []), true)
     expect(条目数()).toBe(0)
     expect(取("[data-slot='hgraph-legend-collapsed']")).not.toBeNull()
+  })
+
+  test("图例在 hgraph-viewport 之后、同属 hgraph-svg（R74），坐标 (12,48)（R108）", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    const svg = 取("[data-slot='hgraph-svg']")
+    const 视口 = 取("[data-slot='hgraph-viewport']")
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    expect(svg).not.toBeNull()
+    expect(视口).not.toBeNull()
+    expect(图例).not.toBeNull()
+    expect(图例!.closest("[data-slot='hgraph-svg']")).toBe(svg!)
+    expect(svg!.contains(视口)).toBe(true)
+    expect(视口!.compareDocumentPosition(图例!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(图例!.getAttribute("transform")).toBe("translate(12 48)")
+  })
+
+  test("收起态文案恰为「图例」", () => {
+    挂(造图([造节点("a", 100, 100)], []), true)
+    const 收起 = 取("[data-slot='hgraph-legend-collapsed']")
+    expect(收起).not.toBeNull()
+    expect(收起!.textContent?.trim()).toBe("图例")
+  })
+})
+
+describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () => {
+  test("选中非空时点 toggle ⇒ 选择零调用、选中不变", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("a", 100, 100)], []), undefined, { 选中: ["a"], 动作 })
+    const 钮 = 取("[data-slot='hgraph-legend-toggle']")
+    expect(钮).not.toBeNull()
+
+    按一下(钮!, { x: 20, y: 24 })
+    钮!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+    expect(计数.选择).toBeUndefined()
+    expect(节点组("a")!.getAttribute("data-selected")).toBe("true")
+  })
+
+  test("图例上 dblclick ⇒ 加节点零调用", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("a", 100, 100)], []), undefined, { 动作 })
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    expect(图例).not.toBeNull()
+
+    图例!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 20, clientY: 24 }))
+
+    expect(计数.加节点).toBeUndefined()
+  })
+
+  test("从图例上按下拖动 ⇒ 画布 transform 不变（不平移）", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    const 视口 = 取("[data-slot='hgraph-viewport']")
+    expect(视口).not.toBeNull()
+    const 前 = 视口!.getAttribute("transform")
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    expect(图例).not.toBeNull()
+
+    拖一下(图例!, { x: 20, y: 24 }, { x: 160, y: 164 })
+
+    expect(视口!.getAttribute("transform")).toBe(前)
   })
 })
 

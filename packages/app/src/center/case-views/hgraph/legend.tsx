@@ -5,7 +5,9 @@
  *
  * 导出（T015 / R64）只序列化 `[data-slot="hgraph-svg"]` 这一棵。图例放在 svg 外虽然
  * 画面上也看得见，但导出会丢；设计 §8 要求导出图**含图例**。所以图例是 svg 的
- * **直接子节点、viewport 之后**——固定屏幕坐标 `(12,12)`，不吃缩放/平移。
+ * **直接子节点、viewport 之后**——固定屏幕坐标 `(12,48)`，不吃缩放/平移。纵坐标 48 是
+ * R108 裁定：编辑态左上角 HTML chrome（模式/工具栏，约 y8–34）会挡住 `(12,12)` 的标题行
+ * 与折叠入口，图例下移到它下方；导出不受影响（chrome 是 svg 外的 HTML）。
  *
  * ## 折叠是本地 UI 态
  *
@@ -36,7 +38,7 @@ export function 图例(props: 图例Props): JSX.Element {
   createEffect(() => set收起(props.初始收起 === true))
 
   return (
-    <g data-slot="hgraph-legend" transform="translate(12 12)">
+    <g data-slot="hgraph-legend" transform="translate(12 48)">
       <Show
         when={收起()}
         fallback={

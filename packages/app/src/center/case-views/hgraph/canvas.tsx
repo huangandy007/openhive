@@ -60,6 +60,17 @@ const 拖动阈值 = 3
 // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 多边形 只读 x/y；上游签名要完整 图节点，没有值可收窄
 const 原点壳 = { x: 0, y: 0 } as 位点
 
+/**
+ * 画布内嵌界面（菜单 / 图例 / 表单控件）：指针与双击落到它们身上都不算「点空白画布」。
+ * 图例的折叠入口是 `<g role="button">`，`button` 选择器匹配不到，必须按 `data-slot` 认；
+ * 漏掉它会让点图例清空选中、双击图例真加一个节点、拖图例平移画布。
+ */
+const 内嵌界面 = "[data-slot='hgraph-menu'], [data-slot='hgraph-legend'], button, input, textarea, select"
+
+/** 事件目标是否落在内嵌界面里（按下与双击共用这一处判断，`#002-06`）。 */
+const 落在内嵌界面 = (目标: EventTarget | null) =>
+  目标 instanceof Element && 目标.closest(内嵌界面) !== null
+
 export type 模式 = "指针" | "连线"
 
 export type 坐标换算 = (屏幕: { readonly clientX: number; readonly clientY: number }) => {
@@ -195,9 +206,10 @@ export interface 画布Props {
    */
   readonly 恢复毫秒?: number
   /**
-   * 外环自动档表（T018 / R105）：节点 id → 档（0..4）。编辑器用 `外环档表` 算好传入；
-   * 不传则画布用同一个纯函数自算——导出 / 演示直接挂画布时也要有环。两条路径同一出处
-   * （`#002-06`），不要在这里另写「度数 → 档」。
+   * 外环自动档表（T018 / R105）：节点 id → 档（0..4）。编辑器用 `外环档表` 算好传入。
+   * 它同时决定外环粗细与 0.3–0.6 缩放下的标签放行（R75）；环另有一条自算兜底（导出 /
+   * 演示直接挂画布时也要有环），标签放行只认这个入参。算法唯一定义在 `geometry.ts`
+   * 的 `外环档表`（`#002-06`），不要在这里另写「度数 → 档」。
    */
   readonly 档表?: ReadonlyMap<string, number>
   /**
@@ -429,10 +441,10 @@ export function 画布(props: 画布Props): JSX.Element {
    * 与「双向两条平行带」的次序；不按传入顺序编号（同输入同输出）。
    */
   const 平行序 = createMemo(() => 算平行边序(props.文档.边))
-  /** 自算的外环自动档表（只在调用方没传 `档表` 时被读）。 */
+  /** 外环粗细的兜底档表（只在调用方没传 `档表` 时被读，导出 / 演示直接挂画布用）。 */
   const 自动档表 = createMemo(() => 外环档表(props.文档.节点, props.文档.边, props.文档.设置.外环阈值))
-  const 档表 = () => props.档表 ?? 自动档表()
-  const 环档 = (点: 节点) => 档表().get(点.id) ?? 0
+  const 环档表 = () => props.档表 ?? 自动档表()
+  const 环档 = (点: 节点) => 环档表().get(点.id) ?? 0
 
   /**
    * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
@@ -462,7 +474,7 @@ export function 画布(props: 画布Props): JSX.Element {
         悬停id: 悬停id(),
         开: props.标签开,
         // T018 / R75：自动外环档不在文件里；不传档表时 0.3–0.6 缩放会把自动档节点误隐。
-        档表: 档表(),
+        档表: props.档表,
         边们: props.文档.边,
       }),
     )
@@ -479,7 +491,7 @@ export function 画布(props: 画布Props): JSX.Element {
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
     set菜单(undefined)
     if (事件.button !== 0) return
-    if (目标 instanceof Element && 目标.closest("button,input,textarea,select")) return
+    if (落在内嵌界面(目标)) return
     if (目标 instanceof HTMLElement && 目标.isContentEditable) return
     容器?.focus()
     // 指针捕获：拖出 overflow-hidden 容器后仍在画布上收到 move/up（FR-040 只禁键盘的
@@ -796,9 +808,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const 双击 = (事件: MouseEvent) => {
     if (props.只读 === true) return
     const 目标 = 事件.target
-    // 菜单与画布内的按钮 / 输入框不算「双击空白」：否则双击 chrome 按钮会额外加一个节点（M2）。
-    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu'], button, input, textarea, select") !== null)
-      return
+    // 菜单 / 图例 / 画布内按钮与输入框不算「双击空白」：否则双击 chrome 或图例会额外加一个节点（M2）。
+    if (落在内嵌界面(目标)) return
     const 文字id = 读属性(目标, "data-text-id")
     if (文字id !== undefined) {
       const 行 = props.文档.文字.find((文) => 文.id === 文字id)

@@ -266,7 +266,7 @@ describe("尺寸（R64）", () => {
 // ---------------------------------------------------------------------------
 
 describe("主题变量内联（R65）", () => {
-  test("注入的变量换成解析值；未注入的保留 var( 并记 1 条缺口（去重）", async () => {
+  test("注入的变量换成解析值；未注入的保留 var( 并逐条记缺口（去重）", async () => {
     const 表: Record<string, string> = {
       "--v2-text-text-base": "#111111",
       "--v2-background-bg-layer-02": "#222222",
@@ -293,6 +293,22 @@ describe("主题变量内联（R65）", () => {
     const 出 = 替换主题变量('<a fill="var(--x)"/><b stroke="var(--x)"/>', () => undefined)
     expect(出.缺口).toEqual(["--x"])
     expect(出.串).toBe('<a fill="var(--x)"/><b stroke="var(--x)"/>')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 图例导出（T018 / R74 / R108）
+// ---------------------------------------------------------------------------
+
+describe("图例导出（T018 / R74 / R108）", () => {
+  test("导出串含展开图例 4 条，且在 hgraph-svg 内、坐标 (12,48)", async () => {
+    const { 依赖, 账 } = 记账依赖()
+    const 结果 = await 跑导出({ 文档: 单节点文档(), 依赖 })
+    expect(结果.kind).toBe("ok")
+    const svg = 账.光栅化们[0].svg
+    expect(svg.match(/data-slot="hgraph-legend-item"/g)?.length ?? 0).toBe(4)
+    expect(svg).toContain('data-slot="hgraph-legend"')
+    expect(svg).toContain('transform="translate(12 48)"')
   })
 })
 

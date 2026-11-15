@@ -3389,6 +3389,25 @@ function 宽图(): 图文件 {
   }
 }
 
+/**
+ * 星形档图：中心 c 连 4 条边（自动 3 档），四片叶子各 1 条（1 档）。
+ * 坐标拉开，避免 55% 缩放时标签盒互撞干扰「按档放行」的断言。
+ */
+function 档图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("c", 380, 340),
+      造节点("l1", 80, 80),
+      造节点("l2", 680, 80),
+      造节点("l3", 80, 600),
+      造节点("l4", 680, 600),
+    ],
+    边: ["l1", "l2", "l3", "l4"].map((id) => 造边(`e-${id}`, id, "c")),
+    文字: [],
+  }
+}
+
 /** 1001 颗节点（>1000）：40 列 × 26 行网格。 */
 function 千点图(): 图文件 {
   const 节点们: 节点[] = []
@@ -3673,6 +3692,44 @@ describe("T017b · 标签分级与运动帧（R71 / R70）", () => {
     for (let 序 = 0; 序 < 4; 序++) 滚轮(-100)
     await 等(80)
     expect(边标签个数()).toBe(1)
+  })
+})
+
+describe("T018 修复轮 1 · 图例与档表（R75 / R108）", () => {
+  test("55% 缩放：自动 3 档节点标签可见（编辑器把 档表 传给画布）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 档图())
+    await flush()
+
+    // 1 / 1.15⁴ ≈ 0.572，落在 0.3–0.6 的「按档放行」区间；滚轮触发的运动帧默认
+    // 200ms 才恢复标签（编辑器不注入恢复毫秒），故等到 260ms 再断言。
+    for (let 序 = 0; 序 < 4; 序++) 滚轮(100)
+    await 等(260)
+
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toContain("scale(0.57")
+    // 中心度数 4 ⇒ 自动 3 档 ⇒ 保留；四片叶子 1 档 ⇒ 隐。
+    expect(升序(带标签的节点id们())).toEqual(["c"])
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("演示中 ⇒ 画布图例收起；退出后同一画布实例恢复展开", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(4)
+
+    按钮("hgraph-toolbar-present").click()
+    await flush()
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-legend-collapsed']")).not.toBeNull()
+    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(0)
+
+    按键(取("[data-slot='hgraph-stage']")!, { key: "Escape" })
+    await flush()
+    await flush()
+    expect(取("[data-slot='hgraph-legend-collapsed']")).toBeNull()
+    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(4)
   })
 })
 
