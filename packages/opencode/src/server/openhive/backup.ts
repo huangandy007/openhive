@@ -43,7 +43,7 @@ import {
 } from "./archive"
 import { OpenhivePg } from "./pg"
 import { PREFIX } from "./project"
-import { 成员角色 } from "./project-actor"
+import { 成员角色, 项目属主 } from "./project-actor"
 import {
   AutoBackupCancelled,
   applyRetention,
@@ -242,7 +242,10 @@ async function authorize(
   // 配置**放在授权之后**：未授权的人不该从「503 还是 403」读出这台机器的部署状态（spec §9.1）。
   if (Option.isNone(deps.minio)) return { ok: false, response: unavailable("MinIO 未配置，备份不可用") }
 
-  return { ok: true, value: { user, projectId, directory: projectDirectory(deps.root, user.id, projectId) } }
+  // 落点＝**属主**的沙箱（2026-11-15，A14-10）：共享项目的成员备份/恢复的是属主那份目录
+  // （`项目属主` 的注释）。按调用者拼出来的目录对成员**不存在**，预检会回 400 path 不存在。
+  const 属主 = await 项目属主(pg, user.id, projectId)
+  return { ok: true, value: { user, projectId, directory: projectDirectory(deps.root, 属主, projectId) } }
 }
 
 /** 查询串里的一项（`projectId` 只走查询串 / 请求体，不走路径段）。 */
@@ -1231,7 +1234,8 @@ export function makeDetect(deps: DetectDeps): (userId: string, projectId: string
         store,
         userId,
         projectId,
-        directory: projectDirectory(deps.root, userId, projectId),
+        // 落点＝**属主**的沙箱（同 `authorize`）：自动备份跑在成员名下时也要拍属主那份目录。
+        directory: projectDirectory(deps.root, await 项目属主(deps.pg(), userId, projectId), projectId),
         kind: "auto",
         scope: "",
         jobId,

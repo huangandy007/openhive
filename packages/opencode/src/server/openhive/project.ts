@@ -108,6 +108,7 @@ import {
   memberCountsOf,
   membersOf,
   membershipsOf,
+  ownersOf,
   projectMetaOf,
   recordProject,
   rolesOf,
@@ -324,6 +325,8 @@ function badRequest(message: string) {
  * - `directory` / `stale` / `memberCount` / `archived` / `role` 两条链**同一套算法**——尤其
  *   `directory` 共用 `projectDirectory`：它同时也是中间件改写 `?directory=` 用的那个函数，
  *   两处漂一寸就是「项目在自己的目录下，文件树却在另一个目录」。
+ *   ⚠️ 自**有**的行属主是本人、影子行的属主是 `project_member` 里的 owner 行（2026-11-15）——
+ *   与中间件同一条裁定：成员在**属主**的沙箱里干活，目录不能按成员自己算。
  *
  * ⚠️ **影子行的 `lastAccessedAt` 是「加入时刻」，不是「最近访问」**——成员的「最近访问」今天
  * **没有写入方**（`handleTouch` 走的 `touchProjectExt` 只 `update`，目标行不存在就是零行、不报错，
@@ -370,6 +373,9 @@ function handleList(deps: Deps) {
     const archives = yield* Effect.promise(() => archiveStatesOf(deps.pg(), ids))
     // `userId` 取的是**调用者**（不是「按项目查全部成员再挑」）——理由见 `rolesOf` 的注释。
     const roles = yield* Effect.promise(() => rolesOf(deps.pg(), { userId: user.value.id, projectIds: ids }))
+    // 影子行的**落点属主**：成员在这些项目里干活时，目录在**属主**的沙箱下（同
+    // `middleware/project-location.ts` 的 `落点属主`）。只查影子行——自己的行属主恒为自己。
+    const owners = yield* Effect.promise(() => ownersOf(deps.pg(), joined.map((membership) => membership.projectId)))
 
     // ⚠️ **一次 `Date.now()`，提到 map 外面**：`isStale` 的 `now` 由调用方给（`ext.ts` 里那条
     // 注释讲了为什么不取时钟）。在 map 里现取的话，同一个响应里**每一行各有一个基准**——边界上
@@ -427,7 +433,11 @@ function handleList(deps: Deps) {
         ...(type === "shared" ? { memberCount: counts.get(membership.projectId) ?? 0 } : {}),
         lastAccessedAt,
         stale: isStale(lastAccessedAt, now),
-        directory: projectDirectory(deps.root, user.value.id, membership.projectId),
+        // 落点＝**属主**的沙箱（2026-11-15，A14-10）：成员自己没有这个目录，写成本人的就是在
+        // 交一个不存在的路径出去（左栏拿它取会话 ⇒ 空；右栏拿它读文件 ⇒ 400/500）。
+        // `?? user.value.id` 是**坏账兜底**：`project_member` 没有 owner 行时（建项目必有，异常态）
+        // 中间件那边同样判不出属主、落点退回沙箱根——两边一起退化，不会互相打架。
+        directory: projectDirectory(deps.root, owners.get(membership.projectId) ?? user.value.id, membership.projectId),
         ...(archive ? { archived: archive.archived } : {}),
         ...(role ? { role } : {}),
       }

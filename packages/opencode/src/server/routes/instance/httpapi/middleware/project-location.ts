@@ -1,6 +1,6 @@
 export * as ProjectLocation from "./project-location"
 
-import { archiveStatesOf } from "@opencode-ai/auth/project-member"
+import { archiveStatesOf, membersOf } from "@opencode-ai/auth/project-member"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectExt } from "@opencode-ai/core/project/ext"
@@ -460,29 +460,65 @@ const isArchived = (openhivePg: OpenhivePg.Interface, projectId: string) =>
   )
 
 /**
- * 从**会话目录**里取出项目 id（第二道门，T015 · D1）：只认**恰好一层**
- * `join(沙箱根, 本人 id, projectId)` 的形状——那正是第一道门写进 `session.directory` 的形状。
+ * 这个请求**该落在谁的沙箱**里（2026-11-15，共享项目）。
  *
- * 比这更深或更浅一律 `undefined`（= 「这条会话不在任何项目里」⇒ 放行）：
+ * ## 为什么需要它
+ *
+ * 落点的权威写法是 `projectDirectory(根, 项目属主 id, projectId)`，而「属主是谁」对**成员**是
+ * 问不出来的：成员没有那个项目的 `project_ext` 行（影子行的物理前提，`./openhive/project` 的
+ * 函数头写着）⇒ 上面那句 `ProjectExt.findByProjectID` 对成员恒 `undefined` ⇒ 旧实现直接走 R5、
+ * **不改写目录**。结果（真栈实测）：成员带项目头打 `GET /openhive/project/tree` 得
+ * `400 {"error":"没有项目上下文"}`，而属主同一条请求 200。
+ *
+ * ## 为什么是**属主**的沙箱，而不是「每人一份副本」
+ *
+ * 全仓**没有任何代码**会建出 `{根}/{成员 id}/{projectId}`（真栈实测：被邀成员的王五沙箱里
+ * 没有那个项目目录）。落「自己的一份」等于把共享项目退化成两份互不相干的副本——两个人都以为
+ * 在同一个案子上干活。归档/找回那条链按成员逐个算目录只是**照旧写法**，那些目标对成员恒是
+ * no-op，不构成「每成员副本」这条路的证据。
+ *
+ * ## 三种返回
+ *
+ * - **属主 id** —— 我是属主（上面那一支已经查到 `project_ext`）**或**我在 `project_member` 里
+ *   有一行（owner / member 都算）；文件都在**属主**的沙箱里。
+ * - **`undefined`** —— 不是成员 ⇒ 由调用方走 R5（落沙箱根）。**不抛 403**：查不到项目与
+ *   「不是我的项目」在这一层是同一个处置（R5 的既有口径，`#002-06`：别为同一种结局写两个分支）。
+ *
+ * ⚠️ **没有属主行 ⇒ `undefined`（fail-closed）**：单属主由部分唯一索引保证「至多一个」，
+ * 「一个都没有」是数据异常；这时宁可当没带（落沙箱根），也不替它挑一个成员来当落点。
+ * ⚠️ 一次往返：`membersOf` 同时回答「我在不在」与「属主是谁」，不拆成两条查询。
+ */
+async function 落点属主(openhivePg: OpenhivePg.Interface, userId: string, projectId: string): Promise<string | undefined> {
+  const 成员 = await membersOf(openhivePg.pg(), projectId)
+  if (!成员.some((member) => member.userId === userId)) return undefined
+  return 成员.find((member) => member.role === "owner")?.userId
+}
+
+/**
+ * 从一个**项目目录**里取出项目 id（第一道门的目录通道 ／ 第二道门，T015 · D1）：只认**恰好一层**
+ * `{沙箱根}/{某人 id}/{projectId}` 的形状——那正是第一道门写进 `session.directory` 的形状。
+ *
+ * 比这更深或更浅一律 `undefined`（= 「这条请求/会话不在任何项目里」⇒ 放行／当作没带）：
  * - **浅**（= 沙箱根本身）：不带头建会话的正常落点，当然不是项目会话；
  * - **深**（`…/{projectId}/sub`）：今天到不了（锚定把客户端报的目录全改写成沙箱根，
  *   而本层只加一段）；真到了这里，宁可放行也不猜——猜错的方向是**乱拒**。
  *   见文件头「已知不覆盖」最后一条。
  *
- * ⚠️ 第一段必须等于**本人 id**：不这么写的话，`{沙箱根}/{别人}/{projectId}` 也会被当成
- * 「我的项目会话」。那条路今天走不到（会话目录由本层从本人沙箱算出来），但这一行让判据
- * **自己**站得住，而不是靠「上游不会那样写」。
+ * ## 为什么**不再**要求「第一段等于本人 id」（2026-11-15）
  *
- * ⚠️ **这一行测不到，是实测的**（M9，2026-10-06）：把它改成恒不成立 ⇒ **7 pass / 0 fail**，
- * 一条都不红。造不出那样一条会话行（会话目录只有本层与锚定两个来源，都在本人沙箱里），
- * 所以它属于 `#003-03` 的第③类「变异全绿」。**留着而不是删掉**的理由：它不是抽象出来的
- * 灵活性，而是一个等式，写出来是为了让这个判定**不依赖一条没说出口的上游不变量**——
- * 但读者要知道它没有测试守着（`LEARNINGS #002-02`：没覆盖的写成缺口，不写成已覆盖）。
+ * 共享项目的目录住在**属主**的沙箱里（成员没有 `project_ext` 行，也没有自己那份副本——见下面
+ * `落点属主` 的注释）⇒ 成员请求与成员会话的第一段是**属主**的 id。旧判据在这里恒
+ * `undefined`，两个后果：① 成员的目录通道被当作没带（`?directory=` 静默失效）；
+ * ② **第二道门认不出成员的会话**——已归档的共享项目上，成员那条会话照常可读（真缺口）。
+ *
+ * 「第一段是谁」本来就不该在这一层判：它是**归属**问题，而归属由 R5 那两道查库判
+ * （自己的 `project_ext` ／ PG 成员关系），不在路径里。这里只判**形状**（恰好两层）。
+ * 于是 `{沙箱根}/{别人}/{projectId}` 也不会凭空生效：查不到就是 R5 ⇒ 落沙箱根。
+ * ⚠️ 旧注释里那条「M9 变异全绿」的记载随这一行一起作废（那行已经不在了，不是被覆盖了）。
  */
-function projectIdOfSessionDirectory(root: string, userId: string, directory: string): string | undefined {
+function projectIdOfSessionDirectory(root: string, directory: string): string | undefined {
   const parts = relative(root, directory).split(/[\\/]/)
   if (parts.length !== 2) return undefined
-  if (parts[0] !== userId) return undefined
   return parts[1]
 }
 
@@ -529,7 +565,7 @@ export const projectLocationLayer = HttpRouter.middleware<{
         const directoryProjectId =
           requestedDirectory === undefined
             ? undefined
-            : projectIdOfSessionDirectory(config.root, user.value.id, requestedDirectory)
+            : projectIdOfSessionDirectory(config.root, requestedDirectory)
         const projectId = headerProjectId ?? directoryProjectId ?? cookieProjectId
         // 落定的这个 id 是不是从**环境通道**来的——决定下面两处「无效 ⇒ 当作没带」而不是报错。
         // ⚠️ 判据是「**头与目录都不在场**」，不是「cookie 在不在场」：这两条谁在场，结果就一定来自
@@ -572,7 +608,7 @@ export const projectLocationLayer = HttpRouter.middleware<{
           // 会话存在才谈得上「在哪个项目里」；不存在就放行，让 handler 用它的口径回 404。
           const found = yield* session.get(SessionID.make(sessionID)).pipe(Effect.option)
           if (Option.isSome(found)) {
-            const sessionProjectID = projectIdOfSessionDirectory(config.root, user.value.id, found.value.directory)
+            const sessionProjectID = projectIdOfSessionDirectory(config.root, found.value.directory)
             if (sessionProjectID !== undefined && (yield* isArchived(openhivePg, sessionProjectID))) return forbidden()
           }
         }
@@ -602,12 +638,18 @@ export const projectLocationLayer = HttpRouter.middleware<{
         }
 
         const project = yield* ProjectExt.findByProjectID(database.db, projectId)
+        // 落点属主：自己建的（`project_ext` 有行）⇒ 就是我；否则问**共享 PG** 的成员关系
+        // （成员没有那一行，见 `落点属主` 的注释）。这里只是**多一条来源**，R5 的处置没动。
+        const 属主 =
+          project === undefined
+            ? yield* Effect.promise(() => 落点属主(openhivePg, user.value.id, projectId))
+            : user.value.id
         // R5：查不到就落沙箱根，**不做隐式建项目**（本层一个字都不写库）。
         //
         // 查库**报错**不吞（`findByProjectID` 用 `Effect.orDie`，真炸成 500）：那条路径上建会话
         // 本来就要写同一个库，吞掉只会把同一个故障挪到下一步，还多一个「看着还在、其实没有」的
-        // 分支（`LEARNINGS #002-02`）。
-        if (project === undefined) return yield* effect
+        // 分支（`LEARNINGS #002-02`）。`落点属主` 同理不吞：它用 `membersOf`（不 catch）。
+        if (属主 === undefined) return yield* effect
 
         // 归档 = 冻结（005 T015，FR-010）：**已归档的项目上不能干活**——建会话、读写文件一律拒，
         // 连 owner 也不行（唯一的出口是「找回」，而那条管理链**不带这个头**）。
@@ -644,7 +686,10 @@ export const projectLocationLayer = HttpRouter.middleware<{
         // 本行此前是全仓**四处同款写法**中的一处；四份里任何一份漂了都静默变成「会话落在别的目录」。
         // ⚠️ `config.root` 必须是 `AnchorWorkspace.Config`——`./project` 的 `deps.root` 也是它
         // （**实测**：两处都写作 `yield* AnchorWorkspace.Config`）。换成 `/shared` 那套会全盘错位。
-        const target = projectDirectory(config.root, user.value.id, projectId)
+        // 落点是**项目属主**的沙箱：共享项目的成员在这里读写的是同一份文件（`落点属主` 的注释）。
+        // ⚠️ 别把这里换回 `user.value.id`——对成员来说那个目录**不存在**，会话就会被建到一个
+        // 悬空路径上，而项目树/文件接口会照着实得路径报 400/500。
+        const target = projectDirectory(config.root, 属主, projectId)
         const rewritten = rewriteBody(rewriteRequest(request, target), target)
 
         return yield* Effect.provideService(effect, HttpServerRequest.HttpServerRequest, yield* rewritten)

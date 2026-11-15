@@ -76,6 +76,9 @@ const SECRET = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
 
 const ALICE: TokenSubject = { id: "550e8400-e29b-41d4-a716-446655440000", policeNo: "020601", name: "张三", isAdmin: false }
 
+/** 被邀进 ALICE 项目的成员（自己库里没有那个项目的 `project_ext` 行）。 */
+const BOB: TokenSubject = { id: "550e8400-e29b-41d4-a716-446655440002", policeNo: "020602", name: "王五", isAdmin: false }
+
 /**
  * 客户端报「当前项目」的通道。**写死字面量、不 import 生产常量**——import 过来就成了
  * 「生产改什么测试跟着改什么」，改名也测不出来（`LEARNINGS #003-05` 的假镜像）。
@@ -102,6 +105,11 @@ const ARCHIVED_HEADED = "prj_frozen_0004"
  * 请求看上去「不属于任何项目」。这正是绕过面的形状（F1）。
  */
 const DECOY_UNKNOWN = "prj_frozen_0005"
+/**
+ * 用例 ⑨（2026-11-15）专用：**共享项目**——会话落在**属主**的沙箱里，属主与成员是两个人。
+ * 前提同 `ARCHIVED_LATER`：会话**先**进去、项目**后**归档。
+ */
+const MEMBER_SHARED = "prj_frozen_0006"
 
 const SANDBOX = mkdtempSync(path.join(tmpdir(), "openhive-project-frozen-"))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -327,6 +335,25 @@ const 让谁当owner = (subject: TokenSubject, projectId: string) =>
     await pg!.db.execute(sql`
       insert into auth.project_member (project_id, user_id, role, time_created)
       values (${projectId}, ${subject.id}, 'owner', 1700000000)
+      on conflict (project_id, user_id) do update set role = excluded.role
+    `)
+  })
+
+/**
+ * 让某人成为某项目的 **member**（2026-11-15 的共享项目维度，夹具注入、裸 SQL）。
+ *
+ * ⚠️ `auth.user` 行先写（外键），两句分开发（同 `让谁当owner` 的两条 ⚠️）。
+ */
+const 让谁当成员 = (subject: TokenSubject, projectId: string) =>
+  Effect.promise(async () => {
+    await pg!.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
+      on conflict (id) do nothing
+    `)
+    await pg!.db.execute(sql`
+      insert into auth.project_member (project_id, user_id, role, time_created)
+      values (${projectId}, ${subject.id}, 'member', 1700000000)
       on conflict (project_id, user_id) do update set role = excluded.role
     `)
   })
@@ -588,6 +615,48 @@ describe("T015 · 归档 = 冻结（FR-010）：已归档的项目上不能干�
         expect(v2body.error).toBe(FROZEN_MESSAGE)
         expect(归档后.status).toBe(403)
         expect(v2归档后.status).toBe(403)
+      }),
+    30_000,
+  )
+
+  /**
+   * **共享项目：成员的会话归档后同样被第二道门拒**（2026-11-15）。
+   *
+   * ## 这条单钉什么
+   *
+   * 第二道门靠**会话行的目录**认项目（`projectIdOfSessionDirectory`）。成员放开之后，他的会话
+   * 落在**属主**的沙箱（`{根}/{属主 id}/{projectId}`）——旧解析器里那句「第一段必须等于**本人**
+   * id」会让它返回 `undefined` ⇒ 这条会话在归档后**照常可读**（门没响、也没人会发现）。
+   *
+   * ## 为什么要先断落点（否则是假绿）
+   *
+   * 若会话落错地方（例如落回成员自己的沙箱根），后面那条 403 也**可能**绿——但绿的原因不是本
+   * 用例要证的那条。所以 `expect(canonical(...)).toBe(属主目录)` 是**前置**，失败即中止。
+   */
+  it.live(
+    "共享项目：成员的会话（落在**属主**沙箱里）归档后同样被拒（403 ＋ 文案）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, MEMBER_SHARED)
+        yield* 让谁当owner(ALICE, MEMBER_SHARED)
+        yield* 让谁当成员(BOB, MEMBER_SHARED)
+        // BOB 的库要存在（建库钩子）；**不种 project_ext**——那正是被测前提。
+        yield* as(BOB, "/session", { method: "POST" })
+
+        const created = yield* postSessionAs(BOB, MEMBER_SHARED)
+        expect(created.status).toBe(200)
+        const { data: session } = yield* json(SessionV2, created)
+
+        expect(canonical(sessionDirectory(BOB.id, session.id) ?? "")).toBe(
+          canonical(path.join(sandboxOf(ALICE), MEMBER_SHARED)),
+        )
+
+        yield* 标成已归档(MEMBER_SHARED)
+
+        const 读它 = yield* as(BOB, `/api/session/${session.id}`)
+        const body = yield* json(Frozen, 读它)
+        expect(body.error).toBe(FROZEN_MESSAGE)
+        expect(读它.status).toBe(403)
       }),
     30_000,
   )

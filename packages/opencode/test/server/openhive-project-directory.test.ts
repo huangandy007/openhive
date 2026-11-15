@@ -94,6 +94,11 @@ const GHOST = "prj_ghost_0002"
  * 归档，本文件前面那些「带头落项目目录」的用例会**一起变红**——而那是夹具传染，不是被测对象出了事。
  */
 const FROZEN = "prj_frozen_0003"
+/**
+ * 一个**共享项目**（属主 ALICE、成员 BOB，2026-11-15）：成员自己库里**没有**它的 `project_ext`
+ * 行——那正是「影子行」的物理前提，也是下面那条用例的被测前提。
+ */
+const SHARED_PROJECT = "prj_shared_0004"
 
 // ⚠️ 归一化到长名再往下接：本机 `TMP` 是 **8.3 短名**（`ADMINI~1`），而锚定那一侧会把
 // 存在的父目录 `realpath` 成长名 ⇒ 若这里留着短名，`sandboxOf` 的**期望值**就与实际值
@@ -357,6 +362,26 @@ const 标成已归档 = (projectId: string) =>
       ),
     ),
   )
+
+/**
+ * 把某人记成某项目的成员（**裸 SQL 写共享 PG**，2026-11-15 的共享项目维度）。
+ *
+ * ⚠️ `auth.user` 行必须先有：`project_member.user_id` 有外键指向它。
+ * ⚠️ 两句**分开发**：`db.execute` 一次一句，不拼 `;`。
+ */
+const 记成成员 = (subject: TokenSubject, projectId: string, role: "owner" | "member") =>
+  Effect.promise(async () => {
+    await pg!.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
+      on conflict (id) do nothing
+    `)
+    await pg!.db.execute(sql`
+      insert into auth.project_member (project_id, user_id, role, time_created)
+      values (${projectId}, ${subject.id}, ${role}, 1700000000)
+      on conflict (project_id, user_id) do update set role = excluded.role
+    `)
+  })
 
 /**
  * 归一化：断言钉的是**归属**，不是路径的书写形式（同 `tenant-directory-isolation.test.ts`）。
@@ -1058,6 +1083,41 @@ describe("目录通道（客户端报的 ?directory= 只说「哪个项目」）
         const landed = canonical(sessionDirectory(ALICE.id, id) ?? "")
         expect(landed).toBe(canonical(sandboxOf(ALICE)))
         expect(landed).not.toContain(canonical(sandboxOf(BOB)))
+      }),
+    30_000,
+  )
+
+  /**
+   * **共享项目：成员的会话落在属主的沙箱里**（2026-11-15，A14-10 的根因落点）。
+   *
+   * ## 为什么是属主的目录，而不是成员自己的一份
+   *
+   * 全仓**没有任何代码**会为成员建出 `{根}/{成员 id}/{projectId}`（真栈实测：王五的沙箱里
+   * 没有那个目录；`project.ts` 的影子里程碑也只给成员 PG 那一半）。落「自己的一份」等于把
+   * 共享项目退化成两份互不相干的副本——而归档/找回那条链按成员逐个算目录只是**照旧写法**，
+   * 那些目标对成员恒是 no-op。
+   *
+   * ## 判据两半（`LEARNINGS #004-08`）
+   *
+   * ① 落点**恰好**是 `{沙箱根}/{属主 id}/{projectId}`；
+   * ② 落点**不是**成员自己的沙箱根（少了它，一个「成员一律落沙箱根」的实现也能绿前半句——
+   *    而那就是改动前的行为）。
+   */
+  it.live(
+    "共享项目：成员的会话落在**属主**的沙箱里（不是自己的沙箱根）",
+    () =>
+      Effect.gen(function* () {
+        yield* withProject(ALICE, SHARED_PROJECT)
+        yield* 记成成员(ALICE, SHARED_PROJECT, "owner")
+        yield* 记成成员(BOB, SHARED_PROJECT, "member")
+        // BOB 的库要存在（建库钩子走一次普通清单）；但**不种 project_ext**——被测前提。
+        yield* as(BOB, "/openhive/project")
+
+        const id = yield* createV1As(BOB, { project: SHARED_PROJECT })
+
+        const landed = canonical(sessionDirectory(BOB.id, id) ?? "")
+        expect(landed).toBe(canonical(项目目录(ALICE, SHARED_PROJECT)))
+        expect(landed).not.toBe(canonical(sandboxOf(BOB)))
       }),
     30_000,
   )

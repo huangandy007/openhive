@@ -3,8 +3,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { sql } from "drizzle-orm"
+import { drizzle } from "drizzle-orm/bun-sql"
 import { ConfigProvider, Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { resolveDatabaseUrl } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { listBackupEvents } from "@opencode-ai/auth/project-backup-event"
@@ -120,6 +122,24 @@ beforeAll(async () => {
 afterAll(async () => {
   await pg?.stop()
 })
+
+/**
+ * 手工构造 `makeDetect` 时递进去的客户端：**不预编译**（`prepare: false`）。
+ *
+ * 夹具的 PGlite socket 把多条连接汇进**同一个 PG 会话**，而 bun-sql 的预编译语句是
+ * **连接级**的 ⇒ 第二个客户端再准备**同一句带参 SQL** 必报 `42P05 duplicate_prepared_statement`
+ * （`test-support.ts` 文件头的实测；本机复现：客户端 A 先跑 `ownersOf`，客户端 B 同一句必挂）。
+ * 本文件的 app 有它自己的池（`OpenhivePg.layer`），而 `detect` 里要查属主、取消时还要写审计
+ * ——直接递 `pg!.db` 等于让第二份客户端在 app 已经准备过的文本上再准备一遍。
+ *
+ * `prepare: false` 走不命名语句的路径（实测：与「已准备好同句」的客户端并存不撞），
+ * **只影响测试夹具**：生产的 `connect()` 不收这个旋钮。
+ */
+let detect库: ReturnType<typeof 建不预编译客户端> | undefined
+function 建不预编译客户端() {
+  return drizzle({ connection: { url: resolveDatabaseUrl(process.env), prepare: false, max: 1 } })
+}
+const detectPg = () => (detect库 ??= 建不预编译客户端())
 
 /** 每个用例后还原假时钟（`setSystemTime` 影响整个进程）。 */
 afterEach(() => setSystemTime())
@@ -860,7 +880,8 @@ describe("Fix round 1 · 自动备份进共享单飞锁（I-1 / §7.3）与取�
           detect: OpenhiveBackup.makeDetect({
             root: WORKSPACE_ROOT,
             minio: 连接,
-            pg: () => pg!.db,
+            // 见文件头 `detectPg`：第二份客户端必须不预编译，否则与 app 的池撞 `42P05`。
+            pg: detectPg,
             jobs: sharedJobs,
             quotaBytes: TEST_QUOTA,
             run: async (input) => {
@@ -1565,6 +1586,130 @@ describe("2026-10-29 · 老项目（PG 不认识，只有每用户库的 project
         const 起 = yield* as(openApp, ALICE, BACKUP, 体({ projectId: 陈旧行项目 }))
         expect(起.status).toBe(403)
         expect((yield* json(Schema.Struct({ code: Schema.String }), 起)).code).toBe("forbidden")
+      }),
+    30_000,
+  )
+})
+
+/**
+ * **共享项目的成员，备份的是属主那份目录**（2026-11-15，A14-10）。
+ *
+ * 成员在属主的沙箱里干活（路线 A），而 `authorize()` 此前按**调用者**拼目录
+ * （`{根}/{我}/{projectId}`）——成员那个目录从来不存在，备份一跑就失败。判据不看「接口回了
+ * 202」，而是**快照里真的有属主目录的那份文件**（`#004-08`：副作用才是被测属性）。
+ *
+ * 快照按用户前缀存（`storeOf` 的 `userId` 就是调用者），所以成员读自己那份前缀即可——
+ * 这条同时钉住「读的是属主目录、存的是自己前缀」这一组合。
+ */
+describe("共享项目 · 成员备份属主目录（2026-11-15，A14-10）", () => {
+  /** 与 `等到终态` 同形，只是轮询身份换成调用者。**等条件不等时间**（`#006-31`）。 */
+  const 等到终态As = (subject: TokenSubject, jobId: string) =>
+    Effect.gen(function* () {
+      for (let i = 0; i < 200; i += 1) {
+        const 响应 = yield* as(openApp, subject, `${BACKUP}/jobs/${jobId}`)
+        expect(响应.status).toBe(200)
+        const job = yield* json(JobWire, 响应)
+        if (job.state === "succeeded" || job.state === "failed" || job.state === "cancelled") return job
+        yield* Effect.sleep("50 millis")
+      }
+      return yield* Effect.fail(new Error("任务 10 秒内没有进入终态"))
+    })
+
+  it.live(
+    "成员对共享项目起备份 ⇒ 快照清单里有属主目录的 `资料/甲.txt`",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* 新项目()
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_member (project_id, user_id, role, time_created)
+            values (${project.projectId}, ${BOB.id}, 'member', 0)
+            on conflict (project_id, user_id) do update set role = excluded.role
+          `),
+        )
+
+        const 起 = yield* as(openApp, BOB, BACKUP, 体({ projectId: project.projectId }))
+        expect(起.status).toBe(202)
+        const { jobId } = yield* json(Schema.Struct({ jobId: Schema.String }), 起)
+        const job = yield* 等到终态As(BOB, jobId)
+
+        // 被测属性（快照内容）在前：快照里必须有属主目录里那份文件。
+        const 列 = yield* as(openApp, BOB, `${BACKUP}/snapshots?projectId=${project.projectId}`)
+        expect(列.status).toBe(200)
+        const 清单 = yield* json(
+          Schema.Struct({
+            snapshots: Schema.Array(Schema.Struct({ id: Schema.String })),
+          }),
+          列,
+        )
+        const 快照 = 清单.snapshots[0]
+        expect(快照).toBeDefined()
+        const 明细 = yield* as(
+          openApp,
+          BOB,
+          `${BACKUP}/snapshots/${快照?.id ?? ""}?projectId=${project.projectId}`,
+        )
+        expect(明细.status).toBe(200)
+        const 文件 = yield* json(
+          Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+          明细,
+        )
+        expect(文件.files.map((row) => row.path)).toContain("资料/甲.txt")
+        expect(job.state).toBe("succeeded")
+      }),
+    30_000,
+  )
+
+  /**
+   * **自动备份（成员）：`makeDetect` 拍的是属主目录**（2026-11-15）。
+   *
+   * 手动那条走 `authorize()`，自动这条走 `makeDetect` 自己的落点解析——两条**各有一处**按
+   * 调用者拼目录的写法，只钉一条会让另一条静默回退（`#002-06`：同一前提的每个落点都要有自己的
+   * 判据）。这里直接调 `makeDetect`（不注入假执行器 ⇒ 走生产 `拍一次`），
+   * 断言它的**副作用**：成员的快照里有属主目录那份文件（`#004-08`）。
+   *
+   * ⚠️ 客户端用 `detectPg`（不预编译）：app 的池已经准备过同一批文本（见文件头）。
+   */
+  it.live(
+    "自动备份（成员）：`makeDetect` 拍下的快照里有属主目录的 `资料/甲.txt`",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* 新项目()
+        yield* Effect.promise(() =>
+          pg!.db.execute(sql`
+            insert into auth.project_member (project_id, user_id, role, time_created)
+            values (${project.projectId}, ${BOB.id}, 'member', 0)
+            on conflict (project_id, user_id) do update set role = excluded.role
+          `),
+        )
+
+        const detect = OpenhiveBackup.makeDetect({
+          root: WORKSPACE_ROOT,
+          minio: 连接,
+          pg: detectPg,
+          jobs: sharedJobs,
+          quotaBytes: TEST_QUOTA,
+        })
+        yield* Effect.promise(() => detect(BOB.id, project.projectId))
+
+        const 列 = yield* as(openApp, BOB, `${BACKUP}/snapshots?projectId=${project.projectId}`)
+        expect(列.status).toBe(200)
+        const 清单 = yield* json(
+          Schema.Struct({ snapshots: Schema.Array(Schema.Struct({ id: Schema.String })) }),
+          列,
+        )
+        expect(清单.snapshots).toHaveLength(1)
+        const 明细 = yield* as(
+          openApp,
+          BOB,
+          `${BACKUP}/snapshots/${清单.snapshots[0]?.id ?? ""}?projectId=${project.projectId}`,
+        )
+        expect(明细.status).toBe(200)
+        const 文件 = yield* json(
+          Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+          明细,
+        )
+        expect(文件.files.map((row) => row.path)).toContain("资料/甲.txt")
       }),
     30_000,
   )

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { migrate } from "@opencode-ai/auth/migrate"
@@ -78,6 +79,14 @@ const ALICE: TokenSubject = {
   isAdmin: false,
 }
 
+/** 被邀进 ALICE 项目的成员（**自己库里没有 `project_ext` 行**——影子行的物理前提）。 */
+const BOB: TokenSubject = {
+  id: "550e8400-e29b-41d4-a716-446655440002",
+  policeNo: "020602",
+  name: "王五",
+  isAdmin: false,
+}
+
 /**
  * 客户端报「当前项目」的通道。
  *
@@ -102,6 +111,8 @@ const DIRS = "prj_dirs_0003"
 const MISSING = "prj_missing_0004"
 /** 项目目录是个**文件**（落在 `FileSystem.list` 那一层才 die）。 */
 const NOTDIR = "prj_notdir_0005"
+/** **共享项目**：属主 ALICE，成员 BOB（2026-11-15 的成员维度）。 */
+const SHARED = "prj_shared_0006"
 
 const SANDBOX = realpathSync.native(mkdtempSync(path.join(tmpdir(), "openhive-project-tree-")))
 const DATA_ROOT = path.join(SANDBOX, "data")
@@ -222,6 +233,28 @@ const 种项目 = (subject: TokenSubject, projectId: string) =>
     } finally {
       db.close()
     }
+  })
+
+/**
+ * 把某人记成某项目的成员／属主（**裸 SQL 写共享 PG**，不调产品写入接口——成员关系那条链
+ * 在 `invite` 出口上，用它验它等于自证）。
+ *
+ * ⚠️ `auth.user` 行必须先有：`project_member.user_id` 有外键指向它（同
+ * `openhive-project-frozen.test.ts` 的 `让谁当owner`）。
+ * ⚠️ 两句**分开发**：`db.execute` 一次一句，不拼 `;`。
+ */
+const 记成成员 = (subject: TokenSubject, projectId: string, role: "owner" | "member") =>
+  Effect.promise(async () => {
+    await pg!.db.execute(sql`
+      insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+      values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
+      on conflict (id) do nothing
+    `)
+    await pg!.db.execute(sql`
+      insert into auth.project_member (project_id, user_id, role, time_created)
+      values (${projectId}, ${subject.id}, ${role}, 1700000000)
+      on conflict (project_id, user_id) do update set role = excluded.role
+    `)
   })
 
 /**
@@ -405,6 +438,48 @@ describe("GET /openhive/project/tree · 一次请求交回整棵树", () => {
 
         expect(yield* 体(response)).toEqual({ error: "读取文件树失败" })
         expect(response.status).toBe(500)
+      }),
+    30_000,
+  )
+
+  /**
+   * **共享项目：成员读到的是属主目录下的文件**（2026-11-15，A14-10 的界面层缺口）。
+   *
+   * ## 现象（真栈实测，两条都贴过响应体）
+   *
+   * 属主（张三）带项目头打本端点 ⇒ `200 {"paths":[…]}`；被邀进同一项目的成员（王五）打**同一条**
+   * 请求 ⇒ `400 {"error":"没有项目上下文"}`。
+   *
+   * ## 根因（不是本端点的形状判据）
+   *
+   * `project-location.ts` 的 R5 在**请求方自己的** `project_ext` 里找项目，而成员**没有那一行**
+   * （影子行的物理前提，`./opencode/project` 的函数头写着）⇒ `undefined` ⇒ 请求不被改写，
+   * `?directory=` 停在**沙箱根**（1 段）⇒ 本端点的形状判据**正确地**拒了它。所以修的是 R5，
+   * 本端点只跟着放宽「第一段必须是自己」那半句（成员的落点在**属主**的沙箱里）。
+   *
+   * ## 两半断言（`LEARNINGS #004-08`）
+   *
+   * ① 成员 200 且**列出的正是属主目录里的那一个文件**——少了它，「回一个空清单」也绿；
+   * ② 属主同一条请求也是 200——少了它，一个「对谁都能读」的实现照样绿（而那是**别人的**项目）。
+   */
+  it.live(
+    "共享项目：成员（自己库里没有 project_ext 行）读到属主目录下的文件",
+    () =>
+      Effect.gen(function* () {
+        yield* 种项目(ALICE, SHARED)
+        yield* 记成成员(ALICE, SHARED, "owner")
+        yield* 记成成员(BOB, SHARED, "member")
+        const 目录 = 摆项目目录(ALICE, SHARED)
+        writeFileSync(path.join(目录, "流水.csv"), "属主的材料")
+        // 成员的库也要建出来（建库钩子走一次列表）；但**不种 project_ext**——那正是被测前提。
+        yield* as(BOB, "/openhive/project")
+
+        const 成员看到 = yield* as(BOB, 出口, SHARED)
+        const 属主看到 = yield* as(ALICE, 出口, SHARED)
+
+        expect(yield* 体(成员看到)).toEqual({ paths: ["流水.csv"], truncated: false })
+        expect(成员看到.status).toBe(200)
+        expect(yield* 体(属主看到)).toEqual({ paths: ["流水.csv"], truncated: false })
       }),
     30_000,
   )

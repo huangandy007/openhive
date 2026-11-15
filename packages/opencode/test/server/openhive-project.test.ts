@@ -667,6 +667,38 @@ describe("T018 · 列项目（FR-003）", () => {
   )
 
   /**
+   * **共享项目的成员，列表里的 `directory` 也必须是属主的目录**（2026-11-15，A14-10 收口）。
+   *
+   * 影子行的 `directory` 此前算成 `{沙箱根}/{我}/{projectId}`——成员那个目录**从来不存在**。
+   * 左栏拿它去取会话 ⇒ 一个都列不出来；右栏拿它去读文件 ⇒ 400/500。这与「成员直接在属主的
+   * 沙箱里干活」是同一条裁定（见 `middleware/project-location.ts` 的 `落点属主`），本用例钉
+   * **列表这一侧的投影**：列表给的目录，成员拿它建会话，会话必须落在**属主**的沙箱里。
+   *
+   * 判据不重算服务端算法——直接读成员自己库里那行会话的 `directory`，与「属主沙箱根 ＋ id」
+   * 比较（oracle 不经过被测端点，`LEARNINGS #002-02`）。
+   */
+  it.live(
+    "共享项目：成员的列表 directory 指向**属主**的沙箱（拿它建会话，落在属主目录下）",
+    () =>
+      Effect.gen(function* () {
+        const entry = yield* createAs(ALICE, { name: "共享给李四", type: "shared" })
+        yield* Effect.promise(() => addMemberRow(entry.id, BOB.id, "member"))
+
+        const listed = (yield* listAs(BOB)).find((row) => row.id === entry.id)
+        expect(listed).toBeDefined()
+        const 目录 = listed?.directory ?? ""
+
+        const 属主目录 = path.join(sandboxOf(ALICE), entry.id)
+        expect(canonical(目录)).toBe(canonical(属主目录))
+
+        // 机制那一半：拿列表给的目录建会话 ⇒ 成员自己库里那行记的就是属主目录。
+        const sessionId = yield* createV2SessionAs(BOB, entry.id, 目录)
+        expect(canonical(sessionDirectory(BOB.id, sessionId) ?? "")).toBe(canonical(属主目录))
+      }),
+    30_000,
+  )
+
+  /**
    * **同一毫秒的两条，顺序仍然确定**——次级键 `project_id` 的判据。
    *
    * 少了这条，实现里那句 `orderBy(desc(last_accessed_at), project_id)` 的后半段**删掉也不会红**

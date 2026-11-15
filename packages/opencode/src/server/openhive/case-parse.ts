@@ -19,7 +19,7 @@ import { 人工解析动作, 该动作可用, isRunning, nextStatus } from "./ca
 import { 入队材料, inside, LINK_ESCAPE, realInside } from "./file"
 import { 材料视图 } from "./case-materials"
 import { OpenhivePg } from "./pg"
-import { 成员角色 as 成员角色共享 } from "./project-actor"
+import { 成员角色 as 成员角色共享, 项目属主 } from "./project-actor"
 
 /**
  * 材料解析的两个出口（设计 §5.2 / §5.3 / §8.1）。
@@ -127,6 +127,7 @@ interface 磁盘文件 {
  */
 function 读盘文件(
   deps: Deps,
+  /** 项目的**落点属主**（不是调用者）：共享项目里成员读的是属主那份目录。 */
   userId: string,
   projectId: string,
   path: string,
@@ -182,6 +183,10 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
 
     if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
+
+    // 项目的**落点属主**（2026-11-15，A14-10）：共享项目的成员读的是**属主**那份目录。
+    // 一次查库、下面两处（读盘 / 入队）共用——按调用者算出来的目录对成员**不存在**。
+    const 属主 = yield* Effect.promise(() => 项目属主(deps.pg(), user.value.id, projectId))
 
     // 指定模板只对「入队 / 重新解析」有意义（设计 §9.5）；取消 / 跳过带了就是请求形状不对。
     if (templateId !== undefined && (action === "取消" || action === "跳过"))
@@ -258,7 +263,7 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
         return ok({ ok: true, status: "已跳过" })
       }
 
-      const 读 = yield* 读盘文件(deps, user.value.id, projectId, path)
+      const 读 = yield* 读盘文件(deps, 属主, projectId, path)
       if ("错误" in 读) return fail(读.status, 读.错误, 读.code)
 
       const 冲突 = yield* Effect.promise(() =>
@@ -290,14 +295,14 @@ function handleParse(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     // PDF / 图片 / 音视频仍不在这里（R1）；文本类从计划 4 起走同一个入口。
     if (!可解析材料(path)) return fail(409, "这类文件的解析在后续计划", "not_parseable")
 
-    const 读 = yield* 读盘文件(deps, user.value.id, projectId, path)
+    const 读 = yield* 读盘文件(deps, 属主, projectId, path)
     if ("错误" in 读) return fail(读.status, 读.错误, 读.code)
 
     const 结果 = yield* Effect.promise(() =>
       收冲突(() =>
         入队材料(deps.pg(), {
           root: deps.root,
-          project: projectDirectory(deps.root, user.value.id, projectId),
+          project: projectDirectory(deps.root, 属主, projectId),
           target: 读.绝对,
           bytes: 读.字节,
           fileName: 读.文件名,

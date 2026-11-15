@@ -1349,6 +1349,76 @@ describe("补测 · 项目头不是凭证：同一个 id 在别人手里够不�
 })
 
 /**
+ * **共享项目的成员，直接落在属主的沙箱里干活**（2026-11-15，A14-10）。
+ *
+ * 裁定（路线 A）：成员**不**复制项目，读写的是**属主**那一份目录。本组钉两条出口：
+ * 下载（读）与上传（写）；落点一律用磁盘判据（`#004-08`：副作用才是被测属性）。
+ *
+ * 与上一条 BOLA 的关系：那条证明「**不是成员**的人拿 id 够不着」；这条证明「**是成员**的人
+ * 够得着、且落在属主目录」。两条一起才把「按项目名册放行」钉死——只有前一条时，「全拦」
+ * 也能全绿。
+ */
+describe("共享项目 · 成员在属主的沙箱里干活（2026-11-15，A14-10）", () => {
+  /** 名册：给项目写 owner / member 行（同 `openhive-project-tree.test.ts` 的 `记成成员`）。 */
+  const 记成成员 = (subject: TokenSubject, projectId: string, role: "owner" | "member") =>
+    Effect.promise(async () => {
+      await pg!.db.execute(sql`
+        insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+        values (${subject.id}, ${subject.policeNo}, ${subject.name}, 'x', 'x', 'x', 'x', 'x', 0, 'h', 0)
+        on conflict (id) do nothing
+      `)
+      await pg!.db.execute(sql`
+        insert into auth.project_member (project_id, user_id, role, time_created)
+        values (${projectId}, ${subject.id}, ${role}, 1700000000)
+        on conflict (project_id, user_id) do update set role = excluded.role
+      `)
+    })
+
+  /**
+   * 本组**专属**的项目 id。
+   *
+   * ⚠️ 不能用 `ALPHA`：名册行留在 PG 夹具里（全文件共用一份），而后面还有两条
+   * 「乙带甲的项目 id ⇒ 400」——把那两行留在 `ALPHA` 上会让它们**反过来绿/红**
+   * （`LEARNINGS #005-34`：上一条用例污染下一条）。
+   */
+  const 共享项目 = "prj_shared_member_0007"
+  const 属主目录 = path.join(沙箱根, 共享项目)
+
+  /** 有就返回正文、没有返回 `undefined`——别让 `readFileSync` 的 ENOENT 盖住真正的红。 */
+  const 读盘 = (target: string) => (existsSync(target) ? readFileSync(target, "utf8") : undefined)
+
+  it.live(
+    "成员读到属主目录里的文件、写进去的文件也落在属主目录（成员自己沙箱里没有这个项目）",
+    () =>
+      Effect.gen(function* () {
+        重置文件()
+        mkdirSync(属主目录, { recursive: true })
+        yield* 种项目(ALICE, 共享项目)
+        // 前提：属主用**真出口**放一份进去（别裸写盘——落点要与生产同路）。
+        const 甲上传 = yield* upload(ALICE, "", "甲.txt", 甲, 共享项目)
+        expect(甲上传.status).toBe(200)
+        // 名册：甲是 owner、乙是 member。⚠️ 乙**没有** `project_ext` 行（影子行的前提）。
+        yield* 记成成员(ALICE, 共享项目, "owner")
+        yield* 记成成员(BOB, 共享项目, "member")
+
+        // 读：成员下载属主目录里那份。写：成员上传一份新的。
+        const 乙下载 = yield* as(BOB, `${出口.download}?path=${encodeURIComponent("甲.txt")}`, {
+          headers: { [PROJECT_HEADER]: 共享项目 },
+        })
+        const 乙上传 = yield* upload(BOB, "", "乙写的.txt", "乙写的正文", 共享项目)
+
+        // 被测属性（磁盘）在前（`#004-14`）。
+        expect(读盘(path.join(属主目录, "乙写的.txt"))).toBe("乙写的正文")
+        expect(existsSync(path.join(sandboxOf(BOB), 共享项目, "乙写的.txt"))).toBe(false)
+        expect(乙上传.status).toBe(200)
+        expect(yield* Effect.promise(() => 乙下载.text())).toBe(甲)
+        expect(乙下载.status).toBe(200)
+      }),
+    30_000,
+  )
+})
+
+/**
  * T018 那笔「新建 / 重命名 / 删除」（2026-10-10 补）。
  *
  * ## 它补的是哪个洞

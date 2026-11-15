@@ -362,6 +362,36 @@ export async function rolesOf(
   return new Map(rowsOf(result).map((row) => [String(row.project_id), String(row.role)]))
 }
 
+/**
+ * 一次取一批项目的**属主**（2026-11-15：共享项目的**落点**是属主的沙箱）。
+ *
+ * ## 为什么需要它
+ *
+ * 成员没有那个项目的 `project_ext` 行（影子行的物理前提），于是「这个项目在谁的目录里」在成员的
+ * 每用户库里**问不出来**——只能在共享 PG 里问。两个消费者：`middleware/project-location.ts`
+ * （每条成员请求）与 `./openhive/project` 的列表（影子行的 `directory` 字段）。
+ *
+ * ## 形状由调用点定（`LEARNINGS #004-07`）
+ *
+ * 批量而不是单条：列表那边一次要一屏项目的属主，单条版本会被循环 N 次。中间件那边只要一个 id
+ * ——传一个元素的数组，别为它再写一份单条实现（`#002-06`）。
+ *
+ * **没有属主行的项目键缺席**（同 `archiveStatesOf` / `memberCountsOf` / `rolesOf` 的口径）：
+ * 「部分唯一索引保证至多一行」是**有行时**的话，一行都没有是另一种状态（数据异常 / 项目从未在 PG
+ * 注册），读成某个默认值等于替它编一个属主。调用方据此 fail-closed。
+ *
+ * 空数组在入口提前返回（同 `memberCountsOf`：`in ()` 是语法错，应当炸出来而不是被兜住）。
+ */
+export async function ownersOf(db: ProjectMemberTarget, projectIds: readonly string[]): Promise<Map<string, string>> {
+  if (projectIds.length === 0) return new Map()
+  const result = await db.execute(sql`
+    select project_id, user_id
+    from auth.project_member
+    where role = 'owner' and project_id in (${idsOf(projectIds)})
+  `)
+  return new Map(rowsOf(result).map((row) => [String(row.project_id), String(row.user_id)]))
+}
+
 export interface RecordProjectInput {
   readonly projectId: string
   readonly name: string

@@ -600,6 +600,50 @@ describe("POST /openhive/case/parse（入队 / 重新解析）", () => {
     }))
 })
 
+/**
+ * **共享项目的成员能解析属主目录里的文件**（2026-11-15，A14-10）。
+ *
+ * 成员在属主的沙箱里干活（路线 A）；而 `读盘文件` / `入队材料` 此前按**调用者**拼目录
+ * （`{根}/{我}/{projectId}`）——成员那个目录从来不存在，入队会回 404 `file_missing`。
+ *
+ * 判据用**磁盘的位置**本身：文件只存在于**属主**目录，成员目录**根本不建**。所以这条绿
+ * 只能来自「去属主目录读」。用专属项目 id，不动全文件共用的那两份夹具（`#005-34`）。
+ */
+describe("POST /openhive/case/parse（共享项目 · 成员）", () => {
+  const 共享项目 = "p-case-shared-member"
+  const 属主项目根 = join(原始沙箱根, 我.id, 共享项目)
+
+  it("成员入队属主目录里的文件 ⇒ 200 排队中，材料行记在共享项目上", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(async () => {
+        await 库().execute(sql`
+          insert into auth.project_member (project_id, user_id, role, time_created)
+          values (${共享项目}, ${我.id}, 'owner', 0),
+                 (${共享项目}, ${别人.id}, 'member', 0)
+          on conflict (project_id, user_id) do update set role = excluded.role
+        `)
+        mkdirSync(join(属主项目根, "资料"), { recursive: true })
+        writeFileSync(join(属主项目根, "资料", "共享话单.xlsx"), "共享话单内容")
+      })
+
+      const 响应 = yield* 解析(别人, { projectId: 共享项目, path: "资料/共享话单.xlsx", action: "入队" })
+
+      const 材料 = yield* Effect.promise(async () => {
+        const rows = rowsOf(
+          await 库().execute(sql`
+            select id, parse_status, queued_by
+              from auth.case_material
+             where project_id = ${共享项目} and path = ${"资料/共享话单.xlsx"}
+          `),
+        )
+        return rows[0]
+      })
+      expect(材料?.parse_status).toBe("排队中")
+      expect(材料?.queued_by).toBe(别人.id)
+      expect(响应.status).toBe(200)
+    }))
+})
+
 describe("POST /openhive/case/parse（指定模板 templateId）", () => {
   const 种模板 = (projectId: string, eventType: "通话" | "见面") =>
     建模板(库(), {

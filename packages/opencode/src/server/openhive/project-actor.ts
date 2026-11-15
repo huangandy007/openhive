@@ -23,7 +23,7 @@
  *
  * ⚠️ 放宽只到 `owner`：老项目里没有「成员」这个概念，创建者就是属主。
  */
-import { membersOf, projectMetaOf, rolesOf, type ProjectMemberTarget } from "@opencode-ai/auth/project-member"
+import { membersOf, ownersOf, projectMetaOf, rolesOf, type ProjectMemberTarget } from "@opencode-ai/auth/project-member"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectExt } from "@opencode-ai/core/project/ext"
 import { Effect } from "effect"
@@ -60,4 +60,22 @@ export function 成员角色(
     if (已登记) return undefined
     return "owner"
   })
+}
+
+/**
+ * 项目沙箱的**属主**（2026-11-15，A14-10「共享项目的成员在属主的沙箱里干活」）。
+ *
+ * 回的是「目录该以谁的名字拼」：
+ * - `project_member` 里有 owner 行 ⇒ 属主的 id（成员与属主共用**同一份**文件）；
+ * - 没有 owner 行 ⇒ 调用者本人（老项目只活在调用者自己的 `project_ext` 里，属主就是他）。
+ *
+ * 与 `middleware/project-location.ts` 的 `落点属主` 是**同一条裁定**的两个读者：那边还要求
+ * 「调用者必须是成员」（不是成员 ⇒ fail-closed 落沙箱根），这边只回答「目录归谁」——调用方
+ * 都已各自验过成员（`成员角色`）。
+ *
+ * ⚠️ 没有 owner 行的坏账**退回调用者自己**，与列表出口（`project.ts` 的 `handleList`）同一处置：
+ * 这条退化只会让请求落在一个**不存在**的目录上（404/空），不会让任何人读到别人的文件。
+ */
+export function 项目属主(pg: ProjectMemberTarget, userId: string, projectId: string): Promise<string> {
+  return ownersOf(pg, [projectId]).then((owners) => owners.get(projectId) ?? userId)
 }

@@ -43,7 +43,10 @@ export * as OpenhiveFile from "./file"
  * **所有项目的父目录**（每个项目是它下面的一层）。于是 `prj_other/密件.txt` 这条相对路径
  * 当场可达：复制能把兄弟项目的文件抄出来、移动能把它搬走、上传能往兄弟项目里**塞一个新文件**
  * （这条才是判据的形状——「同名覆盖」那半句是错的：同名时**预检自己**就会拒，见下）。
- * ⇒ 判据：`?directory=` **恰好**是沙箱根**下面一层**（且那一段是合法路径段）。
+ * ⇒ 判据：`?directory=` **恰好**是沙箱根**下面两层**（`{根}/{某用户}/{projectId}`，两段都合法）。
+ * ⚠️ 2026-11-15（A14-10）之前是「本人沙箱下面一层」——共享项目的成员在**属主**的沙箱里干活，
+ * 第一段是**属主**、不是本人，那条判据会把成员的每一次文件动作打成 400。第一段是谁由
+ * `middleware/project-location.ts` 按名册定（成员关系 → 属主），本模块不重复判。
  *
  * ⚠️ 这条判据**不是**「再判一遍中间件判过的东西」：中间件拦的是「这个项目在不在、冻没冻」，
  * 本模块判的是「这次请求到底在不在项目里」。中间件**刻意**允许无头请求直通（那是大多数
@@ -433,17 +436,18 @@ export const routes = HttpRouter.use((router) =>
 function projectDirectoryOf(
   request: HttpServerRequest.HttpServerRequest,
   root: string,
-  userId: string,
 ): string | undefined {
   const directory = new URL(request.url, "http://localhost").searchParams.get("directory")
   if (directory === null) return undefined
 
-  const below = relative(join(root, userId), directory)
+  // 相对**沙箱根**恰好两层：`{某用户}/{projectId}`。第一段是属主还是本人，由定位层按名册
+  // 判（共享项目的成员落在属主目录），本模块只判「这次请求在不在**某个**项目里」。
+  const below = relative(root, directory)
   if (below === "" || isAbsolute(below)) return undefined
 
   const parts = below.split(/[\\/]/)
-  if (parts.length !== 1) return undefined
-  if (!User.isSafePathSegment(parts[0])) return undefined
+  if (parts.length !== 2) return undefined
+  if (!parts.every((part) => User.isSafePathSegment(part))) return undefined
   return directory
 }
 
@@ -583,7 +587,7 @@ const gate = (
     const user = yield* Effect.serviceOption(User.Service)
     if (Option.isNone(user)) return unauthorized()
 
-    const directory = projectDirectoryOf(request, root, user.value.id)
+    const directory = projectDirectoryOf(request, root)
     if (directory === undefined) return badRequest(NO_PROJECT)
     return directory
   })

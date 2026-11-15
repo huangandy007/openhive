@@ -278,8 +278,10 @@ describe("B1 · 共享项目对成员可见（FR-003 × FR-004）", () => {
         // 成员数是共享项目的口径（甲 + 乙）。
         expect(mine[0].memberCount).toBe(2)
         // 落点算法与 owner 那条**同一个函数**（`projectDirectory`）⇒ 乙那头也拿得到目录。
+        // 2026-11-15（A14-10 路线 A）：共享项目的成员在**属主**的沙箱里干活 ⇒ 乙拿到的目录是
+        // 甲那份（`{根}/{甲}/{projectId}`），不是乙自己那个**从来不存在**的目录。
         expect(canonical(mine[0].directory ?? "")).toBe(
-          canonical(path.join(WORKSPACE_ROOT, BOB.id, project.id)),
+          canonical(path.join(WORKSPACE_ROOT, ALICE.id, project.id)),
         )
       }),
     30_000,

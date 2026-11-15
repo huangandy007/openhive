@@ -77,15 +77,19 @@ export const routes = HttpRouter.use((router) =>
         // 那里不导出，这里写一份并互相指认）。
         // **不能省**：没有项目通道时 `?directory=` 停在**沙箱根** `{根}/{本人 id}`——相对根只有 1 段，
         // 挡不下就会把「跨项目的一棵树」当成这个项目的清单交出去，错得还看不出。
-        // ⚠️ 「第一段等于本人 id」那半句本端点**测不到**（与 `projectIdOfSessionDirectory` 同一条不可达
-        // 线：目录只有锚定层与项目定位层两个来源、都在本人沙箱里）——留着是为了让判据不依赖一条没有
-        // 说出口的前提，不是因为它被覆盖了（`LEARNINGS #002-02`）。
+        // ⚠️ 2026-11-15 起判据**只剩「2 段」**，不再要求第一段是本人 id：共享项目的成员去读写
+        // **属主**的沙箱（`middleware/project-location.ts` 的 `落点属主`），第一段是属主 id。
+        // 原来那半句 `段[0] !== user.value.id` 在引入共享项目后**会误伤成员**（把合法的项目目录判成
+        // 「没有项目上下文」⇒ 400），且它**本来就测不到**（目录只有锚定层与项目定位层两个来源）——
+        // 现在更明确：第一段是谁由定位层按成员关系判定，本端点不重复判。
+        // 挡越权的仍然是「2 段」这条 ＋ 定位层（它只可能把 `?directory=` 写成沙箱根或已过成员校验的
+        // 项目目录）。
         const user = yield* Effect.serviceOption(User.Service)
         if (目录 === null || Option.isNone(user)) {
           return HttpServerResponse.jsonUnsafe({ error: "没有项目上下文" }, { status: 400 })
         }
         const 段 = path.relative(config.root, 目录).split(/[\\/]/)
-        if (段.length !== 2 || 段[0] !== user.value.id) {
+        if (段.length !== 2) {
           return HttpServerResponse.jsonUnsafe({ error: "没有项目上下文" }, { status: 400 })
         }
 
