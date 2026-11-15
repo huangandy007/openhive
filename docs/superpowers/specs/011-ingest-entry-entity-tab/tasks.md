@@ -123,7 +123,12 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T001
   - **验证**：`A: project/case-materials-view.test.tsx` —— 既有用例**不改断言**、全绿（TR-005 行为不变）
 
-- [ ] T007 [US2] 新增 `选中集待入队`（先红后绿）：同一文件 `case-materials-view.ts`；用例进 `case-materials-view.test.tsx`
+- [x] T007 [US2] 新增 `选中集待入队`（先红后绿）：同一文件 `case-materials-view.ts`；用例进 `case-materials-view.test.tsx`
+
+  > **红（2026-11-15 实测）**：`SyntaxError: Export named '选中集待入队' not found`，0 pass / 1 fail / 1 error。
+  > **绿**：26 pass / 0 fail（既有 22 + 新增 4）。
+  > **变异**：`文件待入队` 去掉 `row.status === "已跳过" ||` 一处 ⇒ 「已跳过」用例红 `Expected: [] / Received: ["资料/跳过.xlsx"]`（总 23 pass / 3 fail，另两条既有用例同红）；恢复后 26 pass / 0 fail。
+  > **门禁**：`packages/app` typecheck 退出 0；根 `bun run lint` 退出 1，唯一 error 在未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（既有），本任务两文件仅命中两条既有 `consistent-return` 警告。
 
   - **入参**：`选中项: readonly string[]`（文件与目录路径混排）、`文件们: readonly string[]`（全树文件）、`行们: readonly 材料视图[]`、`extensions`
   - **出参**：`readonly string[]`（候选路径；文件与目录统一展开、按「见过」去重、**保持输入顺序**）

@@ -191,6 +191,58 @@ export function 目录下待入队(
   return 结果
 }
 
+// 归一与树节点同款（`normalizeFileTreeV2Path`：`\`→`/`、去首尾 `/`、折叠 `//`）。
+// 本文件是纯规则层，不 import 上游组件模块——同一套归一规则在这里写一份局部实现。
+const 归一 = (path: string) => path.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").replace(/\/{2,}/g, "/")
+const 尾分隔符 = /[\\/]$/
+
+/**
+ * 多选（文件与目录混排）下**会真正入队**的候选——批量确认框里的 N（契约 C3–C5）。
+ *
+ * 判据只有 `文件待入队` 一处（`#002-06`）：目录展开交给 `目录下待入队`，文件直接过它。
+ * 一个 `见过` 跨全部选中项去重：同一份文件被目录和自身各选中一次也只入队一次。
+ * 顺序 = `选中项` 输入顺序、目录内部保持 `文件们` 原顺序——候选顺序就是入队顺序。
+ *
+ * 形态判定：带尾分隔符 ⇒ 目录；否则在 `文件们` 里能找到同形文件条目 ⇒ 文件；
+ * 都不是 ⇒ 按目录处理（空目录 / 还没出现在清单里的子目录），展开结果自然为空。
+ */
+export function 选中集待入队(
+  选中项: readonly string[],
+  文件们: readonly string[],
+  行们: readonly 材料视图[],
+  extensions: readonly string[],
+): readonly string[] {
+  const 行表 = new Map(行们.map((row) => [row.path, row]))
+  const 文件映射 = new Map<string, string>()
+  for (const path of 文件们) {
+    if (尾分隔符.test(path)) continue
+    const 键 = 归一(path)
+    if (!文件映射.has(键)) 文件映射.set(键, path)
+  }
+
+  const 结果: string[] = []
+  const 见过 = new Set<string>()
+  for (const 项 of 选中项) {
+    const 键 = 归一(项)
+    if (键 === "") continue
+    const 文件 = 尾分隔符.test(项) ? undefined : 文件映射.get(键)
+    const 候选 =
+      文件 !== undefined
+        ? 文件待入队(文件, 行表.get(文件), extensions)
+          ? [文件]
+          : []
+        : 目录下待入队(键, 文件们, 行们, extensions)
+    for (const path of 候选) {
+      // 去重按归一键：不同分隔符写法指向同一份文件也只出现一次。
+      const 去重键 = 归一(path)
+      if (见过.has(去重键)) continue
+      见过.add(去重键)
+      结果.push(path)
+    }
+  }
+  return 结果
+}
+
 /**
  * 菜单五项亮不亮的**唯一依据**。所有原因函数都先过三句公共闸：接入、有对象、是文件。
  * `undefined` = 亮。
