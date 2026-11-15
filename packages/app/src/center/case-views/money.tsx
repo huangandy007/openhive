@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "soli
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
-import { 金额文本, 精度时间文本, 时间文本 } from "./format"
+import { 金额文本, 精度时间文本 } from "./format"
 
 export interface MoneyProps {
   readonly projectId: string
@@ -14,7 +14,13 @@ interface 汇总行 { readonly 方向: string; readonly 笔数: number; readonly
 interface 对手方行 { readonly 对手方: string; readonly 方向: string; readonly 笔数: number; readonly 合计: string }
 interface 余额 { readonly 首: string | null; readonly 末: string | null; readonly 最高: string | null; readonly 最低: string | null; readonly 行数: number }
 
-interface 流水行 { readonly id: string; readonly 金额: string; readonly 时间: number | null; readonly 摘要: string | null }
+interface 流水行 {
+  readonly id: string
+  readonly 金额: string
+  readonly 时间: number | null
+  readonly 精度: string | null
+  readonly 摘要: string | null
+}
 interface 人说行 {
   readonly id: string
   readonly 方向: "出" | "入"
@@ -35,9 +41,11 @@ const 解单笔 = (条: unknown): 流水行 | undefined => {
   if (条 === null || typeof 条 !== "object") return undefined
   const 行 = 条 as Record<string, unknown>
   const 时间 = 可空数(行.时间)
+  const 精度 = 可空串(行.精度)
   const 摘要 = 可空串(行.摘要)
-  if (!是串(行.id) || !是串(行.金额) || 时间 === undefined || 摘要 === undefined) return undefined
-  return { id: 行.id, 金额: 行.金额, 时间, 摘要 }
+  if (!是串(行.id) || !是串(行.金额) || 时间 === undefined || 精度 === undefined || 摘要 === undefined)
+    return undefined
+  return { id: 行.id, 金额: 行.金额, 时间, 精度, 摘要 }
 }
 
 const 解人说 = (条: unknown): 人说行 | undefined => {
@@ -76,19 +84,38 @@ const 对手方行文本 = (行: 对手方行) => `${行.对手方} · ${行.方
 const 余额文本 = (余额: 余额) =>
   `首 ${金额文本(余额.首)} · 末 ${金额文本(余额.末)} · 最高 ${金额文本(余额.最高)} · 最低 ${金额文本(余额.最低)} · 共 ${余额.行数} 行`
 
-function 解资金(数据: unknown): {
+/**
+ * 这两类 `空原因` 的语义是**不能断定**（材料没读全 / 外币不进人民币口径），不是「没有」。
+ * 页面据此收起所有「没有…」的空态，改说原因（`#012-02`：空证据按原始事实写）。
+ * 其余空原因（确实没有交易 / 账户未在材料中出现 / 无匹配行…）是对数据下的确定结论，照实说没有。
+ */
+const 空原因话表: Record<string, string> = {
+  项目内资金材料未翻译: "项目内资金材料还没翻译完，现在不能断定有没有交易",
+  外币行全部未计入: "该账户在窗口内只有外币流水，外币不计入人民币口径，无法给出结论",
+}
+
+function 解资金(数据: unknown, 空原因: unknown): {
   汇总: 汇总行[]
   对手方: 对手方行[]
   余额: 余额 | null
   流水: 明细段<流水行>
   人说的: 明细段<人说行>
+  原因话: string | undefined
 } {
+  const 原因话 = typeof 空原因 === "string" ? 空原因话表[空原因] : undefined
   // `数据: null` 是服务端**明确表示空**（与同页「没有可汇总的转账」一致），不是「本次未返回」；
   // 只有键缺席或形状认不出（老服务端 / 坏回包）才是「不知道」（`#002-02`）。
   if (数据 === null)
-    return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "有", 行们: [] }, 人说的: { 状态: "有", 行们: [] } }
+    return {
+      汇总: [],
+      对手方: [],
+      余额: null,
+      流水: { 状态: "有", 行们: [] },
+      人说的: { 状态: "有", 行们: [] },
+      原因话,
+    }
   if (typeof 数据 !== "object")
-    return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "未返回" }, 人说的: { 状态: "未返回" } }
+    return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "未返回" }, 人说的: { 状态: "未返回" }, 原因话 }
   const 记 = 数据 as Record<string, unknown>
   const 汇总 = Array.isArray(记.汇总)
     ? 记.汇总.flatMap((条) => {
@@ -117,16 +144,23 @@ function 解资金(数据: unknown): {
           最低: 是串((原余额 as Record<string, unknown>).最低) ? ((原余额 as Record<string, string>).最低 ?? null) : null,
           行数: 是数((原余额 as Record<string, unknown>).行数) ? ((原余额 as Record<string, number>).行数 ?? 0) : 0,
         }
-  return { 汇总, 对手方, 余额, 流水: 解段(记.单笔最大, 解单笔), 人说的: 解段(记.人说的笔, 解人说) }
+  return { 汇总, 对手方, 余额, 流水: 解段(记.单笔最大, 解单笔), 人说的: 解段(记.人说的笔, 解人说), 原因话 }
 }
 
 const 有段落 = <T,>(段: 明细段<T>): T[] | undefined => (段.状态 === "有" ? 段.行们 : undefined)
 
-const 流水行文本 = (行: 流水行) => `${金额文本(行.金额)} · ${时间文本(行.时间)} · ${行.摘要 ?? "无摘要"}`
+const 流水行文本 = (行: 流水行) =>
+  `${金额文本(行.金额)} · ${精度时间文本(行.时间, 行.精度)} · ${行.摘要 ?? "无摘要"}`
+/** 聚合多次（或首末不同）的行给「首 → 末」：只写首笔会把跨日多次记成「某日一次」。 */
+const 人说时间文本 = (行: 人说行): string => {
+  if (行.首 === null) return "时间未记"
+  const 首 = 精度时间文本(行.首, 行.精度)
+  if (行.末 === null || 行.末 === 行.首) return 首
+  return `${首} → ${精度时间文本(行.末, 行.精度)}`
+}
 const 人说行文本 = (行: 人说行) =>
-  `${行.方向} → ${行.对手} · ${行.金额 === null ? "金额未记" : 金额文本(行.金额)} · ${
-    行.首 === null ? "时间未记" : 精度时间文本(行.首, 行.精度)
-  }` + (行.次数 !== null && 行.次数 > 1 ? ` · ${行.次数} 次` : "")
+  `${行.方向} → ${行.对手} · ${行.金额 === null ? "金额未记" : 金额文本(行.金额)} · ${人说时间文本(行)}` +
+  (行.次数 !== null && 行.次数 > 1 ? ` · ${行.次数} 次` : "")
 
 /** 资金概览。汇总 / 对手方 / 余额都来自 `aggregate_money` 的**同一次**返回，前端不再分头取数。 */
 export function Money(props: MoneyProps): JSX.Element {
@@ -165,7 +199,7 @@ export function Money(props: MoneyProps): JSX.Element {
       })
   })
 
-  const 解 = () => 解资金(结果()?.数据)
+  const 解 = () => 解资金(结果()?.数据, 结果()?.空原因)
 
   return (
     <div
@@ -185,6 +219,10 @@ export function Money(props: MoneyProps): JSX.Element {
       </Show>
 
       <Show when={结果()}>
+        {/* 不能断定（材料没读全 / 只有外币）时先说原因，下面收起所有「没有…」的说法。 */}
+        <Show when={解().原因话}>
+          {(话) => <p data-slot="money-empty-reason" class="mt-2 text-[13px] text-v2-text-text-muted">{话()}</p>}
+        </Show>
         <div class="mt-2 flex flex-wrap gap-2">
           <For each={解().汇总}>
             {(行) => (
@@ -199,13 +237,13 @@ export function Money(props: MoneyProps): JSX.Element {
               </div>
             )}
           </For>
-          <Show when={解().汇总.length === 0}>
+          <Show when={解().汇总.length === 0 && 解().原因话 === undefined}>
             <p class="text-[13px] text-v2-text-text-muted">没有可汇总的转账</p>
           </Show>
         </div>
 
         <h2 class="mt-3 text-[13px] font-semibold text-v2-text-text-base">对手方</h2>
-        <Show when={解().对手方.length === 0}>
+        <Show when={解().对手方.length === 0 && 解().原因话 === undefined}>
           <p class="text-[13px] text-v2-text-text-muted">没有对手方</p>
         </Show>
         <For each={解().对手方}>
@@ -226,7 +264,14 @@ export function Money(props: MoneyProps): JSX.Element {
         </For>
 
         <h2 class="mt-3 text-[13px] font-semibold text-v2-text-text-base">余额</h2>
-        <Show when={解().余额} fallback={<p class="text-[13px] text-v2-text-text-muted">没有可用余额</p>}>
+        <Show
+          when={解().余额}
+          fallback={
+            <Show when={解().原因话 === undefined}>
+              <p class="text-[13px] text-v2-text-text-muted">没有可用余额</p>
+            </Show>
+          }
+        >
           {(余额) => (
             <div
               data-slot="money-balance"
@@ -249,7 +294,7 @@ export function Money(props: MoneyProps): JSX.Element {
             <Show when={有段落(解().流水)}>
               {(行们) => (
                 <>
-                  <Show when={行们().length === 0}>
+                  <Show when={行们().length === 0 && 解().原因话 === undefined}>
                     <p data-slot="money-flow-empty" class="text-[13px] text-v2-text-text-muted">没有流水笔</p>
                   </Show>
                   <For each={行们()}>
@@ -276,7 +321,7 @@ export function Money(props: MoneyProps): JSX.Element {
             <Show when={有段落(解().人说的)}>
               {(行们) => (
                 <>
-                  <Show when={行们().length === 0}>
+                  <Show when={行们().length === 0 && 解().原因话 === undefined}>
                     <p data-slot="money-human-empty" class="text-[13px] text-v2-text-text-muted">没有人说的笔</p>
                   </Show>
                   <For each={行们()}>

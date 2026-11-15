@@ -72,8 +72,8 @@ const 数据 = {
 const 带明细 = {
   ...数据,
   单笔最大: [
-    { id: "ev-1", 金额: "50000.00", 时间: 1773300000, 摘要: "转账-货款" },
-    { id: "ev-2", 金额: "120.00", 时间: null, 摘要: null },
+    { id: "ev-1", 金额: "50000.00", 时间: 1773300000, 精度: "到日", 摘要: "转账-货款" },
+    { id: "ev-2", 金额: "120.00", 时间: null, 精度: null, 摘要: null },
   ],
   人说的笔: [
     { id: "r-1", 方向: "出", 对手: "李四", 金额: "50000.00", 首: 1773300000, 末: 1773300000, 精度: "到日", 次数: null },
@@ -81,9 +81,9 @@ const 带明细 = {
   ],
 }
 
-const 明细api = (数据段: unknown) =>
+const 明细api = (数据段: unknown, 空原因: string | null = null) =>
   假api({
-    money: async () => ({ kind: "ok", value: { 数据: 数据段, 口径: "只统计已抽成关系的转账", 缺口: [] } }),
+    money: async () => ({ kind: "ok", value: { 数据: 数据段, 口径: "只统计已抽成关系的转账", 缺口: [], 空原因 } }),
   })
 
 function 假api(over: Partial<CaseDetailApi> = {}): CaseDetailApi {
@@ -232,6 +232,22 @@ describe("资金", () => {
     expect(人说[1]!.textContent).toContain("3 次")
   })
 
+  test("流水行按精度出时间：只到日的来源不补时分（页面不替抽取器编时刻）", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-flow']").length === 2)
+    const 行 = host.querySelector<HTMLElement>("[data-slot='money-flow']")!
+    // 时间 = 1773300000（本地 2026-03-12）；精度「到日」⇒ 时分是占位，不许出现。
+    expect(行.getAttribute("data-copy")).toContain("2026-03-12")
+    expect(行.getAttribute("data-copy")).not.toContain(":")
+  })
+
+  test("流水行没有时间 ⇒ 时间未知（精度不改变这条）", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-flow']").length === 2)
+    const 行们 = [...host.querySelectorAll<HTMLElement>("[data-slot='money-flow']")]
+    expect(行们[1]!.textContent).toContain("时间未知")
+  })
+
   test("精度只到日的人说行只显示日期，不补出时分（页面不替抽取器编时刻）", async () => {
     const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
     await 等(() => host.querySelectorAll("[data-slot='money-human']").length === 2)
@@ -239,6 +255,28 @@ describe("资金", () => {
     // 首 = 1773300000（本地 2026-03-12）；精度「到日」⇒ 时分是占位，不许出现。
     expect(行.getAttribute("data-copy")).toContain("2026-03-12")
     expect(行.getAttribute("data-copy")).not.toContain(":")
+    // 首末相同（同一时刻）⇒ 不画区间，免得读成「发生过一段时间」。
+    // （`出 → 李四` 里的箭头是方向分隔，不算区间；区间只认「日期 → 日期」。）
+    expect(行.getAttribute("data-copy")).not.toMatch(/\d{4}-\d{2}-\d{2} → /)
+  })
+
+  /** 聚合多次的人说行：只显示「首」会把 8 天里陆续发生的 3 笔记成「3 月 12 日一次」。 */
+  test("人说行聚合多次时显示「首 → 末」区间，不只给首笔时间", async () => {
+    const 区间 = {
+      ...带明细,
+      人说的笔: [
+        { id: "r-3", 方向: "出", 对手: "李四", 金额: "900.00", 首: 1773300000, 末: 1774000000, 精度: "到日", 次数: 3 },
+      ],
+    }
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(区间)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-human']").length === 1)
+    const 文本 = host.querySelector<HTMLElement>("[data-slot='money-human']")!.getAttribute("data-copy")!
+    const 区间文本 = /(\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})/.exec(文本)
+    expect(区间文本).not.toBeNull()
+    // 两端都得是日期（精度「到日」），且确实不同。
+    expect(区间文本![1]).not.toBe(区间文本![2])
+    expect(文本).toContain("3 次")
+    expect(文本).not.toContain(":")
   })
 
   test("数据: null（新服务端明确表示空）⇒ 两段说「没有」，不说「本次未返回」", async () => {
@@ -246,6 +284,32 @@ describe("资金", () => {
     await 等(() => host.textContent!.includes("没有流水笔"))
     expect(host.textContent).toContain("没有人说的笔")
     expect(host.textContent).not.toContain("本次未返回")
+  })
+
+  /**
+   * `数据: null` 不只表示「真空」：`空原因` 是「材料没翻译完」「只有外币」时，语义是
+   * **不能断定**（`#012-02`：空证据按原始事实写）。页面不许把它写成「没有流水笔」。
+   */
+  test("空原因 = 项目内资金材料未翻译 ⇒ 不写「没有流水笔」，改说现在不能断定", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(null, "项目内资金材料未翻译")} />)
+    await 等(() => host.textContent!.includes("不能断定"))
+    expect(host.textContent).not.toContain("没有流水笔")
+    expect(host.textContent).not.toContain("没有人说的笔")
+    expect(host.textContent).not.toContain("没有可汇总的转账")
+  })
+
+  test("空原因 = 外币行全部未计入 ⇒ 同样不写「没有流水笔」，说清无法给出结论", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(null, "外币行全部未计入")} />)
+    await 等(() => host.textContent!.includes("无法给出结论"))
+    expect(host.textContent).not.toContain("没有流水笔")
+    expect(host.textContent).not.toContain("没有人说的笔")
+  })
+
+  test("空原因 = 无匹配行 ⇒ 这是确定的空，照实说没有（不借「不能断定」推脱）", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(null, "无匹配行")} />)
+    await 等(() => host.textContent!.includes("没有流水笔"))
+    expect(host.textContent).not.toContain("不能断定")
+    expect(host.textContent).not.toContain("无法给出结论")
   })
 
   test("两段各有自己的空态（不共用一句「没有明细」）", async () => {

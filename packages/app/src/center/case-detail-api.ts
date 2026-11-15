@@ -190,6 +190,11 @@ export interface 工具结果 {
   readonly 数据: unknown
   readonly 口径?: string
   readonly 缺口?: readonly string[]
+  /**
+   * 空结果的**原因**（信封七字段之一）：`数据` 为 `null` 时它区分「确实没有」与
+   * 「不能断定」（材料未翻译 / 只有外币）。老版本服务端不带这个键。
+   */
+  readonly 空原因?: string | null
 }
 
 /**

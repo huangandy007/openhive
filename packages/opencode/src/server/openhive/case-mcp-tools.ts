@@ -2204,6 +2204,8 @@ type 单笔最大行 = {
   readonly id: string
   readonly 金额: string
   readonly 时间: number | null
+  /** 时间精度（到日 / 到分 / 到秒）：读端据此决定显不显示时分，别替抽取器补更精确的时刻。 */
+  readonly 精度: string | null
   readonly 摘要: string | null
 }
 
@@ -2261,7 +2263,7 @@ function 单笔最大条件(
 async function 取单笔最大(ctx: 工具上下文, 条件: readonly SQL[]): Promise<单笔最大行[]> {
   return rowsOf(
     await ctx.db.execute(sql`
-      select id, occurred_at, amount::text as amount_text, summary
+      select id, occurred_at, amount::text as amount_text, precision, summary
         from auth.case_event
        where ${sql.join([...条件], sql` and `)}
        order by amount desc, occurred_at asc nulls last, id asc
@@ -2271,6 +2273,7 @@ async function 取单笔最大(ctx: 工具上下文, 条件: readonly SQL[]): Pr
     id: String(行.id),
     金额: String(行.amount_text),
     时间: 行.occurred_at === null || 行.occurred_at === undefined ? null : Number(行.occurred_at),
+    精度: typeof 行.precision === "string" ? 行.precision : null,
     摘要: (行.summary as string | null) ?? null,
   }))
 }

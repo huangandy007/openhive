@@ -99,7 +99,7 @@ type 流数据 = {
   首末: { 首: number | null; 末: number | null }
   汇总: { 方向: string; 笔数: number; 合计: string }[]
   对手排行: 对手行[]
-  单笔最大: { id: string; 金额: string; 时间: number | null }[]
+  单笔最大: { id: string; 金额: string; 时间: number | null; 精度: string | null }[]
   集中度: Record<string, string>
   外币行数: number
   人说的笔: 人说行[]
@@ -249,6 +249,9 @@ describe("money_flow", () => {
       },
     ])
     expect(数据.单笔最大.map((条) => 条.金额)).toEqual(["20000.00", "10000.00"])
+    // 精度随行返回：表格「2026-04-01 10:00:00」解析成「到秒」，读端据此决定显不显示时分
+    // （页面不得替抽取器补一个更精确的时刻，`#002-06` 同一前提单出处）。
+    expect(数据.单笔最大.map((条) => 条.精度)).toEqual(["到秒", "到秒"])
     expect(数据.集中度).toEqual({ 入: "100.0%" })
     expect(数据.外币行数).toBe(1)
     // 单笔口径是整句契约，不是关键词（C1：时间窗同样作用于单笔最大）。
