@@ -27,6 +27,7 @@ import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 构图, 布局目标 } from "./editor"
+import { 适配视口 } from "./geometry"
 import { 重置导出记录, type 导出依赖 } from "./export"
 
 const 挂过的: Array<() => void> = []
@@ -3303,5 +3304,420 @@ describe("T016b · 复制粘贴", () => {
     按键(乙host.querySelector("[data-slot='hgraph-canvas']")!, { key: "v", ctrlKey: true })
     await 过防抖()
     expect(乙.写们.length).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T017b · 大图找得到、看得清（搜索 / 隔离 / 筛选 / 查找路径 / 标签分级）
+//
+// 口径：R70 视口归画布（编辑器只递增请求序号）、R71 标签取舍由画布调用、R72 隔离与
+// 筛选共用「已隐藏 N」。所有新交互都是本地展示态，**零写盘**（用例断言 `写们.length` 不变）。
+// ---------------------------------------------------------------------------
+
+const 节点标签个数 = () => document.querySelectorAll("[data-slot='hgraph-node-label']").length
+const 边标签个数 = () => document.querySelectorAll("[data-slot='hgraph-edge-label']").length
+const 已选节点id们 = () =>
+  [...document.querySelectorAll("[data-slot='hgraph-node'][data-selected='true']")].map((元素) =>
+    元素.getAttribute("data-node-id"),
+  )
+const 带标签的节点id们 = () =>
+  [...document.querySelectorAll("[data-slot='hgraph-node']")]
+    .filter((组) => 组.querySelector("[data-slot='hgraph-node-label']") !== null)
+    .map((组) => 组.getAttribute("data-node-id"))
+/** 断言集合用的稳定升序（不用裸 `.sort()`：oxlint 要求显式 compare）。 */
+const 升序 = (值: readonly (string | null)[]) =>
+  [...值].sort((甲, 乙) => {
+    const 左 = 甲 ?? ""
+    const 右 = 乙 ?? ""
+    return 左 < 右 ? -1 : 左 > 右 ? 1 : 0
+  })
+
+const 勾选 = (输入: HTMLInputElement, 值: boolean) => {
+  输入.checked = 值
+  输入.dispatchEvent(new Event("change", { bubbles: true }))
+}
+
+const 输入搜索词 = (词: string) => {
+  const 输入 = 取("[data-slot='hgraph-search']") as HTMLInputElement
+  expect(输入).not.toBeNull()
+  输入.value = 词
+  输入.dispatchEvent(new Event("input", { bubbles: true }))
+  return 输入
+}
+
+const 滚轮 = (deltaY: number) =>
+  画布()!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY }))
+
+/** n1–n2 相连，n3 孤立；类型：n1/n2 是「人」，n3 是「公司」。 */
+function 三点图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("n1", 100, 100, { 类型: "人" }),
+      造节点("n2", 200, 100, { 类型: "人" }),
+      造节点("n3", 400, 400, { 类型: "公司" }),
+    ],
+    边: [造边("e1", "n1", "n2")],
+    文字: [],
+  }
+}
+
+/** 四跳链 n1–n2–n3–n4（名称：张三/李四/王五/赵六）。 */
+function 链图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("n1", 100, 100, { 名称: "张三" }),
+      造节点("n2", 200, 100, { 名称: "李四" }),
+      造节点("n3", 300, 100, { 名称: "王五" }),
+      造节点("n4", 400, 100, { 名称: "赵六" }),
+    ],
+    边: [造边("e1", "n1", "n2"), 造边("e2", "n2", "n3"), 造边("e3", "n3", "n4")],
+    文字: [],
+  }
+}
+
+/** 宽图：两颗节点相距 6000，适配后缩放 ≈ 0.11（低于 0.3 档）。 */
+function 宽图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [造节点("n1", 0, 0), 造节点("n2", 6000, 0)],
+    边: [],
+    文字: [],
+  }
+}
+
+/** 1001 颗节点（>1000）：40 列 × 26 行网格。 */
+function 千点图(): 图文件 {
+  const 节点们: 节点[] = []
+  for (let 序 = 0; 序 < 1001; 序++) {
+    节点们.push(造节点(`n${序}`, (序 % 40) * 60, Math.floor(序 / 40) * 60))
+  }
+  return { ...一份图(), 节点: 节点们, 边: [], 文字: [] }
+}
+
+/**
+ * 挂一块裸画布（不拼工具栏/检查器）：R70 的视口请求、R71 的标签分级都在画布内落地。
+ * `恢复毫秒` 是运动帧恢复的测试缝（默认 200）；`标签开` = 编辑器的 >800 落点。
+ */
+function 挂画布(
+  文档: 图文件,
+  选项: {
+    选中?: readonly string[]
+    居中请求?: { readonly id: string; readonly 序号: number }
+    适配请求?: number
+    适配目标?: readonly string[]
+    标签开?: boolean
+    恢复毫秒?: number
+  } = {},
+) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  const 幽 = 幽灵动作表()
+  const [选中, set选中] = createSignal<readonly string[]>(选项.选中 ?? [])
+  const [居中请求, set居中请求] = createSignal(选项.居中请求)
+  const [适配请求, set适配请求] = createSignal(选项.适配请求)
+  const [适配目标, set适配目标] = createSignal(选项.适配目标)
+  const [标签开, set标签开] = createSignal(选项.标签开)
+  挂过的.push(
+    render(
+      () => (
+        <画布组件
+          文档={文档}
+          选中={选中()}
+          模式="指针"
+          坐标换算={({ clientX, clientY }) => ({
+            // WheelEvent 的 clientX/Y 在 happy-dom 下可能是 undefined：按内容原点兜底。
+            x: Number.isFinite(clientX) ? clientX : 0,
+            y: Number.isFinite(clientY) ? clientY : 0,
+          })}
+          动作={幽.动作}
+          居中请求={居中请求()}
+          适配请求={适配请求()}
+          适配目标={适配目标()}
+          标签开={标签开()}
+          恢复毫秒={选项.恢复毫秒}
+        />
+      ),
+      host,
+    ),
+  )
+  return { 幽, 选中, set选中, set居中请求, set适配请求, set适配目标, set标签开 }
+}
+
+describe("T017b · 隔离（R72）", () => {
+  test("#10 只看邻居：只渲染 1 跳集合，角落条写明已隐藏 N 个节点", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    const 按钮 = 取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement
+    expect(按钮).not.toBeNull()
+    expect(按钮.disabled).toBe(false)
+    按钮.click()
+    await flush()
+
+    // 可见集合：n1 与其 1 跳邻居 n2；n3 孤立 ⇒ 被隐藏。
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n2")).not.toBeNull()
+    expect(节点组("n3")).toBeNull()
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 1 个节点")
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("#11 退出隔离：角落条消失、全部节点重新渲染", async () => {
+    const { api } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-neighbors']") as HTMLButtonElement).click()
+    await flush()
+    expect(取("[data-slot='hgraph-hidden-badge']")).not.toBeNull()
+
+    ;(取("[data-slot='hgraph-exit-isolation']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(取("[data-slot='hgraph-hidden-badge']")).toBeNull()
+    expect(节点组("n3")).not.toBeNull()
+  })
+})
+
+describe("T017b · 筛选（R72）", () => {
+  test("#12 类型筛选：选「人」后隐藏计数 = 非「人」节点数（1）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    ;(取("[data-slot='hgraph-filter-toggle']") as HTMLButtonElement).click()
+    await flush()
+    const 人 = 取("[data-slot='hgraph-filter-type'][value='人']") as HTMLInputElement
+    expect(人).not.toBeNull()
+    勾选(人, true)
+    await flush()
+
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n2")).not.toBeNull()
+    expect(节点组("n3")).toBeNull()
+    expect(文案("hgraph-hidden-badge")).toContain("已隐藏 1 个节点")
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("#12b 性质筛选只作用于边：选「推断」后事实边不渲染，节点不被隐藏", async () => {
+    const { api, 写们 } = 假api()
+    const 图: 图文件 = {
+      ...三点图(),
+      边: [
+        { ...造边("e1", "n1", "n2"), 性质: "事实" },
+        { ...造边("e2", "n2", "n3"), 性质: "推断" },
+      ],
+    }
+    挂上(api, 图)
+    await flush()
+    expect(边数()).toBe(2)
+
+    ;(取("[data-slot='hgraph-filter-toggle']") as HTMLButtonElement).click()
+    await flush()
+    const 性质 = 取("[data-slot='hgraph-filter-kind']") as HTMLSelectElement
+    性质.value = "推断"
+    性质.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+
+    expect(边数()).toBe(1)
+    expect(节点数()).toBe(3)
+    // 性质筛选不隐藏节点 ⇒ 「已隐藏 N」为 0，角落条不渲染（R72：共用节点口径）。
+    expect(取("[data-slot='hgraph-hidden-badge']")).toBeNull()
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+})
+
+describe("T017b · 搜索（R72）", () => {
+  test("#13 搜索 Enter：选中 1 个、节点落 viewBox 中心（居中请求生效）、零写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    const 输入 = 输入搜索词("n2")
+    await flush()
+    按键(输入, { key: "Enter" })
+    await flush()
+
+    expect(已选节点id们()).toEqual(["n2"])
+    // 画布宽高 760×680、缩放不变（1）⇒ n2(200,100) 落在中心：translate(180 240)。
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(180 240) scale(1)")
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("#14 搜索无结果：文案「没有匹配的节点」，选中不变", async () => {
+    const { api } = 假api()
+    挂上(api, 三点图())
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    输入搜索词("不存在的人")
+    await flush()
+
+    expect(文案("hgraph-search-empty")).toBe("没有匹配的节点")
+    expect(已选节点id们()).toEqual(["n1"])
+  })
+})
+
+describe("T017b · 查找路径（R72）", () => {
+  test("#15 有路径：面板含「3 跳」与途经名称，选中 = 路径 id，零写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 链图())
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n4", 400, 100, { shiftKey: true })
+    await flush()
+    const 按钮 = 取("[data-slot='hgraph-toolbar-path']") as HTMLButtonElement
+    expect(按钮).not.toBeNull()
+    expect(按钮.disabled).toBe(false)
+    按钮.click()
+    await flush()
+
+    const 面板 = 文案("hgraph-path-panel") ?? ""
+    expect(面板).toContain("3 跳")
+    expect(面板).toContain("张三")
+    expect(面板).toContain("李四")
+    expect(面板).toContain("王五")
+    expect(面板).toContain("赵六")
+    expect(升序(已选节点id们())).toEqual(["n1", "n2", "n3", "n4"])
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("#16 不连通：面板明说没有路径，选中不变、零写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, { ...三点图(), 边: [] })
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+    ;(取("[data-slot='hgraph-toolbar-path']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(文案("hgraph-path-panel")).toContain("这两个节点之间没有连通的路径")
+    expect(升序(已选节点id们())).toEqual(["n1", "n2"])
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+})
+
+describe("T017b · 标签分级与运动帧（R71 / R70）", () => {
+  test("#17 适配后缩放 ≈ 11%（<30%）只留选中标签；放到 ≥60% 恢复全部", async () => {
+    const 图 = 宽图()
+    const 预期 = 适配视口(图.节点, { 宽: 760, 高: 680 })
+    挂画布(图, { 选中: ["n1"], 恢复毫秒: 40, 适配请求: 1 })
+    await flush()
+
+    // 适配请求（R70）：画布用 `适配视口(节点们, {宽:760, 高:680})` 落地，原点不动。
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe(
+      `translate(${预期.x} ${预期.y}) scale(${预期.缩放})`,
+    )
+    // 缩放 ≈ 0.11 < 0.3 ⇒ 只留选中节点。
+    expect(带标签的节点id们()).toEqual(["n1"])
+
+    for (let 序 = 0; 序 < 13; 序++) 滚轮(-100)
+    await 等(80)
+    expect(升序(带标签的节点id们())).toEqual(["n1", "n2"])
+  })
+
+  test("#18 拖动中标签全隐；松手后延迟恢复（不是立即显示）", async () => {
+    挂画布(三点图(), { 恢复毫秒: 40 })
+    await flush()
+    expect(节点标签个数()).toBe(3)
+    expect(边标签个数()).toBe(1)
+
+    按下(节点组("n1")!, 100, 100)
+    for (let 序 = 1; 序 <= 6; 序++) 指针移动(100 + 序 * 10, 100)
+    expect(节点标签个数()).toBe(0)
+    expect(边标签个数()).toBe(0)
+
+    松开(160, 100)
+    await flush()
+    // 松手后不是立即恢复：定时器（40ms）尚未到。
+    expect(节点标签个数()).toBe(0)
+    await 等(80)
+    expect(节点标签个数()).toBe(3)
+  })
+
+  test("#19 边标签：缩放 50% 不渲染，≥80% 才渲染", async () => {
+    挂画布(三点图(), { 恢复毫秒: 40 })
+    await flush()
+    expect(边标签个数()).toBe(1)
+
+    // deltaY > 0 = 缩小（canvas.tsx 的滚轮公式）。
+    for (let 序 = 0; 序 < 5; 序++) 滚轮(100)
+    await 等(80)
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toContain("scale(0.5)")
+    expect(边标签个数()).toBe(0)
+
+    // 0.5 × 1.15⁴ ≈ 0.87 ≥ 0.8。
+    for (let 序 = 0; 序 < 4; 序++) 滚轮(-100)
+    await 等(80)
+    expect(边标签个数()).toBe(1)
+  })
+})
+
+describe("T017b · 大图提示与标签开关", () => {
+  test(">300 提示拆图、>1000 提示性能风险但不拦；>800 默认关标签，工具栏可强制打开", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 千点图())
+    await flush()
+
+    expect(文案("hgraph-size-notice")).toBe("这张图已经偏大，建议拆成多张")
+    expect(文案("hgraph-size-warn")).toContain("1000")
+    // >800 默认关标签：只显选中与悬停（这里没有选中）。
+    expect(节点标签个数()).toBe(0)
+
+    const 开关 = 取("[data-slot='hgraph-toolbar-all-labels']") as HTMLButtonElement | null
+    expect(开关).not.toBeNull()
+    expect(开关!.getAttribute("aria-pressed")).toBe("false")
+    开关!.click()
+    await flush()
+
+    expect(开关!.getAttribute("aria-pressed")).toBe("true")
+    expect(节点标签个数()).toBeGreaterThan(0)
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+})
+
+describe("T017b · 视口请求（R70）", () => {
+  test("居中请求：只平移不改缩放，节点落 viewBox 中心", async () => {
+    const { set居中请求 } = 挂画布(三点图())
+    await flush()
+
+    set居中请求({ id: "n2", 序号: 1 })
+    await flush()
+
+    // n2(200,100) ⇒ translate(760/2-200, 680/2-100) = (180, 240)，缩放保持 1。
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(180 240) scale(1)")
+  })
+
+  test("适配全部按钮：编辑器只递增请求，画布用 `适配视口` 落地", async () => {
+    const { api } = 假api()
+    const 图 = 宽图()
+    挂上(api, 图)
+    await flush()
+
+    const 预期 = 适配视口(图.节点, { 宽: 760, 高: 680 })
+    ;(取("[data-slot='hgraph-toolbar-fit']") as HTMLButtonElement).click()
+    await flush()
+
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe(
+      `translate(${预期.x} ${预期.y}) scale(${预期.缩放})`,
+    )
   })
 })

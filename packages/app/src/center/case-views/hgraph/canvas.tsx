@@ -24,9 +24,19 @@
  * `#006-06`）。因此「屏幕坐标 → 画布坐标」是入参 `坐标换算`；默认实现读容器矩形 +
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
-import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import type { 边, 图文件, 节点, 文字 } from "./file"
-import { 框选命中, 连线目标, type 矩形, type 视口变换, type 对齐边, type 等距轴 } from "./geometry"
+import {
+  适配视口,
+  截断标签,
+  标签取舍,
+  框选命中,
+  连线目标,
+  type 矩形,
+  type 视口变换,
+  type 对齐边,
+  type 等距轴,
+} from "./geometry"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -105,6 +115,17 @@ export interface 画布动作 {
    * **临时 id**（按文档顺序，供画布把拖动目标切到副本）；复制不出来返回空数组。
    */
   readonly 复制所选?: (偏移?: number) => readonly string[]
+  /**
+   * 隔离（T017b / R72）：把选区扩成「1 跳邻居」集合并只渲染它。工具栏 / 右键菜单都只调
+   * 这一条，画布不自己算可见集合。
+   */
+  readonly 只看邻居?: (ids: readonly string[]) => void
+  /** 查找路径（T017b / R72）：选中恰 2 节点时本地 BFS，结果只改选中与面板，不写盘。 */
+  readonly 查找路径?: () => void
+  /** 适配全部（T017b / R70）：递增 `适配请求`，视口仍在画布里落地。 */
+  readonly 适配全部?: () => void
+  /** 「显示全部标签」开关（T017b / R71）：>800 节点时工具栏提供，强制打开标签。 */
+  readonly 显示全部标签切换?: () => void
 }
 
 export interface 画布Props {
@@ -137,6 +158,25 @@ export interface 画布Props {
    * 仍是组件内监听/组件自身聚焦：不挂 `window`（FR-040）。
    */
   readonly 聚焦请求?: number
+  /**
+   * 居中 / 适配请求（T017b / R70）：视口归画布，编辑器只递增序号驱动，**不**把视口状态
+   * 提上去（T011 已确认同一画布实例是视口保持的唯一机制）。
+   * - `居中请求` 序号变化 ⇒ 该节点落 viewBox 中心，缩放不变；
+   * - `适配请求` 序号变化 ⇒ `适配视口(适配目标 ?? 全部节点, {宽:760, 高:680})`。
+   */
+  readonly 居中请求?: { readonly id: string; readonly 序号: number }
+  readonly 适配请求?: number
+  readonly 适配目标?: readonly string[]
+  /**
+   * 标签分级的 `开`（T017b / R71）：`false` ⇒ 只留选中与悬停（>800 节点默认关标签的落点）；
+   * `undefined` ⇒ 按缩放档位取舍。`true` = 工具栏强制打开。
+   */
+  readonly 标签开?: boolean
+  /**
+   * 运动帧（拖动 / 滚轮 / 平移）停止后恢复标签的延迟（毫秒），默认 200（R71）。
+   * 测试缝：用真实计时会让用例等到 200ms 以上。
+   */
+  readonly 恢复毫秒?: number
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -241,6 +281,55 @@ export function 画布(props: 画布Props): JSX.Element {
     })
   })
 
+  // --- T017b（R70/R71）：视口请求 + 标签分级 + 运动帧 -----------------------------------------
+
+  /** 悬停节点（R71）：低缩放下悬停也显示它自己的标签。 */
+  const [悬停id, set悬停id] = createSignal<string | undefined>()
+  /** 运动帧（拖动 / 滚轮 / 平移中）：标签全隐，停下后 `恢复毫秒` 再恢复。 */
+  const [运动中, set运动中] = createSignal(false)
+  let 恢复计时: ReturnType<typeof setTimeout> | undefined
+  const 开始运动 = () => {
+    if (恢复计时 !== undefined) {
+      clearTimeout(恢复计时)
+      恢复计时 = undefined
+    }
+    set运动中(true)
+  }
+  const 结束运动 = () => {
+    if (恢复计时 !== undefined) clearTimeout(恢复计时)
+    恢复计时 = setTimeout(() => {
+      恢复计时 = undefined
+      set运动中(false)
+    }, props.恢复毫秒 ?? 200)
+  }
+  // `#005-03`：卸载后别让定时器再去写信号。
+  onCleanup(() => {
+    if (恢复计时 !== undefined) clearTimeout(恢复计时)
+  })
+
+  /** 居中：只平移，缩放不变；序号相同不重放（滚轮/平移改了视口也不重跑）。 */
+  let 上次居中: number | undefined
+  createEffect(() => {
+    const 请求 = props.居中请求
+    if (请求 === undefined || 请求.序号 === 上次居中) return
+    上次居中 = 请求.序号
+    const 点 = props.文档.节点.find((行) => 行.id === 请求.id)
+    if (点 === undefined) return
+    const 缩放 = 视口().缩放
+    set视口({ 缩放, x: 画布宽 / 2 - 数(点.x) * 缩放, y: 画布高 / 2 - 数(点.y) * 缩放 })
+  })
+
+  /** 适配：`适配视口` 口径与留白归 geometry.ts；空目标 = 全部节点。 */
+  let 上次适配: number | undefined
+  createEffect(() => {
+    const 请求 = props.适配请求
+    if (请求 === undefined || 请求 === 上次适配) return
+    上次适配 = 请求
+    const 目标 = props.适配目标
+    const 点们 = 目标 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => 目标.includes(点.id))
+    set视口(适配视口(点们, { 宽: 画布宽, 高: 画布高 }))
+  })
+
   const 提交改名 = (id: string, 值: string) => {
     // 输入框被移除（Enter/Esc 已收尾）后浏览器可能再补一次 blur：此时编辑器里的
     // `重命名id` 已经不是它了，不能再提交（否则 Esc 会变成保存）。
@@ -305,6 +394,24 @@ export function 画布(props: 画布Props): JSX.Element {
   const 可见边们 = createMemo(() =>
     props.可见 === undefined ? props.文档.边 : props.文档.边.filter((行) => props.可见!.边.has(行.id)),
   )
+  /**
+   * 标签分级（R71）：`标签取舍` 由画布调用——缩放只有这里知道；`选中` / `悬停` / `开` /
+   * 边度数都从 props 传入。运动帧直接给空集：省掉每帧一次重叠取舍，也保证「运动中全隐」。
+   */
+  const 保留标签 = createMemo(() => {
+    if (运动中()) return new Set<string>()
+    return new Set(
+      标签取舍(可见节点们(), {
+        缩放: 视口().缩放,
+        选中: props.选中,
+        悬停id: 悬停id(),
+        开: props.标签开,
+        边们: props.文档.边,
+      }),
+    )
+  })
+  /** 边标签：只在缩放 ≥ 0.8 且不在运动帧时渲染（R71，无悬停例外）。 */
+  const 边标签可见 = () => !运动中() && 视口().缩放 >= 0.8
   const 节点位 = (点: 节点) => 拖影().get(点.id) ?? { x: 数(点.x), y: 数(点.y) }
   const 文字位 = (行: 文字) => 拖影().get(行.id) ?? { x: 数(行.x), y: 数(行.y) }
 
@@ -455,6 +562,7 @@ export function 画布(props: 画布Props): JSX.Element {
       if (!现.可拖) return
       if (!现.移动 && 屏距 <= 拖动阈值) return
       现.移动 = true
+      开始运动()
       const 内容 = 到内容(事件)
       const 新 = new Map(拖影())
       for (const 项 of 现.组) {
@@ -470,6 +578,7 @@ export function 画布(props: 画布Props): JSX.Element {
     if (现.类型 === "框选") {
       if (!现.移动 && 屏距 <= 拖动阈值) return
       现.移动 = true
+      开始运动()
       const 内容 = 到内容(事件)
       set框({ x0: 现.起点x, y0: 现.起点y, x1: 内容.x, y1: 内容.y })
       return
@@ -478,6 +587,7 @@ export function 画布(props: 画布Props): JSX.Element {
     if (现.类型 === "画布") {
       if (!现.移动 && 屏距 <= 拖动阈值) return
       现.移动 = true
+      开始运动()
       // 用**按下时的视口**取内容坐标：平移过程中视口在变，拿新视口算会自己追自己。
       const 内容 = 到内容(事件, 现.原视口)
       set视口({
@@ -498,6 +608,8 @@ export function 画布(props: 画布Props): JSX.Element {
     指针 = undefined
     if (容器 !== undefined && 容器.hasPointerCapture?.(事件.pointerId)) 容器.releasePointerCapture(事件.pointerId)
     if (现 === undefined) return
+    // 运动帧收尾（R71）：拖动 / 平移 / 框选停下后延迟恢复标签；单纯点选不动视口就不触发。
+    if (现.移动 && (现.类型 === "对象" || 现.类型 === "画布" || 现.类型 === "框选")) 结束运动()
 
     if (现.类型 === "对象") {
       if (现.移动) {
@@ -618,6 +730,9 @@ export function 画布(props: 画布Props): JSX.Element {
     const 新缩放 = Math.min(3, Math.max(0.5, 旧.缩放 * (事件.deltaY < 0 ? 1.15 : 1 / 1.15)))
     // 光标下的内容点保持不动：p = c·s + t ⇒ t' = t + c·(s − s')。
     set视口({ 缩放: 新缩放, x: 旧.x + 内容.x * (旧.缩放 - 新缩放), y: 旧.y + 内容.y * (旧.缩放 - 新缩放) })
+    // 运动帧（R71）：每次滚轮重置恢复计时 ⇒ 滚轮停 200ms 后才恢复标签。
+    开始运动()
+    结束运动()
   }
 
   const 双击 = (事件: MouseEvent) => {
@@ -773,16 +888,19 @@ export function 画布(props: 画布Props): JSX.Element {
                             stroke-width="1.5"
                             stroke-dasharray={行.性质 === "推断" ? "4 3" : undefined}
                           />
-                          <text
-                            data-slot="hgraph-edge-label"
-                            x={(起.x + 终.x) / 2}
-                            y={(起.y + 终.y) / 2 - 4}
-                            text-anchor="middle"
-                            font-size="11"
-                            fill="var(--v2-text-text-muted)"
-                          >
-                            {行.标签}
-                          </text>
+                          {/* R71：边标签只在缩放 ≥ 0.8 显示（运动帧也隐）。 */}
+                          <Show when={边标签可见()}>
+                            <text
+                              data-slot="hgraph-edge-label"
+                              x={(起.x + 终.x) / 2}
+                              y={(起.y + 终.y) / 2 - 4}
+                              text-anchor="middle"
+                              font-size="11"
+                              fill="var(--v2-text-text-muted)"
+                            >
+                              {行.标签}
+                            </text>
+                          </Show>
                         </>
                       )
                     })()}
@@ -804,6 +922,8 @@ export function 画布(props: 画布Props): JSX.Element {
                   data-locked={点.锁定 === true ? "true" : undefined}
                   transform={`translate(${位().x} ${位().y})`}
                   class="cursor-pointer"
+                  onPointerEnter={() => set悬停id(点.id)}
+                  onPointerLeave={() => set悬停id((旧) => (旧 === 点.id ? undefined : 旧))}
                 >
                   <circle
                     r={节点半径}
@@ -816,15 +936,18 @@ export function 画布(props: 画布Props): JSX.Element {
                   <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
                     {(点.类型 ?? "").slice(0, 1)}
                   </text>
-                  <text
-                    data-slot="hgraph-node-label"
-                    text-anchor="middle"
-                    y={27}
-                    font-size="12"
-                    fill="var(--v2-text-text-base)"
-                  >
-                    {点.名称 ?? ""}
-                  </text>
+                  {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
+                  <Show when={保留标签().has(点.id)}>
+                    <text
+                      data-slot="hgraph-node-label"
+                      text-anchor="middle"
+                      y={27}
+                      font-size="12"
+                      fill="var(--v2-text-text-base)"
+                    >
+                      {截断标签(点.名称 ?? "")}
+                    </text>
+                  </Show>
                 </g>
               )
             }}
@@ -989,6 +1112,18 @@ export function 画布(props: 画布Props): JSX.Element {
                     }}
                   >
                     {点().锁定 === true ? "解锁" : "锁定"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-slot="hgraph-menu-neighbors"
+                    class={菜单项}
+                    onClick={() => {
+                      关闭菜单()
+                      props.动作.只看邻居?.([点().id])
+                    }}
+                  >
+                    只看邻居
                   </button>
                   <button
                     type="button"

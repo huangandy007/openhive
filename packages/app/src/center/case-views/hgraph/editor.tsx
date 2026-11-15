@@ -49,7 +49,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 临时id, 是临时id } from "./temp-id"
-import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
+import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
 import { 检查器, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
@@ -103,6 +103,11 @@ export interface 编辑器Props {
 }
 
 type 保存状态 = "已存" | "待发" | "发送中"
+
+/** 查找路径面板内容（T017b / R72）：不连通 vs 命中路径。 */
+type 路径面板内容 =
+  | { readonly 空: true }
+  | { readonly 空: false; readonly 跳数: number; readonly 路径: readonly string[] }
 
 const 防抖毫秒 = 500
 
@@ -457,6 +462,24 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 导出回执：成功「已记录本次导出」（R67 逐字）或接口 message；与保存状态同一条状态栏。 */
   const [导出提示, set导出提示] = createSignal<string | undefined>()
   const [导出中, set导出中] = createSignal(false)
+  /** T017b（R72）：隔离集合（`undefined` = 未隔离）；再点「只看邻居」取并集扩展。 */
+  const [隔离集, set隔离集] = createSignal<ReadonlySet<string> | undefined>()
+  /** T017b（R72）：类型筛选（空集 = 不过滤），选项 = 文档里出现过的类型。 */
+  const [筛选类型, set筛选类型] = createSignal<ReadonlySet<string>>(new Set())
+  /** T017b（R72）：性质筛选作用在边上（全部 / 事实 / 推断）。 */
+  const [筛选性质, set筛选性质] = createSignal<"全部" | "事实" | "推断">("全部")
+  const [筛选面板开, set筛选面板开] = createSignal(false)
+  /** T017b（R71）：>800 节点默认关标签，这个开关强制打开。 */
+  const [全部标签, set全部标签] = createSignal(false)
+  /** T017b（R72）：搜索框的词与结果光标（结果顺序 = 文档顺序）。 */
+  const [搜索词, set搜索词] = createSignal("")
+  const [搜索光标, set搜索光标] = createSignal(0)
+  /** T017b（R70）：视口请求——画布消费，编辑器只递增序号，不持有视口。 */
+  const [居中请求, set居中请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
+  // 初值 `undefined`（不是 0）：挂载时不能自动适配——没有用户请求就不动视口（R70）。
+  const [适配请求, set适配请求] = createSignal<number | undefined>()
+  /** 查找路径面板（R72）：`空` = 不连通；命中时带跳数与路径。 */
+  const [路径面板, set路径面板] = createSignal<路径面板内容 | undefined>()
   /**
    * 库里现在（T014）：按**实体 id** 缓存快照，切选中不重复取；取不到就删行，
    * 检查器回落「这条不在库里」，「刷新此节点」可重试。
@@ -473,12 +496,117 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** R47：自己发起的退出（或浏览器已退全屏）在途时不再重入，避免双关。 */
   let 正在退出 = false
 
-  /** 演示态交给画布的可见集合；编辑态传 `undefined`（全显）。 */
+  /**
+   * 交给画布的可见集合（R72）：演示中 ⇒ 演示步进结果（现状不变）；编辑态 ⇒
+   * `隔离集 ∩ 筛选集`，两者都未启用就是全集（传 `undefined`）。只过滤渲染，不改文档。
+   */
   const 可见集 = createMemo(() => {
-    if (!演示中()) return undefined
-    const 出 = 演示步进(文档(), 演示步号())
-    return { 节点: 出.可见节点, 边: 出.可见边 }
+    if (演示中()) {
+      const 出 = 演示步进(文档(), 演示步号())
+      return { 节点: 出.可见节点, 边: 出.可见边 }
+    }
+    const 隔离 = 隔离集()
+    const 类型 = 筛选类型()
+    const 性质 = 筛选性质()
+    if (隔离 === undefined && 类型.size === 0 && 性质 === "全部") return undefined
+    const 节点 = new Set<string>()
+    for (const 点 of 文档().节点) {
+      if (隔离 !== undefined && !隔离.has(点.id)) continue
+      if (类型.size > 0 && !类型.has(点.类型 ?? "未分类")) continue
+      节点.add(点.id)
+    }
+    const 边 = new Set<string>()
+    for (const 行 of 文档().边) {
+      // 端点不可见的边不渲染（否则会画到被隐藏的位置）。
+      if (!节点.has(行.从) || !节点.has(行.到)) continue
+      if (性质 !== "全部" && 行.性质 !== 性质) continue
+      边.add(行.id)
+    }
+    return { 节点, 边 }
   })
+
+  /** 文档里出现过的类型（文档顺序）；筛选面板的多选项就是它。 */
+  const 类型们 = createMemo(() => {
+    const 集: string[] = []
+    for (const 点 of 文档().节点) {
+      const 类 = 点.类型 ?? "未分类"
+      if (!集.includes(类)) 集.push(类)
+    }
+    return 集
+  })
+
+  /** 已隐藏节点数：隔离与筛选**共用**这一条口径（R72 / `隐藏计数`）。 */
+  const 隐藏数 = () => {
+    const 集 = 可见集()
+    const 可见数 = 集 === undefined ? 文档().节点.length : 集.节点.size
+    return 隐藏计数(文档().节点.length, 可见数)
+  }
+
+  /** `标签取舍` 的 `开`：工具开关强制打开；>800 节点默认关；否则按缩放档位。 */
+  const 标签开 = () => (全部标签() ? true : 文档().节点.length > 800 ? false : undefined)
+
+  /** 隔离（R72）：选中节点 ∪ 1 跳邻居；再点并集扩展。 */
+  const 只看邻居 = (ids: readonly string[]) => {
+    const 起点 = new Set(文档().节点.filter((点) => ids.includes(点.id)).map((点) => 点.id))
+    if (起点.size === 0) return
+    const 邻 = new Set<string>(起点)
+    for (const 行 of 文档().边) {
+      if (起点.has(行.从)) 邻.add(行.到)
+      if (起点.has(行.到)) 邻.add(行.从)
+    }
+    set隔离集((旧) => (旧 === undefined ? 邻 : new Set([...旧, ...邻])))
+  }
+
+  /** 退出隔离（R72）：清空隔离集；筛选不受影响。 */
+  const 退出隔离 = () => set隔离集(undefined)
+
+  /** 搜索（R72）：名称子串、大小写不敏感、结果顺序 = 文档顺序。 */
+  const 搜索结果 = createMemo(() => {
+    const 词 = 搜索词().trim().toLowerCase()
+    if (词 === "") return []
+    return 文档().节点.filter((点) => (点.名称 ?? "").toLowerCase().includes(词))
+  })
+  /** 光标夹在结果范围内（查询变化后旧光标可能越界）。 */
+  const 当前光标 = () => Math.min(搜索光标(), Math.max(0, 搜索结果().length - 1))
+  const 请求居中 = (id: string) =>
+    set居中请求((旧) => ({ id, 序号: (旧?.序号 ?? 0) + 1 }))
+  /** Enter / 点结果行：选中该节点并请求画布居中（零写）。 */
+  const 选中搜索结果 = (id: string) => {
+    set选中([id])
+    请求居中(id)
+  }
+
+  /** 查找路径（R72）：本地 BFS；命中改选中为路径，未命中只写面板。 */
+  const 执行查找路径 = () => {
+    const 节点ids = 选中().filter((id) => 文档().节点.some((点) => 点.id === id))
+    if (节点ids.length !== 2) return
+    const 结果 = 查找路径(文档().边, 节点ids[0]!, 节点ids[1]!)
+    if (结果 === null) {
+      set路径面板({ 空: true })
+      return
+    }
+    set路径面板({ 空: false, 跳数: 结果.跳数, 路径: 结果.路径 })
+    set选中(结果.路径)
+  }
+
+  /** 查找路径面板文案：不连通 / 「N 跳：甲 → 乙 → …」（名称缺省回退 id）。 */
+  const 路径面板文案 = () => {
+    const 现 = 路径面板()
+    if (现 === undefined) return ""
+    if (现.空) return "这两个节点之间没有连通的路径"
+    const 名称 = 现.路径.map((id) => 文档().节点.find((点) => 点.id === id)?.名称 ?? id).join(" → ")
+    return `${现.跳数} 跳：${名称}`
+  }
+
+  /** 类型复选：勾/取消一个类型（空集 = 不过滤）。 */
+  const 切换筛选类型 = (类: string, 勾上: boolean) => {
+    set筛选类型((旧) => {
+      const 新 = new Set(旧)
+      if (勾上) 新.add(类)
+      else 新.delete(类)
+      return 新
+    })
+  }
 
   let 待发: 操作[] = []
   /**
@@ -1236,6 +1364,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     复制: 复制到剪贴板,
     粘贴,
     复制所选,
+    // T017b：以下都是本地展示态 / 本地算法，零写盘、不进撤销栈。
+    只看邻居,
+    查找路径: 执行查找路径,
+    适配全部: () => set适配请求((旧) => (旧 ?? 0) + 1),
+    显示全部标签切换: () => set全部标签((旧) => !旧),
   }
 
   const 状态文案 = () => {
@@ -1263,6 +1396,80 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>
         <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
+        {/*
+          T017b（R72）：搜索框在编辑器左上。名称子串、大小写不敏感，结果顺序 = 文档顺序；
+          Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
+        */}
+        <div data-slot="hgraph-search-wrap" class="relative">
+          <input
+            data-slot="hgraph-search"
+            aria-label="搜索节点"
+            placeholder="搜索节点…"
+            class="w-40 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            value={搜索词()}
+            onInput={(事件) => {
+              set搜索词(事件.currentTarget.value)
+              set搜索光标(0)
+            }}
+            onKeyDown={(事件) => {
+              if (事件.key === "Enter") {
+                事件.preventDefault()
+                const 目标 = 搜索结果()[当前光标()]
+                if (目标 !== undefined) 选中搜索结果(目标.id)
+                return
+              }
+              if (事件.key === "ArrowDown") {
+                事件.preventDefault()
+                set搜索光标(Math.min(搜索结果().length - 1, 当前光标() + 1))
+                return
+              }
+              if (事件.key === "ArrowUp") {
+                事件.preventDefault()
+                set搜索光标(Math.max(0, 当前光标() - 1))
+              }
+            }}
+          />
+          <Show when={搜索词().trim() !== ""}>
+            <div
+              data-slot="hgraph-search-results"
+              class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
+            >
+              <Show
+                when={搜索结果().length > 0}
+                fallback={
+                  <p data-slot="hgraph-search-empty" class="px-2 py-1 text-12-regular text-v2-text-text-muted">
+                    没有匹配的节点
+                  </p>
+                }
+              >
+                <For each={搜索结果()}>
+                  {(点, 序) => (
+                    <button
+                      type="button"
+                      data-slot="hgraph-search-result"
+                      data-active={序() === 当前光标() ? "true" : undefined}
+                      class="block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
+                      onClick={() => 选中搜索结果(点.id)}
+                    >
+                      {点.名称 ?? 点.id}
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
+          </Show>
+        </div>
+        <button
+          type="button"
+          data-slot="hgraph-filter-toggle"
+          aria-label="筛选"
+          aria-pressed={筛选面板开() ? "true" : "false"}
+          title="按类型 / 性质筛选"
+          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+          onClick={() => set筛选面板开((旧) => !旧)}
+        >
+          筛选
+        </button>
         <button
           type="button"
           data-slot="hgraph-undo"
@@ -1354,7 +1561,102 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </p>
       </Show>
 
-      <工具栏 选中={选中()} 文档={文档()} 动作表={动作} />
+      <工具栏 选中={选中()} 文档={文档()} 动作表={动作} 标签开={标签开()} />
+
+      {/*
+        T017b（R71 / §5.10）：>300 提示拆图；>1000 只提示性能风险，**不拦、不截断**。
+        （08 设计 §5.10 的原文；>1000 的界面用词是本节口径的转写。）
+      */}
+      <Show when={文档().节点.length > 300}>
+        <p
+          data-slot="hgraph-size-notice"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          这张图已经偏大，建议拆成多张
+        </p>
+      </Show>
+      <Show when={文档().节点.length > 1000}>
+        <p
+          data-slot="hgraph-size-warn"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          节点超过 1000 个：拖动和缩放可能变慢，不会拦截或截断内容
+        </p>
+      </Show>
+
+      {/* T017b（R72）：筛选面板——类型（文档里出现过的）＋ 性质（全部/事实/推断）。度量筛选待 T018。 */}
+      <Show when={筛选面板开()}>
+        <div
+          data-slot="hgraph-filter-panel"
+          role="dialog"
+          aria-label="筛选"
+          class="flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <span class="text-12-regular text-v2-text-text-muted">类型</span>
+          <For each={类型们()}>
+            {(类) => (
+              <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
+                <input
+                  type="checkbox"
+                  data-slot="hgraph-filter-type"
+                  value={类}
+                  checked={筛选类型().has(类)}
+                  onChange={(事件) => 切换筛选类型(类, 事件.currentTarget.checked)}
+                />
+                {类}
+              </label>
+            )}
+          </For>
+          <label class="text-12-regular text-v2-text-text-muted">
+            性质
+            <select
+              data-slot="hgraph-filter-kind"
+              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={筛选性质()}
+              onChange={(事件) => {
+                const 值 = 事件.currentTarget.value
+                if (值 === "全部" || 值 === "事实" || 值 === "推断") set筛选性质(值)
+              }}
+            >
+              <option value="全部">全部</option>
+              <option value="事实">事实</option>
+              <option value="推断">推断</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            data-slot="hgraph-filter-clear"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={() => {
+              set筛选类型(new Set<string>())
+              set筛选性质("全部")
+            }}
+          >
+            清除筛选
+          </button>
+        </div>
+      </Show>
+
+      {/* T017b（R72）：查找路径面板——命中列跳数与途经名称；不连通只说明，不改选中。 */}
+      <Show when={路径面板() !== undefined}>
+        <div
+          data-slot="hgraph-path-panel"
+          role="status"
+          class="flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          <span>{路径面板文案()}</span>
+          <button
+            type="button"
+            data-slot="hgraph-path-close"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={() => set路径面板(undefined)}
+          >
+            关闭
+          </button>
+        </div>
+      </Show>
 
       {/* T015：导出选项面板（本地 UI 态；「导出」才出图，取消只收起）。 */}
       <Show when={导出面板开()}>
@@ -1525,7 +1827,30 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           只读={演示中() ? true : undefined}
           可见={可见集()}
           聚焦请求={聚焦请求()}
+          居中请求={演示中() ? undefined : 居中请求()}
+          适配请求={适配请求()}
+          标签开={标签开()}
         />
+        {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
+        <Show when={!演示中() && 隐藏数() > 0}>
+          <div
+            data-slot="hgraph-hidden-badge"
+            role="status"
+            class="absolute bottom-2 left-2 z-10 flex items-center gap-2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 px-2 py-1 text-12-regular text-v2-text-text-muted shadow"
+          >
+            <span>已隐藏 {隐藏数()} 个节点</span>
+            <Show when={隔离集() !== undefined}>
+              <button
+                type="button"
+                data-slot="hgraph-exit-isolation"
+                class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+                onClick={退出隔离}
+              >
+                退出隔离
+              </button>
+            </Show>
+          </div>
+        </Show>
         <Show when={!演示中()}>
           <检查器
             选中={选中()}

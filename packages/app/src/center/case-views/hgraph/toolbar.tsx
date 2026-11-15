@@ -9,7 +9,7 @@
  * （T011；`演示切换` 只是本地展示态，不产生写）。`合并`（T016b）只在选中节点 ≥ 2 时可用，
  * 点击落到 `合并` 动作（确认条在编辑器里）。复制粘贴、导出等不在本轮。
  */
-import { For, type JSX } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 import type { 图文件 } from "./file"
 import type { 画布动作 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
@@ -18,6 +18,11 @@ export interface 工具栏Props {
   readonly 选中: readonly string[]
   readonly 文档: 图文件
   readonly 动作表: 画布动作
+  /**
+   * 标签分级当前态（T017b / R71）：`false` = >800 节点默认关、`true` = 强制打开、
+   * `undefined` = 未过 800（不关）。只用于「显示全部标签」的 aria-pressed。
+   */
+  readonly 标签开?: boolean
 }
 
 const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
@@ -36,6 +41,13 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
     const 点们 = props.文档.节点.filter((点) => props.选中.includes(点.id))
     return 点们.length > 0 && 点们.every((点) => 点.锁定 === true)
   }
+  /** 选中的**节点**数（选中里可能混着文字；查找路径只认节点）。 */
+  const 选中节点数 = () => props.文档.节点.filter((点) => props.选中.includes(点.id)).length
+  /** 查找路径只在恰好 2 个节点时可用（R72）。 */
+  const 可查找路径 = () => 选中节点数() === 2
+  const 可隔离 = () => 选中节点数() >= 1
+  /** >800 节点才出现「显示全部标签」（R71）。 */
+  const 可显示全部标签 = () => props.文档.节点.length > 800
 
   return (
     <div data-slot="hgraph-toolbar" role="toolbar" aria-label="关系图工具栏" class="flex flex-wrap items-center gap-1 px-2 py-1">
@@ -173,6 +185,60 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
       >
         合并
       </button>
+
+      <span class="mx-1 h-4 w-px bg-v2-border-border-muted" aria-hidden="true" />
+
+      {/* T017b：隔离 / 适配全部 / 查找路径 / 标签开关都落动作表（R70 / R71 / R72）。 */}
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-neighbors"
+        aria-label="只看邻居"
+        title="只看邻居（1 跳）"
+        class={按钮}
+        disabled={!可隔离()}
+        onClick={() => props.动作表.只看邻居?.(props.选中)}
+      >
+        只看邻居
+      </button>
+
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-fit"
+        aria-label="适配全部"
+        title="适配全部"
+        class={按钮}
+        disabled={props.文档.节点.length === 0}
+        onClick={() => props.动作表.适配全部?.()}
+      >
+        适配全部
+      </button>
+
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-path"
+        aria-label="查找路径"
+        title="查找路径（选中两个节点）"
+        class={按钮}
+        disabled={!可查找路径()}
+        onClick={() => props.动作表.查找路径?.()}
+      >
+        查找路径
+      </button>
+
+      {/* R71：>800 节点默认关标签，这里可强制打开。按钮只在 >800 时出现。 */}
+      <Show when={可显示全部标签()}>
+        <button
+          type="button"
+          data-slot="hgraph-toolbar-all-labels"
+          aria-label="显示全部标签"
+          aria-pressed={props.标签开 === true ? "true" : "false"}
+          title="显示全部标签"
+          class={按钮}
+          onClick={() => props.动作表.显示全部标签切换?.()}
+        >
+          显示全部标签
+        </button>
+      </Show>
     </div>
   )
 }
