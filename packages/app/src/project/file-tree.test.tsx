@@ -3285,6 +3285,30 @@ describe("FileTree 文件树（FR-005）", () => {
       toaster.clear()
     })
 
+    test("文件夹批量：逐份串行——第 1 份结束前不发出第 2 份（契约 C5）", async () => {
+      // 假 `parse` 在结束前让出一次事件循环：并发执行时两次「开始」会挤在两次「结束」之前。
+      const 事件: string[] = []
+      const 基 = 假材料状态()
+      const 状态 = {
+        ...基.状态,
+        parse: async (path: string) => {
+          事件.push(`开始 ${path}`)
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          事件.push(`结束 ${path}`)
+          return { kind: "ok" as const }
+        },
+      }
+      const host = mount(() => <FileTree paths={["资料/甲.csv", "资料/乙.xlsx"]} caseMaterials={状态} />)
+
+      右键(行按路径(host, "资料"))
+      await 歇一拍()
+      await 开子菜单()
+      await 确认入库()
+
+      await 等到(() => 事件.length === 4)
+      expect(事件).toEqual(["开始 资料/甲.csv", "结束 资料/甲.csv", "开始 资料/乙.xlsx", "结束 资料/乙.xlsx"])
+    })
+
     test("材料状态还没读回来（R14）：入队项灰着，理由说「解析状态还在读取，请稍候」", async () => {
       const { host } = 挂带材料(["话单.csv"], { loaded: false })
       右键(行按路径(host, "话单.csv"))
