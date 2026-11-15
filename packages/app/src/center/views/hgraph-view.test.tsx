@@ -139,8 +139,13 @@ describe("关系图视图（打开通道）", () => {
     expect(文案("hgraph-counts")).toBeUndefined()
   })
 
-  test("没有当前项目（未定义 / 空串）⇒ **一条请求都不发**，显示「没有打开的项目」", async () => {
-    for (const 空 of [undefined, ""] as const) {
+  // 两种空值各起**一条**用例：同一条用例里连挂两次会共用 `document.body`，
+  // 第二轮文案可能被第一轮留下的节点满足（假绿）；调用断言虽各自独立，文案就废了。
+  for (const [标签, 空] of [
+    ["未定义", undefined],
+    ["空串", ""],
+  ] as const) {
+    test(`没有当前项目（${标签}）⇒ **一条请求都不发**，显示「没有打开的项目」`, async () => {
       const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 一份图, 版本: "v1" } } })
 
       await 挂上(api, undefined, () => 空)
@@ -149,8 +154,8 @@ describe("关系图视图（打开通道）", () => {
       expect(文案("hgraph-error")).toBe(没项目)
       expect(文案("hgraph-error")).toContain("没有打开的项目")
       expect(文案("hgraph-counts")).toBeUndefined()
-    }
-  })
+    })
+  }
 
   test("初始化失败 ⇒ 显示失败话术，不假装载入成功", async () => {
     const { api, 调用 } = 假api({
