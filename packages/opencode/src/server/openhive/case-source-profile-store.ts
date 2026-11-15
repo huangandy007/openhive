@@ -145,6 +145,22 @@ interface 指纹项 {
   指纹: string
 }
 
+/** 从 `parse_detail.mapping.工作表[表名].档案.id` 读回这张表在解析时命中的档案。 */
+function 读命中档案id(原始: unknown, 工作表: string): string | undefined {
+  const 详情 = 解析json(原始)
+  if (typeof 详情 !== "object" || 详情 === null || Array.isArray(详情)) return undefined
+  const 映射 = (详情 as Record<string, unknown>)["mapping"]
+  if (typeof 映射 !== "object" || 映射 === null || Array.isArray(映射)) return undefined
+  const 工作表们 = (映射 as Record<string, unknown>)["工作表"]
+  if (typeof 工作表们 !== "object" || 工作表们 === null || Array.isArray(工作表们)) return undefined
+  const 表 = (工作表们 as Record<string, unknown>)[工作表]
+  if (typeof 表 !== "object" || 表 === null || Array.isArray(表)) return undefined
+  const 档案 = (表 as Record<string, unknown>)["档案"]
+  if (typeof 档案 !== "object" || 档案 === null || Array.isArray(档案)) return undefined
+  const id = (档案 as Record<string, unknown>)["id"]
+  return typeof id === "string" ? id : undefined
+}
+
 function 解析指纹(原始: unknown): 指纹项[] {
   const 值 = 解析json(原始)
   if (!Array.isArray(值)) return []
@@ -188,7 +204,7 @@ export async function 建数据源档案(
   return await inTransaction(db, async (tx) => {
     const 材料行 = rowsOf(
       await tx.execute(sql`
-        select file_name, format_fingerprints from auth.case_material
+        select file_name, format_fingerprints, parse_detail from auth.case_material
          where project_id = ${input.projectId} and id = ${input.materialId}
       `),
     )[0]
@@ -204,7 +220,22 @@ export async function 建数据源档案(
       throw new 档案错误("sheet_not_found", `工作表不在这份材料的解析指纹里：${指定}`)
     }
 
-    let 选中: { 工作表: string; 表头: (string | null)[]; columns: Record<number, 识别字段>; 类型: "资金" | "话单" | "其他" } | undefined
+    let 选中:
+      | {
+          readonly 来源: "缓存"
+          readonly 工作表: string
+          readonly 表头: (string | null)[]
+          readonly columns: Record<number, 识别字段>
+          readonly 类型: "资金" | "话单" | "其他"
+        }
+      | {
+          readonly 来源: "档案"
+          readonly 工作表: string
+          readonly mapping: Record<string, string>
+          readonly headerSet: string[]
+          readonly 类型: "资金" | "话单" | "其他"
+        }
+      | undefined
     let 见过其他 = false
     for (const 项 of 指纹们) {
       if (指定 !== undefined && 指定 !== "" && 项.工作表 !== 指定) continue
@@ -214,7 +245,36 @@ export async function 建数据源档案(
            where project_id = ${input.projectId} and fingerprint = ${项.指纹}
         `),
       )[0]
-      if (缓存行 === undefined) continue
+      if (缓存行 === undefined) {
+        // 档案命中的表在解析时**有意不写格式缓存**（`case-ingest.ts` 的档案命中分支）。
+        // 只查缓存会把这类材料判成「没有可建档的工作表」⇒ HTTP 400（真栈 2026-11-15 复现）。
+        // 回落到解析时命中的那条档案：它的映射就是本表的映射。
+        const 档案id = 读命中档案id(材料行.parse_detail, 项.工作表)
+        if (档案id === undefined) continue
+        const 档案行 = rowsOf(
+          await tx.execute(sql`
+            select header_set, mapping, type from auth.case_source_profile
+             where project_id = ${input.projectId} and id = ${档案id}
+          `),
+        )[0]
+        if (档案行 === undefined) continue
+        const 档案映射 = 解析映射(档案行.mapping)
+        if (Object.keys(档案映射).length === 0) continue
+        const 档案类型 = 档案行.type
+        if (档案类型 !== "资金" && 档案类型 !== "话单" && 档案类型 !== "其他") continue
+        if (档案类型 === "其他") {
+          见过其他 = true
+          continue
+        }
+        选中 = {
+          来源: "档案",
+          工作表: 项.工作表,
+          mapping: 档案映射,
+          headerSet: 解析字符串数组(档案行.header_set),
+          类型: 档案类型,
+        }
+        break
+      }
       const columns = 解析缓存映射(解析json(缓存行.mapping))
       if (Object.keys(columns).length === 0) continue
       const 原始表头 = 解析json(缓存行.header)
@@ -227,7 +287,7 @@ export async function 建数据源档案(
         continue
       }
       if (有效 < 2) continue
-      选中 = { 工作表: 项.工作表, 表头, columns, 类型 }
+      选中 = { 来源: "缓存", 工作表: 项.工作表, 表头, columns, 类型 }
       break
     }
 
@@ -236,20 +296,26 @@ export async function 建数据源档案(
     }
     if (选中.类型 === "其他") throw new 档案错误("type_other", "认不出列的格式不固化成档案")
 
-    const mapping: Record<string, string> = {}
-    for (const [k, 字段] of Object.entries(选中.columns)) {
-      if (!/^\d+$/.test(k)) continue
-      if (!是识别字段(字段)) continue
-      const 列号 = Number(k)
-      if (!Number.isInteger(列号) || 列号 < 0 || 列号 >= 选中.表头.length) continue
-      const 表头 = 选中.表头[列号]?.trim() ?? ""
-      if (表头 === "") continue
-      if (mapping[表头] !== undefined && mapping[表头] !== 字段) {
-        throw new 档案错误("header_duplicate", `表头重名，不能建档案：${表头}`)
-      }
-      mapping[表头] = 字段
-    }
-    const headerSet = Object.keys(mapping).sort()
+    const mapping: Record<string, string> =
+      选中.来源 === "档案"
+        ? 选中.mapping
+        : (() => {
+            const 构造: Record<string, string> = {}
+            for (const [k, 字段] of Object.entries(选中.columns)) {
+              if (!/^\d+$/.test(k)) continue
+              if (!是识别字段(字段)) continue
+              const 列号 = Number(k)
+              if (!Number.isInteger(列号) || 列号 < 0 || 列号 >= 选中.表头.length) continue
+              const 表头 = 选中.表头[列号]?.trim() ?? ""
+              if (表头 === "") continue
+              if (构造[表头] !== undefined && 构造[表头] !== 字段) {
+                throw new 档案错误("header_duplicate", `表头重名，不能建档案：${表头}`)
+              }
+              构造[表头] = 字段
+            }
+            return 构造
+          })()
+    const headerSet = 选中.来源 === "档案" ? 选中.headerSet : Object.keys(mapping).sort()
     if (headerSet.length < 2) throw new 档案错误("no_usable_sheet", "有效表头少于 2 列")
 
     const name = (input.name ?? "").trim() || `${String(材料行.file_name)} · ${选中.工作表}`

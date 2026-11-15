@@ -69,6 +69,43 @@ async function 种格式(input: {
   `)
 }
 
+/**
+ * 种一份「只被档案命中」的材料：有解析指纹、**没有**格式缓存行（解析阶段档案命中有意不写），
+ * `parse_detail` 里记着命中的那条档案。这正是真栈上建档 400 的现场。
+ */
+async function 种档案命中(input: {
+  projectId: string
+  materialId: string
+  fingerprint: string
+  档案id: string
+  sheet?: string
+  fileName?: string
+}) {
+  const fileName = input.fileName ?? "流水.xlsx"
+  const sheet = input.sheet ?? "Sheet1"
+  await createMaterial(db(), {
+    id: input.materialId,
+    projectId: input.projectId,
+    fileName,
+    kind: "资金",
+    fingerprint: input.fingerprint,
+    path: fileName,
+  })
+  await db().execute(sql`
+    update auth.case_material
+       set format_fingerprints = ${JSON.stringify([{ 工作表: sheet, 指纹: input.fingerprint }])}::text::jsonb,
+           parse_detail = ${JSON.stringify({
+             mapping: {
+               模型: { 调用: 0 },
+               工作表: {
+                 [sheet]: { 方法: "档案", 档案: { id: input.档案id, name: "老档案" }, 列: {} },
+               },
+             },
+           })}::text::jsonb
+     where project_id = ${input.projectId} and id = ${input.materialId}
+  `)
+}
+
 describe("数据源档案 DAO", () => {
   test("建档：默认名「文件名 · 工作表」，列表可见", async () => {
     await 种格式({ projectId: "p-建", materialId: "m-建", fingerprint: "fp-建" })
@@ -85,6 +122,23 @@ describe("数据源档案 DAO", () => {
       revoked_at: null,
     })
     expect(列表[0]?.header_set.sort()).toEqual([...表头].sort())
+  })
+
+  test("只被档案命中的材料没有格式缓存行 ⇒ 幂等返回那条档案，不报 no_usable_sheet", async () => {
+    // 先在另一份材料上正常建出档案 X。
+    await 种格式({ projectId: "p-档案命中", materialId: "m-源", fingerprint: "fp-源" })
+    const 档案 = await 建数据源档案(db(), { projectId: "p-档案命中", materialId: "m-源" })
+    // 再种一份在解析时命中了 X 的材料：有意没有 case_table_format 行。
+    await 种档案命中({
+      projectId: "p-档案命中",
+      materialId: "m-命中",
+      fingerprint: "fp-命中",
+      档案id: 档案.id,
+    })
+    const 回执 = await 建数据源档案(db(), { projectId: "p-档案命中", materialId: "m-命中" })
+    expect(回执.id).toBe(档案.id)
+    expect(回执.created).toBe(false)
+    expect(await 列出数据源档案(db(), { projectId: "p-档案命中" })).toHaveLength(1)
   })
 
   test("同 type + 同表头 + 同映射 ⇒ 幂等返回既有 id，不新增行", async () => {
