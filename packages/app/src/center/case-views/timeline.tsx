@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX 
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
-import { 时间文本 } from "./format"
+import { 日期文本, 精度时间文本 } from "./format"
 
 export interface TimelineProps {
   readonly projectId: string
@@ -53,18 +53,7 @@ function 解事件们(数据: unknown): 时间线事件[] {
   })
 }
 
-const 两位 = (值: number) => String(值).padStart(2, "0")
-
-/** 秒 → `YYYY-MM-DD`（本地时区）。同 `时间文本`：手写，不用随语言环境漂的 `toLocale*`。 */
-function 日期文本(秒: number): string {
-  const 日 = new Date(秒 * 1000)
-  return `${日.getFullYear()}-${两位(日.getMonth() + 1)}-${两位(日.getDate())}`
-}
-
 const 周 = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-
-/** 精度只到日/月/年时，时间戳里的时分是 0 点占位——显示它等于替抽取器编一个时刻。 */
-const 粗精度 = new Set(["到年", "到月", "到日"])
 
 /**
  * 一条事件的**展示时间**：原文优先；没有原文才退回规范时间，且粗精度不带时分。
@@ -72,9 +61,7 @@ const 粗精度 = new Set(["到年", "到月", "到日"])
  */
 function 事件时间(事件: 时间线事件): string {
   if (事件.occurred_raw !== null) return 事件.occurred_raw
-  if (事件.occurred_at === null) return "时间未知"
-  if (粗精度.has(事件.precision ?? "")) return 日期文本(事件.occurred_at)
-  return 时间文本(事件.occurred_at)
+  return 精度时间文本(事件.occurred_at, 事件.precision)
 }
 
 /**

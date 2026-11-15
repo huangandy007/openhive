@@ -232,6 +232,22 @@ describe("资金", () => {
     expect(人说[1]!.textContent).toContain("3 次")
   })
 
+  test("精度只到日的人说行只显示日期，不补出时分（页面不替抽取器编时刻）", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(带明细)} />)
+    await 等(() => host.querySelectorAll("[data-slot='money-human']").length === 2)
+    const 行 = host.querySelector<HTMLElement>("[data-slot='money-human']")!
+    // 首 = 1773300000（本地 2026-03-12）；精度「到日」⇒ 时分是占位，不许出现。
+    expect(行.getAttribute("data-copy")).toContain("2026-03-12")
+    expect(行.getAttribute("data-copy")).not.toContain(":")
+  })
+
+  test("数据: null（新服务端明确表示空）⇒ 两段说「没有」，不说「本次未返回」", async () => {
+    const host = mount(() => <Money projectId="p" id="e-账" api={明细api(null)} />)
+    await 等(() => host.textContent!.includes("没有流水笔"))
+    expect(host.textContent).toContain("没有人说的笔")
+    expect(host.textContent).not.toContain("本次未返回")
+  })
+
   test("两段各有自己的空态（不共用一句「没有明细」）", async () => {
     const host = mount(() => <Money projectId="p" id="e-账" api={明细api({ ...数据, 单笔最大: [], 人说的笔: [] })} />)
     await 等(() => host.textContent!.includes("没有流水笔"))

@@ -759,3 +759,39 @@ export async function 种人说话数据集(
   )
   return { 项目, 主账号, 对手人名们 }
 }
+
+/**
+ * 缺金额、缺时间的人说转账：一条笔录关系，原文里没有任何金额 / 时间。
+ *
+ * 用途：`aggregate_money.人说的笔` 对「不知道」必须回 `null`——不编 0、不丢行（`#002-02`）。
+ * 转账缺金额在抽取阶段是**合法输出**（标存疑转人工），不进 `问题`、材料不黄。
+ */
+export interface 人说空字段数据集 {
+  项目: string
+  主账号: string
+  对手: string
+}
+
+export async function 种人说空字段数据集(
+  db: Queryable,
+  文件: Map<string, Uint8Array>,
+): Promise<人说空字段数据集> {
+  const 项目 = "p-人说空字段"
+  const 主账号 = "6222021234567899200"
+  const 对手 = "未记金额对手"
+  const 原文 = `1、${主账号}向${对手}转款，金额与时间未记。`
+  const 入队 = 造入队器(db, 文件)
+  const 跑 = 造跑器(db, 文件)
+  const 材料 = await 入队(项目, "P3人说空字段.txt", new TextEncoder().encode(`${原文}\n`))
+  await 跑(材料, async () =>
+    建假抽取器(() => ({
+      实体: [
+        { 类型: "账户", 取值: 主账号 },
+        { 类型: "人", 取值: 对手 },
+      ],
+      关系: [{ 类型: "转账", 从: 主账号, 到: 对手, 原文 }],
+      事件: [],
+    })),
+  )
+  return { 项目, 主账号, 对手 }
+}

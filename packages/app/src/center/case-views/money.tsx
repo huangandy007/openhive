@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "soli
 import type { CaseDetailApi, 工具结果 } from "../case-detail-api"
 import { 多行选区文本 } from "../structured-selection"
 import { 发到会话 } from "../ask-ai"
-import { 金额文本, 时间文本 } from "./format"
+import { 金额文本, 精度时间文本, 时间文本 } from "./format"
 
 export interface MoneyProps {
   readonly projectId: string
@@ -83,7 +83,11 @@ function 解资金(数据: unknown): {
   流水: 明细段<流水行>
   人说的: 明细段<人说行>
 } {
-  if (数据 === null || typeof 数据 !== "object")
+  // `数据: null` 是服务端**明确表示空**（与同页「没有可汇总的转账」一致），不是「本次未返回」；
+  // 只有键缺席或形状认不出（老服务端 / 坏回包）才是「不知道」（`#002-02`）。
+  if (数据 === null)
+    return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "有", 行们: [] }, 人说的: { 状态: "有", 行们: [] } }
+  if (typeof 数据 !== "object")
     return { 汇总: [], 对手方: [], 余额: null, 流水: { 状态: "未返回" }, 人说的: { 状态: "未返回" } }
   const 记 = 数据 as Record<string, unknown>
   const 汇总 = Array.isArray(记.汇总)
@@ -121,7 +125,7 @@ const 有段落 = <T,>(段: 明细段<T>): T[] | undefined => (段.状态 === "�
 const 流水行文本 = (行: 流水行) => `${金额文本(行.金额)} · ${时间文本(行.时间)} · ${行.摘要 ?? "无摘要"}`
 const 人说行文本 = (行: 人说行) =>
   `${行.方向} → ${行.对手} · ${行.金额 === null ? "金额未记" : 金额文本(行.金额)} · ${
-    行.首 === null ? "时间未记" : 时间文本(行.首)
+    行.首 === null ? "时间未记" : 精度时间文本(行.首, 行.精度)
   }` + (行.次数 !== null && 行.次数 > 1 ? ` · ${行.次数} 次` : "")
 
 /** 资金概览。汇总 / 对手方 / 余额都来自 `aggregate_money` 的**同一次**返回，前端不再分头取数。 */

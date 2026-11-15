@@ -19,6 +19,7 @@ import {
 import {
   种P3数据集,
   种人说话数据集,
+  种人说空字段数据集,
   种多对手数据集,
   种无参与者数据集,
   种他者参与者数据集,
@@ -26,6 +27,7 @@ import {
   种金额乱序数据集,
   type P3数据集,
   type 人说话数据集,
+  type 人说空字段数据集,
   type 多对手数据集,
   type 老数据数据集,
   type 他者参与者数据集,
@@ -50,6 +52,7 @@ let 他者: 他者参与者数据集
 let 无时间: 无时间数据集
 let 金额乱序: 金额乱序数据集
 let 人说: 人说话数据集
+let 人说空: 人说空字段数据集
 const 文件 = new Map<string, Uint8Array>()
 const 用户 = "u-资金流"
 
@@ -64,6 +67,7 @@ beforeAll(async () => {
   无时间 = await 种无时间数据集(db(), 文件)
   金额乱序 = await 种金额乱序数据集(db(), 文件)
   人说 = await 种人说话数据集(db(), 文件)
+  人说空 = await 种人说空字段数据集(db(), 文件)
 })
 
 afterAll(async () => {
@@ -200,6 +204,21 @@ describe("aggregate_money 的人说的笔", () => {
     const 入行 = (全部.数据 as { 人说的笔: 人说行[] }).人说的笔.find((行) => 行.方向 === "入")!
     const 窗 = await aggregate_money(ctx(人说.项目), { 账户: 人说.主账号, 止: 入行.首! - 1 })
     expect((窗.数据 as { 人说的笔: 人说行[] }).人说的笔.map((行) => 行.对手)).not.toContain("人说入账人")
+  })
+
+  test("缺金额 / 缺时间的人说笔：金额与首末回 null，不编 0、不丢行", async () => {
+    const 数据 = (await aggregate_money(ctx(人说空.项目), { 账户: 人说空.主账号 })).数据 as { 人说的笔: 人说行[] }
+    expect(数据.人说的笔).toHaveLength(1)
+    expect(数据.人说的笔[0]).toEqual({
+      id: expect.any(String),
+      方向: "出",
+      对手: 人说空.对手,
+      金额: null,
+      首: null,
+      末: null,
+      精度: null,
+      次数: null,
+    })
   })
 
   test("口径写明两栏各列一条、人说的笔按关系行", async () => {
