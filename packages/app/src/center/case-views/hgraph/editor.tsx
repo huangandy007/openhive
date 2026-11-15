@@ -357,6 +357,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 待发: 操作[] = []
   let 计时: ReturnType<typeof setTimeout> | undefined
   let 正在发 = false
+  /**
+   * 文档代（R89）：每次外部重载成功 +1。`发送` 在 await 前捕获它；应答回来时若代已变，
+   * 这批写的结果基于**旧文档**，整段丢弃——否则会覆盖刚重载的新文档、并回填一条旧撤销步。
+   */
+  let 文档代 = 0
   /** 轮询读到、但还没应用的外部变更（询问「重新载入」时用）。 */
   let 待重载: 外部变更 | undefined
   let 轮询计时: ReturnType<typeof setInterval> | undefined
@@ -383,6 +388,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
     const 快照 = 文档()
     const 前 = 已存文档()
+    const 代 = 文档代
     set状态("发送中")
 
     const 回 = await props.api.写({
@@ -393,6 +399,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       批次,
     })
     正在发 = false
+
+    // R89：await 期间文档被外部重载替换过 ⇒ 这批应答相对旧文档，文档/版本/栈/选中映射
+    // 一律不落地（成功失败都一样）。只续上重载后新产生的待发，状态以当前文档为准。
+    if (代 !== 文档代) {
+      if (状态() === "发送中") set状态(待发.length > 0 ? "待发" : "已存")
+      if (待发.length > 0) 排发()
+      return
+    }
 
     if (回.kind === "ok") {
       const 映射 = 回.value.结果.映射
@@ -456,6 +470,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       return
     }
     const 旧 = 文档()
+    // R89：先换代，再落实文档；在途写的应答回来时据此整段丢弃。
+    文档代 += 1
     clearTimeout(计时)
     待发 = []
     待重载 = undefined
@@ -490,7 +506,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     正在查 = true
     try {
       const 回 = await props.api.读({ projectId: props.projectId, path: props.path })
-      if (已卸载 || 回.kind !== "ok") return
+      // `读` 在途时可能已进入演示：应答回来后要复检，否则会在演示中静默换文档（m-1）。
+      if (已卸载 || 演示中() || 回.kind !== "ok") return
       const 新版本 = 回.value.版本
       if (新版本 === 版本()) {
         // 差异已被自己的一次保存抹平：别拿旧的「待重载」再问用户。
