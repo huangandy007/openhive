@@ -81,7 +81,7 @@ timeout 300 bun test ./test/server/case-hgraph-ops.test.ts
 **Independent Test**: 新建一张图，放 10 节点、5 边、1 文字，关闭再打开逐项核对。
 
 - [ ] T007 [US1] 打开通道：`views/index.ts` 注册 `.hgraph`（`load: () => import("./hgraph-view")`）；`hgraph-api.ts` 导出 `读/初始化/写/导出许可` 四方法（入参见 `contracts/ui.md` §2，出参 `结果<T>`）；`file-create-types.ts` 数据驱动数组（此刻只有「关系图」）+ `file-create-dialog.tsx` 加类型胶囊（名字已带后缀不重复加）；`hgraph-view.tsx`：0 字节先 `init` 再渲染。依赖 T006。
-- [ ] T008 [US1] 画布几何纯函数：`连线目标(落点, 节点集)` → `{从,到}|null`；`对齐(ids, 边, 节点)` → `{id,x,y}[]`；`等距(ids, 轴)` → 同上；`框选命中(矩形, 节点, 已选)` → `id[]`；`适配视口(节点, 尺寸)` → `{缩放,x,y}`；`隐藏计数(总, 可见)` → `number`。文件 `hgraph/geometry.ts` + `geometry.test.ts`（可与 Phase 2 并行）。
+- [ ] T008 [US1] 画布几何纯函数：`连线目标(落点, 节点集)` → `{从,到}|null`（`落点 = {从, x, y}`，返回终边必须知道起点）；`对齐(ids, 边, 节点)` → `{id,x,y}[]`；`等距(ids, 轴, 节点)` → 同上（**原计划漏了 `节点`：纯函数没有坐标来源就算不出位置**）；`框选命中(矩形, 节点, 已选)` → `id[]`；`适配视口(节点, 尺寸)` → `{缩放,x,y}`；`隐藏计数(总, 可见)` → `number`。文件 `hgraph/geometry.ts` + `geometry.test.ts`（可与 Phase 2 并行）。
 - [ ] T009 [US1] 编辑器与画布：`editor.tsx` 持有文档/版本/保存状态机（500ms 防抖，**拖动只在 dragend 进待发**，失败停在「待发」并提示「没存上」）；`canvas.tsx` 指针/连线两模式、Shift 加减选、框选、缩放平移、锁定节点不被框选拖动；文字块增删改拖。入参 `{path, api}`，出参 = 渲染的 SVG + 动作回调。⏱ 依赖 T007、T008、T001。
 - [ ] T010 [US1] 动作单一出口 + 检查器：`toolbar.tsx` / 右键菜单 / `inspector.tsx` 全部调同一张动作表（`contracts/ui.md` §3）；检查器三段（可改区失焦即存、只读区、库里现在）、批量态换成对齐/等距/删除/合并；双击内联重命名；`F2`。入参 `{选中, 文档, 动作表}`，出参 = 回调 + 面板。依赖 T009。
 
