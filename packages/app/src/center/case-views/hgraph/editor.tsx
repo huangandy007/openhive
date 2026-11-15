@@ -1,0 +1,321 @@
+/**
+ * `.hgraph` 编辑器（012 · T009b）：文档 / 版本 / 保存状态机 / 撤销栈接线。
+ *
+ * ## 谁持有文档
+ *
+ * 只有本组件持有 `文档`、`版本`、`撤销栈`；`canvas.tsx` 只收 props + 动作回调
+ * （contracts/ui.md §9 的单向数据流，`#005-48`）。载入（读 → 0 字节先 init → 解析）
+ * 归 T007 的打开通道 `hgraph-view.tsx`，编辑器**不**自己读文件——否则视图那 8 条
+ * 「先读后 init」的用例会多出一次读。
+ *
+ * ## 保存状态机
+ *
+ * - 每个动作先**本地乐观应用**（画布要立刻看到结果），500ms 防抖后把这段时间攒下的
+ *   操作作为**一个批次**发一次 `写`（拖动只在 `dragend` 进待发 ⇒ 一次拖拽 = 一次写）。
+ * - 成功 ⇒ 版本取应答里的 `版本`，临时 id 按应答的 `映射` 换成正式 id，**压一步撤销**。
+ * - 失败（网络 / 超时 / 409）⇒ 文档回改前（最近一次已存）的值、清掉待发、状态停在
+ *   「待发」并提示**「没存上」**；**不自动重试**（写操作重打就是重复写入）。
+ * - 409 额外把服务端给的 `最新版本` 留在状态里：T013 要用它问「重新载入？」。本轮
+ *   只保证信息不丢，不做询问界面（FR-012：不静默合并、不替用户选）。
+ *
+ * ## 撤销
+ *
+ * 栈本体在 `undo.ts`（T009a）；本组件只做「每个成功应用的批次压一步」与
+ * `Ctrl+Z` / `Ctrl+Shift+Z` 的接线（按键挂在画布容器上，见 `canvas.tsx`）。
+ * **逆操作生成归 T016**：本轮压入的步 `逆操作` 为空，撤销只弹栈、不发写。
+ *
+ * ## 本地操作代数只覆盖本组件会发出的五种
+ *
+ * `加边 / 加文字 / 改字段 / 删对象 / 移动`——它们是为了「立即显示」，正式语义仍由服务端
+ * `hgraph-edit.ts` 决定（同一前提不在这里重判：不校验来源、不分配正式 id）。`加节点` /
+ * `合并节点` 本轮不产生（T010 / T014 / T016）。
+ */
+import { createSignal, onCleanup, type JSX } from "solid-js"
+import type { HgraphApi, 操作 } from "@/project/hgraph-api"
+import type { 边, 图文件, 文字 } from "./file"
+import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import {
+  可撤销,
+  可重做,
+  压入,
+  新建撤销栈,
+  撤销 as 弹撤销,
+  重做 as 弹重做,
+  type 撤销栈,
+} from "./undo"
+
+export interface 编辑器Props {
+  readonly path: string
+  readonly projectId: string
+  readonly api: HgraphApi
+  /** 视图已解析好的文档（T007 的打开通道负责读 / init / 解析）。 */
+  readonly 初始文档: 图文件
+  readonly 初始版本: string
+  /** 测试缝：happy-dom 没有布局，坐标换算见 `canvas.tsx` 头注释。 */
+  readonly 坐标换算?: 坐标换算
+}
+
+type 保存状态 = "已存" | "待发" | "发送中"
+
+const 防抖毫秒 = 500
+
+/** 临时 id：不匹配服务端的 `^[net]\d+$`，服务端按类别分配正式 id 并写进 `映射`。 */
+let 临时序号 = 0
+const 临时id = (前缀: "e" | "t") => `临时${前缀}${++临时序号}`
+
+/** `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）。 */
+function 打补丁(行: Record<string, unknown>, 补丁: Record<string, unknown>): Record<string, unknown> {
+  const 新 = { ...行 }
+  for (const [键, 值] of Object.entries(补丁)) {
+    if (值 === null || 值 === undefined) delete 新[键]
+    else 新[键] = 值
+  }
+  return 新
+}
+
+/**
+ * 本地乐观应用（只为显示）。不校验来源、不分配正式 id —— 这两件事只有服务端一份实现。
+ * 不认识的（`加节点` / `合并节点`）原样返回：本轮不从画布发出这两种操作。
+ */
+function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
+  if (操作.操作 === "移动") {
+    const 表 = new Map(操作.目标.map((目标) => [`${目标.类别}:${目标.id}`, 目标]))
+    return {
+      ...文档,
+      节点: 文档.节点.map((点) => {
+        const 目标 = 表.get(`节点:${点.id}`)
+        return 目标 === undefined ? 点 : { ...点, x: 目标.x, y: 目标.y }
+      }),
+      文字: 文档.文字.map((行) => {
+        const 目标 = 表.get(`文字:${行.id}`)
+        return 目标 === undefined ? 行 : { ...行, x: 目标.x, y: 目标.y }
+      }),
+    }
+  }
+
+  if (操作.操作 === "改字段") {
+    const 节点改 = new Map<string, Record<string, unknown>>()
+    const 边改 = new Map<string, Record<string, unknown>>()
+    const 文字改 = new Map<string, Record<string, unknown>>()
+    for (const 目标 of 操作.目标) {
+      const 表 = 目标.类别 === "节点" ? 节点改 : 目标.类别 === "边" ? 边改 : 文字改
+      表.set(目标.id, 目标.补丁)
+    }
+    return {
+      ...文档,
+      节点: 文档.节点.map((行) =>
+        节点改.has(行.id) ? (打补丁(行 as unknown as Record<string, unknown>, 节点改.get(行.id)!) as unknown as 图文件["节点"][number]) : 行,
+      ),
+      边: 文档.边.map((行) =>
+        边改.has(行.id) ? (打补丁(行 as unknown as Record<string, unknown>, 边改.get(行.id)!) as unknown as 边) : 行,
+      ),
+      文字: 文档.文字.map((行) =>
+        文字改.has(行.id) ? (打补丁(行 as unknown as Record<string, unknown>, 文字改.get(行.id)!) as unknown as 文字) : 行,
+      ),
+    }
+  }
+
+  if (操作.操作 === "删对象") {
+    const 删节点 = new Set(操作.目标.filter((目标) => 目标.类别 === "节点").map((目标) => 目标.id))
+    const 删边 = new Set(操作.目标.filter((目标) => 目标.类别 === "边").map((目标) => 目标.id))
+    const 删文字 = new Set(操作.目标.filter((目标) => 目标.类别 === "文字").map((目标) => 目标.id))
+    return {
+      ...文档,
+      节点: 文档.节点.filter((行) => !删节点.has(行.id)),
+      // 删节点连带删两端边（data-model §7；与后端同一步）。
+      边: 文档.边.filter((行) => !删边.has(行.id) && !删节点.has(行.从) && !删节点.has(行.到)),
+      文字: 文档.文字.filter((行) => !删文字.has(行.id)),
+    }
+  }
+
+  if (操作.操作 === "加边") {
+    return { ...文档, 边: [...文档.边, ...(操作.边 as unknown as 边[])] }
+  }
+
+  if (操作.操作 === "加文字") {
+    return { ...文档, 文字: [...文档.文字, ...(操作.文字 as unknown as 文字[])] }
+  }
+
+  return 文档
+}
+
+/** 按服务端 `映射` 把临时 id 换成正式 id（含边的两端）。 */
+function 换id(文档: 图文件, 映射: Readonly<Record<string, string>>): 图文件 {
+  const 换 = (id: string) => 映射[id] ?? id
+  return {
+    ...文档,
+    节点: 文档.节点.map((点) => ({ ...点, id: 换(点.id) })),
+    边: 文档.边.map((行) => ({ ...行, id: 换(行.id), 从: 换(行.从), 到: 换(行.到) })),
+    文字: 文档.文字.map((行) => ({ ...行, id: 换(行.id) })),
+  }
+}
+
+let 批次序号 = 0
+
+export function 编辑器(props: 编辑器Props): JSX.Element {
+  const [文档, set文档] = createSignal(props.初始文档)
+  const [版本, set版本] = createSignal(props.初始版本)
+  const [已存文档, set已存文档] = createSignal(props.初始文档)
+  const [状态, set状态] = createSignal<保存状态>("已存")
+  const [错误, set错误] = createSignal<string | undefined>()
+  const [最新版本, set最新版本] = createSignal<string | undefined>()
+  const [撤销栈, set撤销栈] = createSignal<撤销栈>(新建撤销栈())
+  const [选中, set选中] = createSignal<readonly string[]>([])
+  const [模式, set模式] = createSignal<模式>("指针")
+
+  let 待发: 操作[] = []
+  let 计时: ReturnType<typeof setTimeout> | undefined
+  let 正在发 = false
+
+  onCleanup(() => clearTimeout(计时))
+
+  const 发送 = async () => {
+    if (正在发 || 待发.length === 0) return
+    正在发 = true
+    const 批 = 待发
+    待发 = []
+    const 批次 = `批-${++批次序号}`
+    const 前 = 已存文档()
+    set状态("发送中")
+
+    const 回 = await props.api.写({
+      projectId: props.projectId,
+      path: props.path,
+      版本: 版本(),
+      操作: 批,
+      批次,
+    })
+    正在发 = false
+
+    if (回.kind === "ok") {
+      const 新 = 换id(文档(), 回.value.结果.映射)
+      set文档(新)
+      set已存文档(新)
+      set版本(回.value.版本)
+      // 逆操作生成归 T016；本轮先压一个带空逆操作的空步（批次边界现在就钉住）。
+      set撤销栈(压入(撤销栈(), { 批次, 逆操作: [] }))
+      set错误(undefined)
+      set最新版本(undefined)
+      set状态("已存")
+    } else {
+      // 两类失败都回改前值、停在「待发」、只说「没存上」；不自动重试、不替用户合并。
+      set文档(前)
+      set已存文档(前)
+      set错误("没存上")
+      set最新版本(回.code === "VERSION_CONFLICT" ? 回.最新版本 : undefined)
+      set状态("待发")
+    }
+
+    if (待发.length > 0) 排发()
+  }
+
+  const 排发 = () => {
+    clearTimeout(计时)
+    计时 = setTimeout(() => void 发送(), 防抖毫秒)
+  }
+
+  const 应用 = (操作们: readonly 操作[]) => {
+    if (操作们.length === 0) return
+    const 旧 = 文档()
+    set文档(操作们.reduce(应用本地, 旧))
+    待发 = [...待发, ...操作们]
+    set错误(undefined)
+    set最新版本(undefined)
+    set状态("待发")
+    排发()
+  }
+
+  const 撤销一步 = () => {
+    const 出 = 弹撤销(撤销栈())
+    if (出 === undefined) return
+    set撤销栈(出.栈)
+    // 逆操作归 T016；空步只弹栈、不发写，避免产生一次空改动的写请求。
+    if (出.步.逆操作.length > 0) 应用(出.步.逆操作)
+  }
+
+  const 重做一步 = () => {
+    const 出 = 弹重做(撤销栈())
+    if (出 === undefined) return
+    set撤销栈(出.栈)
+    if (出.步.逆操作.length > 0) 应用(出.步.逆操作)
+  }
+
+  const 动作: 画布动作 = {
+    选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
+    移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
+    加边: (从, 到) =>
+      应用([
+        {
+          操作: "加边",
+          边: [
+            {
+              id: 临时id("e"),
+              从,
+              到,
+              // 手画边没有库里出处 ⇒ 标「推断」（事实边必须有出处/证据，V-04）；标签由检查器改。
+              标签: "",
+              性质: "推断",
+              方向: "有向",
+              来源: { kind: "手写" },
+              时间: { 首: "", 末: "" },
+            },
+          ],
+        },
+      ]),
+    加文字: (x, y) =>
+      应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
+    改字段: (类别, id, 补丁) => 应用([{ 操作: "改字段", 目标: [{ 类别, id, 补丁 }] }]),
+    删对象: (目标) => 应用([{ 操作: "删对象", 目标: [...目标] }]),
+    撤销: 撤销一步,
+    重做: 重做一步,
+    切换模式: set模式,
+  }
+
+  const 状态文案 = () => {
+    if (状态() === "已存") return "已保存"
+    if (状态() === "发送中") return "保存中…"
+    return 错误() ?? "待保存"
+  }
+
+  return (
+    <div data-slot="hgraph-editor" class="flex min-h-0 flex-1 flex-col">
+      <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
+        <button
+          type="button"
+          data-slot="hgraph-undo"
+          aria-label="撤销"
+          title="撤销（Ctrl+Z）"
+          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
+          disabled={!可撤销(撤销栈())}
+          onClick={撤销一步}
+        >
+          撤销
+        </button>
+        <button
+          type="button"
+          data-slot="hgraph-redo"
+          aria-label="重做"
+          title="重做（Ctrl+Shift+Z）"
+          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
+          disabled={!可重做(撤销栈())}
+          onClick={重做一步}
+        >
+          重做
+        </button>
+        <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
+          节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
+        </p>
+        <span
+          data-slot="hgraph-save-status"
+          data-state={状态()}
+          data-latest-version={最新版本()}
+          role="status"
+          class="text-12-regular text-v2-text-text-muted"
+        >
+          {状态文案()}
+        </span>
+      </div>
+      <画布 文档={文档()} 选中={选中()} 模式={模式()} 坐标换算={props.坐标换算} 动作={动作} />
+    </div>
+  )
+}
