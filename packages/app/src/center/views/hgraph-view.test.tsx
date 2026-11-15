@@ -194,3 +194,92 @@ describe("关系图视图（打开通道）", () => {
     expect(文案("hgraph-counts")).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// T014 · R63 打开档案：工厂注入回调 → 检查器按钮
+// ---------------------------------------------------------------------------
+
+/** 一颗已绑库节点（n1 在 100,100），用于选中后点「打开档案」。 */
+const 绑定图 = JSON.stringify({
+  格式: 1,
+  标题: "绑定图",
+  创建于: "",
+  更新于: "",
+  设置: {},
+  节点: [
+    {
+      id: "n1",
+      名称: "张三",
+      类型: "人",
+      来源: { kind: "实体", 实体: "e1", 值: "张三" },
+      时间: { 首: "", 末: "" },
+      x: 100,
+      y: 100,
+    },
+  ],
+  边: [],
+  文字: [],
+})
+
+async function 挂绑定图(依赖: { 打开档案?: (实体id: string, 标题: string) => void } = {}) {
+  const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 绑定图, 版本: "v1" } } })
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  挂过的.push(
+    render(() => {
+      const View = 创建HgraphView(api, () => "p 1", 依赖)
+      return <View path="分析/绑定图.hgraph" />
+    }, host),
+  )
+  await flush()
+  await flush()
+  await flush()
+  return { 调用 }
+}
+
+/** happy-dom 无布局：容器矩形为 0 时画布按恒等映射取点，节点 (100,100) 直接命中。 */
+function 点选节点(id: string) {
+  const 节点 = document.body.querySelector(`[data-slot='hgraph-node'][data-node-id='${id}']`)!
+  节点.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 100,
+      clientY: 100,
+      button: 0,
+      buttons: 1,
+      pointerId: 1,
+    }),
+  )
+  document.body.querySelector("[data-slot='hgraph-canvas']")!.dispatchEvent(
+    new PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: 100, clientY: 100, button: 0, pointerId: 1 }),
+  )
+}
+
+describe("关系图视图 · T014 打开档案接线（R63）", () => {
+  test("工厂带回调 ⇒ 透传到检查器按钮；点一次收到 (实体id, 标题)", async () => {
+    const 收到: Array<[string, string]> = []
+    await 挂绑定图({ 打开档案: (id, 标题) => 收到.push([id, 标题]) })
+
+    点选节点("n1")
+    await flush()
+
+    const 钮 = document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-open-archive']")
+    expect(钮).not.toBeNull()
+    expect(钮!.disabled).toBe(false)
+    钮!.click()
+
+    expect(收到).toEqual([["e1", "张三 · 人"]])
+  })
+
+  test("工厂不带回调 ⇒ 视图照常渲染，但没有「打开档案」按钮", async () => {
+    const { 调用 } = await 挂绑定图()
+
+    点选节点("n1")
+    await flush()
+
+    expect(调用).toEqual(["读"])
+    expect(document.body.querySelector("[data-slot='hgraph-canvas']")).not.toBeNull()
+    expect(document.body.querySelector("[data-slot='hgraph-open-archive']")).toBeNull()
+  })
+})

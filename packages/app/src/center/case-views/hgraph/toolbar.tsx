@@ -48,6 +48,18 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         加节点
       </button>
 
+      {/* T014：选择器是编辑器里的覆盖面板，加入才落一个批次的 `加节点`。 */}
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-from-library"
+        aria-label="从库加入"
+        title="从库加入"
+        class={按钮}
+        onClick={() => props.动作表.从库加入?.()}
+      >
+        从库加入
+      </button>
+
       <button
         type="button"
         data-slot="hgraph-toolbar-delete"

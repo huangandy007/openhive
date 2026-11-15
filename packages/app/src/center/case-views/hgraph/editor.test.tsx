@@ -20,6 +20,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
+import type { EntityApi, 实体清单项 } from "@/project/entity-api"
+import type { CaseDetailApi, 实体档案, 档案关系 } from "@/center/case-detail-api"
 import { 解析图, 序列化图, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
@@ -2043,5 +2045,339 @@ describe("T013 · 页面接收 AI 改动", () => {
     挂过的.pop()!()
     await 等(120)
     expect(服.读们.length).toBe(卸载前)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T014 · 从库加入 + 检查器接线（快照 / 刷新 / 打开档案）
+// ---------------------------------------------------------------------------
+
+/** 本地时区当天中午的秒数（`日期文本` 按本地时区格式化）。 */
+const 秒 = (年: number, 月: number, 日: number) => new Date(年, 月 - 1, 日, 12).getTime() / 1000
+const T014落定 = async () => {
+  await flush()
+  await flush()
+}
+
+function 档案关系(首: number | null, 末: number | null): 档案关系 {
+  return {
+    id: `r-${首}-${末}`,
+    type: "转账",
+    方向: "出",
+    对方id: "x",
+    对方值: "x",
+    对方类型: "人",
+    对方细类: null,
+    source_kind: "交易",
+    basis: null,
+    trust_state: "已确认",
+    首,
+    末,
+    次数: 1,
+    金额: null,
+  }
+}
+
+function 档案(补丁: Partial<实体档案> & { id: string }): 实体档案 {
+  return {
+    type: "人",
+    canonical_value: 补丁.id,
+    aliases: [],
+    attrs: {},
+    trust_state: "已确认",
+    created_at: 0,
+    关系: [],
+    事件: [],
+    关系总数: 0,
+    关系数据总数: 0,
+    关系人总数: 0,
+    事件总数: 0,
+    对方数: 0,
+    引用: [],
+    引用总数: 0,
+    待确认: { 实体: 0, 关系: 0, 事件: 0, 合计: 0 },
+    一句话: "",
+    ...补丁,
+  }
+}
+
+type 档案返回 = Awaited<ReturnType<CaseDetailApi["profile"]>>
+
+/** profile 替身：`换回应` 让用例中途换「库里的新状态」（刷新场景）。 */
+function 假详情(初始: (id: string) => 档案返回) {
+  const 调用: Array<[string, string]> = []
+  let 回应 = 初始
+  const api: Pick<CaseDetailApi, "profile"> = {
+    profile: async (projectId, id) => {
+      调用.push([projectId, id])
+      return await 回应(id)
+    },
+  }
+  return {
+    api,
+    调用,
+    换回应(新回应: (id: string) => 档案返回) {
+      回应 = 新回应
+    },
+  }
+}
+
+function 假实体(行们: 实体清单项[]) {
+  const 调用: Array<Parameters<EntityApi["list"]>[0]> = []
+  const api: Pick<EntityApi, "list"> = {
+    list: async (input) => {
+      调用.push(input)
+      return { kind: "ok", value: { 行们, 总数: 行们.length, 缺口: [] } }
+    },
+  }
+  return { api, 调用 }
+}
+
+/** 一颗已绑库节点 + 一颗手写节点 + 一颗锁定节点：选中切换用。 */
+function 绑定图(补丁: Partial<节点> = {}): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("n1", 100, 100, {
+        名称: "张三",
+        类型: "人",
+        来源: { kind: "实体", 实体: "e1", 值: "张三" },
+        属性: [{ 键: "A", 值: "1" }],
+        ...补丁,
+      }),
+      造节点("n2", 200, 100),
+      造节点("n3", 300, 100, { 锁定: true }),
+    ],
+    文字: [造文字("t1", "备注", 50, 50)],
+  }
+}
+
+/** T014 专用挂载：多三条接缝（实体api / 详情api / 打开档案）。 */
+function 挂详情(选项: {
+  api: HgraphApi
+  初始文档?: 图文件
+  详情api?: Pick<CaseDetailApi, "profile">
+  实体api?: Pick<EntityApi, "list">
+  打开档案?: (实体id: string, 标题: string) => void
+}) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  挂过的.push(
+    render(
+      () => (
+        <编辑器
+          path="分析/测试图.hgraph"
+          projectId="p 1"
+          api={选项.api}
+          初始文档={选项.初始文档 ?? 绑定图()}
+          初始版本="v1"
+          坐标换算={({ clientX, clientY }) => ({ x: clientX, y: clientY })}
+          详情api={选项.详情api}
+          实体api={选项.实体api}
+          打开档案={选项.打开档案}
+        />
+      ),
+      host,
+    ),
+  )
+}
+
+const 选择器面板 = () => 取("[data-slot='hgraph-entity-picker']")
+
+describe("T014 · 检查器快照接线", () => {
+  test("#8 选中已绑节点 ⇒ fetch profile 恰 1 次；库里的值/类型/可信态/时间都在；零写盘", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情((id) =>
+      id === "e1"
+        ? {
+            kind: "ok",
+            value: 档案({
+              id: "e1",
+              canonical_value: "张三",
+              type: "人",
+              subtype: "嫌疑人",
+              trust_state: "已确认",
+              关系: [档案关系(秒(2025, 12, 1), 秒(2026, 3, 1))],
+            }),
+          }
+        : { kind: "error", message: "不该取别的实体" },
+    )
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    expect(详情.调用).toEqual([["p 1", "e1"]])
+    expect(文案("hgraph-snapshot-值")).toBe("张三")
+    expect(文案("hgraph-snapshot-类型")).toBe("人 · 嫌疑人")
+    expect(文案("hgraph-snapshot-可信态")).toBe("已确认")
+    expect(文案("hgraph-snapshot-时间")).toBe("2025-12-01 ~ 2026-03-01")
+
+    // 切走再切回：缓存按实体 id，不重复取。
+    点选("n2", 200, 100)
+    await T014落定()
+    点选("n1", 100, 100)
+    await T014落定()
+    expect(详情.调用.length).toBe(1)
+
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
+  })
+
+  test("#9 改名后重开（文档「张三」 vs 库「张三丰」）⇒ diff 句出现；零写盘", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三丰", type: "人" }),
+    }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    expect(文案("hgraph-snapshot-diff")).toBe("文件里记的是「张三」，库里现在是「张三丰」")
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
+  })
+
+  test("#10 库里没有（合并/删除，profile 404）⇒「这条不在库里」；零写盘", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({ kind: "error", message: "实体不存在", code: "NOT_FOUND" }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    expect(文案("hgraph-snapshot-empty")).toBe("这条不在库里")
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
+  })
+
+  test("#10b 库里已排除：可信态行显示排除字样；只加角标不改文件（零写盘）", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三", trust_state: "已排除" }),
+    }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    expect(文案("hgraph-snapshot-可信态")).toBe("已排除")
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
+  })
+})
+
+describe("T014 · 刷新此节点（R61）", () => {
+  test("#11 库名已改 ⇒ 恰 1 条「改字段 {名称}」；属性不写回；一致时零写 + 「与库一致」", async () => {
+    const 写 = 假api()
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三", type: "人", attrs: { 开户行: "招商银行" } }),
+    }))
+    挂详情({ api: 写.api, 详情api: 详情.api })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+    expect(文案("hgraph-snapshot-值")).toBe("张三")
+
+    // 库里改名（类型不变、没细类）。
+    详情.换回应(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三丰", type: "人", attrs: { 开户行: "招商银行" } }),
+    }))
+    按钮("hgraph-snapshot-refresh").click()
+    await T014落定()
+    await 过防抖()
+
+    expect(写.写们.length).toBe(1)
+    expect(写.写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 名称: "张三丰" } }] },
+    ])
+    // 属性是只读快照：文档里的「A：1」一字不动。
+    expect(文案("hgraph-readonly-属性")).toContain("A：1")
+    expect(文案("hgraph-refresh-note")).toBe("属性/出处/时间只读，未写回")
+    // 刷新只取一次：写回补丁改文档不该把选中 effect 再拨醒去取第二遍。
+    expect(详情.调用.length).toBe(2)
+
+    // 再刷一次：库与文件已一致 ⇒ 零写 + 「与库一致」。
+    按钮("hgraph-snapshot-refresh").click()
+    await T014落定()
+    await 过防抖()
+    expect(写.写们.length).toBe(1)
+    expect(文案("hgraph-refresh-note")).toBe("与库一致")
+  })
+})
+
+describe("T014 · 打开档案（R63）", () => {
+  test("#12 注入回调：点按钮收到 (实体id, '名称 · 类型') 恰 1 次", async () => {
+    const 写 = 假api()
+    const 收到: Array<[string, string]> = []
+    挂详情({ api: 写.api, 打开档案: (id, 标题) => 收到.push([id, 标题]) })
+    await flush()
+
+    点选("n1", 100, 100)
+    await T014落定()
+
+    按钮("hgraph-open-archive").click()
+    expect(收到).toEqual([["e1", "张三 · 人"]])
+  })
+})
+
+describe("T014 · 从库加入接线", () => {
+  test("工具栏「从库加入」→ 选择器 → 加入：一个批次的「加节点」，新节点被选中", async () => {
+    const 写 = 假api()
+    const 实体 = 假实体([
+      {
+        id: "e1",
+        type: "人",
+        subtype: "嫌疑人",
+        canonical_value: "张三",
+        trust_state: "已确认",
+        关联数: 1,
+        事件参与数: 0,
+        权重: 0,
+        分组: "核心",
+        created_at: 0,
+      },
+    ])
+    const 详情 = 假详情(() => ({
+      kind: "ok",
+      value: 档案({ id: "e1", canonical_value: "张三", type: "人", subtype: "嫌疑人", attrs: { 开户行: "招商银行" } }),
+    }))
+    挂详情({ api: 写.api, 初始文档: 一份图(), 实体api: 实体.api, 详情api: 详情.api })
+    await flush()
+
+    按钮("hgraph-toolbar-from-library").click()
+    await T014落定()
+    expect(选择器面板()).not.toBeNull()
+
+    const 框 = 取("[data-slot='hgraph-picker-check'][data-entity-id='e1']") as HTMLInputElement
+    框.checked = true
+    框.dispatchEvent(new Event("change", { bubbles: true }))
+    按钮("hgraph-picker-add").click()
+    await T014落定()
+    await 过防抖()
+
+    // 一次批量、一次撤销：写请求恰 1 次，里面只 1 条「加节点」。
+    expect(写.写们.length).toBe(1)
+    const 操作们 = 写.写们[0]!.操作
+    expect(操作们.length).toBe(1)
+    expect(操作们[0]!.操作).toBe("加节点")
+    if (操作们[0]!.操作 !== "加节点") throw new Error("形状不对")
+    expect(操作们[0]!.节点.length).toBe(1)
+    expect(操作们[0]!.节点[0]).toMatchObject({ 名称: "张三", 类型: "人", 细类: "嫌疑人", 出处: [] })
+
+    // 面板收起，新节点被选中（检查器可编辑区显示它的名称）。
+    expect(选择器面板()).toBeNull()
+    expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(4)
+    expect((取("[data-slot='hgraph-field-名称']") as HTMLInputElement).value).toBe("张三")
   })
 })

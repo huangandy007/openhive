@@ -81,6 +81,11 @@ export interface 画布动作 {
    * 工具栏「演示」按钮与 `Esc` 都落这一条（contracts/ui.md §3）。
    */
   readonly 演示切换: () => void
+  /**
+   * 打开「从库加入」选择器（T014）：也是本地动作——开的是编辑器里的覆盖面板，
+   * 只有真正「加入」时才经 `应用` 进一个批次。省略 = 这个壳没有库接缝（拼装测试）。
+   */
+  readonly 从库加入?: () => void
 }
 
 export interface 画布Props {

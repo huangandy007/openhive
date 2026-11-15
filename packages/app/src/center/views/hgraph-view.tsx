@@ -24,6 +24,10 @@ import { createResource, Show, type JSX } from "solid-js"
 import type { ViewComponent } from "@/center/view-registry"
 import { currentProject } from "@/project/current-project"
 import { createHgraphApi, 没项目, type HgraphApi } from "@/project/hgraph-api"
+import { createEntityApi, type EntityApi } from "@/project/entity-api"
+import { createCaseDetailApi, type CaseDetailApi } from "@/center/case-detail-api"
+import { 案件伪路径 } from "@/center/case-route"
+import { useCenterTabs } from "@/center/tab-context"
 import { 解析图, type 解析失败码, type 图文件 } from "@/center/case-views/hgraph/file"
 import { 编辑器 } from "@/center/case-views/hgraph/editor"
 
@@ -57,6 +61,13 @@ function 文件名(path: string): string {
   return path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
 }
 
+/** T014 接缝：实体库 / 档案 / 打开档案（R63）。省略 = 这个壳没有库。 */
+export interface HgraphView依赖 {
+  readonly 实体api?: Pick<EntityApi, "list">
+  readonly 详情api?: Pick<CaseDetailApi, "profile">
+  readonly 打开档案?: (实体id: string, 标题: string) => void
+}
+
 /**
  * 工厂：测试注入替身 api / 项目 id；生产那份在文件底部用默认值组装。
  *
@@ -66,6 +77,7 @@ function 文件名(path: string): string {
 export function 创建HgraphView(
   api: HgraphApi,
   取项目id: () => string | undefined = () => currentProject()?.id,
+  依赖?: HgraphView依赖,
 ): ViewComponent {
   return (props): JSX.Element => {
     // 整个组件生命周期只读这一次：切项目不该把已打开的图挪走。
@@ -124,6 +136,9 @@ export function 创建HgraphView(
                       api={api}
                       初始文档={s.文档}
                       初始版本={s.版本}
+                      实体api={依赖?.实体api}
+                      详情api={依赖?.详情api}
+                      打开档案={依赖?.打开档案}
                     />
                   )}
                 </Show>
@@ -136,5 +151,35 @@ export function 创建HgraphView(
   }
 }
 
-/** 生产那一份（`views/index.ts` 的 loader 解出来的就是它）。 */
-export const HgraphView: ViewComponent = 创建HgraphView(createHgraphApi())
+/** 生产接缝只在第一次用到时建：模块级常量会让测试替身与生产实例混住。 */
+let 默认实体api: EntityApi | undefined
+let 默认详情api: CaseDetailApi | undefined
+const 默认hgraphapi = createHgraphApi()
+
+/**
+ * 生产那一份（`views/index.ts` 的 loader 解出来的就是它）。
+ *
+ * 「打开档案」（R63）在中栏 provider 内取 `useCenterTabs()`，**只有这里**用
+ * `案件伪路径` 拼实体页地址；分屏时开在另一栏（与 `case-view.tsx` 的 `另一栏: true` 同义，
+ * 由 `open` 的栏位参数表达）。
+ */
+export const HgraphView: ViewComponent = (props) => {
+  const center = useCenterTabs()
+  const 组装 = 创建HgraphView(默认hgraphapi, () => currentProject()?.id, {
+    实体api: (默认实体api ??= createEntityApi()),
+    详情api: (默认详情api ??= createCaseDetailApi()),
+    打开档案: (实体id, 标题) => {
+      const projectId = currentProject()?.id
+      if (projectId === undefined || projectId === "") return
+      center.open(
+        {
+          module: center.module() ?? "project",
+          title: 标题,
+          path: 案件伪路径({ projectId, view: "entity", arg: 实体id }),
+        },
+        center.activePane(),
+      )
+    },
+  })
+  return <组装 {...props} />
+}

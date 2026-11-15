@@ -11,6 +11,19 @@ import type { 图节点, 关系图结果 } from "../case-detail-api"
  */
 export const 画布 = { 宽: 760, 高: 680 } as const
 
+/**
+ * 新节点的落点阶梯（R29）：围绕画布中心按已有节点数错开。
+ *
+ * **唯一出处**（`#002-06`）：工具栏/右键的「加节点」与 T014 的「从库加入」都用这一份，
+ * 各写一遍迟早漂。`已有数` 是新节点**之前**的节点数（第 n 颗用 n）。
+ */
+export function 阶梯位置(已有数: number): { readonly x: number; readonly y: number } {
+  return {
+    x: 画布.宽 / 2 + ((已有数 % 5) - 2) * 28,
+    y: 画布.高 / 2 + ((已有数 % 4) - 2) * 28,
+  }
+}
+
 export interface 画布尺寸 {
   readonly 宽: number
   readonly 高: number

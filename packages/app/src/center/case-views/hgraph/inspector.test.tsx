@@ -102,6 +102,8 @@ function 挂检查器(选项: {
   快照?: Readonly<Record<string, 节点快照>>
   载入中?: boolean
   刷新节点?: (实体id: string) => void
+  刷新提示?: string
+  打开档案?: (实体id: string, 标题: string) => void
 }) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -119,6 +121,8 @@ function 挂检查器(选项: {
           快照={选项.快照}
           载入中={选项.载入中}
           刷新节点={选项.刷新节点}
+          刷新提示={选项.刷新提示}
+          打开档案={选项.打开档案}
         />
       ),
       host,
@@ -392,5 +396,73 @@ describe("检查器 · 批量态", () => {
     expect(文本("hgraph-inspector-hint")).toContain("选中")
     expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
     expect(取("[data-slot='hgraph-snapshot-empty']")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T014 · R59 空属性/空出处文案 与 R61 刷新回执
+// ---------------------------------------------------------------------------
+
+describe("检查器 · 从库加入后的空属性/出处（R59）", () => {
+  test("已绑库节点属性为空 ⇒ 「库中无记录属性」；出处为空 ⇒ 「未取到出处」", () => {
+    挂检查器({ 选中: ["n1"], 文档: 造图({ 属性: [], 出处: [] }), 快照 })
+
+    expect(文本("hgraph-readonly-属性")).toBe("库中无记录属性")
+    expect(文本("hgraph-readonly-出处")).toBe("未取到出处")
+  })
+
+  test("手写节点不冒充「库中无记录」：仍写 —", () => {
+    挂检查器({ 选中: ["n2"], 快照 })
+
+    expect(文本("hgraph-readonly-属性")).toBe("—")
+    expect(文本("hgraph-readonly-出处")).toBe("—")
+  })
+
+  test("刷新提示按注入值显示（与库一致 / 只读未写回）", () => {
+    挂检查器({ 选中: ["n1"], 快照, 刷新提示: "与库一致" })
+    expect(文本("hgraph-refresh-note")).toBe("与库一致")
+
+    document.body.innerHTML = ""
+    挂检查器({ 选中: ["n1"], 快照, 刷新提示: "属性/出处/时间只读，未写回" })
+    expect(文本("hgraph-refresh-note")).toBe("属性/出处/时间只读，未写回")
+  })
+
+  test("库里查不到时仍给「刷新」按钮（重试入口，R61）", () => {
+    挂检查器({ 选中: ["n1"], 快照: {}, 刷新节点: () => {} })
+
+    expect(文本("hgraph-snapshot-empty")).toBe("这条不在库里")
+    expect(取("[data-slot='hgraph-snapshot-refresh']")).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T014 · R63 打开档案（注入回调；未绑库 disabled；未注入不渲染）
+// ---------------------------------------------------------------------------
+
+describe("检查器 · 打开档案（R63）", () => {
+  test("注入回调且已绑库：点击收到 (实体id, '名称 · 类型') 恰 1 次", () => {
+    const 收到: Array<[string, string]> = []
+    挂检查器({ 选中: ["n1"], 快照, 打开档案: (id, 标题) => 收到.push([id, 标题]) })
+
+    const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
+    expect(钮).not.toBeNull()
+    expect(钮!.disabled).toBe(false)
+    钮!.click()
+
+    expect(收到).toEqual([["ent1", "张三 · 人物"]])
+  })
+
+  test("未绑库节点：按钮 disabled 且 title=「这条不在库里」", () => {
+    挂检查器({ 选中: ["n2"], 快照, 打开档案: () => {} })
+
+    const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
+    expect(钮).not.toBeNull()
+    expect(钮!.disabled).toBe(true)
+    expect(钮!.getAttribute("title")).toBe("这条不在库里")
+  })
+
+  test("未注入回调：按钮不在 DOM（不放禁用假按钮）", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+    expect(取("[data-slot='hgraph-open-archive']")).toBeNull()
   })
 })

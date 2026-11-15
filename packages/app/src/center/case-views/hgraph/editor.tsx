@@ -36,15 +36,18 @@
  * 子组件只调动作条目，`应用` 是唯一把 `操作[]` 交给 api 的地方。UI 发起的 `加节点`
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
-import { Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
-import type { 关系图结果 } from "../../case-detail-api"
-import { 自动位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
+import type { EntityApi } from "@/project/entity-api"
+import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
+import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 选择器, 时间跨度 } from "./entity-picker"
+import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
-import { 检查器 } from "./inspector"
+import { 检查器, type 节点快照 } from "./inspector"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
   可撤销,
@@ -73,16 +76,19 @@ export interface 编辑器Props {
    * 出「AI 这一批」的一步逆操作压栈。
    */
   readonly 外部改动?: (旧文档: 图文件, 新文档: 图文件) => void
+  /**
+   * 实体库接缝（T014）：省略 = 这个壳没有库（拼装测试），「从库加入」按钮点击无动作，
+   * 「库里现在」保持「还没有接入库里的数据」。
+   */
+  readonly 实体api?: Pick<EntityApi, "list">
+  readonly 详情api?: Pick<CaseDetailApi, "profile">
+  /** 打开实体档案（R63）：由上层注入；省略 = 检查器不渲染按钮。 */
+  readonly 打开档案?: (实体id: string, 标题: string) => void
 }
 
 type 保存状态 = "已存" | "待发" | "发送中"
 
 const 防抖毫秒 = 500
-
-/** 临时 id：不匹配服务端的 `^[net]\d+$`，服务端按类别分配正式 id 并写进 `映射`。 */
-let 临时序号 = 0
-const 临时id = (前缀: "n" | "e" | "t") => `临时${前缀}${++临时序号}`
-const 是临时id = (id: string) => id.startsWith("临时")
 
 /**
  * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
@@ -339,6 +345,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [询问重载, set询问重载] = createSignal(false)
   /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
   const [重载提示, set重载提示] = createSignal(false)
+  /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
+  const [选择器开, set选择器开] = createSignal(false)
+  /**
+   * 库里现在（T014）：按**实体 id** 缓存快照，切选中不重复取；取不到就删行，
+   * 检查器回落「这条不在库里」，「刷新此节点」可重试。
+   */
+  const [快照表, set快照表] = createSignal<Readonly<Record<string, 节点快照>>>({})
+  const [快照载入, set快照载入] = createSignal(false)
+  /** 刷新回执（R61）：「与库一致」/「属性/出处/时间只读，未写回」；只属于当前选中。 */
+  const [刷新提示, set刷新提示] = createSignal<string | undefined>()
   /**
    * 舞台容器（R44/R45）：同时包住画布与覆盖层，演示期间既是键盘容器/焦点落点，
    * 也是全屏目标——Fullscreen 只渲染目标子树，打在覆盖层上会把画布挡在外面。
@@ -370,6 +386,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 正在查 = false
   /** 卸载后到达的 `读` 应答不得再写信号（`#005-03`）。 */
   let 已卸载 = false
+  /** 已请求过快照的实体 id（成功/失败都算）：切选中不重复打接口。 */
+  const 已取快照 = new Set<string>()
+  /** 上一次的「当前库 id」：只在换选中时清刷新回执，文档被改（刷新写回）时别清。 */
+  let 上次库id: string | undefined
+  /** 快照请求序号：只让**最后一次**请求关掉「载入中」（切选中时旧的应答晚到不误关）。 */
+  let 快照请求 = 0
 
   onCleanup(() => {
     clearTimeout(计时)
@@ -566,6 +588,127 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     排发()
   }
 
+  // -------------------------------------------------------------------------
+  // T014 · 库里现在 / 刷新 / 从库加入
+  // -------------------------------------------------------------------------
+
+  /** 选中的**单个**已绑库节点（`来源.kind === "实体"` 且实体 id 非空）。 */
+  const 单个已绑 = (): { readonly 点: 节点; readonly 库id: string } | undefined => {
+    if (选中().length !== 1) return undefined
+    const 点 = 文档().节点.find((点) => 点.id === 选中()[0])
+    const 来源 = 点?.来源
+    if (点 === undefined || 来源?.kind !== "实体") return undefined
+    if (typeof 来源.实体 !== "string" || 来源.实体 === "") return undefined
+    return { 点, 库id: 来源.实体 }
+  }
+
+  /** `实体档案` → 检查器「库里现在」（R61）：值 / 类型(·细类) / 可信态 / 关系首末 min·max。 */
+  const 快照映射 = (档案: 实体档案): 节点快照 => ({
+    值: 档案.canonical_value,
+    类型: 档案.subtype === undefined || 档案.subtype === "" ? 档案.type : `${档案.type} · ${档案.subtype}`,
+    可信态: 档案.trust_state,
+    时间: 时间跨度(档案.关系),
+  })
+
+  const 存快照 = (id: string, 快照: 节点快照) => set快照表((旧) => ({ ...旧, [id]: 快照 }))
+  const 删快照 = (id: string) =>
+    set快照表((旧) => {
+      const 新 = { ...旧 }
+      delete 新[id]
+      return 新
+    })
+
+  /** 取数失败不弹错：检查器回落「这条不在库里」，刷新按钮可重试。 */
+  const 取快照 = async (id: string) => {
+    const api = props.详情api
+    if (api === undefined) return
+    已取快照.add(id)
+    const 请求 = ++快照请求
+    set快照载入(true)
+    const 回 = await api.profile(props.projectId, id)
+    if (已卸载) return
+    if (回.kind === "ok") 存快照(id, 快照映射(回.value))
+    else 删快照(id)
+    const 当前 = 单个已绑()
+    if (请求 === 快照请求 && (当前 === undefined || 当前.库id === id)) set快照载入(false)
+  }
+
+  /**
+   * 选中变化 ⇒ 取一次快照（按实体 id 缓存）。**文档变化不重取**：同一份编辑不重复打接口。
+   * 刷新回执只属于「这一次选中」，换选中即清——但刷新写回文档时库 id 没变，不清。
+   */
+  createEffect(() => {
+    const 当前 = 单个已绑()
+    const 库id = 当前?.库id
+    if (库id !== 上次库id) {
+      上次库id = 库id
+      set刷新提示(undefined)
+    }
+    if (库id === undefined || props.详情api === undefined) {
+      set快照载入(false)
+      return
+    }
+    if (!已取快照.has(库id)) void 取快照(库id)
+  })
+
+  /**
+   * 「刷新此节点」（R61）：重取档案；**只有** 名称/类型/细类 与文档不同才发**一次** `改字段`
+   * （白名单即这三个，`hgraph-edit.ts` 的可改键）。属性/出处/时间是只读快照，不写回。
+   */
+  const 刷新节点 = async (id: string) => {
+    const api = props.详情api
+    if (api === undefined) return
+    已取快照.delete(id)
+    set快照载入(true)
+    const 回 = await api.profile(props.projectId, id)
+    if (已卸载) return
+    set快照载入(false)
+
+    if (回.kind !== "ok") {
+      删快照(id)
+      if (单个已绑()?.库id === id) set刷新提示("这条不在库里")
+      return
+    }
+
+    存快照(id, 快照映射(回.value))
+    // 刷新成功即回填缓存：写回补丁会改文档，选中 effect 不该再为同一实体多取一次。
+    已取快照.add(id)
+    const 点 = 文档().节点.find((点) => 点.来源?.kind === "实体" && 点.来源.实体 === id)
+    if (点 === undefined) return
+
+    const 补丁: Record<string, unknown> = {}
+    if (回.value.canonical_value !== (点.名称 ?? "")) 补丁.名称 = 回.value.canonical_value
+    if (回.value.type !== (点.类型 ?? "")) 补丁.类型 = 回.value.type
+    const 库细类 = 回.value.subtype ?? ""
+    if (库细类 !== (点.细类 ?? "")) 补丁.细类 = 库细类 === "" ? null : 库细类
+
+    if (Object.keys(补丁).length > 0) {
+      应用([{ 操作: "改字段", 目标: [{ 类别: "节点", id: 点.id, 补丁 }] }])
+      set刷新提示("属性/出处/时间只读，未写回")
+      return
+    }
+    set刷新提示("与库一致")
+  }
+
+  /** 从库加入的落点与选择器接线：一次批量、一次撤销；成功后选中新节点。 */
+  const 打开选择器 = () => {
+    if (props.实体api === undefined || props.详情api === undefined) return
+    set选择器开(true)
+  }
+
+  const 收下新节点 = (操作们: readonly 操作[]) => {
+    const ids = 操作们.flatMap((操作) =>
+      操作.操作 === "加节点"
+        ? 操作.节点.flatMap((行) => {
+            const id = (行 as Record<string, unknown>).id
+            return typeof id === "string" ? [id] : []
+          })
+        : [],
+    )
+    应用(操作们)
+    if (ids.length > 0) set选中(ids)
+  }
+
   const 撤销一步 = () => {
     const 出 = 弹撤销(撤销栈())
     if (出 === undefined) return
@@ -679,11 +822,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
     加节点: (位置) => {
       // R29：UI 发起的加节点必须自带坐标（工具栏 = 画布中心阶梯偏移；右键/双击 = 点处）。
-      const 已有数 = 文档().节点.length
-      const 位 = 位置 ?? {
-        x: 布局画布.宽 / 2 + ((已有数 % 5) - 2) * 28,
-        y: 布局画布.高 / 2 + ((已有数 % 4) - 2) * 28,
-      }
+      // 阶梯公式与选择器共用一个出处（`阶梯位置`，#002-06）。
+      const 位 = 位置 ?? 阶梯位置(文档().节点.length)
       const id = 临时id("n")
       应用([
         {
@@ -704,6 +844,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 新节点立刻选中：加完就能 F2 改名 / 继续拖。
       set选中([id])
     },
+    // T014：选择器只是编辑器内的覆盖面板，加入时走 `应用` 一条 `加节点`（一次撤销）。
+    从库加入: () => 打开选择器(),
     改字段: (类别, id, 补丁) => 应用([{ 操作: "改字段", 目标: [{ 类别, id, 补丁 }] }]),
     删对象: (目标) => 应用([{ 操作: "删对象", 目标: [...目标] }]),
     删除所选: () => {
@@ -919,7 +1061,28 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           聚焦请求={聚焦请求()}
         />
         <Show when={!演示中()}>
-          <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
+          <检查器
+            选中={选中()}
+            文档={文档()}
+            动作表={动作}
+            快照={props.详情api === undefined ? undefined : 快照表()}
+            载入中={快照载入()}
+            刷新节点={props.详情api === undefined ? undefined : (库id) => void 刷新节点(库id)}
+            刷新提示={刷新提示()}
+            打开档案={props.打开档案}
+          />
+        </Show>
+        {/* T014：选择器是舞台内覆盖面板（挡住画布交互），不参与演示态。 */}
+        <Show when={!演示中() && 选择器开() && props.实体api !== undefined && props.详情api !== undefined}>
+          <选择器
+            projectId={props.projectId}
+            实体api={props.实体api!}
+            详情api={props.详情api!}
+            已有节点={文档().节点}
+            摆放={(序) => 阶梯位置(文档().节点.length + 序)}
+            onAdd={收下新节点}
+            onClose={() => set选择器开(false)}
+          />
         </Show>
         <Show when={演示中()}>
           <演示覆盖层 步号={演示步号()} />

@@ -48,6 +48,16 @@ export interface 检查器Props {
   readonly 快照?: Readonly<Record<string, 节点快照>>
   readonly 载入中?: boolean
   readonly 刷新节点?: (实体id: string) => void
+  /**
+   * 刷新回执（R61）：`与库一致` / `属性/出处/时间只读，未写回`。
+   * 由编辑器算（它才知道写没写），检查器只显示。
+   */
+  readonly 刷新提示?: string
+  /**
+   * 打开实体档案（R63）：**上层注入**。没注入就不渲染按钮（不放禁用假按钮）；
+   * 注入了但节点未绑库 ⇒ `disabled` + 「这条不在库里」。
+   */
+  readonly 打开档案?: (实体id: string, 标题: string) => void
 }
 
 const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
@@ -120,6 +130,20 @@ export function 检查器(props: 检查器Props): JSX.Element {
   const 快照行 = (): 节点快照 | undefined => {
     const 库id = 实体id()
     return 库id === undefined || props.快照 === undefined ? undefined : props.快照[库id]
+  }
+
+  /**
+   * R59：已绑库的节点，空属性/空出处不能只画一个 `—`——那是「没有」，而这里是
+   * 「库里有、但没取到」。两句都逐字来自 tasks.md；手写节点仍写 `—`（别冒充库里查过）。
+   */
+  const 已绑库 = () => 实体id() !== undefined
+  const 属性展示 = (点: 节点) => {
+    const 文 = 属性文本(点)
+    return 文 === "—" && 已绑库() ? "库中无记录属性" : 文
+  }
+  const 出处展示 = (点: 节点) => {
+    const 文 = 出处文本(点)
+    return 文 === "—" && 已绑库() ? "未取到出处" : 文
   }
 
   const 提交 = (点: 节点, 键: "名称" | "类型" | "细类" | "备注", 新值: string) => {
@@ -367,13 +391,13 @@ export function 检查器(props: 检查器Props): JSX.Element {
               <div class={行}>
                 <span class={标签}>属性</span>
                 <span data-slot="hgraph-readonly-属性" class={值样式}>
-                  {属性文本(点())}
+                  {属性展示(点())}
                 </span>
               </div>
               <div class={行}>
                 <span class={标签}>出处</span>
                 <span data-slot="hgraph-readonly-出处" class={值样式}>
-                  {出处文本(点())}
+                  {出处展示(点())}
                 </span>
               </div>
               <div class={行}>
@@ -385,24 +409,53 @@ export function 检查器(props: 检查器Props): JSX.Element {
             </section>
 
             <section data-slot="hgraph-inspector-snapshot" class="flex flex-col border-t border-v2-border-border-muted pt-1">
-              <div class="flex items-center justify-between">
+              <div class="flex items-center justify-between gap-1">
                 <span class="text-12-regular text-v2-text-text-muted">库里现在</span>
-                <Show when={props.刷新节点 !== undefined && 快照行() !== undefined}>
-                  <button
-                    type="button"
-                    data-slot="hgraph-snapshot-refresh"
-                    aria-label="刷新此节点"
-                    title="刷新此节点"
-                    class={按钮}
-                    onClick={() => {
-                      const 库id = 实体id()
-                      if (库id !== undefined) props.刷新节点!(库id)
-                    }}
-                  >
-                    刷新
-                  </button>
-                </Show>
+                <div class="flex items-center gap-1">
+                  {/* R63：未注入不渲染；未绑库 disabled + 那句「这条不在库里」。 */}
+                  <Show when={props.打开档案 !== undefined}>
+                    <button
+                      type="button"
+                      data-slot="hgraph-open-archive"
+                      aria-label="打开档案"
+                      title={已绑库() ? "打开档案" : "这条不在库里"}
+                      class={按钮}
+                      disabled={!已绑库()}
+                      onClick={() => {
+                        const 库id = 实体id()
+                        if (库id !== undefined) props.打开档案!(库id, `${点().名称 ?? ""} · ${点().类型 ?? ""}`)
+                      }}
+                    >
+                      打开档案
+                    </button>
+                  </Show>
+                  {/*
+                    查不到（合并/删除）也要能重试：按钮跟着「有绑定」而不是「有快照行」。
+                    R61 的「取数失败允许刷新」就落在这个条件上。
+                  */}
+                  <Show when={props.刷新节点 !== undefined && 已绑库()}>
+                    <button
+                      type="button"
+                      data-slot="hgraph-snapshot-refresh"
+                      aria-label="刷新此节点"
+                      title="刷新此节点"
+                      class={按钮}
+                      onClick={() => {
+                        const 库id = 实体id()
+                        if (库id !== undefined) props.刷新节点!(库id)
+                      }}
+                    >
+                      刷新
+                    </button>
+                  </Show>
+                </div>
               </div>
+
+              <Show when={props.刷新提示 !== undefined && props.刷新提示 !== ""}>
+                <p data-slot="hgraph-refresh-note" class="py-0.5 text-12-regular text-v2-text-text-muted">
+                  {props.刷新提示}
+                </p>
+              </Show>
 
               <Show when={props.快照 === undefined}>
                 <p data-slot="hgraph-snapshot-empty" class="py-0.5 text-12-regular text-v2-text-text-muted">
