@@ -21,6 +21,7 @@ import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
 import type { 图文件, 边, 节点, 文字 } from "./file"
 import type { 画布动作 } from "./canvas"
+import { 画布 as 画布组件 } from "./canvas"
 import { 演示步进, 演示覆盖层 } from "./present"
 import { 工具栏 } from "./toolbar"
 import { 编辑器 } from "./editor"
@@ -182,6 +183,17 @@ describe("演示步进 · 纯函数", () => {
     expect(集合(出.可见节点)).toEqual([])
     expect(集合(出.可见边)).toEqual([])
   })
+
+  test("M5 出现序: null 与 undefined 同义（读放宽的解析器会保留 null）", () => {
+    const 图 = 步进图()
+    // 读放宽的解析只做形状闸：`"出现序": null` 会原样留在文档里。
+    ;(图.节点[1] as unknown as Record<string, unknown>).出现序 = null
+    expect((图.节点[1] as unknown as Record<string, unknown>).出现序).toBeNull()
+
+    const 第0 = 演示步进(图, 0)
+    // null 本来是「删键」的同义写法 ⇒ 第 0 步就可见，而不是永不出现。
+    expect(第0.可见节点.has("n0")).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -220,6 +232,8 @@ describe("演示覆盖层 · 快捷键只挂容器", () => {
     // 进入时 focus()：快捷键才有落点（FR-040 的容器归属）。
     expect(document.activeElement).toBe(层)
     expect(步骤文案()).toBe("第 0 步")
+    // R41：覆盖层不吃指针/滚轮，事件落回下面的只读画布（真实命中转发 happy-dom 测不到）。
+    expect(层!.classList.contains("pointer-events-none")).toBe(true)
 
     按键(层!, { key: " " })
     await flush()
@@ -273,6 +287,65 @@ describe("演示覆盖层 · 快捷键只挂容器", () => {
 
     expect(步号()).toBe(0)
     expect(关闭次数()).toBe(0)
+  })
+})
+
+describe("演示覆盖层 · 全屏（R40）", () => {
+  /** 临时在原型上挂方法；happy-dom 默认三者都没有（见下方 no-throw 用例）。 */
+  function 临时原型方法(名: string, 值: unknown): () => void {
+    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
+    const 原 = 原型[名]
+    原型[名] = 值
+    return () => {
+      if (原 === undefined) delete 原型[名]
+      else 原型[名] = 原
+    }
+  }
+
+  test("I2 进入演示时对覆盖层容器调 requestFullscreen 恰 1 次", async () => {
+    let 调用 = 0
+    const 还原 = 临时原型方法("requestFullscreen", () => {
+      调用++
+      return Promise.resolve()
+    })
+    try {
+      挂覆盖层(0)
+      await flush()
+      expect(调用).toBe(1)
+    } finally {
+      还原()
+    }
+  })
+
+  test("I2 requestFullscreen 拒绝也不影响演示（Promise 有 catch，不抛到界面）", async () => {
+    const 还原 = 临时原型方法("requestFullscreen", () => Promise.reject(new Error("用户拒绝")))
+    try {
+      挂覆盖层(0)
+      await flush()
+      expect(覆盖层()).not.toBeNull()
+    } finally {
+      还原()
+    }
+  })
+
+  test("I2 元素没有 requestFullscreen（happy-dom 默认）时进入演示不抛错", async () => {
+    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
+    const 原 = 原型.requestFullscreen
+    delete 原型.requestFullscreen
+    try {
+      expect(原型.requestFullscreen).toBeUndefined()
+      let 错误: unknown
+      try {
+        挂覆盖层(0)
+        await flush()
+      } catch (抛) {
+        错误 = 抛
+      }
+      expect(错误).toBeUndefined()
+      expect(覆盖层()).not.toBeNull()
+    } finally {
+      if (原 !== undefined) 原型.requestFullscreen = 原
+    }
   })
 })
 
@@ -445,6 +518,8 @@ describe("编辑器 · 演示态", () => {
     expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
     expect(取("[data-slot='hgraph-toolbar']")).not.toBeNull()
     expect(取("[data-slot='hgraph-inspector']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-editor-bar']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-save-status']")).not.toBeNull()
 
     进入演示()
     await flush()
@@ -453,6 +528,9 @@ describe("编辑器 · 演示态", () => {
     expect(取("[data-slot='hgraph-toolbar']")).toBeNull()
     expect(取("[data-slot='hgraph-inspector']")).toBeNull()
     expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    // M4：顶栏与保存状态条也属于「全部 chrome」，此前报告里写了但没断言。
+    expect(取("[data-slot='hgraph-editor-bar']")).toBeNull()
+    expect(取("[data-slot='hgraph-save-status']")).toBeNull()
 
     // 画布进入只读演示态：chrome 按钮不渲染、选中描边一个都没有。
     expect(画布()!.getAttribute("data-readonly")).toBe("true")
@@ -510,7 +588,7 @@ describe("编辑器 · 演示态", () => {
     expect(画布()!.getAttribute("data-readonly")).toBeNull()
   })
 
-  test("#9/#10 演示中 Delete 不删节点、零写盘；Esc 后 Delete 才删（快捷键恢复）", async () => {
+  test("#9/#10 演示中 Delete 不删节点、零写盘；Esc 把焦点还给画布，Delete 才删（快捷键真恢复）", async () => {
     const { api, 写们 } = 假api()
     挂编辑器(api)
     await flush()
@@ -521,6 +599,7 @@ describe("编辑器 · 演示态", () => {
     进入演示()
     await flush()
     const 层 = 取("[data-slot='hgraph-present']") as HTMLElement
+    expect(document.activeElement).toBe(层)
     expect(节点组("n3")).not.toBeNull()
 
     按键(层, { key: "Delete" })
@@ -534,11 +613,82 @@ describe("编辑器 · 演示态", () => {
     expect(取("[data-slot='hgraph-present']")).toBeNull()
     // 选中在演示期间保持不变 ⇒ 退出后 Delete 仍有目标。
     expect(节点组("n3")!.getAttribute("data-selected")).toBe("true")
-    按键(画布()!, { key: "Delete" })
+
+    // I1：退出后焦点必须回到画布容器。此前焦点停在 BODY，直接往画布派发是假绿。
+    const 布 = 画布()!
+    expect(document.activeElement).not.toBe(document.body)
+    expect(document.activeElement).toBe(布)
+    // 从 activeElement 起按键（不再直接指定画布元素）。
+    const 活 = document.activeElement as Element
+    按键(活, { key: "Delete" })
     await 过防抖()
     expect(节点组("n3")).toBeNull()
     expect(写们.length).toBe(1)
     expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n3" }] }])
+  })
+
+  test("I2 进入演示请求全屏；Esc 时若处于全屏则退出全屏", async () => {
+    const 原型 = HTMLDivElement.prototype as unknown as Record<string, unknown>
+    const 原请求 = 原型.requestFullscreen
+    const 文档 = document as unknown as Record<string, unknown>
+    const 原退出 = 文档.exitFullscreen
+    let 请求数 = 0
+    let 退出数 = 0
+    原型.requestFullscreen = () => {
+      请求数++
+      return Promise.resolve()
+    }
+    文档.exitFullscreen = () => {
+      退出数++
+      return Promise.resolve()
+    }
+    文档.fullscreenElement = document.body
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+
+      进入演示()
+      await flush()
+      expect(请求数).toBe(1)
+      // 假值仍在 ⇒ 说明只是「查询后退出」，没被生产代码改写。
+      expect(document.fullscreenElement).toBe(document.body)
+
+      按键(取("[data-slot='hgraph-present']")!, { key: "Escape" })
+      await flush()
+      expect(退出数).toBe(1)
+      expect(取("[data-slot='hgraph-present']")).toBeNull()
+    } finally {
+      文档.fullscreenElement = undefined
+      delete 文档.fullscreenElement
+      if (原退出 === undefined) delete 文档.exitFullscreen
+      else 文档.exitFullscreen = 原退出
+      if (原请求 === undefined) delete 原型.requestFullscreen
+      else 原型.requestFullscreen = 原请求
+    }
+  })
+
+  test("I2 不在全屏时退出演示不调用 exitFullscreen", async () => {
+    const 文档 = document as unknown as Record<string, unknown>
+    const 原退出 = 文档.exitFullscreen
+    let 退出数 = 0
+    文档.exitFullscreen = () => {
+      退出数++
+      return Promise.resolve()
+    }
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+      进入演示()
+      await flush()
+      按键(取("[data-slot='hgraph-present']")!, { key: "Escape" })
+      await flush()
+      expect(退出数).toBe(0)
+    } finally {
+      if (原退出 === undefined) delete 文档.exitFullscreen
+      else 文档.exitFullscreen = 原退出
+    }
   })
 
   test("#5 演示零写盘、不进撤销栈；退出后选中与视口保持进入前的值", async () => {
@@ -575,5 +725,41 @@ describe("编辑器 · 演示态", () => {
     expect(变换()).toBe("translate(20 30) scale(1)")
     expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
     expect(撤销键().disabled).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 只读画布：演示态的编辑快捷键闸（M1，直接对画布断言「动作表零调用」）
+// ---------------------------------------------------------------------------
+
+describe("只读画布 · 编辑快捷键完全静默（M1）", () => {
+  function 挂只读画布() {
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const 幽 = 幽灵动作表()
+    挂过的.push(
+      render(
+        () => <画布组件 文档={步进图()} 选中={["n3"]} 模式="指针" 动作={幽.动作} 只读={true} />,
+        host,
+      ),
+    )
+    return 幽
+  }
+
+  test("M1 演示中把 Delete / Ctrl+Z / Ctrl+Shift+Z / F2 派发到画布：动作表零调用、节点仍在", async () => {
+    const 幽 = 挂只读画布()
+    await flush()
+    const 布 = 画布()!
+    expect(布.getAttribute("data-readonly")).toBe("true")
+
+    // 选中刻意非空：若没有只读闸，Delete / F2 会真的走动作表（不是被空选中凑巧挡掉）。
+    按键(布, { key: "Delete" })
+    按键(布, { key: "z", ctrlKey: true })
+    按键(布, { key: "z", ctrlKey: true, shiftKey: true })
+    按键(布, { key: "F2" })
+    await flush()
+
+    expect(幽.计数).toEqual({})
+    expect(节点组("n3")).not.toBeNull()
   })
 })

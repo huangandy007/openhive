@@ -103,10 +103,16 @@ export interface 画布Props {
    */
   readonly 只读?: true
   /**
-   * 演示态可见集合（`演示步进` 的输出）：渲染时按集合过滤；不传 = 全显。
-   * `文字` 不参与（R35）——这个集合只过滤节点与边。
+   * 演示态可见集合（`演示步进` 的输出）：**只保证渲染过滤，不保证命中 / 框选**——
+   * `框选命中` 仍按整份文档计算；当前唯一调用方是只读演示态（指针/框选在只读闸处返回）。
+   * 不传 = 全显。`文字` 不参与（R35）——这个集合只过滤节点与边。
    */
   readonly 可见?: { readonly 节点: ReadonlySet<string>; readonly 边: ReadonlySet<string> }
+  /**
+   * 递增即把焦点还给画布容器（I1）。退出演示时由编辑器驱动，恢复编辑快捷键的落点；
+   * 仍是组件内监听/组件自身聚焦：不挂 `window`（FR-040）。
+   */
+  readonly 聚焦请求?: number
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -188,6 +194,21 @@ export function 画布(props: 画布Props): JSX.Element {
   createEffect(() => {
     props.收起菜单
     set菜单(undefined)
+  })
+
+  /**
+   * 退出演示时把焦点还给画布（I1）：`聚焦请求` 由编辑器在退出时递增。
+   * `queueMicrotask` 等同一轮更新把 `tabindex` 落回容器（只读时容器不可聚焦）再 focus。
+   * 只在请求值变化时执行，避免挂载时抢焦点；不挂 `window`（FR-040）。
+   */
+  let 上次聚焦 = props.聚焦请求
+  createEffect(() => {
+    const 请求 = props.聚焦请求
+    if (请求 === undefined || 请求 === 上次聚焦) return
+    上次聚焦 = 请求
+    queueMicrotask(() => {
+      if (props.只读 !== true) 容器?.focus()
+    })
   })
 
   const 提交改名 = (id: string, 值: string) => {

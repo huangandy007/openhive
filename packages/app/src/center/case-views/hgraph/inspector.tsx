@@ -23,7 +23,7 @@
  * 「打开档案 / 绑定到库实体」与真实取数（T014）；边/文字的出现序 UI（本轮只做节点）。
  * `刷新此节点` 只在调用方注入 `刷新节点` 时出现，没注入就不显示（不放禁用假按钮）。
  */
-import { For, Show, createSignal, type JSX } from "solid-js"
+import { For, Show, createEffect, createSignal, type JSX } from "solid-js"
 import type { 图文件, 节点 } from "./file"
 import type { 画布动作 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
@@ -152,6 +152,14 @@ export function 检查器(props: 检查器Props): JSX.Element {
     const 现 = 提示()
     return 点 !== undefined && 现 !== undefined && 现.id === 点.id ? 现.文本 : undefined
   }
+  /**
+   * M3：换选中即清提示。只按 id 过滤不够——换到别的节点再**换回来**时，
+   * 上一条提示会跟着旧 id 复活；提示只属于「这一次输入」。
+   */
+  createEffect(() => {
+    单个()?.id
+    set提示(undefined)
+  })
 
   const 提交出现序 = (点: 节点, 原值: string) => {
     const 文本 = 原值.trim()
@@ -333,6 +341,7 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   class={`${输入} w-14 flex-none`}
                   inputmode="numeric"
                   value={点().出现序 ?? ""}
+                  onFocus={() => set提示(undefined)}
                   onBlur={(事件) => 提交出现序(点(), 事件.currentTarget.value)}
                 />
                 <Show when={出现序提示()}>

@@ -307,6 +307,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [演示中, set演示中] = createSignal(false)
   /** 演示步号：每次进入从 0 开始（0 是合法起始态）。 */
   const [演示步号, set演示步号] = createSignal(0)
+  /** 退出演示时请求画布重新聚焦（I1）：递增即触发，不挂 window（FR-040）。 */
+  const [聚焦请求, set聚焦请求] = createSignal(0)
 
   /** 演示态交给画布的可见集合；编辑态传 `undefined`（全显）。 */
   const 可见集 = createMemo(() => {
@@ -430,6 +432,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
   }
 
+  /**
+   * 退出演示的唯一出口：切回编辑态，并把焦点还给画布（I1）。
+   * Esc 与工具栏再次点「演示」都走这里；演示期间零写盘、不动撤销栈。
+   */
+  const 退出演示 = () => {
+    set演示中(false)
+    set聚焦请求((旧) => 旧 + 1)
+  }
+
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
@@ -523,7 +534,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // 演示是本地展示态：只切信号，不拼 `操作[]`、不调 `写`、不进撤销栈。
     演示切换: () => {
       if (演示中()) {
-        set演示中(false)
+        退出演示()
         return
       }
       set演示步号(0)
@@ -634,12 +645,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           收起菜单={收起菜单()}
           只读={演示中() ? true : undefined}
           可见={可见集()}
+          聚焦请求={聚焦请求()}
         />
         <Show when={!演示中()}>
           <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
         </Show>
         <Show when={演示中()}>
-          <演示覆盖层 步号={演示步号()} 设置步号={set演示步号} 关闭={() => set演示中(false)} />
+          <演示覆盖层 步号={演示步号()} 设置步号={set演示步号} 关闭={退出演示} />
         </Show>
       </div>
     </div>

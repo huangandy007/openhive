@@ -8,6 +8,7 @@
  * 两值都不同的夹具钉住「互不覆盖」，不给回退值留缝（`#005-47`）。
  */
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 图文件, 节点 } from "./file"
 import type { 画布动作 } from "./canvas"
@@ -106,11 +107,13 @@ function 挂检查器(选项: {
   document.body.appendChild(host)
   const 幽 = 幽灵动作表()
   const 文档 = 选项.文档 ?? 造图()
+  // 选中用信号：M3 要断言「换选再回来」时提示消失。
+  const [选中, set选中] = createSignal<readonly string[]>(选项.选中)
   挂过的.push(
     render(
       () => (
         <检查器
-          选中={选项.选中}
+          选中={选中()}
           文档={文档}
           动作表={幽.动作}
           快照={选项.快照}
@@ -121,7 +124,7 @@ function 挂检查器(选项: {
       host,
     ),
   )
-  return 幽
+  return { ...幽, set选中 }
 }
 
 const 取 = (选择器: string) => document.body.querySelector(选择器) as HTMLElement | null
@@ -327,6 +330,28 @@ describe("检查器 · 出现序", () => {
     输入二.value = "4"
     失焦(输入二)
     expect(幽二.计数.改字段 ?? 0).toBe(0)
+  })
+
+  test("M3 非法提示不跨选中残留：换选再回来、重新聚焦都清掉", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 出现序: 3 }), 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement
+
+    输入.value = "abc"
+    失焦(输入)
+    expect(提示()).toBe("要填非负整数")
+
+    // 重新聚焦即清：用户回来改时不该顶着上一条提示。
+    输入.dispatchEvent(new FocusEvent("focus"))
+    expect(提示()).toBeUndefined()
+
+    // 再来一次非法，然后换选再换回来：提示不能跟着 id 复活。
+    输入.value = "abc"
+    失焦(输入)
+    expect(提示()).toBe("要填非负整数")
+    幽.set选中(["n2"])
+    expect(提示()).toBeUndefined()
+    幽.set选中(["n1"])
+    expect(提示()).toBeUndefined()
   })
 })
 

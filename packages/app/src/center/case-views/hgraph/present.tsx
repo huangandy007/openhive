@@ -18,7 +18,7 @@
  * 画布**——那会让编辑态的视口（缩放/平移）随卸载丢失，而 FR-040 要求退出后视口保持进入前
  * 的样子。快捷键只挂本容器（`tabindex="0"`，进入即 `focus()`），**不挂 `window`**。
  */
-import { onMount, type JSX } from "solid-js"
+import { onCleanup, onMount, type JSX } from "solid-js"
 import type { 图文件 } from "./file"
 
 export interface 演示可见 {
@@ -27,11 +27,14 @@ export interface 演示可见 {
 }
 
 /**
- * `出现序` 的规范化：`undefined` ⇒ 0；非有限数 / 负数 ⇒ `undefined`（不可见）。
+ * `出现序` 的规范化：`undefined` / `null` ⇒ 0；非有限数 / 负数 ⇒ `undefined`（不可见）。
  * 小数按非法处理：步号是自然数，`1.5` 落在 1 与 2 之间没有定义（输入侧也在拦）。
+ *
+ * M5：解析器是读放宽的，`"出现序": null` 会原样留在文档里；它与「删键」同义（后端
+ * `null` = 删键），所以必须按缺省 0 处理，而不是当成非法值永不出现。
  */
-function 归一序(值: number | undefined): number | undefined {
-  if (值 === undefined) return 0
+function 归一序(值: number | null | undefined): number | undefined {
+  if (值 === undefined || 值 === null) return 0
   if (typeof 值 !== "number" || !Number.isFinite(值) || 值 < 0) return undefined
   return 值
 }
@@ -67,6 +70,38 @@ export interface 演示覆盖层Props {
   readonly 关闭: () => void
 }
 
+type 可全屏元素 = { requestFullscreen?: () => Promise<unknown> }
+type 可全屏文档 = { fullscreenElement?: unknown; exitFullscreen?: () => Promise<unknown> }
+
+/**
+ * R40：进入演示请求全屏。元素上没有该方法（happy-dom / 老浏览器）就静默跳过；
+ * 返回的 Promise（用户拒绝、权限策略拒绝）一律吞掉——演示本身不依赖真全屏。
+ * 同步抛错也按「不支持」处理（部分实现要求用户手势）。
+ */
+function 请求全屏(元素: HTMLElement | undefined): void {
+  if (元素 === undefined) return
+  const 方法 = (元素 as unknown as 可全屏元素).requestFullscreen
+  if (typeof 方法 !== "function") return
+  try {
+    void Promise.resolve(方法.call(元素)).catch(() => {})
+  } catch {
+    // 不支持 / 策略拒绝：演示照常可用。
+  }
+}
+
+/** R40：退出演示时只退出「我们自己进入的」全屏；不在全屏就没有可退的。 */
+function 退出全屏(): void {
+  const 宿主 = document as unknown as 可全屏文档
+  if (宿主.fullscreenElement === undefined || 宿主.fullscreenElement === null) return
+  const 方法 = 宿主.exitFullscreen
+  if (typeof 方法 !== "function") return
+  try {
+    void Promise.resolve(方法.call(宿主)).catch(() => {})
+  } catch {
+    // 退出全屏失败不回滚演示态。
+  }
+}
+
 /**
  * 演示覆盖层：盖在画布上的键盘容器 + 步号提示。
  *
@@ -76,7 +111,11 @@ export interface 演示覆盖层Props {
  */
 export function 演示覆盖层(props: 演示覆盖层Props): JSX.Element {
   let 容器: HTMLDivElement | undefined
-  onMount(() => 容器?.focus())
+  onMount(() => {
+    容器?.focus()
+    请求全屏(容器)
+  })
+  onCleanup(退出全屏)
 
   const 按键 = (事件: KeyboardEvent) => {
     const 目标 = 事件.target
@@ -102,6 +141,8 @@ export function 演示覆盖层(props: 演示覆盖层Props): JSX.Element {
     }
   }
 
+  // R41：覆盖层不吃指针/滚轮（`pointer-events-none`），事件落回下面的只读画布
+  //（滚轮缩放仍可用、点选无效）。
   return (
     <div
       ref={(元素) => (容器 = 元素)}
@@ -109,7 +150,7 @@ export function 演示覆盖层(props: 演示覆盖层Props): JSX.Element {
       role="dialog"
       aria-label="演示"
       tabindex="0"
-      class="absolute inset-0 z-30 flex flex-col outline-none"
+      class="pointer-events-none absolute inset-0 z-30 flex flex-col outline-none"
       onKeyDown={按键}
     >
       <p
