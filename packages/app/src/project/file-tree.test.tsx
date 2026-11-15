@@ -3318,6 +3318,89 @@ describe("FileTree 文件树（FR-005）", () => {
         document.body.querySelector<HTMLElement>("[data-slot='parse-confirm-ok']")?.hasAttribute("disabled"),
       ).toBe(true)
     })
+
+    /**
+     * T009（US2）：多选作用域下**只放行「解析入库」**。
+     *
+     * 控制器裁定（2026-11-15，优先于 contracts C3 的「候选非空才亮」）：状态已读到就保持可点——
+     * 0 候选要让确认框解释（spec US2 场景 4），只有「未接入 / 无对象 / 还没读到 / 读取失败」
+     * 才灰并回原话。候选是否 > 0 不参与菜单亮灰。
+     */
+    const 选中 = (host: HTMLElement, paths: readonly string[]) => {
+      const [头, ...其余] = paths
+      if (头 === undefined) throw new Error("多选至少要一条路径——这条用例的前提不成立")
+      点行(host, 头)
+      for (const path of 其余) 点行(host, path, { ctrl: true })
+    }
+
+    test("多选 3 份（1 份已解析）：入队可点、触发项写「已选 3 项」，其余四项共用同一句原因", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [视图行({ path: "甲.csv", status: "已解析" })],
+      })
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      for (const action of ["parse-reenqueue", "parse-cancel", "parse-skip", "parse-view"]) {
+        expect(子项禁用(action), action).toBe(true)
+        expect(子项原因(action), action).toBe("多选时只支持解析入库")
+      }
+      expect(触发状态()).toBe("已选 3 项")
+    })
+
+    test("右键行本身已解析，但选中集里有未入队文件 ⇒ 入队仍可点（不按右键行判）", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [视图行({ path: "甲.csv", status: "已解析" })],
+      })
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "甲.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      // 「按候选集判定」的落实形态：不看右键行状态。
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      expect(触发状态()).toBe("已选 3 项")
+    })
+
+    test("选中两项后右键第三行（不在选中集）⇒ 回到单文件语义，不出现多选统一原因", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [视图行({ path: "丙.csv", status: "已解析" })],
+      })
+      选中(host, ["甲.csv", "乙.csv"])
+      右键(行按路径(host, "丙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      // 右键行是单文件语义：触发项按该行状态写，入队按该行判定（已解析 ⇒ 灰 + 原原因）。
+      expect(触发状态()).toBe("已解析")
+      expect(子项禁用("parse-enqueue")).toBe(true)
+      expect(子项原因("parse-enqueue")).toBe("已经解析过了，要重来请用「重新解析」")
+      for (const action of ["parse-reenqueue", "parse-cancel", "parse-skip", "parse-view"]) {
+        expect(子项原因(action), action).not.toBe("多选时只支持解析入库")
+      }
+    })
+
+    test("全不可入队（3 份都已解析）多选 ⇒ 入队仍可点（0 候选交给确认框解释）", async () => {
+      const { host } = 挂带材料(["甲.csv", "乙.csv", "丙.csv"], {
+        rows: [
+          视图行({ path: "甲.csv", status: "已解析" }),
+          视图行({ path: "乙.csv", status: "已解析" }),
+          视图行({ path: "丙.csv", status: "已解析" }),
+        ],
+      })
+      选中(host, ["甲.csv", "乙.csv", "丙.csv"])
+      右键(行按路径(host, "乙.csv"))
+      await 歇一拍()
+      await 开子菜单()
+
+      expect(子项禁用("parse-enqueue")).toBe(false)
+      for (const action of ["parse-reenqueue", "parse-cancel", "parse-skip", "parse-view"]) {
+        expect(子项禁用(action), action).toBe(true)
+        expect(子项原因(action), action).toBe("多选时只支持解析入库")
+      }
+    })
   })
 
   describe("行尾标记与汇总（计划 3）", () => {

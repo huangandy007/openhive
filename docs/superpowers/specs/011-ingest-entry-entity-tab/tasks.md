@@ -150,7 +150,13 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 ### 菜单与确认框
 
-- [ ] T009 [US2] 多选分支菜单（先红后绿）：`file-tree.tsx` 解析子菜单 + `case-materials-view.ts` 的 `状态文案`；用例进 `file-tree.test.tsx`
+- [x] T009 [US2] 多选分支菜单（先红后绿）：`file-tree.tsx` 解析子菜单 + `case-materials-view.ts` 的 `状态文案`；用例进 `file-tree.test.tsx`
+
+  > **红（2026-11-15 实测）**：`file-tree.test.tsx` 起点 176 pass / 0 fail，新增 4 条 ⇒ **177 pass / 3 fail**：① 四条原因 `Expected: "多选时只支持解析入库" / Received: "这份文件还没有解析记录"`；②③ `parse-enqueue` `Expected: false / Received: true`（入队仍按右键行判灰、触发项仍写行状态）。`case-materials-view.test.tsx` **26 pass / 1 fail**：`Expected: "已选 3 项" / Received: "未入队"`。（「右键第三行」那条实现前即绿——它钉的是现状单文件语义，不是新行为。）
+  > **绿**：`file-tree.test.tsx` **180 pass / 0 fail / 405 expect**（既有 176 + 新增 4）；`case-materials-view.test.tsx` **27 pass / 0 fail / 88 expect**（既有 26 + 新增 1）。
+  > **变异**：① 拆掉 view 层五处 `if (b.多选)`（四项原因 + 入队放行）⇒ 3 条红（多选 1、2、4）；② 拆掉 `状态文案` 的「已选 K 项」分支 ⇒ 3 条红（多选 1、2、单测）；③ `菜单依据` 第三参改传 `false` ⇒ 3 条红（多选 1、2、4），触发项文案仍绿（`选中集大小` 是另一条线）。三次恢复后均回 180 + 27 全绿。
+  > **门禁**：`packages/app` `bun run typecheck` 退出 0；根 `bun run lint` 退出 1，唯一 error 在未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163`（既有）；本任务四文件仅命中既有警告（`consistent-return` ×3、`no-unsafe-type-assertion` ×1），新增行 0 警告。
+  > **实现偏差**：按控制器裁定，selection 作用域「状态已读到即保持可点」（不看候选数），与原文「按候选非空亮」不同；`selection` 的 `onSelect` 本任务留明确 TODO（T010 接确认框），菜单亮灰与文案已完整。
 
   - **入参**：`判菜单目标(path)`、`选中集待入队(...)`、`选中集().size`（K）、`行们`、`rowsLoaded`
   - **出参**：`selection` 作用域下 —— `解析入库` 按候选非空亮、右侧「已选 K 项」；其余四项置灰且共用**同一句**原因；`file` / `folder` 作用域行为不变

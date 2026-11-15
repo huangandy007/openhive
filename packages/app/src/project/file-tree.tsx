@@ -517,7 +517,7 @@ export function FileTree(props: FileTreeProps) {
   /** 这份文件在服务端视图里的那一行；没有 = 还没入队（或清单没读到）。 */
   const 视图行 = (path: string) => 行表().get(path)
 
-  const 依据 = (path: string, 有对象 = true): 亮灯依据 => ({
+  const 依据 = (path: string, 有对象 = true, 多选 = false): 亮灯依据 => ({
     path,
     isFile: 节点表().get(path)?.type === "file",
     row: 视图行(path),
@@ -528,6 +528,7 @@ export function FileTree(props: FileTreeProps) {
     接入: 材料() !== undefined,
     有对象,
     hasReview: props.onReviewParse !== undefined,
+    多选,
   })
 
   /** 行尾标记（只对三种有形状的状态返回；未入队 / 已跳过不画）。 */
@@ -587,7 +588,8 @@ export function FileTree(props: FileTreeProps) {
     const path = 菜单对象()
     return path !== undefined && 节点表().get(path)?.type === "file"
   }
-  const 菜单依据 = () => 依据(菜单对象() ?? "", 菜单对象() !== undefined)
+  const 菜单依据 = () =>
+    依据(菜单对象() ?? "", 菜单对象() !== undefined, 菜单目标()?.kind === "selection")
 
   /** 单文件 / 单目录的解析动作。回一句字符串 = 没办成（弹窗就地显示）。 */
   async function 执行解析(path: string, action: 人工解析动作): Promise<string | undefined> {
@@ -729,6 +731,17 @@ export function FileTree(props: FileTreeProps) {
     if (是选中集(path)) return { kind: "selection", paths: [...选中集()] }
     if (节点表().get(path)?.type === "file") return { kind: "file", path }
     return { kind: "folder", paths: [path] }
+  }
+
+  /**
+   * 这一次右键菜单的**作用域**（T009）——没有对象时 `undefined`。
+   *
+   * 算一次、三处共用（`菜单依据` / 触发项文案 / 入队分支）：三处各写一遍判据，迟早只改一处
+   * （`#002-06`）。
+   */
+  const 菜单目标 = () => {
+    const path = 菜单对象()
+    return path === undefined ? undefined : 判菜单目标(path)
   }
 
   /** 菜单文案：只有「右键行在选中集里且多选」时才带 N。 */
@@ -1230,6 +1243,7 @@ export function FileTree(props: FileTreeProps) {
                     path: 菜单对象() ?? "",
                     extensions: 扩展名(),
                     readFailed: 材料()?.error() !== undefined,
+                    选中集大小: 菜单目标()?.kind === "selection" ? 选中集().size : undefined,
                   })}
                 </span>
                 <Icon name="chevron-right" size="small" />
@@ -1243,6 +1257,11 @@ export function FileTree(props: FileTreeProps) {
                     onSelect={() => {
                       const path = 菜单对象()
                       if (path === undefined) return
+                      // TODO(T010)：selection 作用域接「选中集确认」弹窗——候选 =
+                      // `选中集待入队(目标.paths, 全部(), 状态.rows(), 扩展名())`，M = 被排除的选中项数，
+                      // N=0 仍弹窗、确认键置灰。T009 只做菜单亮灰与触发项文案，故这里先明确空转
+                      //（不是静默漏接：菜单仍亮着是控制器裁定，点下去的行为归 T010）。
+                      if (菜单目标()?.kind === "selection") return
                       if (节点表().get(path)?.type === "directory") 确认解析文件夹(path)
                       else 直接解析(path, "入队")
                     }}

@@ -76,9 +76,13 @@ export function 状态文案(input: {
   extensions?: readonly string[]
   /** 读取失败过（`error()` 有值）：与 `亮灯依据.readFailed` 同名同义。 */
   readFailed?: boolean
+  /** 多选作用的项数（`选中集().size`）：> 1 时右边写「已选 K 项」。 */
+  选中集大小?: number
 }): string {
   if (!input.接入) return "未接入"
   if (!input.有对象) return ""
+  // 多选动作的对象是整批，不是右键那一行 ⇒ 先于 isFile / 行状态回答「带了几项」。
+  if (input.选中集大小 !== undefined && input.选中集大小 > 1) return `已选 ${input.选中集大小} 项`
   if (!input.isFile) return "文件夹"
   // 首拉失败与「还在读」是两种话：五个解析子项已经按 `readFailed` 分开说，
   // 触发项右边不能永远停在「读取中」（终审 F3）。
@@ -258,7 +262,18 @@ export interface 亮灯依据 {
   readonly 接入: boolean
   readonly 有对象: boolean
   readonly hasReview: boolean
+  /**
+   * 这一次菜单作用于**多选**（右键行 ∈ 选中集且选中集 > 1）。
+   *
+   * 只有「解析入库」放行：其余四项对一批文件说不清作用对象，统一灰掉并写同一句原因。
+   * 「解析入库」**不看行状态**（右键行已解析而选中集里有候选 ⇒ 仍亮）；已读到状态就保持可点，
+   * 0 候选交给确认框解释（控制器裁定 2026-11-15）。
+   */
+  readonly 多选?: boolean
 }
+
+/** 多选时其余四项共用的唯一一句原因（单一出处，`#002-06`）。 */
+export const 多选只支持入库 = "多选时只支持解析入库"
 
 const 未接入 = "解析状态还没接上"
 const 无对象 = "右键一个文件或文件夹再用"
@@ -276,6 +291,9 @@ export function 入队不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选：**不看右键行状态**（右键行已解析而选中集里有候选 ⇒ 仍亮）；候选 0 也保持可点，
+  // 交给确认框解释（控制器裁定 2026-11-15，spec US2 场景 4 要这条可达）。
+  if (b.多选) return undefined
   // 目录一律放行到确认弹窗：候选为 0 时由弹窗正文解释、确认键置灰。
   // 不在菜单项上直接灰掉——灰项的说明用户看不到，看起来就像「菜单坏了」。
   if (!b.isFile) return undefined
@@ -291,6 +309,8 @@ export function 重新解析不可用原因(b: 亮灯依据): string | undefined
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (!可解析路径(b.path, b.extensions)) return 后续计划
@@ -305,6 +325,8 @@ export function 取消不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (!运行中(b.row?.status)) return "这份文件现在没有在排队或解析"
   return undefined
@@ -315,6 +337,8 @@ export function 跳过不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (b.row?.kind === "产物") return 产物
   if (运行中(b.row?.status)) return "正在排队或解析中，先取消再跳过"
@@ -328,6 +352,8 @@ export function 查看不可用原因(b: 亮灯依据): string | undefined {
   if (!b.有对象) return 无对象
   // 状态没读回来之前**一律不判**：目录批量也算不出可信候选（`rows` 为空会把已解析当未入队）。
   if (!b.rowsLoaded) return b.readFailed ? 读取失败 : 未读取
+  // 多选只放行「解析入库」；四项共用这一句原因（控制器裁定 2026-11-15）。
+  if (b.多选) return 多选只支持入库
   if (!b.isFile) return 只针对文件
   if (!b.hasReview) return "抽取结果面板在后续计划"
   if (b.row === undefined || (b.row.status !== "已解析" && b.row.status !== "有问题"))

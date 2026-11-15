@@ -285,6 +285,20 @@ test("状态文案：首拉失败说「读取失败」，不是一直「读取�
   expect(状态文案(基础)).toBe("读取中")
 })
 
+test("状态文案：多选时写「已选 K 项」，优先于文件夹 / 行状态", () => {
+  // T009：selection 作用域下触发项右侧回答的是「这一次动作带了几项」，不是某一行状态。
+  expect(状态文案({ isFile: true, loaded: true, 接入: true, 有对象: true, 选中集大小: 3 })).toBe("已选 3 项")
+  // 右键的是目录也照样写 K——多选动作的对象是整批，不是那一行。
+  expect(状态文案({ isFile: false, loaded: true, 接入: true, 有对象: true, 选中集大小: 2 })).toBe("已选 2 项")
+  // 对照：只有 1 项（单选）/ 没传 ⇒ 行为逐字不变。
+  expect(
+    状态文案({ isFile: true, loaded: true, 接入: true, 有对象: true, 选中集大小: 1 }),
+  ).toBe("未入队")
+  // 多选也不能盖过公共闸：未接入 / 无对象仍回原话。
+  expect(状态文案({ isFile: true, loaded: true, 接入: false, 有对象: true, 选中集大小: 3 })).toBe("未接入")
+  expect(状态文案({ isFile: true, loaded: true, 接入: true, 有对象: false, 选中集大小: 3 })).toBe("")
+})
+
 test("状态文案：无材料行且不可解析 ⇒ 与悬停同一句话（系统不解析这类文件）", () => {
   // N3：同一份文件，行提示说「系统不解析这类文件」、子菜单状态却说「未入队」——两句话矛盾。
   expect(
