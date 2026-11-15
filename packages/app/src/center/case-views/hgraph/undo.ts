@@ -19,7 +19,7 @@
  * 每个函数都返回**新栈**，不修改入参（`#005-48`：不要在同一个对象上改来改去）。内部用
  * 只读数组；结构共享只发生在「没有被改动的那部分」。
  */
-import type { 操作 } from "../../../project/hgraph-api"
+import type { 操作 } from "@/project/hgraph-api"
 
 /** 被删对象原样副本：T016 靠它把删除还原（`对象` 的形状由操作代数决定，栈不解释）。 */
 export interface 副本 {
