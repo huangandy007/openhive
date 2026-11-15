@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 空骨架, 序列化图, 解析图, 默认设置 } from "../../src/server/openhive/hgraph-file"
+import { 空骨架, 序列化图, 解析图, 默认设置, 校验来源 } from "../../src/server/openhive/hgraph-file"
 
 /**
  * T003 · `.hgraph` 解析与未知字段保真（012 data-model §1–§5 / contracts/hgraph-format §1、§3）。
@@ -335,5 +335,110 @@ describe("T003 · 空骨架与默认设置", () => {
     expect(Object.isFrozen(默认设置)).toBe(true)
     expect(Object.isFrozen(默认设置.次数阈值)).toBe(true)
     expect(Object.isFrozen(空骨架("图", 时刻).设置.次数阈值)).toBe(false)
+  })
+})
+
+/**
+ * T004 · 来源硬闸与出处规则（012 data-model §6 V-04/V-05/V-06/V-09 / contracts/hgraph-format §2）。
+ *
+ * 这个文件是**全仓唯一**实现：HTTP 手工、AI 工具、检查器改性质都只调 `校验来源`，
+ * 不各写一份。检查顺序照契约 §2 表序，**首个不通过即返回**；所以每条用例同时钉 code 与原话。
+ */
+describe("T004 · 来源硬闸与出处规则", () => {
+  test("① 事实边既无出处也无证据 ⇒ FACTS_NEED_SOURCE，原话逐字", () => {
+    for (const 边 of [
+      { 性质: "事实" },
+      { 性质: "事实", 出处: [], 证据: [] },
+      { 性质: "事实", 出处: [], 证据: undefined },
+    ]) {
+      expect(校验来源(边)).toEqual({
+        ok: false,
+        code: "FACTS_NEED_SOURCE",
+        话术: "这条标了事实但没给出处：要么补出处，要么改成推断并写明依据",
+      })
+    }
+    // 「要么补出处」：只有证据、没有 `出处` 也放行。
+    expect(校验来源({ 性质: "事实", 证据: [{ 关系: "rel_1", 出处: "mat_x#Sheet1#1" }] })).toEqual({ ok: true })
+  })
+
+  test("② 推断无依据 ⇒ INFERENCE_NEEDS_BASIS（节点与边都判）", () => {
+    const 期望 = {
+      ok: false,
+      code: "INFERENCE_NEEDS_BASIS",
+      话术: "标了推断但没写依据：推断必须写明依据",
+    } as const
+    for (const 对象 of [
+      { 来源: { kind: "推断" }, 可信度: "中" },
+      { 来源: { kind: "推断", 依据: "" }, 可信度: "高" },
+      { 来源: { kind: "推断", 依据: "   " }, 可信度: "低" },
+      { 来源: { kind: "推断", 依据: 42 }, 可信度: "高" },
+      { 性质: "事实", 出处: ["mat_x#Sheet1#1"], 来源: { kind: "推断" }, 可信度: "高" },
+    ]) {
+      expect(校验来源(对象)).toEqual(期望)
+    }
+  })
+
+  test("③ 推断有依据无可信度 ⇒ INFERENCE_NEEDS_CONFIDENCE；可信度只判非空，不判高/中/低", () => {
+    const 期望 = {
+      ok: false,
+      code: "INFERENCE_NEEDS_CONFIDENCE",
+      话术: "推断必须给可信度（高/中/低）",
+    } as const
+    for (const 对象 of [
+      { 来源: { kind: "推断", 依据: "两人同日同酒店入住" } },
+      { 来源: { kind: "推断", 依据: "两人同日同酒店入住" }, 可信度: "" },
+      { 来源: { kind: "推断", 依据: "两人同日同酒店入住" }, 可信度: "  " },
+    ]) {
+      expect(校验来源(对象)).toEqual(期望)
+    }
+    // 契约只要求「有可信度」，枚举值不在本函数职责内：非空串即放行。
+    expect(校验来源({ 来源: { kind: "推断", 依据: "同日同酒店" }, 可信度: "很高" })).toEqual({ ok: true })
+  })
+
+  test("④ 反向区间出处 ⇒ BAD_CITATION，原话逐字", () => {
+    const 期望 = {
+      ok: false,
+      code: "BAD_CITATION",
+      话术: "出处要写成 材料#工作表#行号，比如 mat_x#Sheet1#12",
+    } as const
+    for (const 对象 of [
+      { 出处: ["mat_x#Sheet1#40-12"] },
+      { 出处: ["mat_x#Sheet1"] },
+      { 出处: ["mat_x##12"] },
+      { 出处: ["mat_x#Sheet1#十二"] },
+      { 出处: [42] },
+      { 性质: "事实", 出处: ["mat_x#Sheet1#1"], 证据: [{ 关系: "rel_1", 出处: "mat_x#Sheet1#40-12" }] },
+      { 性质: "事实", 出处: ["mat_x#Sheet1#1"], 证据: [{ 关系: "rel_1" }] },
+    ]) {
+      expect(校验来源(对象)).toEqual(期望)
+    }
+  })
+
+  test("⑤ `m#t#12-12` ⇒ 通过：区间两端相等与单行等价，不按「区间写法」拒", () => {
+    expect(校验来源({ 出处: ["m#t#12-12"] })).toEqual({ ok: true })
+  })
+
+  test("⑥ 工作表名含 `#` ⇒ 通过（`m#a#b#12` 按首/末 `#` 切段）", () => {
+    expect(校验来源({ 出处: ["m#a#b#12"] })).toEqual({ ok: true })
+    expect(校验来源({ 出处: ["m#a#b#12-15"] })).toEqual({ ok: true })
+  })
+
+  test("⑦ 节点 `来源.kind = 实体` 无出处 ⇒ 通过（节点不受事实边硬闸约束）", () => {
+    expect(校验来源({ 来源: { kind: "实体", 实体: "ent_1", 值: "张三" } })).toEqual({ ok: true })
+    expect(校验来源({ 来源: { kind: "关系", 关系们: ["rel_1"] } })).toEqual({ ok: true })
+    expect(校验来源({ 来源: { kind: "手写" } })).toEqual({ ok: true })
+  })
+
+  test("⑧ 空闲对象 ⇒ 通过（缺必填字段不是本函数的职责）", () => {
+    expect(校验来源({})).toEqual({ ok: true })
+    expect(校验来源({ id: "t1", 内容: "标题" })).toEqual({ ok: true })
+  })
+
+  test("⑨ 首个不通过即返回：事实边又是推断 ⇒ 先报 FACTS_NEED_SOURCE（契约 §2 表序）", () => {
+    expect(校验来源({ 性质: "事实", 来源: { kind: "推断" } })).toEqual({
+      ok: false,
+      code: "FACTS_NEED_SOURCE",
+      话术: "这条标了事实但没给出处：要么补出处，要么改成推断并写明依据",
+    })
   })
 })

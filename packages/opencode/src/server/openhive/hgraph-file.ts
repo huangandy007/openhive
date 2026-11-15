@@ -1,4 +1,5 @@
 import { type ParseError, parse as 解析JSONC } from "jsonc-parser"
+import { 解析出处 } from "./citation"
 
 /**
  * `.hgraph` 图文件的解析与序列化（012 data-model §1–§5 / contracts/hgraph-format §1、§3）。
@@ -18,7 +19,8 @@ import { type ParseError, parse as 解析JSONC } from "jsonc-parser"
  * 证据按 `关系`），所以重排、增删都不会把未知键贴到别的对象上。
  *
  * 已知键为 `undefined` **或 `null`** ⇒ 视为删除该键（契约 §3.1：`补丁[键] = null` 就是
- * 删键，T005 按这个编码发删除）；`null` 永远不会被写进文件。
+ * 删键，T005 按这个编码发删除）；**已知键**的 `null` 不会被写进文件（未知键的原值 `null`
+ * 仍按保真要求原样写回）。
  */
 
 export interface 设置 {
@@ -444,6 +446,82 @@ export function 解析图(原文: string): 解析结果 {
  */
 export function 序列化图(原文树: unknown, 文档: 图文件): string {
   return JSON.stringify(贴(原文树, 文档, 图文件形状), null, 2) + "\n"
+}
+
+export type 校验失败码 = "FACTS_NEED_SOURCE" | "INFERENCE_NEEDS_BASIS" | "INFERENCE_NEEDS_CONFIDENCE" | "BAD_CITATION"
+
+export type 校验结果 = { ok: true } | { ok: false; code: 校验失败码; 话术: string }
+
+const 校验话术: Readonly<Record<校验失败码, string>> = {
+  FACTS_NEED_SOURCE: "这条标了事实但没给出处：要么补出处，要么改成推断并写明依据",
+  INFERENCE_NEEDS_BASIS: "标了推断但没写依据：推断必须写明依据",
+  INFERENCE_NEEDS_CONFIDENCE: "推断必须给可信度（高/中/低）",
+  BAD_CITATION: "出处要写成 材料#工作表#行号，比如 mat_x#Sheet1#12",
+}
+
+function 拒(code: 校验失败码): 校验结果 {
+  return { ok: false, code, 话术: 校验话术[code] }
+}
+
+function 非空串(值: unknown): 值 is string {
+  return typeof 值 === "string" && 值.trim() !== ""
+}
+
+/**
+ * 单条出处写法：调全仓唯一的 `解析出处`，不另写正则。
+ *
+ * 区间裁定：`起 > 末` 才是坏数据；`m#t#12-12` 与单行 `m#t#12` 等价，**接受**——
+ * 「区间两端相等」不是非法写法，只看起末是否反向。`解析出处` 对反向区间已返回 `null`，
+ * 这里仍显式判一次，把这条裁定与实现放在同一处。
+ */
+function 出处合法(串: unknown): boolean {
+  if (typeof 串 !== "string") return false
+  const 解析 = 解析出处(串)
+  return 解析 !== null && 解析.起 <= 解析.末
+}
+
+/** 缺失 / 不是数组归形状闸管，不归「出处写法」管；是数组就逐项判。 */
+function 出处们合法(值: unknown): boolean {
+  if (!Array.isArray(值)) return true
+  return 值.every(出处合法)
+}
+
+/** `证据` 的元素是 `{ 关系, 出处 }`：只判 `出处`，元素不是对象属形状问题、不在本函数职责内。 */
+function 证据出处们合法(值: unknown): boolean {
+  if (!Array.isArray(值)) return true
+  return 值.every((证据) => !是普通对象(证据) || 出处合法(证据.出处))
+}
+
+/**
+ * 写入前的来源硬闸（contracts/hgraph-format §2 / data-model §6 V-04、V-05、V-06、V-09）：
+ * **全仓唯一实现**，HTTP 手工、AI 工具、检查器改性质三条入口都只调它，不各写一份。
+ *
+ * 检查顺序即契约 §2 表序，**首个不通过即返回**：
+ * `FACTS_NEED_SOURCE` → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
+ * 节点、边、文字都能传（`文字` 没有来源字段，天然通过）。
+ *
+ * 只判「来源相关」：缺必填字段、id 唯一、悬空边、批量上限、路径都不在这里管（T005/T006）。
+ * 什么都不写的空闲对象 ⇒ 通过——本函数不替必填校验兜底。
+ */
+export function 校验来源(对象: unknown): 校验结果 {
+  const 视图 = 是普通对象(对象) ? 对象 : {}
+  const 出处 = 视图.出处
+  const 证据 = 视图.证据
+
+  // 只对边生效：节点没有 `性质` 字段；`事实` 的硬闸只压在标了事实的边上（V-04）。
+  if (视图.性质 === "事实" && !(Array.isArray(出处) && 出处.length > 0) && !(Array.isArray(证据) && 证据.length > 0)) {
+    return 拒("FACTS_NEED_SOURCE")
+  }
+
+  // 推断的判据对节点与边一致（data-model §5.1 / V-05、V-06）。`可信度` 只判非空，不判枚举值。
+  const 来源视图 = 是普通对象(视图.来源) ? 视图.来源 : {}
+  if (来源视图.kind === "推断") {
+    if (!非空串(来源视图.依据)) return 拒("INFERENCE_NEEDS_BASIS")
+    if (!非空串(视图.可信度)) return 拒("INFERENCE_NEEDS_CONFIDENCE")
+  }
+
+  if (!出处们合法(出处) || !证据出处们合法(证据)) return 拒("BAD_CITATION")
+  return { ok: true }
 }
 
 /** `init` 用的空骨架（contracts/hgraph-ops §4）：`创建于` 与 `更新于` 都写 `now`。 */
