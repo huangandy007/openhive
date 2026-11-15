@@ -39,7 +39,7 @@
 import { Show, createSignal, onCleanup, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { 关系图结果 } from "../../case-detail-api"
-import { 自动位置, 画布 as 布局画布 } from "../graph-layout"
+import { 自动位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import type { 边, 图文件, 节点, 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
@@ -73,6 +73,7 @@ const 防抖毫秒 = 500
 /** 临时 id：不匹配服务端的 `^[net]\d+$`，服务端按类别分配正式 id 并写进 `映射`。 */
 let 临时序号 = 0
 const 临时id = (前缀: "n" | "e" | "t") => `临时${前缀}${++临时序号}`
+const 是临时id = (id: string) => id.startsWith("临时")
 
 /**
  * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
@@ -198,23 +199,87 @@ const 数 = (值: unknown) => (typeof 值 === "number" && Number.isFinite(值) ?
 
 /**
  * `自动位置` 的入参是 `关系图结果`（与实体关系图共用同一套布局算法，`#002-06`）。
- * 网格模式只按 `type`/`id` 排序、只读坐标，因此这里补齐类型要求的字段即可。
+ * 环形布局要靠 `中心` / `跳数` 分环，所以这里必须给出真值（R36）：
+ *
+ * - `度数`：与该节点相连、且**两端都在文档里**的边数（悬空边不算）。
+ * - `中心`：度数最大的节点；并列取 id 字典序最小者。没有任何边 ⇒ id 最小者。
+ * - `跳数`：从中心沿边做**无向** BFS 的层数，中心为 0、不可达为 1。
+ *
+ * 纯函数，导出供用例直接断言（不经过 DOM）。
  */
-function 构图(文档: 图文件): 关系图结果 {
+export function 构图(文档: 图文件): 关系图结果 {
+  const 存在 = new Set(文档.节点.map((点) => 点.id))
+  const 度数 = new Map<string, number>(文档.节点.map((点) => [点.id, 0]))
+  const 邻接 = new Map<string, string[]>(文档.节点.map((点) => [点.id, []]))
+  for (const 行 of 文档.边) {
+    if (行.从 === 行.到 || !存在.has(行.从) || !存在.has(行.到)) continue
+    度数.set(行.从, (度数.get(行.从) ?? 0) + 1)
+    度数.set(行.到, (度数.get(行.到) ?? 0) + 1)
+    邻接.get(行.从)!.push(行.到)
+    邻接.get(行.到)!.push(行.从)
+  }
+
+  let 中心id: string | undefined
+  for (const 点 of 文档.节点) {
+    if (中心id === undefined) {
+      中心id = 点.id
+      continue
+    }
+    const 现度 = 度数.get(点.id) ?? 0
+    const 旧度 = 度数.get(中心id) ?? 0
+    if (现度 > 旧度 || (现度 === 旧度 && 点.id < 中心id)) 中心id = 点.id
+  }
+
+  // 无向 BFS：中心 0 层；不可达（含没有中心）按 1（与 `关系图结果` 的既有口径一致）。
+  const 层 = new Map<string, number>()
+  if (中心id !== undefined) {
+    层.set(中心id, 0)
+    const 队列 = [中心id]
+    for (let 头 = 0; 头 < 队列.length; 头++) {
+      const 现 = 队列[头]
+      for (const 邻 of 邻接.get(现) ?? []) {
+        if (层.has(邻)) continue
+        层.set(邻, (层.get(现) ?? 0) + 1)
+        队列.push(邻)
+      }
+    }
+  }
+
   return {
     节点: 文档.节点.map((点) => ({
       id: 点.id,
       type: 点.类型 ?? "",
       value: 点.名称 ?? "",
       trust_state: 点.可信度 ?? "",
-      中心: false,
-      跳数: 1,
-      关联数: 0,
-      度数: 0,
+      中心: 点.id === 中心id,
+      跳数: 层.get(点.id) ?? 1,
+      关联数: 度数.get(点.id) ?? 0,
+      度数: 度数.get(点.id) ?? 0,
     })),
     边: [],
     缺口: [],
   }
+}
+
+/**
+ * 自动布局的目标位置（纯函数，执行前先算好再落成一个 `移动` 批次）。
+ * `模式` 原样透传给 `自动位置`（默认环形，R36）；锁定节点不动、坐标取整
+ * （画布要求整数像素）、与当前位置相同的目标剔掉（避免空写 / 空撤销步）。
+ */
+export function 布局目标(
+  文档: 图文件,
+  模式: 排列模式 = "环形",
+): { readonly 类别: "节点"; readonly id: string; readonly x: number; readonly y: number }[] {
+  const 表 = new Map(自动位置(构图(文档), 布局画布, 模式).map((位) => [位.id, 位]))
+  return 文档.节点.flatMap((点) => {
+    if (点.锁定 === true) return []
+    const 位 = 表.get(点.id)
+    if (位 === undefined) return []
+    const x = Math.round(位.x)
+    const y = Math.round(位.y)
+    if (x === 数(点.x) && y === 数(点.y)) return []
+    return [{ 类别: "节点" as const, id: 点.id, x, y }]
+  })
 }
 
 let 批次序号 = 0
@@ -233,6 +298,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [重命名id, set重命名id] = createSignal<string | undefined>()
   /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
   const [待确认布局, set待确认布局] = createSignal(false)
+  /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
+  const [布局模式, set布局模式] = createSignal<排列模式>()
+  /** 收起右键菜单的请求计数：共同父容器点到菜单外时递增（不用 window 监听，FR-040）。 */
+  const [收起菜单, set收起菜单] = createSignal(0)
 
   let 待发: 操作[] = []
   let 计时: ReturnType<typeof setTimeout> | undefined
@@ -283,6 +352,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 两类失败都停在「待发」、只说「没存上」；不自动重试、不替用户合并。
       set文档(待发.reduce(应用本地, 前))
       set已存文档(前)
+      // 失败批里的临时 id 已随回滚消失：选中 / 改名目标必须清掉这些项，
+      // 否则「删除」按钮仍按「选中非空」亮着，却指向不存在的对象。
+      set选中((旧) => 旧.filter((id) => !是临时id(id)))
+      set重命名id((旧) => (旧 !== undefined && 是临时id(旧) ? undefined : 旧))
       set错误("没存上")
       set最新版本(回.code === "VERSION_CONFLICT" ? 回.最新版本 : undefined)
       set状态("待发")
@@ -340,17 +413,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   const 执行布局 = () => {
     set待确认布局(false)
-    const 表 = new Map(自动位置(构图(文档()), 布局画布, "网格").map((位) => [位.id, 位]))
-    const 目标 = 文档().节点.flatMap((点) => {
-      // 锁定节点不动（data-model §3）；坐标取整（画布要求整数像素）。
-      if (点.锁定 === true) return []
-      const 位 = 表.get(点.id)
-      if (位 === undefined) return []
-      const x = Math.round(位.x)
-      const y = Math.round(位.y)
-      if (x === 数(点.x) && y === 数(点.y)) return []
-      return [{ 类别: "节点" as const, id: 点.id, x, y }]
-    })
+    const 目标 = 布局目标(文档(), 布局模式())
+    set布局模式(undefined)
     if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
   }
 
@@ -436,8 +500,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     },
     对齐: (边, ids) => 位置操作(对齐位置(ids, 边, 文档().节点)),
     等距: (轴, ids) => 位置操作(等距位置(ids, 轴, 文档().节点)),
-    自动布局: () => {
-      if (文档().节点.length > 0) set待确认布局(true)
+    自动布局: (模式) => {
+      if (文档().节点.length === 0) return
+      set布局模式(模式)
+      set待确认布局(true)
     },
     撤销: 撤销一步,
     重做: 重做一步,
@@ -451,7 +517,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   }
 
   return (
-    <div data-slot="hgraph-editor" class="relative flex min-h-0 flex-1 flex-col">
+    <div
+      data-slot="hgraph-editor"
+      class="relative flex min-h-0 flex-1 flex-col"
+      // 菜单「点外面就关」收口在这里（工具栏 / 画布 / 检查器的共同父容器）：
+      // 画布自己的 pointerdown 只覆盖画布内部，工具栏与检查器上的点击收不到（I1）。
+      // 不用 window 监听（FR-040）；菜单内部的点击由菜单项自己收尾。
+      onPointerDown={(事件) => {
+        const 目标 = 事件.target
+        if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+        set收起菜单((旧) => 旧 + 1)
+      }}
+    >
       <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
         <button
           type="button"
@@ -526,6 +603,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           坐标换算={props.坐标换算}
           动作={动作}
           重命名id={重命名id()}
+          收起菜单={收起菜单()}
         />
         <检查器 选中={选中()} 文档={文档()} 动作表={动作} />
       </div>

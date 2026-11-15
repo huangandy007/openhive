@@ -24,7 +24,7 @@ import type { 图文件, 节点, 文字 } from "./file"
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
-import { 编辑器 } from "./editor"
+import { 编辑器, 构图, 布局目标 } from "./editor"
 
 const 挂过的: Array<() => void> = []
 
@@ -1164,5 +1164,293 @@ describe("T010 · 单一出口", () => {
       expect(Number.isInteger(目标.x)).toBe(true)
       expect(Number.isInteger(目标.y)).toBe(true)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T010 · 修复轮 1（审查 I1 / M1–M6）
+// ---------------------------------------------------------------------------
+
+const 右键 = (元素: Element, x = 100, y = 100) =>
+  元素.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+
+describe("T010 · 修复轮 1", () => {
+  test("I1 右键菜单：在工具栏上 pointerdown ⇒ 菜单收起", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    右键(节点组("n1")!)
+    await flush()
+    expect(取("[data-slot='hgraph-menu']")).not.toBeNull()
+
+    取("[data-slot='hgraph-toolbar-add-node']")!.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerId: 1 }),
+    )
+    await flush()
+    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+  })
+
+  test("I1 复现：n1 菜单开着时从工具栏加节点 ⇒ 菜单已关、没有删错对象", async () => {
+    const { api } = 假api({
+      写: (输入) => {
+        const 操作 = 输入.操作[0]!
+        if (操作.操作 === "加节点") return 成功("v2", { [String(操作.节点[0]!.id)]: "n7" })
+        return 成功("v3")
+      },
+    })
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    右键(节点组("n1")!)
+    await flush()
+    expect(取("[data-slot='hgraph-menu']")).not.toBeNull()
+
+    // 真实一次点击 = pointerdown → pointerup → click；菜单在 pointerdown 就该收。
+    按下(取("[data-slot='hgraph-toolbar-add-node']")!, 40, 40)
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await flush()
+    await 过防抖()
+
+    // 菜单必须已经收起：否则下一步点菜单「删除」删的是当前选中的新节点，不是菜单打开的 n1。
+    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+    expect(取("[data-slot='hgraph-menu-delete']")).toBeNull()
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n7")).not.toBeNull()
+
+    // 菜单收起后 Delete 按当前选中删的是新节点；n1 不受影响。
+    按键(画布()!, { key: "Delete" })
+    await 过防抖()
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n7")).toBeNull()
+  })
+
+  test("M1 画布内输入框 + 非空选中：Delete / F2 不生效", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    文字行("t1")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 50, clientY: 50 }))
+    await flush()
+    const 输入 = 取("[data-slot='hgraph-text-editor']") as HTMLInputElement
+    expect(输入).not.toBeNull()
+
+    按键(输入, { key: "Delete" })
+    按键(输入, { key: "F2" })
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(0)
+    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+    expect(取("[data-slot='hgraph-rename-editor']")).toBeNull()
+  })
+
+  test("M2 双击画布 chrome 按钮不触发加节点", async () => {
+    const { 幽 } = 挂拼装()
+    await flush()
+
+    取("[data-slot='hgraph-mode-pointer']")!.dispatchEvent(
+      new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }),
+    )
+    await flush()
+    expect(幽.计数.加节点 ?? 0).toBe(0)
+  })
+
+  test("M3 加节点应答前 F2：映射后改名输入框仍连着正式 id，提交发正式 id", async () => {
+    const { api, 写们, 解 } = 闸门api()
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await flush()
+    按键(画布()!, { key: "F2" })
+    await flush()
+    expect(取("[data-slot='hgraph-rename-editor']")).not.toBeNull()
+
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    const 加 = 写们[0]!.操作[0]!
+    expect(加.操作).toBe("加节点")
+    if (加.操作 !== "加节点") throw new Error("不是加节点")
+    const 临时 = String(加.节点[0]!.id)
+
+    解(0, 成功("v2", { [临时]: "n7" }))
+    await flush()
+    await flush()
+
+    // 映射之后输入框必须还连着正式 id（临时 id 在文档里已经不存在了）。
+    const 还在 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    expect(还在).not.toBeNull()
+    还在!.value = "正式名"
+    按键(还在!, { key: "Enter" })
+    await 过防抖()
+
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n7", 补丁: { 名称: "正式名" } }] },
+    ])
+  })
+
+  test("M4 锁定切换：一次批次锁两个节点；再来一次解锁（false）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-lock']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      {
+        操作: "改字段",
+        目标: [
+          { 类别: "节点", id: "n1", 补丁: { 锁定: true } },
+          { 类别: "节点", id: "n2", 补丁: { 锁定: true } },
+        ],
+      },
+    ])
+    expect(取("[data-slot='hgraph-toolbar-lock']")!.textContent?.trim()).toBe("解锁")
+
+    ;(取("[data-slot='hgraph-toolbar-lock']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      {
+        操作: "改字段",
+        目标: [
+          { 类别: "节点", id: "n1", 补丁: { 锁定: false } },
+          { 类别: "节点", id: "n2", 补丁: { 锁定: false } },
+        ],
+      },
+    ])
+  })
+
+  test("M5 边菜单标签 Enter 只提交一次，之后再 blur 也不重复", async () => {
+    const 图 = 一份图()
+    图.边 = [
+      {
+        id: "e1",
+        从: "n1",
+        到: "n2",
+        标签: "",
+        性质: "推断",
+        方向: "有向",
+        来源: { kind: "手写" },
+        时间: { 首: "", 末: "" },
+      },
+    ]
+    const { 幽 } = 挂拼装({ 文档: 图 })
+    await flush()
+
+    右键(取("[data-slot='hgraph-edge'][data-edge-id='e1']")!)
+    await flush()
+    const 输入 = 取("[data-slot='hgraph-menu-edge-label']") as HTMLInputElement
+    expect(输入).not.toBeNull()
+    输入.value = "新标签"
+    按键(输入, { key: "Enter" })
+    await flush()
+    expect(幽.计数.改字段).toBe(1)
+
+    // 菜单卸载后浏览器/测试补发的 blur 不能再提交一次。
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await flush()
+    expect(幽.计数.改字段).toBe(1)
+  })
+
+  test("M6 加节点失败 ⇒ 选中清空、工具栏删除不可用", async () => {
+    const { api } = 假api({ 写: () => ({ kind: "error", message: "写不进去", code: "INTERNAL" }) })
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await flush()
+    await 过防抖()
+    await flush()
+
+    expect((取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector("[data-node-id^='临时']")).toBeNull()
+    expect(取("[data-slot='hgraph-rename-editor']")).toBeNull()
+  })
+
+  test("M7 构图：度数为边数、中心取度数最大 / id 最小、跳数为无向 BFS 层数", () => {
+    const 图 = 一份图()
+    图.节点 = [造节点("n1", 100, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100)]
+    图.边 = [
+      { id: "e1", 从: "n1", 到: "n2", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+      { id: "e2", 从: "n2", 到: "n3", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+    ]
+
+    const 结果 = 构图(图)
+    const 表 = new Map(结果.节点.map((点) => [点.id, 点]))
+    // 链 n1-n2-n3 按「度数 = 相连边数」：中间 n2 有两条边 ⇒ 度数 2，是中心；
+    // 两侧各 1 条；无向 BFS 从 n2 出发 ⇒ n2=0、n1/n3=1。
+    // （审查示例写的「中心 n1、跳数 0/1/2、度数都 1」与这三条定义互相矛盾：
+    //  链上 n2 必有 2 条边；若要从 n1 取得 0/1/2 的跳数，n2 的度数就不可能也是 1。）
+    expect(表.get("n1")!.度数).toBe(1)
+    expect(表.get("n2")!.度数).toBe(2)
+    expect(表.get("n3")!.度数).toBe(1)
+    expect(表.get("n2")!.中心).toBe(true)
+    expect(表.get("n1")!.中心).toBe(false)
+    expect(表.get("n3")!.中心).toBe(false)
+    expect(表.get("n2")!.跳数).toBe(0)
+    expect(表.get("n1")!.跳数).toBe(1)
+    expect(表.get("n3")!.跳数).toBe(1)
+
+    // 并列规则：一条边 n1-n2（两边度数都是 1）⇒ 取 id 字典序最小 n1。
+    const 两粒 = 一份图()
+    两粒.节点 = [造节点("n2", 200, 100), 造节点("n1", 100, 100)]
+    两粒.边 = [
+      { id: "e1", 从: "n1", 到: "n2", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+    ]
+    const 表二 = new Map(构图(两粒).节点.map((点) => [点.id, 点]))
+    expect(表二.get("n1")!.中心).toBe(true)
+    expect(表二.get("n2")!.中心).toBe(false)
+    expect(表二.get("n1")!.跳数).toBe(0)
+    expect(表二.get("n2")!.跳数).toBe(1)
+
+    // 无边 ⇒ 取 id 最小者为中心，其余不可达按 1。
+    const 孤立 = 一份图()
+    孤立.节点 = [造节点("n2", 200, 100), 造节点("n1", 100, 100)]
+    孤立.边 = []
+    const 表三 = new Map(构图(孤立).节点.map((点) => [点.id, 点]))
+    expect(表三.get("n1")!.中心).toBe(true)
+    expect(表三.get("n1")!.跳数).toBe(0)
+    expect(表三.get("n2")!.跳数).toBe(1)
+    expect(表三.get("n2")!.度数).toBe(0)
+  })
+
+  test("M7 自动布局：默认环形与网格产出不同坐标；锁定节点不在目标里", () => {
+    const 图 = 一份图()
+    图.节点 = [造节点("n1", 100, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100)]
+    图.边 = [
+      { id: "e1", 从: "n1", 到: "n2", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+      { id: "e2", 从: "n2", 到: "n3", 标签: "", 性质: "推断", 方向: "无向", 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } },
+    ]
+    const 键 = (目标: ReturnType<typeof 布局目标>) => 目标.map((位) => `${位.id}:${位.x},${位.y}`)
+
+    const 默认 = 布局目标(图)
+    const 环形 = 布局目标(图, "环形")
+    const 网格 = 布局目标(图, "网格")
+    // 默认是环形（R36）——参数原样透传，不是写死某一种。
+    expect(键(默认)).toEqual(键(环形))
+    expect(键(环形)).not.toEqual(键(网格))
+    for (const 位 of [...默认, ...网格]) {
+      expect(Number.isInteger(位.x)).toBe(true)
+      expect(Number.isInteger(位.y)).toBe(true)
+    }
+
+    const 带锁 = 一份图()
+    带锁.节点 = [造节点("n1", 100, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100, { 锁定: true })]
+    expect(布局目标(带锁).some((位) => 位.id === "n3")).toBe(false)
   })
 })

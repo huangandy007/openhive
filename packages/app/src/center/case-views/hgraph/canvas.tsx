@@ -86,6 +86,12 @@ export interface 画布Props {
   readonly 动作: 画布动作
   /** 正在内联改名的节点 id；由编辑器的 `重命名` 动作设置。 */
   readonly 重命名id?: string
+  /**
+   * 递增即收起右键菜单。由编辑器的共同父容器在点到菜单外时驱动——画布自己的
+   * `pointerdown` 只覆盖画布内部，工具栏 / 检查器上的点击收不到（I1）。
+   * 仍是组件内监听：不挂 `window`（FR-040）。
+   */
+  readonly 收起菜单?: number
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -163,6 +169,12 @@ export function 画布(props: 画布Props): JSX.Element {
     改名收尾 = false
   })
 
+  /** 外部（共同父容器）点到菜单外 ⇒ 收起；递增计数变化即触发。 */
+  createEffect(() => {
+    props.收起菜单
+    set菜单(undefined)
+  })
+
   const 提交改名 = (id: string, 值: string) => {
     // 输入框被移除（Enter/Esc 已收尾）后浏览器可能再补一次 blur：此时编辑器里的
     // `重命名id` 已经不是它了，不能再提交（否则 Esc 会变成保存）。
@@ -187,6 +199,7 @@ export function 画布(props: 画布Props): JSX.Element {
   /** 右键：先把落点选中（节点/文字），菜单项只调动作表（FR-025）。 */
   const 右键 = (事件: MouseEvent) => {
     事件.preventDefault()
+    上次边提交 = undefined
     const 目标 = 事件.target
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
     const 矩 = 容器?.getBoundingClientRect()
@@ -415,10 +428,14 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 按键 = (事件: KeyboardEvent) => {
+    // 输入框判定按 tagName 读，**不能**用 `instanceof HTMLElement`：画布内文字编辑框
+    // 在 `<foreignObject>` 里，happy-dom 下它是 SVG 命名空间节点（HTMLElement 为 false），
+    // 旧守卫会漏掉它 ⇒ 选中非空时在输入框里按 Delete 会删节点（M1 实测）。
     const 目标 = 事件.target
-    if (目标 instanceof HTMLElement) {
-      const 名 = 目标.tagName
-      if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 目标.isContentEditable) return
+    if (目标 !== null && "tagName" in 目标) {
+      const 名 = String(目标.tagName).toUpperCase()
+      const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
+      if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
     }
     const 主键 = 事件.ctrlKey || 事件.metaKey
     if (主键 && (事件.key === "z" || 事件.key === "Z")) {
@@ -464,7 +481,9 @@ export function 画布(props: 画布Props): JSX.Element {
 
   const 双击 = (事件: MouseEvent) => {
     const 目标 = 事件.target
-    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    // 菜单与画布内的按钮 / 输入框不算「双击空白」：否则双击 chrome 按钮会额外加一个节点（M2）。
+    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu'], button, input, textarea, select") !== null)
+      return
     const 文字id = 读属性(目标, "data-text-id")
     if (文字id !== undefined) {
       const 行 = props.文档.文字.find((文) => 文.id === 文字id)
@@ -505,10 +524,18 @@ export function 画布(props: 画布Props): JSX.Element {
     const 现 = 菜单()
     return 现?.类型 === "边" ? props.文档.边.find((行) => 行.id === 现.id) : undefined
   }
-  /** 边菜单的字段编辑：显式失焦/回车才提交（不逐字写）。 */
+  /**
+   * 边菜单的字段编辑：显式失焦/回车才提交（不逐字写）。
+   * 一次性收尾锁：Enter 提交并卸载输入框后，浏览器可能再补一次 blur——
+   * 同一 (id, 键, 值) 只提交一次（M5）。换菜单 / 换字段仍是新提交。
+   */
+  let 上次边提交: string | undefined
   const 提交边字段 = (id: string, 键: "标签" | "性质", 值: string) => {
+    const 指纹 = `${id}:${键}:${值}`
+    if (上次边提交 === 指纹) return
     const 行 = props.文档.边.find((边) => 边.id === id)
     if (行 === undefined || 行[键] === 值) return
+    上次边提交 = 指纹
     props.动作.改字段("边", id, { [键]: 值 })
   }
 
