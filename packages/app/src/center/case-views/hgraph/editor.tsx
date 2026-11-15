@@ -497,6 +497,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 舞台: HTMLDivElement | undefined
   /** R47：自己发起的退出（或浏览器已退全屏）在途时不再重入，避免双关。 */
   let 正在退出 = false
+  /**
+   * T011-M1：这一次演示**真的进过全屏**（`requestFullscreen` 已成功落地）。
+   * `fullscreenchange` 看到 `fullscreenElement === null` 只有在此标记为真时才算「用户按了
+   * Esc 退出演示」；否则那是别的全屏（顶栏对 `documentElement`）在用同一个事件。
+   * 进入演示时清零、退出演示时清零。
+   */
+  let 曾进全屏 = false
 
   /**
    * 交给画布的可见集合（R72）：演示中 ⇒ 演示步进结果（现状不变）；编辑态 ⇒
@@ -1230,10 +1237,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const 进入演示 = () => {
     set演示步号(0)
     set演示中(true)
+    曾进全屏 = false
     // tabindex 要等本轮属性更新落地后再 focus（R45）；全屏请求同在手势任务内（queueMicrotask）。
     queueMicrotask(() => {
       舞台?.focus()
-      请求全屏(舞台)
+      // T011-M1：只有请求真的成立才记「曾进全屏」；被拒/不支持时顶栏全屏的
+      // fullscreenchange 不能被当成退出演示的信号。
+      void 请求全屏(舞台).then((成) => {
+        if (成 && 演示中()) 曾进全屏 = true
+      })
     })
   }
 
@@ -1247,6 +1259,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const 退出演示 = async (选项: { 已退全屏?: boolean } = {}) => {
     if (正在退出) return
     正在退出 = true
+    // T011-M1：退出即清「曾进全屏」——后续 fullscreenchange（含 exitFullscreen 自己
+    // 派发的那一次）都不再被当作「用户按了 Esc」重复关演示。
+    曾进全屏 = false
     try {
       const 目标 = 舞台
       set演示中(false)
@@ -1261,9 +1276,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * R47：真全屏下 Esc 是浏览器保留手势（Chrome/Firefox 直接退全屏，通常不把 keydown 交给
    * 页面）。监听 `fullscreenchange`（不是键盘，FR-040 不禁止）：演示仍开着而全屏元素变 null
    * ⇒ 按「用户按了 Esc」处理，关闭演示。
+   *
+   * T011-M1：还必须是**我们进的那次全屏**（`曾进全屏`）。`fullscreenchange` 是文档级事件，
+   * 顶栏「全屏」对 `documentElement` 进出也会派发；没有归属校验时用户关掉顶栏全屏会把演示
+   * 误关。
    */
   const 全屏变化 = () => {
-    if (!演示中()) return
+    if (!演示中() || !曾进全屏) return
     const 宿主 = document as unknown as { fullscreenElement?: unknown }
     if (宿主.fullscreenElement !== null) return
     void 退出演示({ 已退全屏: true })

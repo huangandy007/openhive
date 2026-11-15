@@ -7,7 +7,8 @@
  *   集合语义与顺序无关（`演示步进` 的输出是集合）。
  * - 边必须**两端都可见**且边自身 `出现序 ≤ 步号`；端点未出现 ⇒ 边隐藏（演示的本意）。
  * - `文字` 不参与步进（R35）：演示态文字块照常显示，即使它写了 `出现序`。
- * - 快捷键只挂覆盖层容器，不挂 `window`（FR-040）；焦点在输入框时三个键都不生效。
+ * - 快捷键挂在舞台容器（`hgraph-stage`，R45）——覆盖层是纯视觉层、不挂键盘——不挂 `window`（FR-040）；
+ *   焦点在输入框时三个键都不生效。
  * - 演示态零写盘、不进撤销栈；退出后 `选中` 与视口保持进入前的值。
  *
  * ## 为什么编辑器级用例放在本文件
@@ -811,6 +812,43 @@ describe("编辑器 · 演示态", () => {
       expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 1 步")
     } finally {
       if (原 !== undefined) 原型.requestFullscreen = 原
+    }
+  })
+
+  test("T011-M1 演示开、全屏请求被拒：用户点顶栏全屏再退出 ⇒ 演示不被误关", async () => {
+    // 顶栏「全屏」对 `documentElement` 请求（`topbar/fullscreen.ts:15-16`），与我们无关。
+    // 演示开着时请求被拒（策略/用户拒绝），随后用户自己进出顶栏全屏 ⇒ fullscreenchange
+    // 也会把元素变 null；旧实现据此误判成「用户按了 Esc」把演示关掉。
+    const 还原 = 临时全屏环境({
+      request: () => Promise.reject(new Error("denied")),
+      exit: () => Promise.resolve(),
+      fullscreenElement: undefined,
+    })
+    try {
+      const { api } = 假api()
+      挂编辑器(api)
+      await flush()
+      进入演示()
+      await flush()
+      await flush()
+      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+
+      // 用户点顶栏全屏：全屏元素是 documentElement（不是舞台）。
+      const 文档 = document as unknown as Record<string, unknown>
+      文档.fullscreenElement = document.documentElement
+      document.dispatchEvent(new Event("fullscreenchange"))
+      await flush()
+      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+
+      // 用户再点一次顶栏（或按 Esc）退出全屏。
+      文档.fullscreenElement = null
+      document.dispatchEvent(new Event("fullscreenchange"))
+      await flush()
+      // 我们从未进过全屏 ⇒ 这次 null 不是「退出演示」的信号。
+      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+      expect(节点组("n0")).not.toBeNull()
+    } finally {
+      还原()
     }
   })
 

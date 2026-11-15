@@ -81,15 +81,23 @@ type 可全屏文档 = { fullscreenElement?: unknown; exitFullscreen?: () => Pro
  * R40：进入演示请求全屏。元素上没有该方法（happy-dom / 老浏览器）就静默跳过；
  * 返回的 Promise（用户拒绝、权限策略拒绝）一律吞掉——演示本身不依赖真全屏。
  * 同步抛错也按「不支持」处理（部分实现要求用户手势）。
+ *
+ * T011-M1：返回值告诉调用方**这次请求是否真的成立**（resolve ⇒ `true`）。编辑器只有在
+ * 成立后才记「曾进全屏」，`fullscreenchange` 判 null 时才敢把 null 当成「用户按了 Esc」——
+ * 否则顶栏全屏（`documentElement`）进出一次就会把演示误关。
  */
-export function 请求全屏(元素: HTMLElement | undefined): void {
-  if (元素 === undefined) return
+export function 请求全屏(元素: HTMLElement | undefined): Promise<boolean> {
+  if (元素 === undefined) return Promise.resolve(false)
   const 方法 = (元素 as unknown as 可全屏元素).requestFullscreen
-  if (typeof 方法 !== "function") return
+  if (typeof 方法 !== "function") return Promise.resolve(false)
   try {
-    void Promise.resolve(方法.call(元素)).catch(() => {})
+    return Promise.resolve(方法.call(元素)).then(
+      () => true,
+      () => false,
+    )
   } catch {
     // 不支持 / 策略拒绝：演示照常可用。
+    return Promise.resolve(false)
   }
 }
 
