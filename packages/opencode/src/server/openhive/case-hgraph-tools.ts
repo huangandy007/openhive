@@ -207,6 +207,15 @@ function 抛核心失败(失败: { readonly code: 失败码; readonly 话术: st
   throw new 工具错误(映射失败码(失败.code), 失败.话术)
 }
 
+/**
+ * R83：核心幂等索引是 `[userId, projectId, 锁键, 幂等键]`，**不含工具名**——同键换工具
+ * （`graph_add` 后 `graph_update`）会命中上一次的重放结果、什么都不写。核心索引字段不动，
+ * 在工具层给键加 `${工具名}:` 前缀（**唯一映射一处**，`#002-06`）；键缺省时仍缺省。
+ */
+function 幂等键(工具: "graph_add" | "graph_update" | "graph_remove", 键: string | undefined): string | undefined {
+  return 键 === undefined ? undefined : `${工具}:${键}`
+}
+
 // ---------------------------------------------------------------------------
 // graph_list
 // ---------------------------------------------------------------------------
@@ -299,7 +308,7 @@ export async function graph_add(
     path: 路径,
     操作: 操作们,
     批次: args.批次,
-    幂等键: args.幂等键,
+    幂等键: 幂等键("graph_add", args.幂等键),
   })
   if (!写.ok) 抛核心失败(写)
 
@@ -356,7 +365,7 @@ export async function graph_update(
     path: 路径,
     操作: [{ 操作: "改字段", 目标 }],
     批次: args.批次,
-    幂等键: args.幂等键,
+    幂等键: 幂等键("graph_update", args.幂等键),
   })
   if (!写.ok) {
     // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §4），不顺手新建。
@@ -386,7 +395,7 @@ async function 读并核目标(
   ctx: 工具上下文,
   路径: string,
   目标: readonly { readonly 类别: 类别; readonly id: string }[],
-): Promise<{ readonly 名字: string[]; readonly 缺失?: string }> {
+): Promise<{ readonly 名字: string[]; readonly 文字数: number; readonly 缺失?: string }> {
   const 读 = await 读文件(依赖(ctx), { projectId: ctx.身份.projectId, userId: ctx.身份.userId, path: 路径 })
   if (!读.ok) 抛核心失败(读)
   const 解析 = 解析图(读.内容)
@@ -396,6 +405,8 @@ async function 读并核目标(
   const 边 = new Set(解析.文档.边.map((条) => 条.id))
   const 文字 = new Set(解析.文档.文字.map((块) => 块.id))
   const 名字 = new Set<string>()
+  // 契约的 `删除` 形状只有节点 / 边，文字只进 `说明`；重复点名只算一次（`Set` 去重）。
+  const 文字在图上 = new Set<string>()
   let 缺失: string | undefined
   for (const 条目 of 目标) {
     let 在图上 = true
@@ -410,18 +421,22 @@ async function 读并核目标(
     if (条目.类别 === "节点") {
       const 点 = 节点.get(条目.id)
       if (点 !== undefined) 名字.add(点.名称)
+    } else if (条目.类别 === "文字") {
+      文字在图上.add(条目.id)
     }
   }
-  return { 名字: [...名字], 缺失 }
+  return { 名字: [...名字], 文字数: 文字在图上.size, 缺失 }
 }
 
-function 删除说明(删除: { 节点: number; 边: number }, 名字: readonly string[]): string {
+function 删除说明(删除: { 节点: number; 边: number }, 名字: readonly string[], 文字数: number): string {
   const 部分: string[] = []
   if (删除.节点 > 0) {
     // 名字个数对不上计数（重复点名 / 已被连带删掉）时只报数字，不编造一份不完整的名单。
     部分.push(名字.length === 删除.节点 ? `${删除.节点} 个节点（${名字.join("、")}）` : `${删除.节点} 个节点`)
   }
   if (删除.边 > 0) 部分.push(`${删除.边} 条边`)
+  // `hgraph-edit.ts` 删文字不计数（契约 `删除` 只有节点/边），但删了却回「没有删除任何对象」是谎报。
+  if (文字数 > 0) 部分.push(`${文字数} 个文字`)
   if (部分.length === 0) return "没有删除任何对象"
   return `删了 ${部分.join("和 ")}`
 }
@@ -441,7 +456,7 @@ export async function graph_remove(
     path: 路径,
     操作: [{ 操作: "删对象", 目标 }],
     批次: args.批次,
-    幂等键: args.幂等键,
+    幂等键: 幂等键("graph_remove", args.幂等键),
   })
   if (!写.ok) {
     // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §5），不静默成功。
@@ -450,5 +465,5 @@ export async function graph_remove(
   }
 
   const 删除 = { 节点: 写.结果.删除.节点, 边: 写.结果.删除.边 }
-  return { 路径, 版本: 写.版本, 删除, 说明: 删除说明(删除, 核.名字), 重放: 写.重放 }
+  return { 路径, 版本: 写.版本, 删除, 说明: 删除说明(删除, 核.名字, 核.文字数), 重放: 写.重放 }
 }

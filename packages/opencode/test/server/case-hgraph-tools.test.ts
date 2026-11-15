@@ -15,7 +15,12 @@ import {
   graph_update,
   映射失败码,
 } from "../../src/server/openhive/case-hgraph-tools"
-import { createCaseMcpServer, 新预算计数, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
+import {
+  createCaseMcpServer,
+  分发表,
+  新预算计数,
+  type 调用留痕,
+} from "../../src/server/openhive/case-mcp-server"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
 import { 解析图 } from "../../src/server/openhive/hgraph-file"
 import { 内容版本 } from "../../src/server/openhive/hgraph-ops"
@@ -537,6 +542,84 @@ describe("graph_remove", () => {
     expect(次.重放).toBe(true)
     expect(读回图("remove/边.hgraph").边.map((条) => 条.id)).toEqual(["e2"])
   })
+
+  test("删文字：文件里确实删掉，`说明` 点出文字数（重复点名只算一次）", async () => {
+    // 契约的 `删除` 形状只有节点/边（数据模型不把文字计入删除计数），但「删了却回
+    // 没有删除任何对象」是谎报。文字数只进 `说明`，`删除` 形状保持不变。
+    摆图("remove/文字.hgraph", {
+      ...空图("文字"),
+      文字: [
+        { id: "t1", 内容: "标题", x: 0, y: 0, 字号: "中" },
+        { id: "t2", 内容: "备注块", x: 0, y: 80, 字号: "小" },
+      ],
+    })
+    const 结果 = await graph_remove(ctx(), {
+      路径: "remove/文字.hgraph",
+      目标: [
+        { 类别: "文字", id: "t1" },
+        { 类别: "文字", id: "t1" },
+        { 类别: "文字", id: "t2" },
+      ],
+    })
+    expect(结果.删除).toEqual({ 节点: 0, 边: 0 })
+    expect(结果.说明).toBe("删了 2 个文字")
+    expect(读回图("remove/文字.hgraph").文字).toEqual([])
+  })
+})
+
+// ───────────────────────── 5b. 幂等键按工具隔离（R83） ─────────────────────────
+
+describe("幂等键跨工具", () => {
+  // 核心索引是 [userId, projectId, 锁键, 幂等键]，不含工具名 ⇒ 工具层给每个写工具加
+  // `${工具名}:` 前缀（唯一映射一处）。否则同键换工具会命中上一次的重放结果、什么都不写。
+  test("同键先 graph_add 后 graph_update ⇒ 第二次不重放、真的改（不同图路径也不行）", async () => {
+    摆图("idem/跨工具.hgraph", {
+      ...空图("跨工具"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+    })
+    const 键 = "跨工具-k1"
+    const 加 = await graph_add(ctx(), {
+      路径: "idem/跨工具.hgraph",
+      节点: [手写节点("李四")],
+      幂等键: 键,
+    })
+    expect(加.重放).toBe(false)
+
+    const 改 = await graph_update(ctx(), {
+      路径: "idem/跨工具.hgraph",
+      目标: [{ 类别: "节点", id: "n1", 字段: { 名称: "张三丰" } }],
+      幂等键: 键,
+    })
+    expect(改.重放).toBe(false)
+    expect(改.更新).toBe(1)
+    expect(读回图("idem/跨工具.hgraph").节点.find((点) => 点.id === "n1")).toMatchObject({
+      名称: "张三丰",
+    })
+  })
+
+  test("同键先 graph_update 后 graph_remove ⇒ 第二次不重放、真的删", async () => {
+    摆图("idem/跨工具删.hgraph", {
+      ...空图("跨工具删"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 }), 手写节点("李四", { id: "n2", x: 40, y: 40 })],
+      边: [事实边("n1", "n2", { id: "e1" })],
+    })
+    const 键 = "跨工具-k2"
+    const 改 = await graph_update(ctx(), {
+      路径: "idem/跨工具删.hgraph",
+      目标: [{ 类别: "节点", id: "n1", 字段: { 备注: "已核" } }],
+      幂等键: 键,
+    })
+    expect(改.重放).toBe(false)
+
+    const 删 = await graph_remove(ctx(), {
+      路径: "idem/跨工具删.hgraph",
+      目标: [{ 类别: "边", id: "e1" }],
+      幂等键: 键,
+    })
+    expect(删.重放).toBe(false)
+    expect(删.删除).toEqual({ 节点: 0, 边: 1 })
+    expect(读回图("idem/跨工具删.hgraph").边).toEqual([])
+  })
 })
 
 // ───────────────────────── 6. 错误码映射（纯函数） ─────────────────────────
@@ -608,6 +691,17 @@ describe("MCP 分发", () => {
     expect(Array.isArray(体.图)).toBe(true)
     expect("数据" in 体).toBe(false)
     expect("摘要" in 体).toBe(false)
+  })
+
+  test("graph_list 也走 `收参数`：不认识的参数 ⇒ bad_input，空参数正常列表", async () => {
+    // 分发层的键白名单是唯一出口（`#004-09`）：graph_list 无参数，任何键都该被拒，
+    // 不能像以前那样静默忽略（模型把 `路径` 传给它时会被当成「没看见」）。
+    const 错 = await 取工具错误(() => 分发表.graph_list(ctx(), { 路径: "mcp/分发.hgraph" }))
+    expect(错.code).toBe("bad_input")
+    expect(错.message).toContain("不认识的参数：路径")
+
+    const 正常 = await 分发表.graph_list(ctx(空项目), {})
+    expect(正常).toEqual({ 图: [] })
   })
 
   test("普通成员带不存在路径调 graph_add ⇒ forbidden（授权先于「图在不在」，不给 not_found 探路）", async () => {

@@ -480,13 +480,15 @@ const TOOLS: readonly Tool[] = [
         节点: {
           type: "array",
           description:
-            "节点草稿数组：{ 临时id?, 名称, 类型, 来源, 时间, 出处?, 属性?, 可信度?, x?, y? }（未给 x/y 时服务端放置）",
+            "节点草稿数组：{ 临时id?, 名称, 类型, 来源, 时间, 出处?, 属性?, 可信度?, x?, y? }（未给 x/y 时服务端放置）。" +
+            "临时 id 不要用 n/e/t + 数字（会被当正式 id）。",
           items: { type: "object" },
         },
         边: {
           type: "array",
           description:
-            "边草稿数组：{ 临时id?, 从, 到, 标签, 性质(事实/推断), 方向(有向/无向), 来源, 时间, 出处?, 证据? }",
+            "边草稿数组：{ 临时id?, 从, 到, 标签, 性质(事实/推断), 方向(有向/无向), 来源, 时间, 出处?, 证据?, 可信度? }。" +
+            "临时 id 不要用 n/e/t + 数字（会被当正式 id）。",
           items: { type: "object" },
         },
         批次: { type: "string", description: "撤销批次名（前端按它把整批算一步撤销），原样回传" },
@@ -618,7 +620,11 @@ export const 分发表: Record<
     ),
   revoke_source_profile: (ctx, args) =>
     revoke_source_profile(ctx, 收参数<Parameters<typeof revoke_source_profile>[1]>(args, ["档案"], [], [])),
-  graph_list: (ctx) => graph_list(ctx),
+  graph_list: (ctx, args) => {
+    // 无参数工具也要过 `收参数`：任何键都拒（漏键静默丢掉 = 模型以为传了、服务端当没看见）。
+    收参数<Record<string, never>>(args, [], [], [])
+    return graph_list(ctx)
+  },
   graph_read: (ctx, args) => graph_read(ctx, 收参数<Parameters<typeof graph_read>[1]>(args, ["路径"], [], [])),
   graph_add: (ctx, args) =>
     graph_add(

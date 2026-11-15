@@ -26,6 +26,7 @@ import {
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
 import { 工具名, 分发表 } from "../../src/server/openhive/case-mcp-server"
+import { 图工具名 } from "../../src/server/openhive/case-hgraph-tools"
 import { addCitation, createMaterial, getMaterial, insertFactRows } from "../../src/server/openhive/case-store"
 import { claimNextJob, enqueueMaterial, runJob } from "../../src/server/openhive/case-ingest"
 import { insertEvent, insertRelation, setMaterialText, upsertEntity } from "../../src/server/openhive/case-fact-store"
@@ -1850,7 +1851,14 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
   // 防漏：期望覆盖集合从 `工具名` 注册表派生（不手写名单），每个注册工具都必须有真实
   // 返回进入本守卫。删掉 explore_entity 的三条（或将来新增工具忘了加）时，这条会指出
   // 漏了谁，而不是让违规检查空转通过。
-  const 覆盖次数 = new Map<工具名, number>(工具名.map((名) => [名, 0]))
+  //
+  // 图工具是**例外**：R48 裁定它们不套七字段信封（返回 `{图}` / `{路径,版本,节点,边,文字}` 等
+  // 改动回执），本守卫查的 `下一步` / `出处.可下钻` 对它们没有语义。排除集合同样从
+  // `图工具名` 派生（不手写名单），将来新增图工具也不会被误判成「漏了真实返回」；
+  // 图工具自己的返回形状由 `case-hgraph-tools.test.ts` 守。
+  const 覆盖次数 = new Map<工具名, number>(
+    工具名.filter((名) => !图工具名.has(名)).map((名) => [名, 0]),
+  )
   for (const { 工具 } of 结果们) 覆盖次数.set(工具, (覆盖次数.get(工具) ?? 0) + 1)
   const 未覆盖 = [...覆盖次数].filter(([, 次]) => 次 === 0).map(([名]) => 名)
   expect(未覆盖).toEqual([])
