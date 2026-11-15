@@ -20,7 +20,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { HgraphApi, 写应答 } from "@/project/hgraph-api"
-import type { 图文件, 节点, 文字 } from "./file"
+import { 解析图, 序列化图, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
@@ -1483,5 +1483,373 @@ describe("T010 · 修复轮 1", () => {
     const 带锁 = 一份图()
     带锁.节点 = [造节点("n1", 100, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100, { 锁定: true })]
     expect(布局目标(带锁).some((位) => 位.id === "n3")).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T013 · 页面接收 AI 改动（轮询 / 静默重载 / 询问 / 清栈 / 提示）
+// ---------------------------------------------------------------------------
+
+const 文本 = (图: 图文件) => 序列化图(undefined, 图)
+
+/** 按 data-slot 取按钮；`querySelector` 的泛型直接给出元素类型，避免重复断言。 */
+const 按钮 = (slot: string) => document.body.querySelector<HTMLButtonElement>(`[data-slot='${slot}']`)!
+
+/** 从当前远端图造一次「外部改动」：多一颗 n9（判据显眼，且不影响旧节点）。 */
+function 外部改过的图(基: 图文件): 图文件 {
+  return {
+    ...基,
+    更新于: "2026-11-16T11:30:00+08:00",
+    节点: [...基.节点, 造节点("n9", 600, 400)],
+  }
+}
+
+/**
+ * T013 的假服务端：`读` 回远端快照；`写` 真的把 `移动` 应用到远端并推进版本，
+ * 让「自己保存成功」不被下一 tick 误判成外部改动。只实现用例用到的操作。
+ */
+function 假服务端(初始图: 图文件, 选项: { 写挂起?: boolean; 读失败?: boolean } = {}) {
+  const 解析 = 解析图(文本(初始图))
+  if (!解析.ok) throw new Error(`T013 夹具不是合法图：${解析.说明}`)
+  const 图 = 解析.文档
+  const 远端 = { 内容: 文本(图), 版本: "w1", 读失败: 选项.读失败 === true }
+  let 序 = 0
+  const 写们: 写入参[] = []
+  const api: HgraphApi = {
+    读: async () => {
+      if (远端.读失败) return { kind: "error", message: "网络断了", code: "network" }
+      return { kind: "ok", value: { 内容: 远端.内容, 版本: 远端.版本 } }
+    },
+    初始化: async () => {
+      throw new Error("编辑器不该 init")
+    },
+    写: async (输入) => {
+      写们.push(输入)
+      if (选项.写挂起 === true) return await new Promise<写应答>(() => {})
+      for (const 操作 of 输入.操作) {
+        if (操作.操作 !== "移动") continue
+        for (const 目标 of 操作.目标) {
+          const 目标行 =
+            目标.类别 === "节点"
+              ? 图.节点.find((点) => 点.id === 目标.id)
+              : 图.文字.find((行) => 行.id === 目标.id)
+          if (目标行 !== undefined) {
+            目标行.x = 目标.x
+            目标行.y = 目标.y
+          }
+        }
+      }
+      图.更新于 = `自存-${++序}`
+      远端.内容 = 文本(图)
+      远端.版本 = `自存${序}`
+      return 成功(远端.版本)
+    },
+    导出许可: async () => {
+      throw new Error("编辑器不该导出")
+    },
+  }
+  return {
+    api,
+    写们,
+    远端,
+    现图: () => 图,
+    设远端(新图: 图文件, 版本: string) {
+      远端.内容 = 文本(新图)
+      远端.版本 = 版本
+    },
+    /** 任意原文（坏 JSON 等）：验证解析失败走询问、不覆盖。 */
+    设原文(内容: string, 版本: string) {
+      远端.内容 = 内容
+      远端.版本 = 版本
+    },
+    设读失败(失败: boolean) {
+      远端.读失败 = 失败
+    },
+  }
+}
+
+/** T013 专用挂载：多两个测试缝（`轮询毫秒` / `外部改动`）。 */
+function 挂轮询(
+  api: HgraphApi,
+  选项: {
+    初始文档?: 图文件
+    初始版本?: string
+    轮询毫秒?: number
+    外部改动?: (旧文档: 图文件, 新文档: 图文件) => void
+  } = {},
+) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  挂过的.push(
+    render(
+      () => (
+        <编辑器
+          path="分析/测试图.hgraph"
+          projectId="p 1"
+          api={api}
+          初始文档={选项.初始文档 ?? 一份图()}
+          初始版本={选项.初始版本 ?? "v1"}
+          坐标换算={({ clientX, clientY }) => ({ x: clientX, y: clientY })}
+          轮询毫秒={选项.轮询毫秒 ?? 25}
+          外部改动={选项.外部改动}
+        />
+      ),
+      host,
+    ),
+  )
+}
+
+describe("T013 · 页面接收 AI 改动", () => {
+  test("#1 无待发时版本变 ⇒ 静默重载 + 清栈 + 提示；重载零写盘", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 40 })
+    await flush()
+
+    // 先制造一步撤销（旧历史），并让假服务端真的接受这次移动。
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    const 存档 = 服.写们.length
+    expect(存档).toBe(1)
+
+    // AI 改了文件：多一颗 n9、版本变了。
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(200)
+
+    expect(节点组("n9")).not.toBeNull()
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(取("[data-slot='hgraph-reload-notice']")!.getAttribute("role")).toBe("status")
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+    // 重载只读：写调用数停在存档那一次。
+    expect(服.写们.length).toBe(存档)
+  })
+
+  test("#2 自己保存成功后下一次轮询：不重载，文档与选中不变", async () => {
+    const 收到: unknown[] = []
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 40, 外部改动: (旧, 新) => 收到.push([旧, 新]) })
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    拖(节点组("n2")!, 200, 100, 260, 100)
+    await 过防抖()
+    // 让至少 3 个 tick 跑过：读回同版本不该触发任何重载。
+    await 等(220)
+
+    expect(节点组("n2")!.getAttribute("transform")).toBe("translate(260 100)")
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+    expect(收到.length).toBe(0)
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+  })
+
+  test("#3 有待发时版本变 ⇒ 只问不重载（旧节点仍在）", async () => {
+    const 服 = 假服务端(一份图(), { 写挂起: true })
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+
+    // 立刻产生待发（500ms 防抖窗口内），随后远端被外部改掉。
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(120)
+
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+    expect(文案("hgraph-reload-ask")).toContain("图已被更新，重新载入？")
+    expect(节点组("n9")).toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+  })
+
+  test("#4 询问里点「重新载入」⇒ 换新文档 + 清栈 + 提示；零写盘", async () => {
+    const 服 = 假服务端(一份图(), { 写挂起: true })
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(100)
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+
+    按钮("hgraph-reload-ask-reload").click()
+    await flush()
+    await flush()
+
+    expect(节点组("n9")).not.toBeNull()
+    expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    // 待发被丢弃、防抖计时被清：一次写都没发。
+    expect(服.写们.length).toBe(0)
+  })
+
+  test("#5 「保留我的改动」⇒ 询问消失、文档不变；下一 tick 再问（不吞）", async () => {
+    const 服 = 假服务端(一份图(), { 写挂起: true })
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(100)
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+
+    按钮("hgraph-reload-ask-keep").click()
+    // 点击是同步的：询问条立刻收起（不等 tick；点击前已发起的那次读可能在 flush 后回填）。
+    expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
+    expect(节点组("n9")).toBeNull()
+
+    // 版本仍不同 ⇒ 下一个 tick 重新问，不吞。
+    await 等(120)
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+    expect(节点组("n9")).toBeNull()
+  })
+
+  test("#6 读失败 ⇒ 静默跳过本 tick：文档/栈/版本不变、无错误提示", async () => {
+    const 收到: unknown[] = []
+    const 服 = 假服务端(一份图(), { 读失败: true })
+    挂轮询(服.api, { 轮询毫秒: 25, 外部改动: (旧, 新) => 收到.push([旧, 新]) })
+    await flush()
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+
+    // 远端内容变了，但读一直失败 ⇒ 不重载、不提示、不弹错。
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(200)
+
+    expect(节点组("n9")).toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(文案("hgraph-save-status")).not.toContain("没存上")
+    expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+    expect(收到.length).toBe(0)
+  })
+
+  test("#7 重载后按 Ctrl+Z ⇒ 旧逆操作不写回（写调用数不变）", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(服.写们.length).toBe(1)
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(150)
+    expect(节点组("n9")).not.toBeNull()
+    expect(按钮("hgraph-undo").disabled).toBe(true)
+
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    expect(服.写们.length).toBe(1)
+  })
+
+  test("#8 重载后选中清空，检查器不再显示旧节点", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    expect(取("[data-slot='hgraph-field-名称']")).not.toBeNull()
+
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(150)
+
+    expect(节点组("n1")!.getAttribute("data-selected")).toBeNull()
+    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
+  })
+
+  test("#9 演示中版本变 ⇒ 本 tick 不重载；退出演示后下一 tick 重载", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 30 })
+    await flush()
+    按钮("hgraph-toolbar-present").click()
+    await flush()
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(150)
+    // 演示不被打断：覆盖层还在，新文档没有套上。
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(节点组("n9")).toBeNull()
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+
+    // 退出演示（舞台上的 Esc）⇒ 下一 tick 自然处理。
+    按键(取("[data-slot='hgraph-stage']")!, { key: "Escape" })
+    await flush()
+    await flush()
+    expect(取("[data-slot='hgraph-present']")).toBeNull()
+
+    await 等(150)
+    expect(节点组("n9")).not.toBeNull()
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+  })
+
+  test("#10 重载时外部改动收到（旧文档, 新文档）各一次；同版本不重复回调", async () => {
+    const 收到: Array<{ 旧: 图文件; 新: 图文件 }> = []
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25, 外部改动: (旧, 新) => 收到.push({ 旧, 新 }) })
+    await flush()
+
+    服.设远端(外部改过的图(服.现图()), "a1")
+    await 等(150)
+    // 再跑几个 tick：同版本不该重复回调。
+    await 等(120)
+
+    expect(收到.length).toBe(1)
+    expect(收到[0]!.旧.节点.some((点) => 点.id === "n9")).toBe(false)
+    expect(收到[0]!.新.节点.some((点) => 点.id === "n9")).toBe(true)
+  })
+
+  test("R85 版本变但内容相同 ⇒ 不掉栈、不提示、不触发回调；版本照常更新", async () => {
+    const 收到: unknown[] = []
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 40, 外部改动: (旧, 新) => 收到.push([旧, 新]) })
+    await flush()
+
+    // 先保存一次，让栈里有一步（才能判「有没有被清」）。
+    拖(节点组("n1")!, 100, 100, 150, 130)
+    await 过防抖()
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    expect(服.写们.length).toBe(1)
+
+    // 服务端同值补丁：只刷新 `更新于` 并推进版本，用户可见内容一模一样。
+    const 同内容 = { ...服.现图(), 更新于: "2026-11-16T12:00:00+08:00" }
+    服.设远端(同内容, "w9")
+    await 等(200)
+
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+    expect(按钮("hgraph-undo").disabled).toBe(false)
+    expect(收到.length).toBe(0)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
+
+    // 版本确实推进到 w9：下一次写必须带 w9（否则下一轮重复比对 / 409）。
+    拖(节点组("n2")!, 200, 100, 220, 100)
+    await 过防抖()
+    expect(服.写们.length).toBe(2)
+    expect(服.写们[1]!.版本).toBe("w9")
+
+    // 真正的 AI 改动（内容变了）⇒ 正常重载并回调一次。
+    服.设远端(外部改过的图(服.现图()), "w10")
+    await 等(200)
+    expect(节点组("n9")).not.toBeNull()
+    expect(文案("hgraph-reload-notice")).toBe("图已重新载入，撤销记录已清空")
+    expect(收到.length).toBe(1)
+  })
+
+  test("解析失败（坏 JSON）⇒ 走询问路径不覆盖；保留后文档不变", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+
+    服.设原文("{ 这不是 JSON", "bad1")
+    await 等(120)
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+    expect(节点组("n1")).not.toBeNull()
+    expect(文案("hgraph-reload-notice")).toBeUndefined()
+
+    按钮("hgraph-reload-ask-keep").click()
+    await flush()
+    expect(取("[data-slot='hgraph-reload-ask']")).toBeNull()
+    expect(节点组("n1")).not.toBeNull()
   })
 })

@@ -40,7 +40,7 @@ import { Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "so
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { 关系图结果 } from "../../case-detail-api"
 import { 自动位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
-import type { 边, 图文件, 节点, 文字 } from "./file"
+import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 对齐 as 对齐位置, 等距 as 等距位置 } from "./geometry"
 import { 工具栏 } from "./toolbar"
@@ -53,6 +53,7 @@ import {
   新建撤销栈,
   撤销 as 弹撤销,
   重做 as 弹重做,
+  清空,
   type 撤销栈,
 } from "./undo"
 
@@ -65,6 +66,13 @@ export interface 编辑器Props {
   readonly 初始版本: string
   /** 测试缝：happy-dom 没有布局，坐标换算见 `canvas.tsx` 头注释。 */
   readonly 坐标换算?: 坐标换算
+  /** 外部改动轮询间隔（毫秒，R54）；默认 10 秒，测试缝。 */
+  readonly 轮询毫秒?: number
+  /**
+   * 外部重载接缝（R53）：重载发生时收到（旧文档, 新文档）。默认不调用；T016 用它 diff
+   * 出「AI 这一批」的一步逆操作压栈。
+   */
+  readonly 外部改动?: (旧文档: 图文件, 新文档: 图文件) => void
 }
 
 type 保存状态 = "已存" | "待发" | "发送中"
@@ -283,6 +291,24 @@ export function 布局目标(
   })
 }
 
+/**
+ * R85：判「文档内容变了」用的规范化键。
+ *
+ * 服务端每次**非空**写入都会刷新 `更新于` 并推进版本（同值补丁也算一次写，`hgraph-ops.ts`
+ * 只对 `操作: []` 短路），所以比较内容时把它归一——否则「把某字段改成原值」会被当成外部
+ * 改动、清掉撤销栈。其余字段按 `序列化图` 的固定键序输出（与后端同一份形状表），不做
+ * 对象引用比较或手写浅比较。
+ */
+function 内容键(文档: 图文件): string {
+  return 序列化图(undefined, { ...文档, 更新于: "" })
+}
+
+/** 轮询发现的外部变更；`文档` 缺省 = 新内容解析失败（只能询问，绝不覆盖）。 */
+interface 外部变更 {
+  readonly 版本: string
+  readonly 文档?: 图文件
+}
+
 let 批次序号 = 0
 
 export function 编辑器(props: 编辑器Props): JSX.Element {
@@ -309,6 +335,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [演示步号, set演示步号] = createSignal(0)
   /** 退出演示时请求画布重新聚焦（I1）：递增即触发，不挂 window（FR-040）。 */
   const [聚焦请求, set聚焦请求] = createSignal(0)
+  /** 外部改动询问条：有未发出改动 / 新内容解析失败时只问不重载（FR-012）。 */
+  const [询问重载, set询问重载] = createSignal(false)
+  /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
+  const [重载提示, set重载提示] = createSignal(false)
   /**
    * 舞台容器（R44/R45）：同时包住画布与覆盖层，演示期间既是键盘容器/焦点落点，
    * 也是全屏目标——Fullscreen 只渲染目标子树，打在覆盖层上会把画布挡在外面。
@@ -327,8 +357,21 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 待发: 操作[] = []
   let 计时: ReturnType<typeof setTimeout> | undefined
   let 正在发 = false
+  /** 轮询读到、但还没应用的外部变更（询问「重新载入」时用）。 */
+  let 待重载: 外部变更 | undefined
+  let 轮询计时: ReturnType<typeof setInterval> | undefined
+  let 提示计时: ReturnType<typeof setTimeout> | undefined
+  /** 上一 tick 的 `读` 还没回来：不叠第二次（远端慢时避免并发风暴）。 */
+  let 正在查 = false
+  /** 卸载后到达的 `读` 应答不得再写信号（`#005-03`）。 */
+  let 已卸载 = false
 
-  onCleanup(() => clearTimeout(计时))
+  onCleanup(() => {
+    clearTimeout(计时)
+    clearTimeout(提示计时)
+    if (轮询计时 !== undefined) clearInterval(轮询计时)
+    已卸载 = true
+  })
 
   const 发送 = async () => {
     if (正在发 || 待发.length === 0) return
@@ -388,6 +431,111 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const 排发 = () => {
     clearTimeout(计时)
     计时 = setTimeout(() => void 发送(), 防抖毫秒)
+  }
+
+  /** 重载成功提示（R55）：文案逐字；5 秒后自动消失，不常驻。 */
+  const 弹重载提示 = () => {
+    set重载提示(true)
+    clearTimeout(提示计时)
+    提示计时 = setTimeout(() => {
+      if (!已卸载) set重载提示(false)
+    }, 5000)
+  }
+
+  /**
+   * 应用一次外部重载（R55）。**只读零写盘**：这里不调 `api.写`。
+   * 旧逆操作基于旧版本，重载后不能再写回（US6 场景 4）；T016 用 `外部改动` 回调
+   * diff 出「AI 这一批」的新一步。
+   */
+  const 执行重载 = (变更: 外部变更) => {
+    const 新 = 变更.文档
+    // 口径 4：新内容解析失败绝不覆盖当前文档；关掉询问，下一 tick 再问。
+    if (新 === undefined) {
+      待重载 = undefined
+      set询问重载(false)
+      return
+    }
+    const 旧 = 文档()
+    clearTimeout(计时)
+    待发 = []
+    待重载 = undefined
+    set文档(新)
+    set已存文档(新)
+    set版本(变更.版本)
+    set状态("已存")
+    set错误(undefined)
+    set最新版本(undefined)
+    set撤销栈(清空(撤销栈()))
+    // 旧 id 可能已不存在：选中 / 改名 / 确认条 / 菜单一并收起（`#005-48`）。
+    set选中([])
+    set重命名id(undefined)
+    set待确认布局(false)
+    set布局模式(undefined)
+    set收起菜单((旧计数) => 旧计数 + 1)
+    set询问重载(false)
+    弹重载提示()
+    props.外部改动?.(旧, 新)
+  }
+
+  /**
+   * 一个轮询 tick（R54）：只读 `api.读`，按 `版本`（内容哈希）发现变化。
+   *
+   * - `读` 失败 ⇒ 静默跳过本 tick（不弹错、不动文档 / 栈），下一 tick 再试；
+   * - 版本变但规范化内容相同 ⇒ 只推进版本（R85：服务端同值补丁也会推进版本）；
+   * - 有本地未发改动（飞行中 / 待发 / 发送中）或新内容解析失败 ⇒ 只问不重载；
+   * - 否则静默重载。
+   */
+  const 轮询 = async () => {
+    if (已卸载 || 演示中() || 正在查) return
+    正在查 = true
+    try {
+      const 回 = await props.api.读({ projectId: props.projectId, path: props.path })
+      if (已卸载 || 回.kind !== "ok") return
+      const 新版本 = 回.value.版本
+      if (新版本 === 版本()) {
+        // 差异已被自己的一次保存抹平：别拿旧的「待重载」再问用户。
+        if (询问重载()) {
+          待重载 = undefined
+          set询问重载(false)
+        }
+        return
+      }
+      const 解析 = 解析图(回.value.内容)
+      if (解析.ok && 内容键(解析.文档) === 内容键(文档())) {
+        // R85：版本推进了，但用户可见内容没变 ⇒ 不掉栈、不提示、不触发回调。
+        set版本(新版本)
+        待重载 = undefined
+        set询问重载(false)
+        return
+      }
+      const 变更: 外部变更 = 解析.ok ? { 版本: 新版本, 文档: 解析.文档 } : { 版本: 新版本 }
+      if (正在发 || 待发.length > 0 || 状态() === "发送中" || !解析.ok) {
+        待重载 = 变更
+        set询问重载(true)
+        return
+      }
+      执行重载(变更)
+    } finally {
+      正在查 = false
+    }
+  }
+
+  onMount(() => {
+    轮询计时 = setInterval(() => void 轮询(), props.轮询毫秒 ?? 10_000)
+  })
+
+  const 重新载入 = () => {
+    if (待重载 === undefined) {
+      set询问重载(false)
+      return
+    }
+    执行重载(待重载)
+  }
+
+  /** 不替用户合并：只关掉询问；下一 tick 版本仍不同会再问（不吞）。 */
+  const 保留我的改动 = () => {
+    待重载 = undefined
+    set询问重载(false)
   }
 
   const 应用 = (操作们: readonly 操作[]) => {
@@ -645,6 +793,44 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           {状态文案()}
         </span>
       </div>
+
+      {/* 有未发出改动 / 新内容解析失败：只问，不替用户选、不自动合并（FR-012）。 */}
+      <Show when={询问重载()}>
+        <div
+          data-slot="hgraph-reload-ask"
+          role="alertdialog"
+          aria-label="外部改动确认"
+          class="flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <span class="text-12-regular text-v2-text-text-muted">图已被更新，重新载入？</span>
+          <button
+            type="button"
+            data-slot="hgraph-reload-ask-reload"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            onClick={重新载入}
+          >
+            重新载入
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-reload-ask-keep"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={保留我的改动}
+          >
+            保留我的改动
+          </button>
+        </div>
+      </Show>
+
+      <Show when={重载提示()}>
+        <p
+          data-slot="hgraph-reload-notice"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          图已重新载入，撤销记录已清空
+        </p>
+      </Show>
 
       <工具栏 选中={选中()} 文档={文档()} 动作表={动作} />
 
