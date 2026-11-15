@@ -91,7 +91,10 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T003
   - **验证**：`grep -n '顺手入队\|上传自动入队\|handleUpload` 传的就是它' packages/opencode/src/server/openhive/file.ts` 0 命中；`S: openhive-file-ops` 仍绿（纯注释）
 
-- [ ] T005 [P] [US1] 上传完成提示：`packages/app/src/project/file-transfer-dialog.tsx:144` 的 `完成态` 按 `props.state.action === "上传"` 渲染一行弱化提示；`packages/app/src/project/file-transfer-dialog.test.tsx` 新增两条用例
+- [x] T005 [P] [US1] 上传完成提示：`packages/app/src/project/file-transfer-dialog.tsx:144` 的 `完成态` 按 `props.state.action === "上传"` 渲染一行弱化提示；`packages/app/src/project/file-transfer-dialog.test.tsx` 新增两条用例
+
+  > **红（2026-11-15 实测）**：上传完成态 `Expected to contain "右键" / Received ""`，7 pass / 1 fail。
+  > **绿**：8 pass / 0 fail。**变异**：条件改 `action === "下载"` ⇒ 上传用例红；恢复后 8 pass。
 
   - **入参**：`state = { kind: "done", action: "上传" | "下载", files, bytes }`
   - **出参**：上传完成态含「右键」与「解析入库」提示；下载完成态**不含**；运行中/失败态不变；不加新 prop
