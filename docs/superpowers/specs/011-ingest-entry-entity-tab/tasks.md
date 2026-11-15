@@ -267,7 +267,21 @@ L: cd <仓库根> && timeout 300 bun run lint
 
 ## Phase 6: Polish
 
-- [ ] T016 门禁：两个包 typecheck + 本章受影响的全部测试文件 + 仓库根 lint
+- [x] T016 门禁：两个包 typecheck + 本章受影响的全部测试文件 + 仓库根 lint
+
+  > **实测（2026-11-15，逐条真实输出）**：
+  > - `cd packages/app && timeout 300 bun run typecheck`（`tsgo -b`）⇒ **EXIT=0**。
+  > - `cd packages/opencode && timeout 300 bun run typecheck`（`tsgo --noEmit`）⇒ **EXIT=0**。
+  > - `cd packages/opencode && timeout 300 bun test ./test/server/openhive-file-ops.test.ts` ⇒ **117 pass / 0 fail / 660 expect**，EXIT=0。
+  > - `cd packages/opencode && timeout 300 bun test ./test/server/openhive-case-materials.test.ts` ⇒ **38 pass / 0 fail / 132 expect**，EXIT=0。
+  > - `cd packages/opencode && timeout 300 bun test ./test/server/openhive-file-upload-ingest.test.ts` ⇒ **14 pass / 0 fail / 32 expect**，EXIT=0。
+  > - `cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/project/file-tree.test.tsx ./src/project/case-materials-view.test.tsx` ⇒ **221 pass / 0 fail / 535 expect**（190 + 31），EXIT=0。
+  > - `... ./src/project/file-transfer-dialog.test.tsx` ⇒ **8 pass / 0 fail / 23 expect**，EXIT=0。
+  > - `... ./src/project/sidebar-tabs.test.tsx` ⇒ **21 pass / 0 fail / 47 expect**，EXIT=0。
+  > - `... ./src/workspace/workspace-entry.test.tsx` ⇒ **238 pass / 0 fail / 634 expect**，EXIT=0。
+  > - `cd packages/app && timeout 300 bun test ./src/project/entity-api.test.ts` ⇒ **6 pass / 0 fail**，EXIT=0；`./src/center/case-route.test.ts` ⇒ **9 pass / 0 fail**，EXIT=0；`... ./src/center/case-views/entity-profile.test.tsx` ⇒ **56 pass / 0 fail**，EXIT=0。
+  > - 仓库根 `timeout 300 bun run lint` ⇒ **EXIT=1；1 error / 6231 warnings**。唯一 error 为既有且未触碰的 `packages/session-ui/src/v2/components/prompt-input/index.tsx:163:19`（`'0'-prefixed octal literals`，`content-['\200B']`）。
+  > **warning 基线口径（如实）**：T001 未记录全仓 warning 数，故无法逐数对比「不新增」。替代证据：本 feature 改动文件逐个单独 lint 均为 0 error、仅既有 warning（`layout-new.tsx:114/149`、测试剪贴板断言等，均出现在本 feature 之前）。此项作为 T016 的已知缺口登记，不写成「已对比基线」。
 
   - **入参**：T002–T015 的改动
   - **出参**：`packages/app` `T` EXIT=0；`packages/opencode` `T` EXIT=0；受影响测试全绿；`L` 0 errors（warning 数与 T001 基线对比不新增）
