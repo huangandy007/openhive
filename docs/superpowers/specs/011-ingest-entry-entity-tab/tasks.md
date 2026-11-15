@@ -177,6 +177,11 @@ L: cd <仓库根> && timeout 300 bun run lint
   - **依赖**：T007
   - **验证**：3 选 1 已解析 ⇒ N=2、M=1；全不可入队 ⇒ N=0 + 禁用；先红后绿
 
+  > **T010-fix（复审发现 #1，2026-11-15）**：`目录下待入队` / `选中集入队范围` 的分隔符口径缺陷——`文件们` 是 `fs.list` 原样（win32 带 `\`），`目录` 来自树节点（已被 `normalizeFileTreeV2Path` 归一成 `/`），混比导致 win32 下文件夹展开恒为空（N=0、M 偏大）；候选也必须回写 posix 形（服务端 `case-parse.ts:112` 按 `split("/")` 切段且拒收 `\`）。修复：比较与行表建键一律用归一键，返回归一形；顺序与去重语义不变。
+  > **红（2026-11-15 实测）**：`case-materials-view.test.tsx` 新增 4 条 ⇒ **27 pass / 4 fail / 94 expect**，4 条都红在反斜杠清单展开为空：① `Expected: ["资料/甲.csv","资料/乙.xlsx"] / Received: []`；② `Expected: ["资料/乙.xlsx"] / Received: []`；③ `Expected: ["资料/甲.csv","资料/乙.xlsx"] / Received: []`；④ `Expected: ["资料/甲.csv"] / Received: []`。
+  > **绿**：`case-materials-view.test.tsx` **31 pass / 0 fail / 95 expect**；`file-tree.test.tsx` **189 pass / 0 fail / 439 expect**；`packages/app` `bun run typecheck` 退出 0。
+  > **变异**：① 前缀比较改回原始路径拼 `"/"` ⇒ 4 条 T010-fix 全红（①②③④均 `Received: []`），**27 pass / 4 fail**；② `目录下待入队` 行表建键改回 `row.path`（去掉归一）⇒ 用例 ② 红 `Expected: ["资料/乙.xlsx"] / Received: ["资料/甲.csv","资料/乙.xlsx"]`（原始 `资料\甲.csv` 的已解析行查不到、被当「未入队」），**30 pass / 1 fail**。两次恢复后均回 **31 pass / 0 fail / 95 expect** + **189 pass / 0 fail / 439 expect**。
+
 - [x] T011 [US2] 抽出批量执行器 + 失败不中断（先红后绿）：`file-tree.tsx:663-682` 抽成 `执行批量入队(候选)`，`break`（`:673`）改「继续 + 收集」；用例进 `file-tree.test.tsx`
 
   > **红（2026-11-15 实测）**：既有 183 条 + 新增 6 条（另把旧「中途失败即停」改写为「失败不中断」）⇒ `file-tree.test.tsx` **186 pass / 3 fail / 189 tests**，三条全部红在旧 `break` 中断：① 文件夹失败不中断 `Expected` 3 条 `记.解析` / `Received` 2 条（缺 `资料/丙.csv`）；② 全失败 `Expected` 2 条 / `Received` 1 条（缺 `资料/乙.xlsx`）；③ 多选失败不中断 `Expected` 3 条 / `Received` 2 条（缺 `丙.csv`）。其余新增（全成功、A×2、B）实现前即绿——它们钉既有正确行为，红只来自 `break`（检查点：首跑时上一条红在半路、`toaster.clear()` 未执行导致 toast 串味，本组加 `beforeEach(() => toaster.clear())` 后得到上述干净基线）。

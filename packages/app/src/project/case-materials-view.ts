@@ -172,6 +172,11 @@ export function 文件待入队(path: string, row: 材料视图 | undefined, ext
  * 右键一个文件夹时**会真正入队**的文件（用户确认弹窗里的 N）。
  *
  * 候选判据只有 `文件待入队` 一处；这里只负责「取这个目录下的文件 + 去重」。
+ *
+ * ⚠️ 比较**必须用归一键**：`目录` 来自树节点（已被 `normalizeFileTreeV2Path` 归一成 `资料`），
+ * 而 `文件们` 是 `fs.list` 原样（win32 带反斜杠 `资料\甲.csv`）。混着比会在 win32 下恒为空，
+ * 让文件夹展开 N=0、多选 M 偏大。返回值也统一成归一形（`/` 分隔、无首尾分隔符）：服务端解析
+ * 入口按 `split("/")` 切段并拒收 `\`，行与上传同样是 `/`。
  */
 export function 目录下待入队(
   目录: string,
@@ -179,14 +184,17 @@ export function 目录下待入队(
   行们: readonly 材料视图[],
   extensions: readonly string[],
 ): readonly string[] {
-  const 前缀 = 目录 === "" ? "" : `${目录}/`
-  const 行表 = new Map(行们.map((row) => [row.path, row]))
+  const 归目录 = 归一(目录)
+  const 前缀 = 归目录 === "" ? "" : `${归目录}/`
+  // 行表按归一键：候选（归一形）查行时不能拿原始 `row.path` 建键。
+  const 行表 = new Map(行们.map((row) => [归一(row.path), row]))
   const 结果: string[] = []
   const 见过 = new Set<string>()
 
-  for (const path of 文件们) {
-    if (path.endsWith("/")) continue
-    if (path === 目录 || !path.startsWith(前缀)) continue
+  for (const 原 of 文件们) {
+    if (尾分隔符.test(原)) continue // 目录条目（`/` 与 `\` 两种尾分隔符都认）
+    const path = 归一(原)
+    if (path === 归目录 || !path.startsWith(前缀)) continue
     if (见过.has(path)) continue
     见过.add(path)
     if (!文件待入队(path, 行表.get(path), extensions)) continue
@@ -220,12 +228,13 @@ export function 选中集入队范围(
   行们: readonly 材料视图[],
   extensions: readonly string[],
 ): { 候选: readonly string[]; 被排除的选中项: number } {
-  const 行表 = new Map(行们.map((row) => [row.path, row]))
+  // 行表与文件映射都按归一键；映射的值也存归一形——候选最终要交给按 `/` 切段的服务端。
+  const 行表 = new Map(行们.map((row) => [归一(row.path), row]))
   const 文件映射 = new Map<string, string>()
   for (const path of 文件们) {
     if (尾分隔符.test(path)) continue
     const 键 = 归一(path)
-    if (!文件映射.has(键)) 文件映射.set(键, path)
+    if (!文件映射.has(键)) 文件映射.set(键, 键)
   }
 
   const 候选: string[] = []
