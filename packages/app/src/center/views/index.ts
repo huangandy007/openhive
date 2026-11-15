@@ -61,6 +61,16 @@ viewRegistry.register({
 })
 
 /**
+ * 关系图（012 · T007）。`.hgraph` 是**文件视图**（有写口，写走 `hgraph-api` 的 `ops`），
+ * 不是 `case://` 数据轴视图——故注册在扩展名表里，不走 `case-view.tsx`。
+ * 本轮只做「打开通道」，画布/编辑器是 T009/T010。
+ */
+viewRegistry.register({
+  extensions: [".hgraph"],
+  load: async () => (await import("./hgraph-view")).HgraphView,
+})
+
+/**
  * HTML 预览（2026-10-30）：渲染成网页，另给「源码」切换。
  *
  * 从下面的 `代码扩展名` 里摘出来了——代码视图对网页只显示「这是代码文件」+ 一个按钮，

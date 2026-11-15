@@ -39,9 +39,10 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogV2, DialogBody, DialogFooter, DialogHeader, DialogTitle } from "@opencode-ai/ui/v2/dialog-v2"
 import { Field } from "@opencode-ai/ui/v2/field-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
-import { Show, createSignal, type JSX } from "solid-js"
+import { For, Show, createSignal, type JSX } from "solid-js"
 import { 改名草稿 } from "@/components/inline-rename-input"
 import { FileOpError } from "./file-op-error"
+import { 可新建类型, 补类型后缀, type 可新建类型 as 类型定义 } from "./file-create-types"
 
 export interface FileCreateDialogProps {
   /** 建文件还是建文件夹——只决定标题与占位文案（服务端 `Schema.Literals(["file","directory"])`）。 */
@@ -65,13 +66,21 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
   const [失败话, set失败话] = createSignal<string | undefined>()
   /** 交出去之后、回话之前。这段缝隙里「确定」是锁着的（见 `确定`）。 */
   const [忙, set忙] = createSignal(false)
+  /** 选中的类型胶囊；`undefined` = 不选 = 普通文件（012 · T007）。 */
+  const [选中类型, set选中类型] = createSignal<类型定义 | undefined>()
 
   const 是文件夹 = () => props.kind === "directory"
   /** `undefined` ＝ 这份草稿还不值得交出去（空 / 只有空白）⇒ 「确定」禁用、提交直接返回。 */
   const 名字 = () => 改名草稿(草稿(), undefined)
+  /** 真正交出去的名字：选了类型才补后缀（已带同后缀不重复加，见 `补类型后缀`）。 */
+  const 提交名 = () => {
+    const name = 名字()
+    const 类型 = 选中类型()
+    return name === undefined || 类型 === undefined ? name : 补类型后缀(name, 类型)
+  }
 
   async function 确定() {
-    const name = 名字()
+    const name = 提交名()
     // `忙` 守卫：「弹窗不关」**新造**出一个旧形状不存在的洞——请求在飞时再按一次「确定」会
     // **建两次**。改之前弹窗立刻关，这个洞不存在（spec §5.2 第 1 条）。
     if (name === undefined || 忙()) return
@@ -127,6 +136,33 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
               }}
             />
           </Field>
+          {/* 类型胶囊（012 · T007）：**可选开关**，默认不选 = 普通文件。
+              只在「新建文件」里出现——目录不能变成 `.hgraph`（`kind === "directory"` 不显示）。
+              选中只影响交出去的名字（补后缀），不改弹窗其它行为。 */}
+          <Show when={!是文件夹()}>
+            <div data-slot="file-create-types" class="flex flex-wrap gap-2">
+              <For each={可新建类型}>
+                {(类型) => {
+                  const 选中 = () => 选中类型() === 类型
+                  return (
+                    <button
+                      type="button"
+                      data-slot="file-create-type"
+                      aria-pressed={选中()}
+                      class={
+                        选中()
+                          ? "rounded-full border border-v2-border-border-strong px-3 py-1 text-[13px] text-v2-text-text-base"
+                          : "rounded-full border border-v2-border-border-muted px-3 py-1 text-[13px] text-v2-text-text-muted"
+                      }
+                      onClick={() => set选中类型(选中() ? undefined : 类型)}
+                    >
+                      {类型.标签}
+                    </button>
+                  )
+                }}
+              </For>
+            </div>
+          </Show>
           {/* 落点（用户 2026-10-11 裁定「要显示」）：弹窗盖住了树，「建在哪儿」就没有第二个地方
               看得见了。根那一档写**「项目根目录」**而不是留空——「什么都没写」与「写在根上」
               是两句话，空着会读成前者。 */}

@@ -102,6 +102,15 @@ const 提交 = () => {
 
 const 文案 = (slot: string) => document.body.querySelector(`[data-slot='${slot}']`)?.textContent?.trim()
 
+/** 类型胶囊（`file-create-types.ts` 的数据驱动数组画出来的那一行）。 */
+const 胶囊们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-slot='file-create-type']")]
+
+const 点类型 = (标签: string) => {
+  const el = 胶囊们().find((候选) => 候选.textContent?.trim() === 标签)
+  if (!el) throw new Error(`没有「${标签}」胶囊——这条用例的前提不成立`)
+  el.click()
+}
+
 /** 新建弹窗还在不在。**布尔**，不是节点——见 `file-op-error.test.tsx` 顶部那条警告。 */
 const 弹窗在 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
 
@@ -269,6 +278,75 @@ describe("新建弹窗（FileCreateDialog）", () => {
     await flush()
 
     expect(收到).toEqual(["新.md", "改过的.md"])
+  })
+
+  /**
+   * ── 类型胶囊（012 · T007）────────────────────────────────────────
+   *
+   * 胶囊是**可选开关**：默认不选 = 普通文件（否则「新建文件」从此每个都变 `.hgraph`）。
+   * 选中才给名字补后缀；已带同后缀（大小写不敏感）不重复加。
+   */
+
+  test("新建文件才显示类型胶囊；新建文件夹不显示", async () => {
+    await 打开({ kind: "file", parent: "" })
+    expect(胶囊们().map((el) => el.textContent?.trim())).toEqual(["关系图"])
+  })
+
+  test("新建文件夹的弹窗里没有类型胶囊（目录不能变成 .hgraph）", async () => {
+    await 打开({ kind: "directory", parent: "" })
+
+    expect(胶囊们()).toHaveLength(0)
+  })
+
+  test("选中「关系图」⇒ 交出去的名字补 .hgraph", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三资金流向")
+    点类型("关系图")
+    提交()
+
+    expect(收到).toEqual(["张三资金流向.hgraph"])
+  })
+
+  test("名字已带 .hgraph ⇒ 不重复加", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三资金流向.hgraph")
+    点类型("关系图")
+    提交()
+
+    expect(收到).toEqual(["张三资金流向.hgraph"])
+  })
+
+  test("后缀比较大小写不敏感（.HGRAPH 也不重复加）", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三资金流向.HGRAPH")
+    点类型("关系图")
+    提交()
+
+    expect(收到).toEqual(["张三资金流向.HGRAPH"])
+  })
+
+  test("带其它后缀 ⇒ 按名字处理，追加在后（张三.md ⇒ 张三.md.hgraph）", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三.md")
+    点类型("关系图")
+    提交()
+
+    expect(收到).toEqual(["张三.md.hgraph"])
+  })
+
+  test("再点一次胶囊 ⇒ 取消选中，名字原样（开关是可逆的）", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三")
+    点类型("关系图")
+    点类型("关系图")
+    提交()
+
+    expect(收到).toEqual(["张三"])
   })
 
   test("在飞时再按一次「确定」⇒ 只发一次（这个洞是「弹窗不关」新造出来的）", async () => {
