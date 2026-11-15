@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { sql } from "drizzle-orm"
@@ -13,13 +13,16 @@ import {
   graph_read,
   graph_remove,
   graph_update,
+  写失败回报,
   映射失败码,
 } from "../../src/server/openhive/case-hgraph-tools"
 import {
   createCaseMcpServer,
   分发表,
   新预算计数,
+  预算上限缺口,
   type 调用留痕,
+  type 预算计数,
 } from "../../src/server/openhive/case-mcp-server"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
 import { 解析图 } from "../../src/server/openhive/hgraph-file"
@@ -181,6 +184,22 @@ async function 取工具错误(工作: () => Promise<unknown>): Promise<工具�
     throw 错误
   }
   throw new Error("期望抛工具错误，实际成功返回")
+}
+
+/**
+ * 注入「写盘失败」而不碰工具层（R86 #8 的可测方式）：
+ * - win32：`rename` 覆盖只读目标回 EPERM（本机实测）；
+ * - POSIX：目标目录只读 ⇒ 同目录临时文件建不出来回 EACCES（POSIX 上覆盖只读文件是允许的）。
+ * 返回的函数必须放进 `finally` 恢复权限，否则 afterAll 删不掉夹具目录。
+ */
+function 让写盘失败(绝对: string): () => void {
+  if (process.platform === "win32") {
+    chmodSync(绝对, 0o444)
+    return () => chmodSync(绝对, 0o666)
+  }
+  const 目录 = dirname(绝对)
+  chmodSync(目录, 0o555)
+  return () => chmodSync(目录, 0o755)
 }
 
 // ───────────────────────── 1. graph_list ─────────────────────────
@@ -399,7 +418,34 @@ describe("graph_add", () => {
     expect(次.重放).toBe(true)
     expect(次.版本).toBe(首.版本)
     expect(次.映射).toEqual(首.映射)
+    // 重放的 `放置` 与首轮一致（都是写回后读回文件得到的坐标），不因重放变空。
+    expect(首.放置).toHaveLength(1)
+    expect(次.放置).toEqual(首.放置)
+    expect(次.新增).toEqual(首.新增)
     expect(读回图("add/幂等.hgraph").节点).toHaveLength(1)
+  })
+
+  test("只加边的幂等重放：`放置` 两轮都为空（只讲节点坐标），`新增.边` 与首轮一致", async () => {
+    // R86 #12 的「放置: [] 而 新增 > 0」在只加边时是**首轮就成立**的语义（`放置` 只报节点），
+    // 不是重放引入的偏差；用例把它钉住，免得后来者把它当 bug 去「修」成编造坐标。
+    摆图("add/边重放.hgraph", {
+      ...空图("边重放"),
+      节点: [手写节点("甲", { id: "n1", x: 0, y: 0 }), 手写节点("乙", { id: "n2", x: 40, y: 40 })],
+    })
+    const 入参 = {
+      路径: "add/边重放.hgraph",
+      边: [事实边("n1", "n2", { 临时id: "tmpE" })],
+      幂等键: "add-边-k",
+    }
+    const 首 = await graph_add(ctx(), 入参)
+    expect(首.放置).toEqual([])
+    expect(首.新增).toEqual({ 节点: 0, 边: 1 })
+
+    const 次 = await graph_add(ctx(), 入参)
+    expect(次.重放).toBe(true)
+    expect(次.放置).toEqual([])
+    expect(次.新增).toEqual(首.新增)
+    expect(读回图("add/边重放.hgraph").边).toHaveLength(1)
   })
 
   test("没有节点也没有边 ⇒ bad_input（不返回一次假的成功）", async () => {
@@ -580,6 +626,54 @@ describe("graph_remove", () => {
     expect(读回图("remove/边.hgraph").边.map((条) => 条.id)).toEqual(["e2"])
   })
 
+  test("删节点幂等重放：删除计数与首轮一致，说明按「名字对不上计数只报数字」规则（不编名单）", async () => {
+    摆图("remove/节点重放.hgraph", {
+      ...空图("节点重放"),
+      节点: [手写节点("李四", { id: "n1", x: 10, y: 20 })],
+      边: [事实边("n1", "n1", { id: "e1" })],
+    })
+    const 入参 = {
+      路径: "remove/节点重放.hgraph",
+      目标: [{ 类别: "节点", id: "n1" }],
+      幂等键: "remove-节点-k",
+    }
+    const 首 = await graph_remove(ctx(), 入参)
+    expect(首.删除).toEqual({ 节点: 1, 边: 1 })
+    expect(首.说明).toBe("删了 1 个节点（李四）和 1 条边")
+
+    const 次 = await graph_remove(ctx(), 入参)
+    expect(次.重放).toBe(true)
+    expect(次.删除).toEqual(首.删除)
+    // 节点名在重放时不可得（盘上已删）——`删除说明` 的既有规则是只报数字，不编名单。
+    expect(次.说明).toBe("删了 1 个节点和 1 条边")
+    expect(次.说明).not.toContain("没有删除任何对象")
+  })
+
+  test("删文字幂等重放：重放 true 时不再谎报「没有删除任何对象」", async () => {
+    // R86 #12 / `#12` 补记：`删除` 形状不计文字，重放时盘上文字已删（`核.文字数` = 0），
+    // 旧实现于是回「没有删除任何对象」——否认了首轮确实删过。
+    摆图("remove/文字重放.hgraph", {
+      ...空图("文字重放"),
+      文字: [
+        { id: "t1", 内容: "标题", x: 0, y: 0, 字号: "中" },
+        { id: "t2", 内容: "备注块", x: 0, y: 80, 字号: "小" },
+      ],
+    })
+    const 入参 = {
+      路径: "remove/文字重放.hgraph",
+      目标: [{ 类别: "文字", id: "t1" }],
+      幂等键: "remove-文字-k",
+    }
+    const 首 = await graph_remove(ctx(), 入参)
+    expect(首.说明).toBe("删了 1 个文字")
+
+    const 次 = await graph_remove(ctx(), 入参)
+    expect(次.重放).toBe(true)
+    expect(次.删除).toEqual({ 节点: 0, 边: 0 })
+    expect(次.说明).toBe("重放：上次的删除已生效（本次没有重复删除）")
+    expect(读回图("remove/文字重放.hgraph").文字.map((块) => 块.id)).toEqual(["t2"])
+  })
+
   test("删文字：文件里确实删掉，`说明` 点出文字数（重复点名只算一次）", async () => {
     // 契约的 `删除` 形状只有节点/边（数据模型不把文字计入删除计数），但「删了却回
     // 没有删除任何对象」是谎报。文字数只进 `说明`，`删除` 形状保持不变。
@@ -656,6 +750,72 @@ describe("幂等键跨工具", () => {
     expect(删.重放).toBe(false)
     expect(删.删除).toEqual({ 节点: 0, 边: 1 })
     expect(读回图("idem/跨工具删.hgraph").边).toEqual([])
+  })
+})
+
+// ───────────────────────── 5d. 写失败优先级（R86 #8） ─────────────────────────
+
+describe("写失败优先级", () => {
+  // 核心失败的「缺目标」是 `BAD_OP`，而工具层预读（`核.缺失`）也可能先看到缺目标。
+  // 但写盘失败 / 文件解析坏 / 白名单或枚举不合法同样是 `!写.ok`——那些才是「为什么没存上」
+  // 的真因，不能被一句「图上没有 n9」盖掉。
+  test("核心报 WRITE_FAILED 时不被 `核.缺失` 压成 not_found（辅助函数直接注入失败对象）", () => {
+    // 注：顺序流里「缺目标」在 `应用操作` 就返回 BAD_OP、根本走不到写盘 ⇒ 这一组合只能在
+    // 并发/文件被换掉的窗口出现；故用唯一出口 `写失败回报` 直接钉住优先级规则。
+    const 错 = 写失败回报({ ok: false, code: "WRITE_FAILED", 话术: "图没存上：写盘失败（EPERM）" }, "n9")
+    expect(错.code).toBe("write_failed")
+    expect(错.message).toBe("图没存上：写盘失败（EPERM）")
+  })
+
+  test("只有核心话术点名那个缺失 id（BAD_OP）才折 not_found；其它 BAD_OP 保留原话术", () => {
+    const 缺 = 写失败回报({ ok: false, code: "BAD_OP", 话术: "图上没有节点「n9」" }, "n9")
+    expect(缺.code).toBe("not_found")
+    expect(缺.message).toBe("图上没有 n9")
+
+    const 枚举 = 写失败回报({ ok: false, code: "BAD_OP", 话术: "边的「性质」只能是 事实 或 推断" }, "n9")
+    expect(枚举.code).toBe("bad_input")
+    expect(枚举.message).toBe("边的「性质」只能是 事实 或 推断")
+  })
+
+  test("真的写盘失败（只读目标）⇒ write_failed，不是 not_found（并确认优先级的非遮罩分支）", async () => {
+    const 绝对 = 摆图("update/写失败.hgraph", {
+      ...空图("写失败"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+    })
+    const 恢复 = 让写盘失败(绝对)
+    try {
+      const 错 = await 取工具错误(() =>
+        graph_update(ctx(), {
+          路径: "update/写失败.hgraph",
+          目标: [{ 类别: "节点", id: "n1", 字段: { 名称: "张三丰" } }],
+        }),
+      )
+      expect(错.code).toBe("write_failed")
+      expect(错.message).toContain("写盘失败")
+    } finally {
+      恢复()
+    }
+  })
+
+  test("同批里既有缺失目标又有不合法枚举 ⇒ 报枚举（真因），不拿缺失 id 遮住 bad_input", async () => {
+    const 绝对 = 摆图("update/枚举遮罩.hgraph", {
+      ...空图("枚举遮罩"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+      边: [事实边("n1", "n1", { id: "e1" })],
+    })
+    const 前 = 字节哈希(绝对)
+    const 错 = await 取工具错误(() =>
+      graph_update(ctx(), {
+        路径: "update/枚举遮罩.hgraph",
+        目标: [
+          { 类别: "边", id: "e1", 字段: { 性质: "怪" } },
+          { 类别: "节点", id: "n9", 字段: { 名称: "幽灵" } },
+        ],
+      }),
+    )
+    expect(错.code).toBe("bad_input")
+    expect(错.message).toBe("边的「性质」只能是 事实 或 推断")
+    expect(字节哈希(绝对)).toBe(前)
   })
 })
 
@@ -800,5 +960,50 @@ describe("MCP 分发", () => {
 
     await 缺根客.close()
     await 缺根.close()
+  })
+
+  /** 固定次数的预算：只验「第几次起挂上限缺口」，不依赖真实计数（`#005-34`）。 */
+  async function 用次数服务(次数: number, 用例: (客: Client) => Promise<void>): Promise<void> {
+    const 服务 = createCaseMcpServer({
+      db: 库(),
+      workspaceRoot: 沙箱根,
+      留痕: () => {},
+      预算: { 计次: () => 次数 } satisfies 预算计数,
+    })
+    const [客户端侧, 服务端侧] = InMemoryTransport.createLinkedPair()
+    await 服务.connect(服务端侧)
+    const 客 = new Client({ name: "预算图客户端", version: "0.0.0" })
+    await 客.connect(客户端侧)
+    try {
+      await 用例(客)
+    } finally {
+      await 客.close()
+      await 服务.close()
+    }
+  }
+
+  test("第 12 次起图工具也带预算上限缺口（与查库工具同一预算出口，不套七字段信封）", async () => {
+    const 取体 = (结果: { content: { type: string; text?: string }[] }): Record<string, unknown> => {
+      const 块 = 结果.content.find((条) => 条.type === "text")
+      if (块?.text === undefined) throw new Error("工具返回里没有 text 内容块")
+      const 体: Record<string, unknown> = JSON.parse(块.text)
+      return 体
+    }
+
+    await 用次数服务(12, async (客) => {
+      const 结果 = await 客.callTool({ name: "graph_list", arguments: {}, _meta: meta(属主) })
+      expect(结果.isError).not.toBe(true)
+      const 体 = 取体(结果)
+      // 图结果没有 `缺口` 字段：上限提示挂成显式字段，不伪造七字段信封（R48）。
+      expect(体.预算上限缺口).toBe(预算上限缺口)
+      expect(Array.isArray(体.图)).toBe(true)
+      expect("摘要" in 体).toBe(false)
+      expect("数据" in 体).toBe(false)
+    })
+
+    await 用次数服务(11, async (客) => {
+      const 体 = 取体(await 客.callTool({ name: "graph_list", arguments: {}, _meta: meta(属主) }))
+      expect("预算上限缺口" in 体).toBe(false)
+    })
   })
 })

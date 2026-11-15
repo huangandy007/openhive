@@ -4,7 +4,7 @@ import { basename, join, relative, sep } from "node:path"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "./case-mcp-tools"
 import type { 类别, 边草稿, 操作, 改字段目标, 节点草稿, 删对象目标 } from "./hgraph-edit"
 import { 解析图 } from "./hgraph-file"
-import { 应用并写回, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 失败码 } from "./hgraph-ops"
+import { 应用并写回, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 核心失败, type 失败码 } from "./hgraph-ops"
 import { 项目属主 } from "./project-actor"
 
 /**
@@ -228,6 +228,22 @@ function 抛核心失败(失败: { readonly code: 失败码; readonly 话术: st
 }
 
 /**
+ * 写失败时回给模型的错误（`graph_update` / `graph_remove` 共用，`#002-06`）。
+ *
+ * `核.缺失` 只是**工具层预读**的观察；核心失败若另有真因（写盘失败 / 文件解析坏 / 白名单或
+ * 枚举不合法），那才是「为什么没存上」的答案，不能被一句「图上没有 n9」盖掉（R86 #8）。
+ */
+export function 写失败回报(写: 核心失败, 缺失: string | undefined): 工具错误 {
+  // 只有核心回的正是「缺目标」那一条（`BAD_OP` 且话术点名该 id）才折 `not_found`。
+  // `hgraph-edit` 的缺失话术是 `图上没有<类别>「<id>」`（唯一出处）；白名单 / 枚举 / 未知类别
+  // 这类 `BAD_OP` 不带目标 id，写盘 / 解析失败更是别的码——都按真因回报。
+  if (缺失 !== undefined && 写.code === "BAD_OP" && 写.话术.includes(缺失)) {
+    return new 工具错误("not_found", `图上没有 ${缺失}`)
+  }
+  return new 工具错误(映射失败码(写.code), 写.话术)
+}
+
+/**
  * R83：核心幂等索引是 `[userId, projectId, 锁键, 幂等键]`，**不含工具名**——同键换工具
  * （`graph_add` 后 `graph_update`）会命中上一次的重放结果、什么都不写。核心索引字段不动，
  * 在工具层给键加 `${工具名}:` 前缀（**唯一映射一处**，`#002-06`）；键缺省时仍缺省。
@@ -387,11 +403,8 @@ export async function graph_update(
     批次: args.批次,
     幂等键: 幂等键("graph_update", args.幂等键),
   })
-  if (!写.ok) {
-    // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §4），不顺手新建。
-    if (核.缺失 !== undefined) throw new 工具错误("not_found", `图上没有 ${核.缺失}`)
-    抛核心失败(写)
-  }
+  // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §4），不顺手新建；其它失败的优先见 `写失败回报`。
+  if (!写.ok) throw 写失败回报(写, 核.缺失)
 
   return { 路径, 版本: 写.版本, 更新: 写.结果.更新, 重放: 写.重放 }
 }
@@ -478,12 +491,16 @@ export async function graph_remove(
     批次: args.批次,
     幂等键: 幂等键("graph_remove", args.幂等键),
   })
-  if (!写.ok) {
-    // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §5），不静默成功。
-    if (核.缺失 !== undefined) throw new 工具错误("not_found", `图上没有 ${核.缺失}`)
-    抛核心失败(写)
-  }
+  // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §5），不静默成功；其它失败的优先见 `写失败回报`。
+  if (!写.ok) throw 写失败回报(写, 核.缺失)
 
   const 删除 = { 节点: 写.结果.删除.节点, 边: 写.结果.删除.边 }
-  return { 路径, 版本: 写.版本, 删除, 说明: 删除说明(删除, 核.名字, 核.文字数), 重放: 写.重放 }
+  // 重放时盘上目标已不在：`删除` 计数来自幂等记录（首轮的结果），但节点名与文字数只能从**当前**
+  // 盘上取（`#12` 补记）。节点/边有计数可报；文字不进 `删除` 形状，若此时一律走 `删除说明`
+  // 就会回「没有删除任何对象」——否认首轮确实删过。重放且无节点/边/文字可报时明说重放。
+  const 说明 =
+    写.重放 && 删除.节点 === 0 && 删除.边 === 0 && 核.文字数 === 0
+      ? "重放：上次的删除已生效（本次没有重复删除）"
+      : 删除说明(删除, 核.名字, 核.文字数)
+  return { 路径, 版本: 写.版本, 删除, 说明, 重放: 写.重放 }
 }
