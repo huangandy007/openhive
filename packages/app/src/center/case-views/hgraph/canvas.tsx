@@ -91,6 +91,20 @@ export interface 画布动作 {
    * 真正出图在编辑器点「导出」时经 `导出PNG`（R64）。
    */
   readonly 导出面板切换?: () => void
+  /**
+   * 合并所选节点（T016b）：只弹编辑器里的确认条，真正写盘在「确定」之后。选中节点 < 2
+   * 时编辑器自己忽略；工具栏按钮也按同一判据 disabled。
+   */
+  readonly 合并?: () => void
+  /** `Ctrl+C`（T016b）：把当前选中节点（与两端都在选区内的边）记成实例内快照，不写盘。 */
+  readonly 复制?: () => void
+  /** `Ctrl+V`（T016b）：粘贴剪贴板快照，偏移 24；剪贴板为空/源对象已不存在 ⇒ 不发。 */
+  readonly 粘贴?: () => void
+  /**
+   * `Ctrl+D` 与 `Alt+拖`（T016b）：复制当前选中（偏移 0 或调用方给的偏移），返回新节点的
+   * **临时 id**（按文档顺序，供画布把拖动目标切到副本）；复制不出来返回空数组。
+   */
+  readonly 复制所选?: (偏移?: number) => readonly string[]
 }
 
 export interface 画布Props {
@@ -323,6 +337,47 @@ export function 画布(props: 画布Props): JSX.Element {
       if (点 === undefined) return
       const 已选中 = props.选中.includes(节点id)
       const 可拖 = 点.锁定 !== true && !事件.shiftKey
+
+      // Alt+拖（T016b / R97）：先复制所选（偏移 0），再把拖动目标切到副本；复制不出来
+      // 就不进入拖动（不制造一次空拖）。
+      if (事件.altKey && 可拖) {
+        const 复制 = props.动作.复制所选
+        if (复制 !== undefined) {
+          if (!已选中) props.动作.选择([节点id], false)
+          // 复制范围与编辑器一致：整份选中；按在未选中的节点上时只复制它。
+          const 用于复制 = 已选中 ? props.选中 : [节点id]
+          const 原id们 = props.文档.节点.filter((行) => 用于复制.includes(行.id)).map((行) => 行.id)
+          const 副本id们 = 复制(0)
+          const 序 = 原id们.indexOf(节点id)
+          if (序 >= 0 && 副本id们.length === 原id们.length) {
+            // 副本偏移 0 ⇒ 与原节点同坐标；锁定节点的副本不参与这次拖动。
+            const 副本组 = 原id们.flatMap((原id, 位) => {
+              const 行 = 节点表().get(原id)
+              if (行 === undefined || 行.锁定 === true) return []
+              return [{ id: 副本id们[位]!, x: 数(行.x), y: 数(行.y) }]
+            })
+            if (副本组.length > 0) {
+              指针 = {
+                类型: "对象",
+                类别: "节点",
+                id: 副本id们[序]!,
+                起点屏x: 事件.clientX,
+                起点屏y: 事件.clientY,
+                起点x: 内容.x,
+                起点y: 内容.y,
+                shift: false,
+                已选中: true,
+                可拖: true,
+                组: 副本组,
+                移动: false,
+              }
+              return
+            }
+          }
+          return
+        }
+      }
+
       // 整组拖动：按在已选中的解锁节点上 ⇒ 所有选中的**解锁**节点一起走；否则只走这一颗。
       const 组 =
         已选中 && 可拖
@@ -507,6 +562,22 @@ export function 画布(props: 画布Props): JSX.Element {
       事件.preventDefault()
       if (事件.shiftKey) props.动作.重做()
       else props.动作.撤销()
+      return
+    }
+    // 复制粘贴（T016b / R97）：只挂画布容器（上面的输入框守卫已提前返回）。
+    if (主键 && (事件.key === "c" || 事件.key === "C")) {
+      事件.preventDefault()
+      props.动作.复制?.()
+      return
+    }
+    if (主键 && (事件.key === "v" || 事件.key === "V")) {
+      事件.preventDefault()
+      props.动作.粘贴?.()
+      return
+    }
+    if (主键 && (事件.key === "d" || 事件.key === "D")) {
+      事件.preventDefault()
+      props.动作.复制所选?.(0)
       return
     }
     if (事件.key === "Delete") {

@@ -6,6 +6,7 @@
  */
 let 序号 = 0
 
-export const 临时id = (前缀: "n" | "e" | "t") => `临时${前缀}${++序号}`
+/** `c`/`ce` = 复制粘贴（T016b）：节点副本 / 边副本，与正式 id 形状刻意不匹配。 */
+export const 临时id = (前缀: "n" | "e" | "t" | "c" | "ce") => `临时${前缀}${++序号}`
 
 export const 是临时id = (id: string) => id.startsWith("临时")

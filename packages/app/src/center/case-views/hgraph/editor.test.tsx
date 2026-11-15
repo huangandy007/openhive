@@ -1070,24 +1070,25 @@ describe("T010 · 单一出口", () => {
     ])
   })
 
-  test("批量态：选中 2 个 ⇒ 对齐/等距可用、合并 disabled；选中 1 个 ⇒ 对齐/等距 disabled、删除可用", async () => {
+  test("批量态：选中 2 个 ⇒ 对齐/等距/合并可用；选中 1 个 ⇒ 对齐/等距/合并 disabled、删除可用", async () => {
     const { 幽, set选中 } = 挂拼装({ 选中: ["n1"] })
     await flush()
 
     expect((取("[data-slot='hgraph-toolbar-align-左']") as HTMLButtonElement).disabled).toBe(true)
     expect((取("[data-slot='hgraph-toolbar-space-水平']") as HTMLButtonElement).disabled).toBe(true)
     expect((取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement).disabled).toBe(false)
-    expect(取("[data-slot='hgraph-toolbar-merge']")).toBeNull()
+    // T016b：合并按钮常驻，选中节点数 < 2 时 disabled（曾被渲染成 disabled 占位）。
+    const 合并 = 取("[data-slot='hgraph-toolbar-merge']") as HTMLButtonElement
+    expect(合并).not.toBeNull()
+    expect(合并.disabled).toBe(true)
 
     set选中(["n1", "n2"])
     await flush()
     const 对齐 = 取("[data-slot='hgraph-toolbar-align-左']") as HTMLButtonElement
     expect(对齐.disabled).toBe(false)
     expect((取("[data-slot='hgraph-toolbar-space-水平']") as HTMLButtonElement).disabled).toBe(false)
-    const 合并 = 取("[data-slot='hgraph-toolbar-merge']") as HTMLButtonElement
-    expect(合并).not.toBeNull()
-    expect(合并.disabled).toBe(true)
-    expect(合并.getAttribute("title")).toBe("合并（下个任务做）")
+    expect(合并.disabled).toBe(false)
+    expect(合并.getAttribute("title")).toBe("合并所选")
 
     // 检查器批量面板也出现且可用（FR-028）。
     expect(取("[data-slot='hgraph-batch']")).not.toBeNull()
@@ -2929,5 +2930,255 @@ describe("T015 · 导出 PNG 面板", () => {
     expect(光栅化们.length).toBe(0)
     expect(下载们).toEqual([])
     expect(取("[data-slot='hgraph-export-panel']")).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T016b · 合并节点 / 复制粘贴（R79 / R80 / R96 / R97）
+// ---------------------------------------------------------------------------
+
+/** n1、n2 都带来源/出处，n3 作集外端点；三条边里只有 e1 两端都在 {n1,n2}。 */
+function 合并图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("n1", 100, 100, {
+        名称: "张三",
+        出处: ["甲"],
+        来源: { kind: "实体", 实体: "x1", 值: "张三" },
+      }),
+      造节点("n2", 200, 100, {
+        名称: "李四",
+        出处: ["乙"],
+        来源: { kind: "实体", 实体: "x2", 值: "李四" },
+      }),
+      造节点("n3", 300, 100, { 名称: "王五" }),
+    ],
+    边: [造边("e1", "n1", "n2"), 造边("e2", "n2", "n3"), 造边("e3", "n3", "n1")],
+    文字: [],
+  }
+}
+
+/** 应答映射：本批所有「临时」节点/边换成正式 id（模拟服务端 `映射`）。 */
+function 副本映射(输入: 写入参, 节根 = 8, 边根 = 8): Record<string, string> {
+  const 映射: Record<string, string> = {}
+  let 节 = 节根
+  let 边 = 边根
+  for (const 操作 of 输入.操作) {
+    if (操作.操作 === "加节点") {
+      for (const 行 of 操作.节点) {
+        if (typeof 行.id === "string" && 行.id.startsWith("临时")) 映射[行.id] = `n${++节}`
+      }
+    }
+    if (操作.操作 === "加边") {
+      for (const 行 of 操作.边) {
+        if (typeof 行.id === "string" && 行.id.startsWith("临时")) 映射[行.id] = `e${++边}`
+      }
+    }
+  }
+  return 映射
+}
+
+const 节点标签们 = () =>
+  [...document.querySelectorAll("[data-slot='hgraph-node-label']")].map((元素) => 元素.textContent?.trim() ?? "")
+
+const 边线们 = () =>
+  [...document.querySelectorAll("[data-slot='hgraph-edge-line']")].map((元素) => [
+    Number(元素.getAttribute("x1")),
+    Number(元素.getAttribute("y1")),
+    Number(元素.getAttribute("x2")),
+    Number(元素.getAttribute("y2")),
+  ])
+
+describe("T016b · 合并节点", () => {
+  test("#12 合并后端点指向保留者（断言具体 id）；一次撤销按名称/字段还原，重做保持禁用（R96）", async () => {
+    const { api, 写们 } = 假api({
+      写: (输入) => {
+        if (输入.操作.some((操作) => 操作.操作 === "合并节点")) return 成功("v2")
+        return 成功("v3", 副本映射(输入, 7, 6))
+      },
+    })
+    挂上(api, 合并图())
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+    const 合并 = 按钮("hgraph-toolbar-merge")
+    expect(合并.disabled).toBe(false)
+    合并.click()
+    await flush()
+    expect(文案("hgraph-merge-confirm")).toContain("合并到「张三」？")
+
+    按钮("hgraph-merge-confirm-ok")!.click()
+    await 过防抖()
+
+    // 整批一次写：保留者 n1，并入 n2（不含保留者）。
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "合并节点", 保留: "n1", 并入: ["n2"] }])
+    expect(节点数()).toBe(2)
+    expect(边数()).toBe(3)
+    // 端点重指：三条边全部落在 n1/n3 之间（本地乐观应用后位置反映这一点）。
+    expect(边线们()).toEqual([
+      [100, 100, 100, 100], // e1 变成 n1 自环
+      [100, 100, 300, 100], // e2 n2→n3 改指 n1
+      [300, 100, 100, 100], // e3 不变
+    ])
+
+    // 撤销：逆操作 = 删保留者 + 加节点副本 + 加边副本；应答把临时 id 换正式 id。
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    await flush()
+    await flush()
+
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作.map((操作) => 操作.操作)).toEqual(["删对象", "加节点", "加边"])
+
+    // 按名称/坐标逐一还原（不断言 id：合并逆操作会重建 id，R79/R96）。
+    expect(节点数()).toBe(3)
+    expect(节点标签们().sort()).toEqual(["张三", "李四", "王五"].sort())
+    expect(边数()).toBe(3)
+    expect(边线们()).toEqual([
+      [100, 100, 200, 100],
+      [200, 100, 300, 100],
+      [300, 100, 100, 100],
+    ])
+    // R96：合并步的逆操作会重建 id ⇒ 撤销后不提供重做（重做为必然打空的写）。
+    expect(按钮("hgraph-redo").disabled).toBe(true)
+  })
+
+  test("#16 合并按钮：选中 1 个 disabled、2 个可用；确认条文案含保留者；取消零写；保留者下拉可改", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 合并图())
+    await flush()
+
+    const 合并 = 按钮("hgraph-toolbar-merge")
+    expect(合并.disabled).toBe(true)
+    点选("n1", 100, 100)
+    await flush()
+    expect(合并.disabled).toBe(true)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+    expect(合并.disabled).toBe(false)
+
+    // 默认保留者 = 选中中文档顺序第一（n1 = 张三）。
+    合并.click()
+    await flush()
+    expect(文案("hgraph-merge-confirm")).toContain("合并到「张三」？")
+    expect(取("[data-slot='hgraph-merge-confirm']")).not.toBeNull()
+
+    // 取消 ⇒ 收起、零写。
+    按钮("hgraph-merge-confirm-cancel")!.click()
+    await flush()
+    expect(取("[data-slot='hgraph-merge-confirm']")).toBeNull()
+    await 过防抖()
+    expect(写们.length).toBe(0)
+
+    // 再开，下拉改保留者为 n2（李四）。
+    合并.click()
+    await flush()
+    const 下拉 = 取("[data-slot='hgraph-merge-keeper']") as HTMLSelectElement
+    expect([...下拉.options].map((项) => 项.value)).toEqual(["n1", "n2"])
+    下拉.value = "n2"
+    下拉.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+    expect(文案("hgraph-merge-confirm")).toContain("合并到「李四」？")
+
+    按钮("hgraph-merge-confirm-ok")!.click()
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "合并节点", 保留: "n2", 并入: ["n1"] }])
+  })
+})
+
+describe("T016b · 复制粘贴", () => {
+  test("#14 Ctrl+C 零写；Ctrl+V 偏移 24、名称加「副本」、只带两端在选区的边", async () => {
+    const { api, 写们 } = 假api({ 写: (输入) => 成功("v2", 副本映射(输入)) })
+    挂上(api, 合并图())
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+
+    按键(画布()!, { key: "c", ctrlKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(0)
+
+    按键(画布()!, { key: "v", ctrlKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    const 操作 = 写们[0]!.操作
+    expect(操作.map((条) => 条.操作)).toEqual(["加节点", "加边"])
+    const 加节点 = 操作[0]!
+    if (加节点.操作 !== "加节点") throw new Error("期望加节点")
+    expect(加节点.节点.map((行) => 行.名称)).toEqual(["张三副本", "李四副本"])
+    expect(加节点.节点.map((行) => [行.x, 行.y])).toEqual([
+      [124, 124],
+      [224, 124],
+    ])
+    const 加边 = 操作[1]!
+    if (加边.操作 !== "加边") throw new Error("期望加边")
+    // e1 两端都在选区；e2/e3 只有一端 ⇒ 不复制。
+    expect(加边.边).toHaveLength(1)
+
+    await flush()
+    await flush()
+    expect(节点数()).toBe(5)
+    expect(边数()).toBe(4)
+    expect(节点标签们()).toEqual(expect.arrayContaining(["张三副本", "李四副本"]))
+    // 粘贴后选中新节点（应答映射把临时 id 换成正式 id）。
+    const 选中们 = [...document.querySelectorAll("[data-slot='hgraph-node'][data-selected='true']")]
+    expect(选中们.map((元素) => 元素.getAttribute("data-node-id"))).toEqual(["n9", "n10"])
+    expect(取("[data-slot='hgraph-node'][data-node-id='临时c']")).toBeNull()
+  })
+
+  test("#15 Ctrl+D 偏移 0（原地复制），与 Ctrl+V 的 24 分开断言", async () => {
+    const { api, 写们 } = 假api({ 写: (输入) => 成功("v2", 副本映射(输入)) })
+    挂上(api, 合并图())
+    await flush()
+
+    点选("n1", 100, 100)
+    点选("n2", 200, 100, { shiftKey: true })
+    await flush()
+
+    按键(画布()!, { key: "d", ctrlKey: true })
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    const 加节点 = 写们[0]!.操作[0]!
+    if (加节点.操作 !== "加节点") throw new Error("期望加节点")
+    expect(加节点.节点.map((行) => [行.x, 行.y])).toEqual([
+      [100, 100],
+      [200, 100],
+    ])
+  })
+
+  test("R97 Alt+拖：先复制所选（偏移 0），再把拖动目标切到副本；一次写含 加节点 + 移动", async () => {
+    const { api, 写们 } = 假api({ 写: (输入) => 成功("v2", 副本映射(输入)) })
+    挂上(api, 合并图())
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 130, 120, { altKey: true })
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 操作 = 写们[0]!.操作
+    expect(操作.map((条) => 条.操作)).toEqual(["加节点", "移动"])
+    const 加节点 = 操作[0]!
+    if (加节点.操作 !== "加节点") throw new Error("期望加节点")
+    expect(加节点.节点.map((行) => [行.名称, 行.x, 行.y])).toEqual([["张三副本", 100, 100]])
+    const 移动 = 操作[1]!
+    if (移动.操作 !== "移动") throw new Error("期望移动")
+    expect(移动.目标).toEqual([{ 类别: "节点", id: String(加节点.节点[0]!.id), x: 130, y: 120 }])
+
+    await flush()
+    await flush()
+    // 原节点不动，副本落在拖动终点且被选中。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(节点组("n9")!.getAttribute("transform")).toBe("translate(130 120)")
+    expect(节点组("n9")!.getAttribute("data-selected")).toBe("true")
   })
 })

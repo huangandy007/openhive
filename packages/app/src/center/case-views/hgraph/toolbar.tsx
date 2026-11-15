@@ -6,10 +6,10 @@
  * 快捷键在 `canvas.tsx` 的容器 `keydown` 上，落到同一张表（FR-040）。
  *
  * 范围：`加节点 / 删除所选 / 锁定切换 / 对齐 / 等距 / 自动布局`（R28）与 `演示`
- * （T011；`演示切换` 只是本地展示态，不产生写）。`合并` 按 tasks.md 呈现为 `disabled`，
- * 真实语义在 T016。复制粘贴、导出等不在本轮。
+ * （T011；`演示切换` 只是本地展示态，不产生写）。`合并`（T016b）只在选中节点 ≥ 2 时可用，
+ * 点击落到 `合并` 动作（确认条在编辑器里）。复制粘贴、导出等不在本轮。
  */
-import { For, Show, type JSX } from "solid-js"
+import { For, type JSX } from "solid-js"
 import type { 图文件 } from "./file"
 import type { 画布动作 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
@@ -29,6 +29,8 @@ const 按钮 =
 export function 工具栏(props: 工具栏Props): JSX.Element {
   const 有选中 = () => props.选中.length > 0
   const 可批量 = () => props.选中.length >= 2
+  /** 合并只认节点：选中里可能混着文字/边（画布不把边放进选中，但文字会）。 */
+  const 可合并 = () => props.文档.节点.filter((点) => props.选中.includes(点.id)).length >= 2
   /** 选中的节点全锁 ⇒ 按钮显示「解锁」；其余（含没选中）显示「锁定」。 */
   const 全锁 = () => {
     const 点们 = props.文档.节点.filter((点) => props.选中.includes(点.id))
@@ -159,18 +161,18 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         演示
       </button>
 
-      <Show when={可批量()}>
-        <button
-          type="button"
-          data-slot="hgraph-toolbar-merge"
-          aria-label="合并所选"
-          title="合并（下个任务做）"
-          class={按钮}
-          disabled
-        >
-          合并
-        </button>
-      </Show>
+      {/* T016b：合并常驻按钮，选中节点 ≥ 2 才可用（点击弹确认条，不直接写）。 */}
+      <button
+        type="button"
+        data-slot="hgraph-toolbar-merge"
+        aria-label="合并所选"
+        title="合并所选"
+        class={按钮}
+        disabled={!可合并()}
+        onClick={() => props.动作表.合并?.()}
+      >
+        合并
+      </button>
     </div>
   )
 }

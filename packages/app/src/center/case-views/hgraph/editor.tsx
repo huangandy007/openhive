@@ -30,9 +30,9 @@
  *
  * ## 本地操作代数只覆盖本组件会发出的六种
  *
- * `加节点 / 加边 / 加文字 / 改字段 / 删对象 / 移动`——它们是为了「立即显示」，正式语义仍由
- * 服务端 `hgraph-edit.ts` 决定（同一前提不在这里重判：不校验来源、不分配正式 id）。
- * `合并节点` 本轮不产生（T016）。
+ * `加节点 / 加边 / 加文字 / 改字段 / 删对象 / 移动 / 合并节点`——它们是为了「立即显示」，
+ * 正式语义仍由服务端 `hgraph-edit.ts` 决定（同一前提不在这里重判：不校验来源、不分配正式 id）。
+ * `合并节点` 的本地应用只镜像端点重指/并集（T016b）；逆操作仍归 `history.ts`。
  *
  * ## 动作表（T010）
  *
@@ -40,7 +40,7 @@
  * 子组件只调动作条目，`应用` 是唯一把 `操作[]` 交给 api 的地方。UI 发起的 `加节点`
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
-import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { EntityApi } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
@@ -68,6 +68,7 @@ import {
   type 副本,
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
+import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
 
 export interface 编辑器Props {
   readonly path: string
@@ -118,9 +119,58 @@ function 打补丁(行: Record<string, unknown>, 补丁: Record<string, unknown>
   return 新
 }
 
+/** 字符串集合并集：按值去重、保序——镜像后端 `hgraph-edit.ts:224-233` 的 `并字符串集`。 */
+function 并字符串(甲: unknown, 乙: unknown): string[] | undefined {
+  const 甲组 = Array.isArray(甲) ? 甲.filter((值): 值 is string => typeof 值 === "string") : undefined
+  const 乙组 = Array.isArray(乙) ? 乙.filter((值): 值 is string => typeof 值 === "string") : undefined
+  if (甲组 === undefined && 乙组 === undefined) return undefined
+  const 结果: string[] = []
+  for (const 值 of [...(甲组 ?? []), ...(乙组 ?? [])]) if (!结果.includes(值)) 结果.push(值)
+  return 结果
+}
+
+/** 备注并集：非空、去重、`；` 连接——镜像后端 `并备注`（`:236-243`）。 */
+function 并备注(甲: unknown, 乙: unknown): string | undefined {
+  const 结果: string[] = []
+  for (const 值 of [甲, 乙]) {
+    if (typeof 值 !== "string" || 值.trim() === "") continue
+    if (!结果.includes(值)) 结果.push(值)
+  }
+  return 结果.length > 0 ? 结果.join("；") : undefined
+}
+
+/** 把被并入者的 出处/备注/`来源.并入` 并到保留者——镜像后端 `合并到保留`（`:626-651`）。 */
+function 合并到保留(保留记录: Record<string, unknown>, 并入记录: Record<string, unknown>): void {
+  const 出处 = 并字符串(保留记录.出处, 并入记录.出处)
+  if (出处 !== undefined) 保留记录.出处 = 出处
+  const 备注 = 并备注(保留记录.备注, 并入记录.备注)
+  if (备注 !== undefined) 保留记录.备注 = 备注
+
+  const 来源 = 并入记录.来源
+  if (typeof 来源 !== "object" || 来源 === null) return
+  const 来源记录 = 来源 as Record<string, unknown>
+  const 追加: string[] = []
+  if (typeof 来源记录.实体 === "string" && 来源记录.实体 !== "") 追加.push(来源记录.实体)
+  if (Array.isArray(来源记录.并入)) {
+    for (const id of 来源记录.并入) if (typeof id === "string" && id !== "") 追加.push(id)
+  }
+  if (追加.length === 0) return
+
+  const 保留来源 = 保留记录.来源
+  if (typeof 保留来源 !== "object" || 保留来源 === null) return
+  const 保留来源记录 = 保留来源 as Record<string, unknown>
+  const 原 = Array.isArray(保留来源记录.并入)
+    ? 保留来源记录.并入.filter((id): id is string => typeof id === "string")
+    : []
+  const 新 = [...原]
+  for (const id of 追加) if (!新.includes(id)) 新.push(id)
+  保留来源记录.并入 = 新
+}
+
 /**
  * 本地乐观应用（只为显示）。不校验来源、不分配正式 id —— 这两件事只有服务端一份实现。
- * `合并节点` 原样返回：T016a 不产生（合并归 T016b）。
+ * `合并节点` 在这里镜像后端语义（T016b）：端点重指、出处/备注并集、`来源.并入` 追加；
+ * 正式写盘仍由服务端判定。
  */
 function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
   if (操作.操作 === "移动") {
@@ -183,6 +233,30 @@ function 应用本地(文档: 图文件, 操作: 操作): 图文件 {
 
   if (操作.操作 === "加文字") {
     return { ...文档, 文字: [...文档.文字, ...(操作.文字 as unknown as 文字[])] }
+  }
+
+  if (操作.操作 === "合并节点") {
+    const 保留点 = 文档.节点.find((点) => 点.id === 操作.保留)
+    const 并入集 = new Set(操作.并入.filter((id) => id !== 操作.保留))
+    if (保留点 === undefined || 并入集.size === 0) return 文档
+    const 保留记录 = structuredClone(保留点) as unknown as Record<string, unknown>
+    for (const id of 并入集) {
+      const 点 = 文档.节点.find((行) => 行.id === id)
+      if (点 !== undefined) 合并到保留(保留记录, structuredClone(点) as unknown as Record<string, unknown>)
+    }
+    return {
+      ...文档,
+      // 保留者保持原位置（文档顺序）；被并入者移除。
+      节点: 文档.节点.flatMap((点) =>
+        点.id === 操作.保留 ? [保留记录 as unknown as 节点] : 并入集.has(点.id) ? [] : [点],
+      ),
+      // 端点重指：所有指向被并入者的边改指保留者（重复边不去重，与后端一致）。
+      边: 文档.边.map((条) => ({
+        ...条,
+        从: 并入集.has(条.从) ? 操作.保留 : 条.从,
+        到: 并入集.has(条.到) ? 操作.保留 : 条.到,
+      })),
+    }
   }
 
   return 文档
@@ -351,6 +425,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [重命名id, set重命名id] = createSignal<string | undefined>()
   /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
   const [待确认布局, set待确认布局] = createSignal(false)
+  /** 合并确认条（T016b）：候选节点 id（文档顺序），`undefined` = 未打开。 */
+  const [待确认合并, set待确认合并] = createSignal<readonly string[] | undefined>()
+  /** 确认条里选中的保留者；默认 = 候选中文档顺序第一（R79）。 */
+  const [合并保留, set合并保留] = createSignal<string | undefined>()
   /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
   const [布局模式, set布局模式] = createSignal<排列模式>()
   /** 收起右键菜单的请求计数：共同父容器点到菜单外时递增（不用 window 监听，FR-040）。 */
@@ -415,6 +493,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    */
   let 草稿仅撤销重做 = false
   /**
+   * 本批撤销里含「合并节点」步（T016b / R96）：合并的逆操作会重建 id（R79），撤销成功后
+   * 不能把该步留在重做栈里（重做会指向已消失的旧 id，必然打空）。
+   */
+  let 草稿含合并撤销 = false
+  /**
+   * 复制剪贴板（T016b / R97）：**编辑器实例内快照**，不跨标签页、不跨图。记下复制当时的
+   * 节点与「两端都在选区内」的边；粘贴时源对象已不存在则跳过（不报错）。
+   */
+  let 剪贴板: { readonly 节点id: readonly string[]; readonly 边id: readonly string[] } | undefined
+  /**
    * 当前待发批里被弹出的撤销/重做步（修复轮 1）：撤销/重做**先弹栈再发写**，写失败时文档
    * 回滚到已存态，这一步也要放回原栈——用户才能直接再按一次同样的键重试，而不是先按重做。
    * 成功 / 重载即丢弃（成功时弹出本就该生效；重载会清空整个栈）。
@@ -459,10 +547,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 批副本 = 草稿副本
     const 仅撤销重做 = 草稿仅撤销重做
     const 批弹出 = 草稿弹出
+    const 批含合并撤销 = 草稿含合并撤销
     草稿逆操作 = []
     草稿副本 = []
     草稿仅撤销重做 = false
     草稿弹出 = []
+    草稿含合并撤销 = false
     const 批次 = `批-${++批次序号}`
     // 发送时快照 = 已存基线 + 本批；它才是「服务端接受这一批之后」的文档。
     // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
@@ -521,6 +611,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             ...(批副本.length > 0 ? { 副本: 批副本 } : {}),
           }),
         )
+      } else if (批含合并撤销) {
+        // R96：合并的逆操作重建 id ⇒ 撤销成功后重做保持禁用（不压指向旧 id 的必然失败写）。
+        set撤销栈((旧) => ({ ...旧, 重做记录: [] }))
       }
       set错误(undefined)
       set最新版本(undefined)
@@ -605,6 +698,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     草稿副本 = []
     草稿仅撤销重做 = false
     草稿弹出 = []
+    草稿含合并撤销 = false
     待重载 = undefined
     set文档(新)
     set已存文档(新)
@@ -629,6 +723,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set重命名id(undefined)
     set待确认布局(false)
     set布局模式(undefined)
+    set待确认合并(undefined)
+    set合并保留(undefined)
     set收起菜单((旧计数) => 旧计数 + 1)
     set询问重载(false)
     弹重载提示()
@@ -887,6 +983,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // 撤销应用 `逆操作`；空步只弹栈、不发写（避免一次空改动的写请求）。本次发送不压新步。
     if (出.步.逆操作.length > 0) {
       草稿弹出 = [...草稿弹出, { 方向: "撤销", 步: 出.步 }]
+      // R96：合并步的逆操作重建 id，撤销成功后清重做栈（见发送成功分支）。
+      if (出.步.正操作.some((操作) => 操作.操作 === "合并节点")) 草稿含合并撤销 = true
       应用(出.步.逆操作, { 仅撤销重做: true })
     }
   }
@@ -923,6 +1021,58 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 目标 = 布局目标(文档(), 布局模式())
     set布局模式(undefined)
     if (目标.length > 0) 应用([{ 操作: "移动", 目标 }])
+  }
+
+  /**
+   * 打开合并确认条（T016b / R79）：选中里至少两颗**节点**才弹。
+   * 默认保留者 = 选中中**文档顺序第一**（`文档().节点` 的顺序）；确认条里可下拉改。
+   */
+  const 打开合并确认 = () => {
+    const 点们 = 文档().节点.filter((点) => 选中().includes(点.id))
+    if (点们.length < 2) return
+    set合并保留(点们[0]!.id)
+    set待确认合并(点们.map((点) => 点.id))
+  }
+
+  /** 确认合并：校验/组装一条 `合并节点`，整批一次写、一步撤销；成功后选中收口到保留者。 */
+  const 执行合并 = () => {
+    const 候选 = 待确认合并()
+    if (候选 === undefined) return
+    set待确认合并(undefined)
+    const 计划 = 合并计划(文档(), 合并保留() ?? 候选[0]!, 候选)
+    set合并保留(undefined)
+    if (!计划.ok) return
+    应用([计划.操作])
+    set选中([计划.保留])
+  }
+
+  /** `Ctrl+C`（R97）：只记**编辑器实例内**快照，不写盘。 */
+  const 复制到剪贴板 = () => {
+    const 节点们 = 文档().节点.filter((点) => 选中().includes(点.id))
+    if (节点们.length === 0) return
+    const 节点id = 节点们.map((点) => 点.id)
+    const 集 = new Set(节点id)
+    // 快照当时的内部边：粘贴只复制它们（复制后新出现的内部边不算）。
+    const 边id = 文档().边.filter((条) => 集.has(条.从) && 集.has(条.到)).map((条) => 条.id)
+    剪贴板 = { 节点id, 边id }
+  }
+
+  /** 复制计划落地：应用 + 选中新节点（临时 id；成功后由应答映射换正式 id）。 */
+  const 收下副本 = (操作们: readonly 操作[]): readonly string[] => {
+    if (操作们.length === 0) return []
+    const ids = 复制节点id(操作们)
+    应用(操作们)
+    if (ids.length > 0) set选中(ids)
+    return ids
+  }
+
+  /** `Ctrl+D` / `Alt+拖`（R97）：复制当前选中；返回新节点临时 id（按文档顺序）。 */
+  const 复制所选 = (偏移 = 0): readonly string[] => 收下副本(复制计划(文档(), 选中(), 偏移))
+
+  /** `Ctrl+V`：粘贴剪贴板快照，偏移 24；源对象已不存在 ⇒ `复制计划` 自动跳过。 */
+  const 粘贴 = () => {
+    if (剪贴板 === undefined) return
+    收下副本(复制计划(文档(), 剪贴板.节点id, 24, 剪贴板.边id))
   }
 
   /** 进入演示：从第 0 步开始；焦点与全屏目标都落在共同父容器（R44/R45）。 */
@@ -1076,6 +1226,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       set导出提示(undefined)
       set导出面板开((旧) => !旧)
     },
+    // T016b：合并只弹确认条（真正写盘在「确定」）；复制/粘贴/原地复制经 `应用` 走既有防抖。
+    合并: 打开合并确认,
+    复制: 复制到剪贴板,
+    粘贴,
+    复制所选,
   }
 
   const 状态文案 = () => {
@@ -1083,6 +1238,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     if (状态() === "发送中") return "保存中…"
     return 错误() ?? "待保存"
   }
+
+  /** 合并确认条当前保留者的名称（文案与下拉共用同一处取名）。 */
+  const 合并保留名称 = () => 文档().节点.find((点) => 点.id === 合并保留())?.名称 ?? ""
 
   return (
     <div
@@ -1275,6 +1433,48 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             data-slot="hgraph-layout-confirm-cancel"
             class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
             onClick={() => set待确认布局(false)}
+          >
+            取消
+          </button>
+        </div>
+      </Show>
+
+      {/* T016b：合并确认条（不用 `window.confirm`）；取消零写，确认才落一个批次。 */}
+      <Show when={待确认合并()}>
+        <div
+          data-slot="hgraph-merge-confirm"
+          role="alertdialog"
+          aria-label="合并节点确认"
+          class="flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <span class="text-12-regular text-v2-text-text-muted">合并到「{合并保留名称()}」？</span>
+          <select
+            data-slot="hgraph-merge-keeper"
+            aria-label="保留节点"
+            class="rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+            value={合并保留() ?? ""}
+            onChange={(事件) => set合并保留(事件.currentTarget.value)}
+          >
+            <For each={待确认合并() ?? []}>
+              {(id) => <option value={id}>{文档().节点.find((点) => 点.id === id)?.名称 ?? id}</option>}
+            </For>
+          </select>
+          <button
+            type="button"
+            data-slot="hgraph-merge-confirm-ok"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            onClick={执行合并}
+          >
+            确定
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-merge-confirm-cancel"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={() => {
+              set待确认合并(undefined)
+              set合并保留(undefined)
+            }}
           >
             取消
           </button>
