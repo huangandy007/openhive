@@ -22,7 +22,7 @@
  * `Math.round`（四舍五入；`.5` 向 `+∞`，与 JS 语义一致）；`适配视口` 的 `缩放`
  * 是视图变换比例，保留小数，只有平移 `x` / `y` 取整。
  */
-import type { 节点 } from "./file"
+import type { 边, 节点 } from "./file"
 
 /** 节点视觉半径；来源见文件头。 */
 const 节点半径 = 15
@@ -257,4 +257,185 @@ export function 适配视口(节点们: readonly 节点[], 尺寸: 视口尺寸)
 /** 隐藏节点数：隔离与筛选共用「总数 - 可见数」（quickstart §1.4）。 */
 export function 隐藏计数(总: number, 可见: number): number {
   return 总 - 可见
+}
+
+// ---------------------------------------------------------------------------
+// T017a（US7·R71）：查找路径 / 标签取舍 / 截断标签
+//
+// **顺序是例外**：本文件此前的函数一律按 id 升序返回；本节 `查找路径` 的路径按 BFS
+// 到达序、`标签取舍` 按优先级序，均不按 id 字典序（口径见 R71）。
+// ---------------------------------------------------------------------------
+
+export interface 路径结果 {
+  readonly 跳数: number
+  readonly 路径: string[]
+}
+
+/**
+ * `标签取舍` 的入参（R71）。
+ *
+ * **`边们` 的由来**：优先级里要「度数高（边数）」这一档，而 `节点` 本身没有边信息；
+ * 纯函数不许读全局/文档，故在参数里补 `边们?`，由调用方（编辑器）传 `文档.边`。
+ * 缺省时所有节点度数按 0 处理。自环计 1 度。
+ */
+export interface 标签取舍参数 {
+  readonly 缩放: number
+  readonly 选中: readonly string[]
+  readonly 悬停id?: string
+  /** 0.3 ≤ 缩放 < 0.6 时放行的外环档下限；默认 3。 */
+  readonly 外环档阈值?: number
+  /** `false` ⇒ 只留选中与悬停（>800 节点默认关标签的落点）。 */
+  readonly 开?: boolean
+  /** 自动档表（T018 接）；缺项回退到 `节点.外环?.档`，再回退 0。 */
+  readonly 档表?: ReadonlyMap<string, number>
+  readonly 边们?: readonly 边[]
+}
+
+/** 标签盒估算的高度/字宽（R71.3）。 */
+const 标签高度 = 16
+const 标签字宽 = 12
+const 标签最大码点 = 12
+
+/** 按码点数（不是 UTF-16 单元数）——别把代理对/扩展区汉字劈成两半。 */
+function 码点数(值: string): number {
+  return Array.from(值).length
+}
+
+/** 截断标签：码点数 > 12 ⇒ 前 12 码点 + `…`；否则原样。 */
+export function 截断标签(名称: string): string {
+  const 点们 = Array.from(名称)
+  if (点们.length <= 标签最大码点) return 名称
+  return 点们.slice(0, 标签最大码点).join("") + "…"
+}
+
+/**
+ * BFS 最短路径（无向：边两端都能走）。
+ *
+ * - `a === b` ⇒ `{ 跳数: 0, 路径: [a] }`（不查图，也不返回 `null`）。
+ * - 不连通 ⇒ `null`。
+ * - 相邻节点的展开顺序 = **边在文档里的顺序**，所以多条等长路径取先到者；同一输入
+ *   两次调用结果相等。
+ * - 自环（`从 === 到`）不产生跳数。
+ */
+export function 查找路径(边们: readonly 边[], a: string, b: string): 路径结果 | null {
+  if (a === b) return { 跳数: 0, 路径: [a] }
+
+  const 邻接 = new Map<string, string[]>()
+  const 连 = (从: string, 到: string) => {
+    const 已有 = 邻接.get(从)
+    if (已有 === undefined) 邻接.set(从, [到])
+    else 已有.push(到)
+  }
+  for (const 边 of 边们) {
+    if (边.从 === 边.到) continue
+    连(边.从, 边.到)
+    连(边.到, 边.从)
+  }
+
+  const 父 = new Map<string, string>()
+  const 已访 = new Set<string>([a])
+  const 队列: string[] = [a]
+  for (let 头 = 0; 头 < 队列.length; 头++) {
+    const 当前 = 队列[头]
+    for (const 邻 of 邻接.get(当前) ?? []) {
+      if (已访.has(邻)) continue
+      已访.add(邻)
+      父.set(邻, 当前)
+      if (邻 === b) {
+        const 路径 = [b]
+        let 步 = b
+        while (步 !== a) {
+          const 前 = 父.get(步)
+          if (前 === undefined) return null // 不可达：只登记已发现节点的父，防御性兜底
+          步 = 前
+          路径.push(步)
+        }
+        return { 跳数: 路径.length - 1, 路径: 路径.reverse() }
+      }
+      队列.push(邻)
+    }
+  }
+  return null
+}
+
+interface 标签盒 {
+  readonly 左: number
+  readonly 右: number
+  readonly 上: number
+  readonly 下: number
+}
+
+/** 估算标签盒：宽 `min(码点数,12)*12`、高 16，左上 `(x - 宽/2, y - 34)`（R71.3）。 */
+function 算标签盒(点: 节点): 标签盒 {
+  const 宽 = Math.min(码点数(点.名称), 标签最大码点) * 标签字宽
+  const 左 = 点.x - 宽 / 2
+  const 上 = 点.y - 34
+  return { 左, 右: 左 + 宽, 上, 下: 上 + 标签高度 }
+}
+
+/** 轴对齐盒相交（边贴边算相交——贴在一起的标签同样看不清）。 */
+function 盒相交(甲: 标签盒, 乙: 标签盒): boolean {
+  return 甲.左 <= 乙.右 && 乙.左 <= 甲.右 && 甲.上 <= 乙.下 && 乙.上 <= 甲.下
+}
+
+/** 节点度数：每条边给两端各 +1；自环只 +1（不重复计）。 */
+function 算度数(边们: readonly 边[] | undefined): Map<string, number> {
+  const 表 = new Map<string, number>()
+  if (边们 === undefined) return 表
+  const 加 = (id: string) => 表.set(id, (表.get(id) ?? 0) + 1)
+  for (const 边 of 边们) {
+    加(边.从)
+    if (边.到 !== 边.从) 加(边.到)
+  }
+  return 表
+}
+
+/**
+ * 标签取舍（R71）：返回保留标签的节点 id，**顺序 = 优先级序**。
+ *
+ * 1. `开 === false` 或 `缩放 < 0.3` ⇒ 只留 `选中 ∪ {悬停id}`。
+ * 2. `0.3 ≤ 缩放 < 0.6` ⇒ 再放行 `档 ≥ 外环档阈值(默认 3)`。
+ * 3. `缩放 ≥ 0.6` ⇒ 全部候选。
+ *
+ * 候选内按 `选中 > 悬停 > 档高 > 度数高 > id 升序` 贪心占位：估算标签盒与已保留盒
+ * 相交就放弃；**选中与悬停永不放弃**（它们先占位，彼此相交也保留）。
+ */
+export function 标签取舍(节点们: readonly 节点[], 参数: 标签取舍参数): string[] {
+  const 选中集 = new Set(参数.选中)
+  const 悬停id = 参数.悬停id
+  const 阈值 = 参数.外环档阈值 ?? 3
+  const 取档 = (点: 节点) => 参数.档表?.get(点.id) ?? 点.外环?.档 ?? 0
+  // 优先级主键：0 = 选中，1 = 悬停，2 = 其余
+  const 级 = (点: 节点) => (选中集.has(点.id) ? 0 : 点.id === 悬停id ? 1 : 2)
+  const 低缩放 = 参数.开 === false || 参数.缩放 < 0.3
+
+  const 候选 = 节点们.filter((点) => {
+    if (级(点) < 2) return true
+    if (低缩放) return false
+    return 参数.缩放 >= 0.6 || 取档(点) >= 阈值
+  })
+
+  const 度数 = 算度数(参数.边们)
+  const 有序 = [...候选].sort((甲, 乙) => {
+    const 级差 = 级(甲) - 级(乙)
+    if (级差 !== 0) return 级差
+    const 档差 = 取档(乙) - 取档(甲)
+    if (档差 !== 0) return 档差
+    const 度差 = (度数.get(乙.id) ?? 0) - (度数.get(甲.id) ?? 0)
+    if (度差 !== 0) return 度差
+    return 按字符串升序(甲.id, 乙.id)
+  })
+
+  const 保留: string[] = []
+  const 已留 = new Set<string>()
+  const 盒们: 标签盒[] = []
+  for (const 点 of 有序) {
+    if (已留.has(点.id)) continue
+    const 盒 = 算标签盒(点)
+    if (级(点) === 2 && 盒们.some((已) => 盒相交(已, 盒))) continue
+    已留.add(点.id)
+    保留.push(点.id)
+    盒们.push(盒)
+  }
+  return 保留
 }
