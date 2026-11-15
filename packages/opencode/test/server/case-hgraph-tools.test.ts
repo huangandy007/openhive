@@ -705,7 +705,7 @@ describe("graph_remove", () => {
 describe("幂等键跨工具", () => {
   // 核心索引是 [userId, projectId, 锁键, 幂等键]，不含工具名 ⇒ 工具层给每个写工具加
   // `${工具名}:` 前缀（唯一映射一处）。否则同键换工具会命中上一次的重放结果、什么都不写。
-  test("同键先 graph_add 后 graph_update ⇒ 第二次不重放、真的改（不同图路径也不行）", async () => {
+  test("同键先 graph_add 后 graph_update ⇒ 第二次不重放、真的改", async () => {
     摆图("idem/跨工具.hgraph", {
       ...空图("跨工具"),
       节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
@@ -752,6 +752,37 @@ describe("幂等键跨工具", () => {
     expect(删.重放).toBe(false)
     expect(删.删除).toEqual({ 节点: 0, 边: 1 })
     expect(读回图("idem/跨工具删.hgraph").边).toEqual([])
+  })
+})
+
+// ───────────────────────── 5c. 幂等键按图隔离 ─────────────────────────
+
+describe("幂等键跨图", () => {
+  // 原用例标题写着「（不同图路径也不行）」但两条调用用的是同一路径（R86 复审 Minor）。
+  // 这里补一条**真跨图**用例：核心索引里的锁键把两张图分开，同一客户端键不得互相重放。
+  test("同一幂等键在另一张图上不重放、真的写", async () => {
+    摆图("idem/甲图.hgraph", 空图("甲图"))
+    摆图("idem/乙图.hgraph", {
+      ...空图("乙图"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+    })
+    const 键 = "跨图-k1"
+    const 加 = await graph_add(ctx(), {
+      路径: "idem/甲图.hgraph",
+      节点: [手写节点("李四")],
+      幂等键: 键,
+    })
+    expect(加.重放).toBe(false)
+
+    const 改 = await graph_update(ctx(), {
+      路径: "idem/乙图.hgraph",
+      目标: [{ 类别: "节点", id: "n1", 字段: { 名称: "张三丰" } }],
+      幂等键: 键,
+    })
+    expect(改.重放).toBe(false)
+    expect(改.更新).toBe(1)
+    expect(读回图("idem/乙图.hgraph").节点[0]).toMatchObject({ 名称: "张三丰" })
+    expect(读回图("idem/甲图.hgraph").节点).toHaveLength(1)
   })
 })
 
