@@ -98,6 +98,7 @@ type 流数据 = {
   单笔最大: { id: string; 金额: string; 时间: number | null }[]
   集中度: Record<string, string>
   外币行数: number
+  人说的笔: 人说行[]
 }
 
 /** 人说的笔的行形状（契约：`aggregate_money` / `money_flow` 同形）。 */
@@ -258,6 +259,31 @@ describe("money_flow", () => {
     expect(流数据.汇总).toEqual(汇总数据.汇总)
     expect(流数据.首末).toEqual(汇总数据.首末)
     expect(流数据.外币行数).toBe(汇总数据.外币行数)
+  })
+
+  test("人说的笔随方向透传；摘要报笔数；人说的笔不进单笔榜", async () => {
+    const 收 = await money_flow(ctx(), { 账户: 数据集.账号.B, 方向: "收" })
+    const 收数据 = 收.数据 as 流数据
+    // B 的账户归属集含人「李四」（唯一户名对齐）⇒ A→李四 10000 与 A→B 5000 都算 B 的「入」，
+    // 共 2 条（末降序）。这也是既有「汇总 入 3 笔 35000」的构成：20000 机器 + 15000 人说的。
+    expect(收数据.人说的笔.map((行) => [行.方向, 行.金额])).toEqual([
+      ["入", "5000.00"],
+      ["入", "10000.00"],
+    ])
+    expect(收.摘要).toContain("人说的 2 笔")
+    // 单笔榜只认资金交易事件：5000 那笔笔录不在榜上，榜仍是两笔流水。
+    expect(收数据.单笔最大.map((条) => 条.金额)).toEqual(["20000.00", "10000.00"])
+
+    // 方向=付：人说的笔被清空（证明 `目标方向` 真的下沉到了 aggregate_money，
+    // 而不是在 JS 里按汇总过滤）。
+    const 付 = await money_flow(ctx(), { 账户: 数据集.账号.B, 方向: "付" })
+    expect((付.数据 as 流数据).人说的笔).toEqual([])
+  })
+
+  test("人说的笔与 aggregate_money 逐行相等（同一口径，不另算一份）", async () => {
+    const 流 = await money_flow(ctx(), { 账户: 数据集.账号.A })
+    const 汇 = await aggregate_money(ctx(), { 账户: 数据集.账号.A })
+    expect((流.数据 as 流数据).人说的笔).toEqual((汇.数据 as { 人说的笔: 人说行[] }).人说的笔)
   })
 
   test("方向=付：所选方向没有人民币转账 ⇒ 汇总为空但空原因为 null，缺口说清", async () => {

@@ -1700,7 +1700,7 @@ export async function aggregate_money(
   ctx: 工具上下文,
   args: { 账户: string; 起?: number; 止?: number },
   /**
-   * **内部选项，不暴露给 MCP 入参**（只有 `money_flow` 传）：
+   * **内部选项，不暴露给 MCP 入参**（内部工具调用方：页面路由与 `money_flow`）：
    * - `对手id`：把「另一端 ∈ 该实体的归属实体集」推进汇总 / 对手方条件，四块同源；
    * - `含首末`：对手方行附带 `首` / `末`（默认输出逐字不变）；
    * - `含账户汇总`：`数据` 里额外回一份**未按对手过滤**的汇总，供读端区分「账户本身没有
@@ -2313,6 +2313,8 @@ export async function money_flow(
     {
       对手方上限: 资金流对手上限,
       含首末: true,
+      // 人说的笔的方向过滤要在 SQL 里做：先截断再过滤会掉行（设计 D6）。
+      ...(目标方向 === undefined ? {} : { 方向: 目标方向 }),
       ...(对手id === undefined ? {} : { 对手id, 含账户汇总: true }),
     },
   )
@@ -2337,6 +2339,16 @@ export async function money_flow(
       末: number | null
     }[]
     外币行数: number
+    人说的笔: {
+      id: string
+      方向: string
+      对手: string
+      金额: string | null
+      首: number | null
+      末: number | null
+      精度: string | null
+      次数: number | null
+    }[]
     /** 只在带 `对手` 时由内部选项额外返回：未按对手过滤的汇总。 */
     账户汇总?: { 方向: string; 笔数: number; 合计: string }[]
   }
@@ -2433,7 +2445,7 @@ export async function money_flow(
   return {
     摘要:
       `「${args.账户}」资金流：入 ${件数("入")} 笔 / ${合计("入")}，出 ${件数("出")} 笔 / ${合计("出")}；` +
-      `前 ${对手个数} 个对手、单笔最大 ${单笔最大.length} 条` +
+      `前 ${对手个数} 个对手、单笔最大 ${单笔最大.length} 条、人说的 ${数据.人说的笔.length} 笔` +
       (方向 === "全部" ? "" : `（已按「${方向}」过滤）`) +
       身份后缀(身份们),
     数据: {
@@ -2444,6 +2456,7 @@ export async function money_flow(
       汇总,
       对手排行,
       单笔最大,
+      人说的笔: 数据.人说的笔,
       集中度,
       外币行数: 数据.外币行数,
     },
@@ -2455,6 +2468,7 @@ export async function money_flow(
       "指定「对手」时汇总、首末、对手排行、单笔最大与集中度同口径缩到该对手（集中度分母随之缩减，接近 100% 不表示集中度）；" +
       单笔口径 +
       "。" +
+      "人说的笔与 aggregate_money 同口径（source_kind=human 的转账关系逐行列一条，与流水栏各列一条）；" +
       (身份们.length === 0 ? "" : 身份口径),
     缺口,
     空原因: null,
