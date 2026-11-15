@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql } from "drizzle-orm"
@@ -41,6 +41,24 @@ const 纯净项目 = "p-hgraph-ascii"
 const 无目录项目 = "p-hgraph-nodir"
 
 const 沙箱根 = mkdtempSync(join(tmpdir(), "openhive-hgraph-"))
+
+/**
+ * F2 的 junction 夹具：**项目目录本身是 junction** 时不能回 404（`stat` 跟随链接）。
+ * win32 能建 junction ⇒ 启用用例；其他平台 / 权限不足建不出来 ⇒ **跳过**，报告里如实
+ * 写「未覆盖」，不假装跑过。
+ */
+const 联结项目 = "p-hgraph-junction"
+const 联结目标 = join(沙箱根, "junction-target")
+let 联结可用 = false
+try {
+  mkdirSync(联结目标, { recursive: true })
+  mkdirSync(join(沙箱根, 我.id), { recursive: true })
+  symlinkSync(联结目标, join(沙箱根, 我.id, 联结项目), "junction")
+  联结可用 = true
+} catch {
+  联结可用 = false
+}
+
 const 数据根 = join(沙箱根, "data")
 const restoreWs = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 沙箱根 })
 const restoreDataRoot = restorePoint({ OPENHIVE_DATA_ROOT: 数据根 })
@@ -72,7 +90,8 @@ beforeAll(async () => {
            (${项目}, ${成员.id}, 'member', 0),
            (${别人的项目}, ${别人.id}, 'owner', 0),
            (${纯净项目}, ${我.id}, 'owner', 0),
-           (${无目录项目}, ${我.id}, 'owner', 0)
+           (${无目录项目}, ${我.id}, 'owner', 0),
+           (${联结项目}, ${我.id}, 'owner', 0)
   `)
   // 导出文件名要项目名（`projectMetaOf`）；没有这一行 ⇒ 名字退化成 projectId。
   await pg.db.execute(sql`
@@ -659,7 +678,7 @@ describe("T006 · 门（401 / 400 / 403）", () => {
     }),
   )
 
-  it("项目目录不存在 ⇒ 404（不是 LINK_ESCAPE，话术说「项目目录不在了」）", () =>
+  it("read 的项目目录不存在 ⇒ 404（不是 LINK_ESCAPE，话术说「项目目录不在了」）", () =>
     Effect.gen(function* () {
       const url = `${PREFIX}/read?${new URLSearchParams({ projectId: 无目录项目, path: "x.hgraph" })}`
       const 响应 = yield* 发(我, url)
@@ -667,6 +686,40 @@ describe("T006 · 门（401 / 400 / 403）", () => {
       const 体 = yield* 读回<{ code: string; error: string }>(响应)
       expect(体.code).toBe("NOT_FOUND")
       expect(体.error).toContain("项目目录不在了")
+    }),
+  )
+
+  it("init 的项目目录不存在 ⇒ 404 NOT_FOUND（F3：不靠 read 那条顺带证明）", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, `${PREFIX}/init`, { projectId: 无目录项目, path: "x.hgraph" })
+      expect(响应.status).toBe(404)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("NOT_FOUND")
+      expect(体.error).toContain("项目目录不在了")
+    }),
+  )
+
+  it("ops 的项目目录不存在 ⇒ 404 NOT_FOUND（F3）", () =>
+    Effect.gen(function* () {
+      const 响应 = yield* 发体(我, `${PREFIX}/ops`, { projectId: 无目录项目, path: "x.hgraph", 操作: [] })
+      expect(响应.status).toBe(404)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("NOT_FOUND")
+      expect(体.error).toContain("项目目录不在了")
+    }),
+  )
+
+  /** F2：项目目录本身是 junction（win32 建不出来就 skip，不当成通过）。 */
+  const 联结用例 = 联结可用 ? it : it.skip
+  联结用例("项目目录本身是 junction ⇒ 读 200（stat 跟随链接，不是 404）", () =>
+    Effect.gen(function* () {
+      const 相对 = "联结图.hgraph"
+      writeFileSync(join(沙箱根, 我.id, 联结项目, 相对), "{}")
+      const url = `${PREFIX}/read?${new URLSearchParams({ projectId: 联结项目, path: 相对 })}`
+      const 响应 = yield* 发(我, url)
+      expect(响应.status).toBe(200)
+      const 体 = yield* 读回<{ 内容: string }>(响应)
+      expect(体.内容).toBe("{}")
     }),
   )
 })
@@ -678,19 +731,34 @@ describe("T006 · 门（401 / 400 / 403）", () => {
  * 结果，win32 上 `图.HGRAPH` 的真身回的是盘上的 `图.hgraph` ⇒ 路径闸先回 `LINK_ESCAPE`
  * （2026-11-15 实测），请求根本到不了锁。所以归一是**防御性**的：今天靠 `projectDirectory`
  * 恒按同一拼法拼目录，未来若放行跨拼法（或平台差异），锁与幂等表已经不会各拿一把。
+ *
+ * 归一只在 **win32** 生效：POSIX 上 `A.hgraph` 与 `a.hgraph` 是两个真文件，折小写会让它们
+ * 共享锁与幂等键（同客户端键跨文件被误判成重放、第二次静默不写）。故 `锁键` 是带平台参数
+ * 的纯函数，下面两端各钉一条。
  */
 describe("T006 · 锁键归一", () => {
-  it("同一文件的大小写拼法得到同一把锁；不同文件不同锁", () =>
-    Effect.promise(async () => {
+  it("win32 折小写 ⇒ 同一文件两种拼法同一把锁；不同文件不同锁", () =>
+    Effect.sync(() => {
       const 目录 = join(我目录(), "大小写")
       mkdirSync(目录, { recursive: true })
-      const 小写 = await 锁键(join(目录, "图.hgraph"))
-      const 大写 = await 锁键(join(目录, "图.HGRAPH"))
-      const 别的 = await 锁键(join(目录, "另一张.hgraph"))
+      const 小写 = 锁键(目录, "图.hgraph", "win32")
+      const 大写 = 锁键(目录, "图.HGRAPH", "win32")
+      const 别的 = 锁键(目录, "另一张.hgraph", "win32")
       expect(小写).toBe(大写)
       expect(小写).not.toBe(别的)
       // 父目录真实名 + 小写 basename（win32 上 join 可能回 `\`，比较时只认「同不同」）。
       expect(小写.endsWith("图.hgraph")).toBe(true)
+      // 默认参数按当前平台：本机 win32 才应相等（在 POSIX 上这两行是**两个真文件**）。
+      expect(锁键(目录, "图.hgraph") === 锁键(目录, "图.HGRAPH")).toBe(process.platform === "win32")
+    }),
+  )
+
+  it("非 win32 不折小写 ⇒ POSIX 上 A.hgraph 与 a.hgraph 不共享锁 / 幂等键", () =>
+    Effect.sync(() => {
+      const 父 = join(沙箱根, "posix")
+      expect(锁键(父, "A.hgraph", "linux")).not.toBe(锁键(父, "a.hgraph", "linux"))
+      expect(锁键(父, "A.hgraph", "darwin")).not.toBe(锁键(父, "a.hgraph", "darwin"))
+      expect(锁键(父, "a.hgraph", "linux")).toBe(锁键(父, "a.hgraph", "linux"))
     }),
   )
 

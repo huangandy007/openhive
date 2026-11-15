@@ -5,7 +5,7 @@ import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { Database } from "@opencode-ai/core/database/database"
 import { User } from "@opencode-ai/core/user"
 import { createHash } from "node:crypto"
-import { lstat, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { lstat, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -230,23 +230,34 @@ async function 查目标(绝对: string): Promise<目标类型> {
 }
 
 /**
- * 串行锁 / 幂等表的键：**「解析后父目录 ＋ 小写 basename」**，不是 `resolve` 结果。
+ * 串行锁 / 幂等表的键：**「真父目录 ＋ basename」**，不是客户端原文，也不是 `resolve` 结果。
  *
- * ## 为什么不能直接用 `resolve` 结果
+ * ## 大小写只按平台归并（仅 win32 折小写）
  *
- * 本机 win32 **大小写不敏感**，而后缀闸明确接受 `.HGRAPH`（与 `.hgraph` 是同一个文件）。
- * 用 `resolve` 结果当 key ⇒ `图.hgraph` 与 `图.HGRAPH` 各拿一把锁，AI 不带 `版本` 的两路
- * 增量写会同时「读同一份基线 → 各写各的」——最后一次 `rename` 静默覆盖，丢更新（`#008-03`
- * 的反面：锁没串起来，await 之后写的仍是旧基线）。
+ * win32 **大小写不敏感**，而后缀闸明确接受 `.HGRAPH`（与 `.hgraph` 是同一个文件）。若不折，
+ * `图.hgraph` 与 `图.HGRAPH` 各拿一把锁，AI 不带 `版本` 的两路增量写会同时「读同一份基线 →
+ * 各写各的」——最后一次 `rename` 静默覆盖，丢更新（`#008-03` 的反面）。
  *
- * 父目录先 `realpath`：项目里允许链接目录（`realInside` 只要求真身仍在项目内），同一目录
- * 经链接名与真实名也是同一个文件。`realpath` 失败（父目录还不存在）退回 `resolve`——那种
- * 情况下文件一定不存在，各出口随后回 `NOT_FOUND`，不会真的并发写。
+ * **POSIX 上 `A.hgraph` 与 `a.hgraph` 是两个真实文件**：在那里也折小写，会让两个文件共享
+ * 一把锁与同一行幂等记录 ⇒ 同客户端幂等键跨文件被误判成重放、第二次**静默不写**。故只认
+ * `win32`，其余平台原样（与 `project-assets.ts:414-422` 的按平台判定同一惯例；macOS 默认
+ * 大小写不敏感但它是 `darwin`，同路径两种写法本就指向同一 inode，按平台判不会漏）。
+ *
+ * 父目录先由调用方 `realpath`：项目里允许链接目录（`realInside` 只要求真身仍在项目内），
+ * 同一目录经链接名与真实名也是同一个文件；`realpath` 失败（父目录还不存在）退回 `resolve`
+ * ——那种情况下文件一定不存在，各出口随后回 `NOT_FOUND`，不会真的并发写。
+ *
+ * 纯函数（父真路径、basename、平台都可注入），用例直接钉两端行为。
  */
-export async function 锁键(绝对: string): Promise<string> {
+export function 锁键(父真路径: string, 名字: string, 平台: string = process.platform): string {
+  return join(父真路径, 平台 === "win32" ? 名字.toLowerCase() : 名字)
+}
+
+/** `锁键` 的异步包装：把目录换成 `realpath`（失败回落 `resolve`）后再算 key。 */
+async function 目标锁键(绝对: string): Promise<string> {
   const 父 = dirname(绝对)
   const 真父 = await realpath(父).catch(() => resolve(父))
-  return join(真父, basename(绝对).toLowerCase())
+  return 锁键(真父, basename(绝对))
 }
 
 /**
@@ -268,7 +279,10 @@ async function 解析目标(依赖: 核心依赖, 入参: 路径入参): Promise
   // 他手里那个项目目录整个没了）。实测（2026-11-15）：不加这一步旧实现已是 404「图文件不存在」
   // ——`dirname(绝对)` 不存在时 `realInside` 那一步本来就被跳过，**没有**复现出 LINK_ESCAPE；
   // 这一步是为了话术准确，同时把顺序钉死：`realpath(目录)` 一旦在别处被调用，失败会回 false。
-  const 目录在 = await lstat(目录).then((信息) => 信息.isDirectory(), () => false)
+  // 用 `stat`（跟随链接）判目录：项目目录本身可能是 junction/symlink（`realInside` 放行
+  // 「真身仍在项目内」的链接），`lstat` 会把这种目录看成「非目录」⇒ 误回 404。
+  // 只有 `stat` 也拿不到（真正缺失）才回 404。
+  const 目录在 = await stat(目录).then((信息) => 信息.isDirectory(), () => false)
   if (!目录在) return 拒("NOT_FOUND", 话术.PROJECT_GONE)
 
   const 类型 = await 查目标(绝对)
@@ -286,7 +300,7 @@ async function 解析目标(依赖: 核心依赖, 入参: 路径入参): Promise
   )
   if (检查点在 && !(await Effect.runPromise(realInside(目录, 检查点)))) return 拒("LINK_ESCAPE")
 
-  return { ok: true, 目标: { 绝对, 目录, 类型, 锁键: await 锁键(绝对) } }
+  return { ok: true, 目标: { 绝对, 目录, 类型, 锁键: await 目标锁键(绝对) } }
 }
 
 // ---------------------------------------------------------------------------
