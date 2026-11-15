@@ -379,3 +379,18 @@ Task: "T008 改名 判菜单目标（src/project/file-tree.tsx）"
 - `[P]` 只在「不同文件且无未完成依赖」时使用；改同一文件的任务按序做。
 - 不做的事以 [spec.md](./spec.md) 的 Scope Boundaries 为准：不加服务端批量接口、不加迁移、不改解析链路与队列。
 - 参考教训：`#002-06`（同一前提单一出处，T006）、`#010-06`（两套来源别各判一次，T008）、`#009-02`（组件测试 conditions/preload）、`#004-03`（红值实测）。
+
+---
+
+## 复审修复轮 2（2026-11-15，D8–D12）
+
+只改文档 / 注释 / 测试，生产可执行逻辑零改动。完整报告见 `.superpowers/sdd/plan/fix-round-2-report.md`。
+
+- **D8–D10（文档/注释）**：spec FR-007 / FR-009 与 US2 场景 4 随 2026-11-15 裁定修正；data-model / research / quickstart / plan / tasks 旧口径对齐；C7 作业新建口径改为「`入队` / `重新解析` 经 `入队材料`」；7 处「上传自动入队」残留改为「011 起上传只落盘、不再入队」（含新发现 `script/openhive-case-stage0.ts:46`）。
+- **D11（FR-007 的 M 计数）**：
+  - 绿：`case-materials-view.test.tsx` 新增 2 条（0 候选文件夹算 1 个被排除项；posix 尾分隔符 `资料/`）⇒ 文件 **33 pass / 0 fail**；与 file-tree 合跑 **225 pass / 0 fail / 556 expect**。
+  - 变异：`case-materials-view.ts` 的 `if (本项候选.length === 0)` 改为 `&& 文件 !== undefined` ⇒ **32 pass / 1 fail**，`Expected: 1 / Received: 0`。恢复后全绿。
+- **D12（生产 v2 toast 落屏）**：
+  - 绿：`file-tree.test.tsx` 新增 `setV2Toast(true)` + `<ToastRegion v2 />` 用例，断言 S/F、前 3 条原因与尾句；合跑 225 pass。
+  - 变异：`packages/ui/src/v2/components/toast-v2.tsx` 的 `description: entry.options.description` 改为 `undefined` ⇒ **1 fail**（`Expected to contain: "资料/一.xlsx" / Received: "成功 0 份；5 份未能入队"`）。恢复后 `git diff --stat packages/ui packages/app/src/project/case-materials-view.ts` 为空。
+- **门禁**：见 `fix-round-2-report.md`；本轮未跑真栈（约束禁止启动/删除真栈进程与状态目录）。

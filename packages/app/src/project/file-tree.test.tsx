@@ -3,7 +3,8 @@ import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { toaster } from "@opencode-ai/ui/toast"
 import { createRoot, createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
-import { ToastRegion } from "@/utils/toast"
+import { setV2Toast, ToastRegion } from "@/utils/toast"
+import { toasterV2 } from "@opencode-ai/ui/v2/toast-v2"
 import { FileTree, type FileTreeAction, type FileTreeProps } from "./file-tree"
 import type { CaseMaterialsApi } from "./case-materials-api"
 import { createCaseMaterials } from "./case-materials-state"
@@ -3313,6 +3314,53 @@ describe("FileTree 文件树（FR-005）", () => {
       for (const path of 路径们.slice(3)) expect(报告, path).not.toContain(path)
       expect(报告).toContain("重试只补没成功的、不会重复")
       toaster.clear()
+    })
+
+    test("生产 v2 toast：批量失败报告经 `setV2Toast(true)` + `<ToastRegion v2 />` 落屏", async () => {
+      // 生产入口是 `layout-new.tsx` 的 `setV2Toast(true)` + `<ToastRegion v2 />`（:138/:271）；
+      // 上面几条批量用例挂的是 legacy `v2={false}`。文案参数同源不代表渲染同源
+      // （`utils/toast.tsx` 的 v2 分支会重写 options），所以这里真跑一遍 v2 渲染。
+      const 路径们 = ["资料/一.xlsx", "资料/二.xlsx", "资料/三.xlsx", "资料/四.xlsx", "资料/五.xlsx"]
+      const 假 = 假材料状态({ parse: ({ path }) => ({ kind: "error", message: `${path} 被拒` }) })
+
+      // happy-dom 未必有 matchMedia；`pulseToastV2` 的 rAF 会读它（写法同 theme-preload.test.ts）。
+      const 原matchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia")
+      Object.defineProperty(window, "matchMedia", {
+        value: () => ({ matches: false }),
+        configurable: true,
+      })
+      setV2Toast(true)
+      try {
+        const host = mount(() => (
+          <>
+            <ToastRegion v2 />
+            <FileTree paths={路径们} caseMaterials={假.状态} />
+          </>
+        ))
+
+        右键(行按路径(host, "资料"))
+        await 歇一拍()
+        await 开子菜单()
+        await 确认入库()
+        // toast 由 solid-sonner 的另一条渲染链落屏；给它一拍。
+        await new Promise((resolve) => setTimeout(resolve, 20))
+
+        // 只取 `.toast-v2` 的文本：body 里还有树本身的行，别把文件名当成「报告里出现了」。
+        const 报告 = [...document.querySelectorAll<HTMLElement>(".toast-v2")]
+          .map((element) => element.textContent ?? "")
+          .join(" ")
+        expect(报告).toContain("成功 0 份；5 份未能入队")
+        for (const path of 路径们.slice(0, 3)) expect(报告, path).toContain(path)
+        for (const path of 路径们.slice(3)) expect(报告, path).not.toContain(path)
+        expect(报告).toContain("重试只补没成功的、不会重复")
+        expect(假.记.解析.length).toBe(5)
+      } finally {
+        // v2 store 是模块级的：不清会串到下一条；`setV2Toast` 也是模块单例，必须先收 v2 再关。
+        toasterV2.dismiss()
+        setV2Toast(false)
+        if (原matchMedia) Object.defineProperty(window, "matchMedia", 原matchMedia)
+        else delete (window as { matchMedia?: unknown }).matchMedia
+      }
     })
 
     test("文件夹批量：逐份串行——第 1 份结束前不发出第 2 份（契约 C5）", async () => {

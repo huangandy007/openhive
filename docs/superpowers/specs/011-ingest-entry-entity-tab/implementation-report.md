@@ -89,7 +89,8 @@ D:/openhive-stack-state/
 | 上传同名同内容两份先后解析改写老材料路径 | 未验 | 既有行为，本 feature 不修 | 记录为已知限制 |
 | 实体详情页入口可达性 | 已下架 UI 入口 | T014 按 spec 下架；能力保留 | 直接 URL / 伪路径验证能力仍在（`entity-profile` / `case-route` 测试绿） |
 | 全仓 lint warning 基线 | **无基线数** | T001 只记录了测试基线，未记录 lint warning 数 | 以「改动文件逐个 lint 0 error、仅既有 warning」替代；**不写成「已与基线对比」** |
-| v2 toast 落屏 | 未覆盖 | 组件测试走 legacy `ToastRegion(v2={false})`；生产入口 `layout-new.tsx` 设 v2 | 文案参数同源，风险有限；真栈 M9 可覆盖外观 |
+| v2 toast 落屏 | **组件级已覆盖**（2026-11-15 复审修复轮 2） | 此前组件测试只走 legacy `ToastRegion(v2={false})`；生产入口 `layout-new.tsx:138/271` 设 v2 | 新增用例 `setV2Toast(true)` + `<ToastRegion v2 />` 断言 S/F、前 3 条与尾句；变异 `description: undefined` ⇒ 红。**真栈外观仍未验** |
+| M 的 0 候选文件夹（FR-007） | **已覆盖**（2026-11-15 复审修复轮 2） | 此前 M 断言只有 `M=0` 与「已解析**文件**」的 `M=1`，目录展开为空 ⇒ M+1 无断言 | 新增纯函数用例：变异 `本项候选.length === 0` 加 `&& 文件 !== undefined` ⇒ `Expected: 1 / Received: 0` |
 | win32 目录行汇总（`汇总全部`） | **未修（预存在）** | `汇总全部` 仍按原始清单 `/` 切分；win32 下目录键、行状态（已解析被当未入队）、根进度计数三处都会错 | 属 feature 010 既有缺陷，超出 011 范围；`目录展开` 已在 T010-fix 修真；建议另立条目 |
 
 ---
@@ -155,4 +156,37 @@ $ cd packages/app && timeout 300 bun test --conditions=browser --preload ./happy
   Expected to not contain: "资料/四.xlsx"
   Received: "成功 0 份；5 份未能入队资料/一.xlsx：…；资料/四.xlsx：…；资料/五.xlsx：…。重试只补没成功的、不会重复"
 恢复后全绿。
+```
+
+### 5.8 复审修复轮 2（2026-11-15，D8–D12）
+
+两位复审（Review A 规格 / Review B TDD）结论均为 PASS_WITH_FIXES。本轮**只改文档 / 注释 / 测试**，生产可执行逻辑零改动；完整命令与输出见 `.superpowers/sdd/plan/fix-round-2-report.md`。
+
+| 项 | 处置 | 落点 |
+|---|---|---|
+| D8 spec FR-009 | 可用性改由「材料状态已接入且已读到」判定；候选集只决定 N 与确认键；追加 2026-11-15 修正块（D2） | `spec.md` FR-009、US2 场景 4 |
+| D8 spec FR-007 | 加 N > 0 条件；N = 0 时正文概括说明并点名已解析 / 已跳过（对齐契约 C4） | `spec.md` FR-007 |
+| D9 下游旧口径 | N 从「确认框标题」改为「正文」；「按候选亮」改为「状态已读到即保持可点」 | `data-model.md:74`、`research.md:84`、`quickstart.md:58`、`plan.md:182`、`tasks.md:162` |
+| D10 C7 措辞 | 作业由 `case/parse` 的 `入队` / `重新解析` 经 `入队材料` 新建 | `contracts/ui-contracts.md:87` |
+| D10 同族注释 | 6 处改为「011 起上传只落盘、不再入队」；另发现并修正 `script/openhive-case-stage0.ts:46`（「上传 / 入队 / 视图」→「系统侧入队 / 右键入队 / 视图」） | `workspace-entry.tsx:538`、`workspace-entry.test.tsx:3830`、`case-ingest.ts:98`、`case-parseable.ts:6`、`file-upload-ingest.test.ts:37`、`case-ingest.test.ts:1873`、`case-stage0.ts:46` |
+| D11 补测 | 新增「0 候选文件夹算 1 个被排除选中项」与 posix 尾分隔符 `资料/` 两条纯函数用例 | `case-materials-view.test.tsx` |
+| D12 补测 | 新增生产 v2 toast 落屏用例（`setV2Toast(true)` + `<ToastRegion v2 />`） | `file-tree.test.tsx` |
+
+实测（2026-11-15）：
+
+```text
+$ cd packages/app && timeout 300 bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts ./src/project/file-tree.test.tsx ./src/project/case-materials-view.test.tsx
+225 pass / 0 fail / 556 expect，EXIT=0   （此前 222：file-tree 191 + view 31）
+
+D11 变异：`if (本项候选.length === 0)` → `if (本项候选.length === 0 && 文件 !== undefined)`
+32 pass / 1 fail / 99 expect，EXIT=1
+  Expected: 1
+  Received: 0
+恢复后全绿。
+
+D12 变异：`description: entry.options.description` → `description: undefined`
+0 pass / 1 fail（其余 191 条 filtered out），EXIT=1
+  Expected to contain: "资料/一.xlsx"
+  Received: "成功 0 份；5 份未能入队"
+恢复后全绿；`git diff --stat packages/ui packages/app/src/project/case-materials-view.ts` 为空。
 ```
