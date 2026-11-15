@@ -1,9 +1,9 @@
 /**
- * `.hgraph` 文件视图（012 · T007「打开通道」）。
+ * `.hgraph` 文件视图（012 · T007「打开通道」 + T009b 接编辑器）。
  *
- * 本轮只做**打开**：读内容 → 0 字节先 `init` → 解析 → 渲染最小可用信息（标题 +
- * 节点/边/文字计数 + 解析失败话术 + 更高版本的只读提示）。画布、编辑器、撤销栈属于
- * T009/T010，这里刻意不实现。
+ * 本视图负责**打开**：读内容 → 0 字节先 `init` → 解析 → 失败话术；成功后把已解析好的
+ * 文档与版本交给 `hgraph/editor.tsx`（文档 / 保存 / 撤销栈都在编辑器里，本视图不再
+ * 自己渲染计数——计数由编辑器按**实时文档**渲染，编辑后不会停在打开那一刻）。
  *
  * ## 读写都走 `hgraph-api`，不走 `props.load` / `props.save`
  *
@@ -24,11 +24,13 @@ import { createResource, Show, type JSX } from "solid-js"
 import type { ViewComponent } from "@/center/view-registry"
 import { currentProject } from "@/project/current-project"
 import { createHgraphApi, 没项目, type HgraphApi } from "@/project/hgraph-api"
-import { 解析图, type 解析结果 } from "@/center/case-views/hgraph/file"
+import { 解析图, type 解析失败码, type 图文件 } from "@/center/case-views/hgraph/file"
+import { 编辑器 } from "@/center/case-views/hgraph/editor"
 
 type 视图状态 =
   | { readonly kind: "失败"; readonly message: string }
-  | { readonly kind: "已载入"; readonly 结果: 解析结果 }
+  | { readonly kind: "打不开"; readonly 说明: string; readonly code: 解析失败码 }
+  | { readonly kind: "已载入"; readonly 文档: 图文件; readonly 版本: string }
 
 async function 载入(api: HgraphApi, projectId: string | undefined, path: string): Promise<视图状态> {
   if (projectId === undefined || projectId === "") return { kind: "失败", message: 没项目 }
@@ -37,13 +39,17 @@ async function 载入(api: HgraphApi, projectId: string | undefined, path: strin
   if (读.kind === "error") return { kind: "失败", message: 读.message }
 
   let 内容 = 读.value.内容
+  let 版本 = 读.value.版本
   if (内容 === "") {
     const 初 = await api.初始化({ projectId, path })
     if (初.kind === "error") return { kind: "失败", message: 初.message }
     内容 = 初.value.内容
+    版本 = 初.value.版本
   }
 
-  return { kind: "已载入", 结果: 解析图(内容) }
+  const 解析 = 解析图(内容)
+  if (!解析.ok) return { kind: "打不开", 说明: 解析.说明, code: 解析.code }
+  return { kind: "已载入", 文档: 解析.文档, 版本 }
 }
 
 /** 文件名（不含目录）——标题为空时兜底显示，别让顶上光秃秃。 */
@@ -89,14 +95,13 @@ export function 创建HgraphView(
               )
             }
 
-            const r = s.结果
-            if (!r.ok) {
+            if (s.kind === "打不开") {
               return (
                 <>
                   <p data-slot="hgraph-error" class="text-14-regular text-v2-text-text-base">
-                    {r.说明}
+                    {s.说明}
                   </p>
-                  <Show when={r.code === "NEWER_VERSION"}>
+                  <Show when={s.code === "NEWER_VERSION"}>
                     <p data-slot="hgraph-readonly" class="text-13-regular text-v2-text-text-muted">
                       这份图来自更高版本，只能查看，请升级后再打开。
                     </p>
@@ -108,11 +113,20 @@ export function 创建HgraphView(
             return (
               <>
                 <h2 data-slot="hgraph-title" class="text-14-medium text-v2-text-text-base">
-                  {r.文档.标题 || 文件名(props.path)}
+                  {s.文档.标题 || 文件名(props.path)}
                 </h2>
-                <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
-                  节点 {r.文档.节点.length} · 边 {r.文档.边.length} · 文字 {r.文档.文字.length}
-                </p>
+                {/* 已载入 ⇒ 载入时项目 id 必然非空（否则 `载入` 已返回失败态）。 */}
+                <Show when={项目id}>
+                  {(id) => (
+                    <编辑器
+                      path={props.path}
+                      projectId={id()}
+                      api={api}
+                      初始文档={s.文档}
+                      初始版本={s.版本}
+                    />
+                  )}
+                </Show>
               </>
             )
           }}

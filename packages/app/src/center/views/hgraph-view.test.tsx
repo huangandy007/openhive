@@ -115,6 +115,18 @@ describe("关系图视图（打开通道）", () => {
     expect(文案("hgraph-title")).toBe("张三资金流向")
   })
 
+  test("已载入 ⇒ 接上编辑器画布（不是只显示计数）", async () => {
+    const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 一份图, 版本: "v1" } } })
+
+    await 挂上(api)
+
+    // 编辑器**不自己再读一遍**：调用序列仍只有视图那一次。
+    expect(调用).toEqual(["读"])
+    expect(document.body.querySelector("[data-slot='hgraph-canvas']")).not.toBeNull()
+    expect(document.body.querySelectorAll("[data-slot='hgraph-node']").length).toBe(2)
+    expect(document.body.querySelector("[data-slot='hgraph-save-status']")).not.toBeNull()
+  })
+
   test("格式 99（NEWER_VERSION）⇒ 只读提示，且不调 init", async () => {
     const { api, 调用 } = 假api({
       读: {
