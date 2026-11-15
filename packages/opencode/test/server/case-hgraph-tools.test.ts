@@ -430,14 +430,47 @@ describe("graph_update", () => {
     expect(读回图("update/绕过.hgraph").节点[0]!.名称).toBe("张三")
   })
 
-  test("id 不存在 ⇒ bad_input（`BAD_OP` 原话「图上没有」原样透传，不顺手新建）", async () => {
+  test("只把「性质」改成推断也过硬闸（不看 `来源.kind`）：缺依据整批拒，补齐后能过", async () => {
+    // R56：`性质 = 推断` 本身也是判据（data-model §5.1 / 契约 §4）——`来源.kind` 是手写时
+    // 旧闸看不见这条路，模型能从 update 绕过去。
+    const 绝对 = 摆图("update/性质闸.hgraph", {
+      ...空图("性质闸"),
+      节点: [手写节点("张三", { id: "n1", x: 10, y: 20 })],
+      边: [事实边("n1", "n1", { id: "e1" })],
+    })
+    const 前 = 字节哈希(绝对)
+
+    const 错误 = await 取工具错误(() =>
+      graph_update(ctx(), { 路径: "update/性质闸.hgraph", 目标: [{ 类别: "边", id: "e1", 字段: { 性质: "推断" } }] }),
+    )
+    expect(错误.code).toBe("bad_input")
+    expect(错误.message).toBe("标了推断但没写依据：推断必须写明依据")
+    expect(字节哈希(绝对)).toBe(前)
+
+    // 同一条边，盘上补齐 `来源.依据` + `可信度` 之后，同一改法能过（闸不是把推断一律拒掉）。
+    // `改字段` 白名单不含 `来源`/`可信度`，所以「补足」只能经由盘上夹具（或 graph_add）。
+    const 补足 = 摆图("update/性质闸补足.hgraph", {
+      ...空图("性质闸补足"),
+      节点: [手写节点("张三", { id: "n1", x: 10, y: 20 })],
+      边: [事实边("n1", "n1", { id: "e1", 来源: { kind: "推断", 依据: "同日同酒店" }, 可信度: "中" })],
+    })
+    const 过 = await graph_update(ctx(), {
+      路径: "update/性质闸补足.hgraph",
+      目标: [{ 类别: "边", id: "e1", 字段: { 性质: "推断" } }],
+    })
+    expect(过.更新).toBe(1)
+    expect(读回图("update/性质闸补足.hgraph").边[0]).toMatchObject({ 性质: "推断", 可信度: "中" })
+    expect(字节哈希(补足)).not.toBe(前)
+  })
+
+  test("id 不存在 ⇒ not_found（契约 §4；转调前按盘上文档核目标，不顺手新建）", async () => {
     const 绝对 = 摆图("update/不存在.hgraph", { ...空图("不存在"), 节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })] })
     const 前 = 字节哈希(绝对)
     const 错误 = await 取工具错误(() =>
       graph_update(ctx(), { 路径: "update/不存在.hgraph", 目标: [{ 类别: "节点", id: "n9", 字段: { 名称: "幽灵" } }] }),
     )
-    expect(错误.code).toBe("bad_input")
-    expect(错误.message).toContain("图上没有节点")
+    expect(错误.code).toBe("not_found")
+    expect(错误.message).toBe("图上没有 n9")
     expect(字节哈希(绝对)).toBe(前)
   })
 
@@ -453,7 +486,7 @@ describe("graph_update", () => {
 // ───────────────────────── 5. graph_remove ─────────────────────────
 
 describe("graph_remove", () => {
-  test("删节点连带删边（计数含连带）＋ 说明点名字；不存在的 id ⇒ bad_input", async () => {
+  test("删节点连带删边（计数含连带）＋ 说明点名字；不存在的 id ⇒ not_found", async () => {
     摆图("remove/连带.hgraph", {
       ...空图("连带"),
       节点: [
@@ -482,8 +515,8 @@ describe("graph_remove", () => {
     const 错误 = await 取工具错误(() =>
       graph_remove(ctx(), { 路径: "remove/连带.hgraph", 目标: [{ 类别: "节点", id: "n9" }] }),
     )
-    expect(错误.code).toBe("bad_input")
-    expect(错误.message).toContain("图上没有节点")
+    expect(错误.code).toBe("not_found")
+    expect(错误.message).toBe("图上没有 n9")
   })
 
   test("显式删边只计数它自己；幂等键重放不重复删", async () => {
@@ -602,5 +635,39 @@ describe("MCP 分发", () => {
     const 体 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { 路径: string; 节点: unknown[] }
     expect(体.路径).toBe("mcp/分发.hgraph")
     expect(体.节点).toEqual([])
+  })
+
+  test("工具上下文缺 workspaceRoot ⇒ tool_failed（fail-closed，模型侧不泄露根路径）", async () => {
+    // R58：`工具上下文.workspaceRoot` 是可选字段（不惊动只取数的夹具），但图工具缺它必须
+    // **fail-closed**，不能退回进程 cwd / 项目根。生产入口永远注入；这里把入口给的那份摘掉，
+    // 模拟内部契约破裂——验的是工具自己的闸，不是身份门。
+    const 行们: 调用留痕[] = []
+    const 缺根 = createCaseMcpServer({
+      db: 库(),
+      workspaceRoot: 沙箱根,
+      留痕: (行) => 行们.push(行),
+      预算: 新预算计数(),
+      工具表: { graph_list: ((ctx: 工具上下文) => graph_list({ db: ctx.db, 身份: ctx.身份 })) as never },
+    })
+    const [客户端侧, 服务端侧] = InMemoryTransport.createLinkedPair()
+    await 缺根.connect(服务端侧)
+    const 缺根客 = new Client({ name: "缺根客户端", version: "0.0.0" })
+    await 缺根客.connect(客户端侧)
+
+    const 结果 = await 缺根客.callTool({ name: "graph_list", arguments: {}, _meta: meta(属主) })
+    expect(结果.isError).toBe(true)
+    const 体 = JSON.parse((结果.content as { text: string }[])[0]!.text) as { error: string; message: string }
+    expect(体.error).toBe("tool_failed")
+    // 模型侧只有固定话术：不带 workspaceRoot 字样、不带沙箱根。
+    expect(体.message).not.toContain("workspaceRoot")
+    expect(体.message).not.toContain(沙箱根)
+    // 留痕留给运维：错误原文点出缺哪个字段，但同样不带路径。
+    const 行 = 行们.at(-1)!
+    expect(行.错误码).toBe("tool_failed")
+    expect(行.错误原文).toContain("workspaceRoot")
+    expect(行.错误原文).not.toContain(沙箱根)
+
+    await 缺根客.close()
+    await 缺根.close()
   })
 })

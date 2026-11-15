@@ -395,6 +395,29 @@ describe("T004 · 来源硬闸与出处规则", () => {
     expect(校验来源({ 来源: { kind: "推断", 依据: "同日同酒店" }, 可信度: "很高" })).toEqual({ ok: true })
   })
 
+  test("③b 边 `性质 = 推断` 同样过硬闸（R56：`来源.kind` 不是唯一判据）", () => {
+    // `改字段` 把「性质」改成推断时不动 `来源.kind`；只判 kind 的话模型能从 update 绕过去
+    // （data-model §5.1 V-05/V-06、contracts/mcp-tools §4）。
+    expect(校验来源({ 性质: "推断", 出处: ["mat_x#Sheet1#1"], 来源: { kind: "手写" } })).toEqual({
+      ok: false,
+      code: "INFERENCE_NEEDS_BASIS",
+      话术: "标了推断但没写依据：推断必须写明依据",
+    })
+    expect(
+      校验来源({ 性质: "推断", 出处: ["mat_x#Sheet1#1"], 来源: { kind: "手写", 依据: "同日同酒店" } }),
+    ).toEqual({
+      ok: false,
+      code: "INFERENCE_NEEDS_CONFIDENCE",
+      话术: "推断必须给可信度（高/中/低）",
+    })
+    // 依据 + 可信度都给出 ⇒ 通过（闸只拦「标了推断却没说为什么」）。
+    expect(
+      校验来源({ 性质: "推断", 出处: ["mat_x#Sheet1#1"], 来源: { kind: "手写", 依据: "同日同酒店" }, 可信度: "中" }),
+    ).toEqual({ ok: true })
+    // 反证闸只认 `性质`：节点形态（没有该字段）照常通过，不因「推断」二字被误伤。
+    expect(校验来源({ 来源: { kind: "手写" } })).toEqual({ ok: true })
+  })
+
   test("④ 反向区间出处 ⇒ BAD_CITATION，原话逐字", () => {
     const 期望 = {
       ok: false,

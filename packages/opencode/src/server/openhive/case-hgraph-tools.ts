@@ -347,6 +347,8 @@ export async function graph_update(
 ): Promise<改结果> {
   const 目标 = 目标数组(args.目标).map(取改字段目标)
   const 路径 = await 定路径(ctx, args.路径)
+  // R57：先按盘上文档核 id；缺失不在这里抛——先给幂等重放机会（R50），见下面的失败分支。
+  const 核 = await 读并核目标(ctx, 路径, 目标)
 
   const 写 = await 应用并写回(依赖(ctx), {
     projectId: ctx.身份.projectId,
@@ -356,7 +358,11 @@ export async function graph_update(
     批次: args.批次,
     幂等键: args.幂等键,
   })
-  if (!写.ok) 抛核心失败(写)
+  if (!写.ok) {
+    // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §4），不顺手新建。
+    if (核.缺失 !== undefined) throw new 工具错误("not_found", `图上没有 ${核.缺失}`)
+    抛核心失败(写)
+  }
 
   return { 路径, 版本: 写.版本, 更新: 写.结果.更新, 重放: 写.重放 }
 }
@@ -366,22 +372,47 @@ export async function graph_update(
 // ---------------------------------------------------------------------------
 
 /**
- * 说明里的节点名要在**删之前**从盘上取（删完就读不到了）。读失败不在这里报错：真正的失败码
- * 由紧接着的 `应用并写回` 给（同一路径、同一闸），这里只是少一句名字。
+ * 转调前按**盘上文档**核目标 id（R57：契约 §4/§5 的 `not_found`「图上没有 n9」）。
+ * 顺带取节点名——要在删之前取（删完就读不到了）。
+ *
+ * - 读文件 / 解析失败：按核心错误码原样报（与紧随其后的 `应用并写回` 同一闸，不另造话术）。
+ * - `缺失` 只记**第一个**缺的 id；**不在读时就抛**——同一 `幂等键` 的第二次调用目标已被
+ *   第一次删/改，必须先让 `应用并写回` 有重放的机会（R50），重放不成立时才报 `not_found`。
+ * - 未知类别留给 `应用操作` 判（工具层不复制类别白名单）。
+ * - 校验与写入之间仍有 TOCTOU：并发删掉目标时核心回 `BAD_OP` ⇒ 按 R51 折 `bad_input`
+ *   （报告已写明这个窗口，不加锁重写一遍写入者）。
  */
-async function 待删节点名(ctx: 工具上下文, 路径: string, 目标: readonly 删对象目标[]): Promise<string[]> {
+async function 读并核目标(
+  ctx: 工具上下文,
+  路径: string,
+  目标: readonly { readonly 类别: 类别; readonly id: string }[],
+): Promise<{ readonly 名字: string[]; readonly 缺失?: string }> {
   const 读 = await 读文件(依赖(ctx), { projectId: ctx.身份.projectId, userId: ctx.身份.userId, path: 路径 })
-  if (!读.ok) return []
+  if (!读.ok) 抛核心失败(读)
   const 解析 = 解析图(读.内容)
-  if (!解析.ok) return []
-  const 按id = new Map(解析.文档.节点.map((点) => [点.id, 点.名称]))
-  const 名字 = new Map<string, string>()
+  if (!解析.ok) throw new 工具错误("bad_input", 解析.说明)
+
+  const 节点 = new Map(解析.文档.节点.map((点) => [点.id, 点]))
+  const 边 = new Set(解析.文档.边.map((条) => 条.id))
+  const 文字 = new Set(解析.文档.文字.map((块) => 块.id))
+  const 名字 = new Set<string>()
+  let 缺失: string | undefined
   for (const 条目 of 目标) {
-    if (条目.类别 !== "节点") continue
-    const 名 = 按id.get(条目.id)
-    if (名 !== undefined) 名字.set(条目.id, 名)
+    let 在图上 = true
+    if (条目.类别 === "节点") 在图上 = 节点.has(条目.id)
+    else if (条目.类别 === "边") 在图上 = 边.has(条目.id)
+    else if (条目.类别 === "文字") 在图上 = 文字.has(条目.id)
+    // 其它字符串类别：不在这里判，交给 `应用操作`（`BAD_OP`）。
+    if (!在图上) {
+      缺失 ??= 条目.id
+      continue
+    }
+    if (条目.类别 === "节点") {
+      const 点 = 节点.get(条目.id)
+      if (点 !== undefined) 名字.add(点.名称)
+    }
   }
-  return [...名字.values()]
+  return { 名字: [...名字], 缺失 }
 }
 
 function 删除说明(删除: { 节点: number; 边: number }, 名字: readonly string[]): string {
@@ -401,7 +432,8 @@ export async function graph_remove(
 ): Promise<删结果> {
   const 目标 = 目标数组(args.目标).map(取删对象目标)
   const 路径 = await 定路径(ctx, args.路径)
-  const 名字 = await 待删节点名(ctx, 路径, 目标)
+  // R57：先核 id；节点名在同一次读里取好供「说明」用。缺失不在这里抛——先给幂等重放机会（R50）。
+  const 核 = await 读并核目标(ctx, 路径, 目标)
 
   const 写 = await 应用并写回(依赖(ctx), {
     projectId: ctx.身份.projectId,
@@ -411,8 +443,12 @@ export async function graph_remove(
     批次: args.批次,
     幂等键: args.幂等键,
   })
-  if (!写.ok) 抛核心失败(写)
+  if (!写.ok) {
+    // 缺失目标且没被幂等重放兜住 ⇒ `not_found`（契约 §5），不静默成功。
+    if (核.缺失 !== undefined) throw new 工具错误("not_found", `图上没有 ${核.缺失}`)
+    抛核心失败(写)
+  }
 
   const 删除 = { 节点: 写.结果.删除.节点, 边: 写.结果.删除.边 }
-  return { 路径, 版本: 写.版本, 删除, 说明: 删除说明(删除, 名字), 重放: 写.重放 }
+  return { 路径, 版本: 写.版本, 删除, 说明: 删除说明(删除, 核.名字), 重放: 写.重放 }
 }
