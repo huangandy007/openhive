@@ -6,30 +6,33 @@
  * **409 保留 `最新版本`**（这是 `请求` 会丢、所以必须走 `请求带错误体` 的那一项）、
  * **失败从不抛**。
  *
- * projectId 在**调用时**取（`currentProject()` 是模块级单例，测试没有应用上下文），
- * 所以工厂第二个参数就是那条缝——生产调用点不传它。
+ * projectId 是**显式必填**入参（契约 ui.md §2）：调用方（视图）在挂载时读一次
+ * `currentProject()?.id` 并传下来。**不由本模块内部读单例**——标签页比项目活得久时，
+ * 内部读会把这条写落到「晚到的当前项目」（`#010-06`）。空值/未定义 ⇒ 不发请求。
  */
 import { describe, expect, test } from "bun:test"
-import { PREFIX, createHgraphApi, type 操作 } from "./hgraph-api"
+import { PREFIX, createHgraphApi, 没项目, type 操作 } from "./hgraph-api"
 
 const 回包 = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
 /** 记录每一次 send 的入参——**唯一**的观测面（不 spy 全局 fetch）。 */
-function 假发送(回: (url: string, init?: RequestInit) => Response | Promise<Response>, 项目 = "p 1") {
+function 假发送(回: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const 看到: Array<{ url: string; init?: RequestInit }> = []
   const api = createHgraphApi(async (url, init) => {
     看到.push({ url, init })
     return await 回(url, init)
-  }, () => 项目)
+  })
   return { api, 看到 }
 }
 
+const 项目 = "p 1"
+
 describe("关系图 API 客户端", () => {
-  test("读 = GET + query，projectId 在调用时取", async () => {
+  test("读 = GET + query，projectId 用调用方显式传进来的那个", async () => {
     const { api, 看到 } = 假发送(() => 回包({ 内容: "{}", 版本: "v1" }))
 
-    expect(await api.读({ path: "分析/张三资金流向.hgraph" })).toEqual({
+    expect(await api.读({ projectId: 项目, path: "分析/张三资金流向.hgraph" })).toEqual({
       kind: "ok",
       value: { 内容: "{}", 版本: "v1" },
     })
@@ -44,7 +47,7 @@ describe("关系图 API 客户端", () => {
   test("初始化 = POST + JSON 体（projectId / path）", async () => {
     const { api, 看到 } = 假发送(() => 回包({ 内容: "{}", 版本: "v2", 写入: true }))
 
-    expect(await api.初始化({ path: "分析/新图.hgraph" })).toEqual({
+    expect(await api.初始化({ projectId: 项目, path: "分析/新图.hgraph" })).toEqual({
       kind: "ok",
       value: { 内容: "{}", 版本: "v2", 写入: true },
     })
@@ -69,7 +72,14 @@ describe("关系图 API 客户端", () => {
       }),
     )
 
-    const 回 = await api.写({ path: "分析/新图.hgraph", 版本: "v2", 操作, 批次: "ai-1", 幂等键: "k1" })
+    const 回 = await api.写({
+      projectId: 项目,
+      path: "分析/新图.hgraph",
+      版本: "v2",
+      操作,
+      批次: "ai-1",
+      幂等键: "k1",
+    })
 
     expect(回.kind).toBe("ok")
     expect(看到[0]!.url).toBe(`${PREFIX}/ops`)
@@ -89,7 +99,7 @@ describe("关系图 API 客户端", () => {
       回包({ error: "图已被别人改过", code: "VERSION_CONFLICT", 最新版本: "v9" }, 409),
     )
 
-    expect(await api.写({ path: "图.hgraph", 版本: "v1", 操作: [] })).toEqual({
+    expect(await api.写({ projectId: 项目, path: "图.hgraph", 版本: "v1", 操作: [] })).toEqual({
       kind: "error",
       message: "图已被别人改过",
       code: "VERSION_CONFLICT",
@@ -100,7 +110,7 @@ describe("关系图 API 客户端", () => {
   test("非 2xx 收成 error 且带 code——从不抛", async () => {
     const { api } = 假发送(() => 回包({ error: "不是该项目成员", code: "FORBIDDEN" }, 403))
 
-    expect(await api.读({ path: "图.hgraph" })).toEqual({
+    expect(await api.读({ projectId: 项目, path: "图.hgraph" })).toEqual({
       kind: "error",
       message: "不是该项目成员",
       code: "FORBIDDEN",
@@ -110,7 +120,7 @@ describe("关系图 API 客户端", () => {
   test("导出许可 = POST + JSON 体", async () => {
     const { api, 看到 } = 假发送(() => 回包({ 允许: true, 文件名: "专案A-张三资金流向-20261115-1003.png" }))
 
-    expect(await api.导出许可({ path: "分析/张三资金流向.hgraph" })).toEqual({
+    expect(await api.导出许可({ projectId: 项目, path: "分析/张三资金流向.hgraph" })).toEqual({
       kind: "ok",
       value: { 允许: true, 文件名: "专案A-张三资金流向-20261115-1003.png" },
     })
@@ -122,16 +132,25 @@ describe("关系图 API 客户端", () => {
     })
   })
 
-  test("没有当前项目 ⇒ 不发请求，直接给一句人话", async () => {
+  test("projectId 空 ⇒ 四个方法都不发请求，各自给一句人话（`#002-06` 单一出处）", async () => {
     const 看到: string[] = []
     const api = createHgraphApi(async (url) => {
       看到.push(url)
       throw new Error("不该发请求")
-    }, () => undefined)
+    })
 
-    const 回 = await api.读({ path: "图.hgraph" })
+    const 空 = { projectId: "", path: "图.hgraph" }
+    const 回们 = [
+      await api.读(空),
+      await api.初始化(空),
+      await api.写({ ...空, 操作: [] }),
+      await api.导出许可(空),
+    ]
 
-    expect(回.kind).toBe("error")
+    // 四个方法**全部**走同一道闸：一条请求都没发。
     expect(看到).toEqual([])
+    for (const 回 of 回们) {
+      expect(回).toEqual({ kind: "error", message: 没项目 })
+    }
   })
 })

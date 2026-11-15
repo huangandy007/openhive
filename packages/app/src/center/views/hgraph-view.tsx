@@ -14,23 +14,31 @@
  *
  * **不 trim**（契约 hgraph-ops §3：读不做 trim，版本要对得上原始字节）。带空白的文件
  * 不是空文件，交给解析器按 `BAD_JSON` 报出来；只有真正的 0 字节才先 `init`。
+ *
+ * ## projectId 在**挂载时**读一次
+ *
+ * `currentProject()` 是模块级单例，可能比这张标签页活得久。挂载时读一次并向下传，之后切
+ * 项目也不会把这次读写挪到别的项目上（`#010-06`）；没有项目就一条请求都不发。
  */
 import { createResource, Show, type JSX } from "solid-js"
 import type { ViewComponent } from "@/center/view-registry"
-import { createHgraphApi, type HgraphApi } from "@/project/hgraph-api"
+import { currentProject } from "@/project/current-project"
+import { createHgraphApi, 没项目, type HgraphApi } from "@/project/hgraph-api"
 import { 解析图, type 解析结果 } from "@/center/case-views/hgraph/file"
 
 type 视图状态 =
   | { readonly kind: "失败"; readonly message: string }
   | { readonly kind: "已载入"; readonly 结果: 解析结果 }
 
-async function 载入(api: HgraphApi, path: string): Promise<视图状态> {
-  const 读 = await api.读({ path })
+async function 载入(api: HgraphApi, projectId: string | undefined, path: string): Promise<视图状态> {
+  if (projectId === undefined || projectId === "") return { kind: "失败", message: 没项目 }
+
+  const 读 = await api.读({ projectId, path })
   if (读.kind === "error") return { kind: "失败", message: 读.message }
 
   let 内容 = 读.value.内容
   if (内容 === "") {
-    const 初 = await api.初始化({ path })
+    const 初 = await api.初始化({ projectId, path })
     if (初.kind === "error") return { kind: "失败", message: 初.message }
     内容 = 初.value.内容
   }
@@ -44,16 +52,21 @@ function 文件名(path: string): string {
 }
 
 /**
- * 工厂：测试注入替身 api；生产那份在文件底部用 `createHgraphApi()` 组装。
+ * 工厂：测试注入替身 api / 项目 id；生产那份在文件底部用默认值组装。
  *
  * 与 `createSaveProjectFile` / `createCaseAlertsApi` 同一取向——`currentProject` 是模块级
  * 单例，组件测试没有应用上下文（`LEARNINGS #002-02`）。
  */
-export function 创建HgraphView(api: HgraphApi): ViewComponent {
+export function 创建HgraphView(
+  api: HgraphApi,
+  取项目id: () => string | undefined = () => currentProject()?.id,
+): ViewComponent {
   return (props): JSX.Element => {
+    // 整个组件生命周期只读这一次：切项目不该把已打开的图挪走。
+    const 项目id = 取项目id()
     const [状态] = createResource(
       () => props.path,
-      (path) => 载入(api, path),
+      (path) => 载入(api, 项目id, path),
     )
 
     return (

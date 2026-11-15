@@ -101,17 +101,17 @@ describe("应用级视图注册表（FR-007 的 10 类里 001 认领的几类）
     expect(源码).toMatch(/import\(["']\.\/[\w-]+-view["']\)/)
   })
 
-  /**
-   * `.html` / `.htm` 从代码视图改归 HTML 预览（2026-10-30）：民警要看的是网页本身，
-   * 不是「这是代码文件」再点一步。两个扩展名必须**整体**归 HtmlView——同一个扩展名
-   * 不能有两个归属（`register` 会抛），只摘一半会让本文件在导入时直接炸。
-   */
   /** 012（T007）：`.hgraph` 是**文件视图**，不是 `case://` 数据轴视图——注册在扩展名表里。 */
   test(".hgraph 归关系图视图（012 · T007）", async () => {
     const { HgraphView } = await import("./hgraph-view")
     expect(await 解出(".hgraph")).toBe(HgraphView)
   })
 
+  /**
+   * `.html` / `.htm` 从代码视图改归 HTML 预览（2026-10-30）：民警要看的是网页本身，
+   * 不是「这是代码文件」再点一步。两个扩展名必须**整体**归 HtmlView——同一个扩展名
+   * 不能有两个归属（`register` 会抛），只摘一半会让本文件在导入时直接炸。
+   */
   test(".html / .htm 归 HTML 预览", async () => {
     const { HtmlView } = await import("./html-view")
     expect(await 解出(".html")).toBe(HtmlView)

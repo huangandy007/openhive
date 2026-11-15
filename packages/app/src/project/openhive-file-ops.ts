@@ -40,6 +40,8 @@
  * 而 Chrome 的 `DownloadURL` 需要一条**真 HTTP URL**、带不了 `x-openhive-project` 头。
  */
 
+import { 关系图后缀 } from "./file-create-types"
+import { createHgraphApi, type HgraphApi } from "./hgraph-api"
 import {
   defaultSend,
   isRecord,
@@ -208,7 +210,11 @@ function responseOf(xhr: XhrLike): Response | undefined {
  * 去改文件名（同 `openhive-project.ts`）。
  */
 export type FileOpOutcome =
-  | { kind: "done"; path: string; base?: string }
+  /**
+   * `提示` 是「动作成了，但有一件收尾没成」——**不是失败**，界面照常当成功处理。
+   * 目前只有新建 `.hgraph` 后补初始内容失败会带它（契约 §7 原话，见 `createEntry`）。
+   */
+  | { kind: "done"; path: string; base?: string; 提示?: string }
   | { kind: "rejected"; message: string; code?: string }
   | { kind: "failed"; message: string }
 
@@ -522,6 +528,19 @@ export async function statProjectFile(
 }
 
 /**
+ * 新建 `.hgraph` 后补初始内容失败的那句话（契约 §7 **原话**，一个字都不要改）。
+ * 文件**已经建好了**，只是初始内容没写进去；双击打开时视图的 0 字节分支会再 `init` 一次。
+ */
+export const HGRAPH_INIT_FAILED = "已建文件但没写进初始内容，双击打开时会补上"
+
+/** `.hgraph` 初始内容的接缝（测试注入；生产走 `hgraph-api` 的 `初始化`）。 */
+export type 图初始化 = (projectId: string, path: string) => ReturnType<HgraphApi["初始化"]>
+
+function 初始化关系图默认(projectId: string, path: string): ReturnType<HgraphApi["初始化"]> {
+  return createHgraphApi().初始化({ projectId, path })
+}
+
+/**
  * 新建一个**空文件**或一个**空目录**（T018 / FR-005）。
  *
  * `dir` 是落点**目录**（相对项目根，`""` ＝ 项目根），`name` 是**单段名**——两样都由文件树给
@@ -531,6 +550,15 @@ export async function statProjectFile(
  * ⚠️ `kind` **原样送上去**：服务端那条判据是 `Schema.Literals(["file","directory"])`，翻错一个词
  * 就是当场 400，而这一层「顺手」翻一次（比如把 `directory` 写成 `dir`）在类型上也合法
  * ——所以用例把两个值各钉了一条。
+ *
+ * ## 012 · T007：新建 `.hgraph` 成功后**立刻补初始内容**（契约 ui.md §7）
+ *
+ * 文件建好后是 0 字节，而「打开时再 init」是**兜底**、不是常态——契约要求建完就写进骨架。
+ * 判据只看「建成了 + `kind === "file"` + 名字（**大小写不敏感**）以 `.hgraph` 结尾」；
+ * 后缀常量与「新建弹窗」共用一份（`file-create-types.ts` 的 `关系图后缀`，`#002-06`）。
+ *
+ * 失败**不阻塞**：文件已经建好了，此时回 `failed` 会让界面说「新建失败」，民警多半会再点一次
+ * ——于是撞上「同名已存在」。所以仍是 `done`，只多带一句 `提示`。
  */
 export async function createEntry(
   projectId: string,
@@ -538,8 +566,13 @@ export async function createEntry(
   dir: string,
   name: string,
   send: FileOpsFetch = defaultSend,
+  初始化: 图初始化 = 初始化关系图默认,
 ): Promise<FileOpOutcome> {
-  return postJson(PATH.create, CREATE_FAILED, projectId, { kind, dir, name }, send)
+  const 结论 = await postJson(PATH.create, CREATE_FAILED, projectId, { kind, dir, name }, send)
+  if (结论.kind !== "done" || kind !== "file" || !name.toLowerCase().endsWith(关系图后缀)) return 结论
+
+  const 初 = await 初始化(projectId, 结论.path)
+  return 初.kind === "error" ? { ...结论, 提示: HGRAPH_INIT_FAILED } : 结论
 }
 
 /**

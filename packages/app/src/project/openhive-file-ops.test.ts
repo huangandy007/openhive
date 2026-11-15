@@ -882,6 +882,78 @@ describe("createEntry（T018 新建）", () => {
   })
 })
 
+/**
+ * 012 · T007（契约 §7 硬要求）：新建 `.hgraph` **成功后立刻补初始内容**。
+ *
+ * 判据三样：① 只在文件名（**大小写不敏感**）以 `.hgraph` 结尾**且真是文件**时触发；
+ * ② 用的是**建出来的路径**与同一个项目；③ init 失败**不阻塞**建文件——文件已经建好了，
+ * 只按契约原话提示，双击打开时视图的 0 字节分支会补上。
+ */
+describe("createEntry 的 .hgraph 初始内容（012 · T007）", () => {
+  const 初始化 = (记录: Array<{ projectId: string; path: string }>) =>
+    async (projectId: string, path: string) => {
+      记录.push({ projectId, path })
+      return { kind: "ok" as const, value: { 内容: "{}", 版本: "v1", 写入: true } }
+    }
+
+  test("新建 .hgraph 成功 ⇒ 立刻 init，用建出来的路径与同一个项目", async () => {
+    const { send, sent } = stub(() => 成功("分析/新图.hgraph"))
+    const 记录: Array<{ projectId: string; path: string }> = []
+
+    const 回 = await createEntry(PROJECT, "file", "分析", "新图.hgraph", send, 初始化(记录))
+
+    // 先 create、再 init；create 只发一条（init 走接缝，不重复建）。
+    expect(sent).toHaveLength(1)
+    expect(记录).toEqual([{ projectId: PROJECT, path: "分析/新图.hgraph" }])
+    expect(回).toEqual({ kind: "done", path: "分析/新图.hgraph" })
+  })
+
+  test("后缀判定**大小写不敏感**：`.HGRAPH` 也 init", async () => {
+    const { send } = stub(() => 成功("分析/新图.HGRAPH"))
+    const 记录: Array<{ projectId: string; path: string }> = []
+
+    await createEntry(PROJECT, "file", "分析", "新图.HGRAPH", send, 初始化(记录))
+
+    expect(记录).toEqual([{ projectId: PROJECT, path: "分析/新图.HGRAPH" }])
+  })
+
+  test("非 .hgraph（.md）⇒ 不调 init", async () => {
+    const { send } = stub(() => 成功("资料/说明.md"))
+    const 记录: Array<{ projectId: string; path: string }> = []
+
+    expect(await createEntry(PROJECT, "file", "资料", "说明.md", send, 初始化(记录))).toEqual({
+      kind: "done",
+      path: "资料/说明.md",
+    })
+    expect(记录).toEqual([])
+  })
+
+  test("目录就算叫 .hgraph ⇒ 也不 init（`kind` 是判据的一部分）", async () => {
+    const { send } = stub(() => 成功("分析/新图.hgraph"))
+    const 记录: Array<{ projectId: string; path: string }> = []
+
+    await createEntry(PROJECT, "directory", "分析", "新图.hgraph", send, 初始化(记录))
+
+    expect(记录).toEqual([])
+  })
+
+  test("init 失败**不阻塞**：仍是 done，只按契约原话提示", async () => {
+    const { send } = stub(() => 成功("分析/新图.hgraph"))
+
+    const 回 = await createEntry(PROJECT, "file", "分析", "新图.hgraph", send, async () => ({
+      kind: "error" as const,
+      message: "图文件写不进去",
+      code: "INTERNAL",
+    }))
+
+    expect(回).toEqual({
+      kind: "done",
+      path: "分析/新图.hgraph",
+      提示: "已建文件但没写进初始内容，双击打开时会补上",
+    })
+  })
+})
+
 describe("renameEntry（T018 重命名）", () => {
   /**
    * ⚠️ 这一条同时是**反接反**的判据（`{ path }` 正是删除那个出口的体，而删除**不带 name**）：

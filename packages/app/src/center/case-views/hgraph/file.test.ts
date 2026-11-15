@@ -52,6 +52,14 @@ describe("解析图（读只做版本闸 + 形状闸）", () => {
     expect(回.code).toBe("BAD_JSON")
   })
 
+  test("纯空白（`\"   \\n\"`）**不 trim** ⇒ BAD_JSON——带空白的文件不是空文件", () => {
+    const 回 = 解析图("   \n")
+
+    expect(回.ok).toBe(false)
+    if (回.ok) throw new Error("不该解析成功")
+    expect(回.code).toBe("BAD_JSON")
+  })
+
   test("缺 `格式` ⇒ BAD_VERSION", () => {
     const 回 = 解析图(JSON.stringify({ 节点: [], 边: [], 文字: [] }))
 

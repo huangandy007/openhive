@@ -17,8 +17,14 @@ export interface 可新建类型 {
   readonly 初始内容?: string
 }
 
+/**
+ * 关系图的后缀（小写带点）。**建文件那一侧也用它**：新建成功后要不要补初始内容，
+ * 判的就是这个名字结尾——两处各写一份 `.hgraph` 迟早只改一边（`#002-06`）。
+ */
+export const 关系图后缀 = ".hgraph"
+
 export const 可新建类型: readonly 可新建类型[] = Object.freeze([
-  Object.freeze({ 标签: "关系图", 后缀: ".hgraph", 初始内容: undefined }),
+  Object.freeze({ 标签: "关系图", 后缀: 关系图后缀, 初始内容: undefined }),
 ])
 
 /**

@@ -815,7 +815,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     projectList()?.find((项目) => 项目.id === currentProject()?.id)?.archived === true
 
   /**
-   * 一次文件动作的收尾：**办成** ⇒ 清话 ＋ 重取清单，回 `undefined`；
+   * 一次文件动作的收尾：**办成** ⇒ 清话（带 `提示` 时改为显示那句话）＋ 重取清单，回 `undefined`；
    * **没办成** ⇒ **回**服务端那句话（一个字都不写进内联那行 `file-op-message`）。
    *
    * ## 为什么从「写共享信号」改成「回一句话」
@@ -839,7 +839,9 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
     // `rejected` 里既有「可改一处再交」的 400，也有「重试永远撞同一道门」的 401 / 403，
     // 见 spec §6 末段）。
     if (结论.kind !== "done") return 结论.message
-    set文件话(undefined)
+    // 办成了但有一件收尾没成（目前只有新建 `.hgraph` 后补初始内容失败）：显示那句话，
+    // 仍回 `undefined` 让弹窗照常关——不能因为收尾失败就说「新建失败」，那会引来重复新建。
+    set文件话(结论.提示)
     拨清单重取()
     return undefined
   }

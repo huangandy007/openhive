@@ -6,10 +6,13 @@
  *
  * 组件测试没有 `@solidjs/testing-library`（本包未装），用 `solid-js/web` 的 `render` +
  * 自己插一个容器（同 `file-create-dialog.test.tsx`）。
+ *
+ * projectId 由视图在**挂载时读一次**（`currentProject()?.id`）再传给 api——测试注入那条缝，
+ * 并顺手钉住「传下去的是同一个 id」以及「没有项目就一条请求都不发」。
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { HgraphApi } from "@/project/hgraph-api"
+import { 没项目, type HgraphApi } from "@/project/hgraph-api"
 import { 创建HgraphView } from "./hgraph-view"
 
 const 挂过的: Array<() => void> = []
@@ -38,13 +41,16 @@ function 假api(剧本: {
   初始化?: Awaited<ReturnType<HgraphApi["初始化"]>>
 }) {
   const 调用: string[] = []
+  const 收到: Array<{ projectId: string; path: string }> = []
   const api: HgraphApi = {
-    读: async () => {
+    读: async (input) => {
       调用.push("读")
+      收到.push(input)
       return 剧本.读
     },
-    初始化: async () => {
+    初始化: async (input) => {
       调用.push("初始化")
+      收到.push(input)
       if (!剧本.初始化) throw new Error("剧本里没给初始化")
       return 剧本.初始化
     },
@@ -55,14 +61,18 @@ function 假api(剧本: {
       throw new Error("打开通道不该导出")
     },
   }
-  return { api, 调用 }
+  return { api, 调用, 收到 }
 }
 
-async function 挂上(api: HgraphApi, path = "分析/张三资金流向.hgraph") {
+async function 挂上(
+  api: HgraphApi,
+  path = "分析/张三资金流向.hgraph",
+  取项目id: () => string | undefined = () => "p 1",
+) {
   const host = document.createElement("div")
   document.body.appendChild(host)
   挂过的.push(render(() => {
-    const View = 创建HgraphView(api)
+    const View = 创建HgraphView(api, 取项目id)
     return <View path={path} />
   }, host))
   // createResource 的首次解析在微任务里；给几轮 flush 让它落定。
@@ -75,7 +85,7 @@ const 文案 = (slot: string) => document.body.querySelector(`[data-slot='${slot
 
 describe("关系图视图（打开通道）", () => {
   test("0 字节 ⇒ **先 init、再按返回内容渲染**（顺序也钉住）", async () => {
-    const { api, 调用 } = 假api({
+    const { api, 调用, 收到 } = 假api({
       读: { kind: "ok", value: { 内容: "", 版本: "空文件哈希" } },
       初始化: { kind: "ok", value: { 内容: 一份图, 版本: "v1", 写入: true } },
     })
@@ -84,6 +94,11 @@ describe("关系图视图（打开通道）", () => {
 
     // 主判据一：先读、读到 0 字节后才 init（不是反过来，也不是两个都调就算）。
     expect(调用).toEqual(["读", "初始化"])
+    // 挂载时读一次项目 id，**两次调用拿到的是同一个值**（不是各自内部再读单例）。
+    expect(收到).toEqual([
+      { projectId: "p 1", path: "分析/张三资金流向.hgraph" },
+      { projectId: "p 1", path: "分析/张三资金流向.hgraph" },
+    ])
     // 主判据二：渲染的是 **init 返回的那份内容**，不是空串。
     expect(文案("hgraph-title")).toBe("张三资金流向")
     expect(文案("hgraph-counts")).toContain("节点 2")
@@ -121,6 +136,44 @@ describe("关系图视图（打开通道）", () => {
     await 挂上(api)
 
     expect(文案("hgraph-error")).toBe("不是该项目成员")
+    expect(文案("hgraph-counts")).toBeUndefined()
+  })
+
+  test("没有当前项目（未定义 / 空串）⇒ **一条请求都不发**，显示「没有打开的项目」", async () => {
+    for (const 空 of [undefined, ""] as const) {
+      const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 一份图, 版本: "v1" } } })
+
+      await 挂上(api, undefined, () => 空)
+
+      expect(调用).toEqual([])
+      expect(文案("hgraph-error")).toBe(没项目)
+      expect(文案("hgraph-error")).toContain("没有打开的项目")
+      expect(文案("hgraph-counts")).toBeUndefined()
+    }
+  })
+
+  test("初始化失败 ⇒ 显示失败话术，不假装载入成功", async () => {
+    const { api, 调用 } = 假api({
+      读: { kind: "ok", value: { 内容: "", 版本: "空文件哈希" } },
+      初始化: { kind: "error", message: "图文件写不进去", code: "INTERNAL" },
+    })
+
+    await 挂上(api)
+
+    expect(调用).toEqual(["读", "初始化"])
+    expect(文案("hgraph-error")).toBe("图文件写不进去")
+    expect(文案("hgraph-counts")).toBeUndefined()
+  })
+
+  test("纯空白内容**不 trim** ⇒ BAD_JSON 失败态，也不调 init", async () => {
+    const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: "   \n", 版本: "v1" } } })
+
+    await 挂上(api)
+
+    // 带空白的文件不是空文件（契约 hgraph-ops §3）：只有真 0 字节才 init。
+    expect(调用).toEqual(["读"])
+    expect(文案("hgraph-error") ?? "").toContain("不是合法 JSON")
+    expect(文案("hgraph-readonly")).toBeUndefined()
     expect(文案("hgraph-counts")).toBeUndefined()
   })
 })

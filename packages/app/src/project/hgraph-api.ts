@@ -15,13 +15,15 @@
  * `message` / `code`，会把这个字段丢掉，前端就无从决定「重新载入」到哪一版。其余三个方法
  * 的失败分支不需要额外字段，走 `请求` 即可。
  *
- * ## projectId 在**调用时**取
+ * ## projectId 是**显式必填**入参（契约 ui.md §2）
  *
- * 与 `openhive-file-saver.ts` 同理：模块级单例 `currentProject()` 不是常量，调用时才代表
- * 「此刻打开的是哪个项目」。测试没有应用上下文，故工厂留了第二个参数作接缝（生产不传）。
- * 没有项目 ⇒ **不发请求**：带空 id 发出去，服务端会退回沙箱根，读写的可能是别的项目的同名文件。
+ * **不在本模块内部读 `currentProject()`**：那个单例只代表「此刻打开的是哪个项目」，而一张
+ * 标签页可能比它活得久——打开关系图后再切项目，内部读会把这次写落到**晚到的**项目上
+ * （`#010-06`）。由调用方（视图）在挂载时读一次、向下传，读的是「打开这张图时」的项目。
+ *
+ * 没有项目（空串 / 未定义）⇒ **不发请求**：带空 id 发出去，服务端会退回沙箱根，读写的
+ * 可能是别的项目的同名文件。四个方法共用同一道闸（`有项目时`，`#002-06`）。
  */
-import { currentProject } from "./current-project"
 import { 默认发送, 请求, 请求带错误体, type CaseFetch, type 结果 } from "./entity-api"
 
 export const PREFIX = "/openhive/hgraph"
@@ -90,16 +92,23 @@ export interface 写结果 {
 export type 写应答 = 结果<写结果> & { readonly 最新版本?: string }
 
 export interface HgraphApi {
-  readonly 读: (input: { path: string }) => Promise<结果<{ 内容: string; 版本: string }>>
-  readonly 初始化: (input: { path: string }) => Promise<结果<{ 内容: string; 版本: string; 写入: boolean }>>
+  readonly 读: (input: { projectId: string; path: string }) => Promise<结果<{ 内容: string; 版本: string }>>
+  readonly 初始化: (input: {
+    projectId: string
+    path: string
+  }) => Promise<结果<{ 内容: string; 版本: string; 写入: boolean }>>
   readonly 写: (input: {
+    projectId: string
     path: string
     版本?: string
     操作: 操作[]
     批次?: string
     幂等键?: string
   }) => Promise<写应答>
-  readonly 导出许可: (input: { path: string }) => Promise<结果<{ 允许: true; 文件名: string }>>
+  readonly 导出许可: (input: {
+    projectId: string
+    path: string
+  }) => Promise<结果<{ 允许: true; 文件名: string }>>
 }
 
 const 体 = (init: RequestInit) => ({
@@ -107,71 +116,70 @@ const 体 = (init: RequestInit) => ({
   headers: { "content-type": "application/json" },
 })
 
-function 没项目结果<T>(): 结果<T> {
-  return { kind: "error", message: 没项目 }
+/** 四个方法共用的「没项目就不发请求」那道闸——判据只有这一处（`#002-06`）。 */
+async function 有项目时<T>(
+  projectId: string | undefined,
+  执行: (id: string) => Promise<结果<T>>,
+): Promise<结果<T>> {
+  if (projectId === undefined || projectId === "") return { kind: "error", message: 没项目 }
+  return await 执行(projectId)
 }
 
-export function createHgraphApi(
-  send: CaseFetch = 默认发送,
-  projectId: () => string | undefined = () => currentProject()?.id,
-): HgraphApi {
+export function createHgraphApi(send: CaseFetch = 默认发送): HgraphApi {
   return {
-    读: async ({ path }) => {
-      const id = projectId()
-      if (id === undefined) return 没项目结果()
-      const 参数 = new URLSearchParams({ projectId: id, path })
-      return await 请求<{ 内容: string; 版本: string }>(send, `${PREFIX}/read?${参数.toString()}`)
-    },
+    读: async ({ projectId, path }) =>
+      await 有项目时(projectId, async (id) => {
+        const 参数 = new URLSearchParams({ projectId: id, path })
+        return await 请求<{ 内容: string; 版本: string }>(send, `${PREFIX}/read?${参数.toString()}`)
+      }),
 
-    初始化: async ({ path }) => {
-      const id = projectId()
-      if (id === undefined) return 没项目结果()
-      return await 请求<{ 内容: string; 版本: string; 写入: boolean }>(
-        send,
-        `${PREFIX}/init`,
-        体({ method: "POST", body: JSON.stringify({ projectId: id, path }) }),
-      )
-    },
+    初始化: async ({ projectId, path }) =>
+      await 有项目时(projectId, async (id) => {
+        return await 请求<{ 内容: string; 版本: string; 写入: boolean }>(
+          send,
+          `${PREFIX}/init`,
+          体({ method: "POST", body: JSON.stringify({ projectId: id, path }) }),
+        )
+      }),
 
-    写: async (input) => {
-      const id = projectId()
-      if (id === undefined) return 没项目结果()
-      const 回 = await 请求带错误体<写结果>(
-        send,
-        `${PREFIX}/ops`,
-        体({
-          method: "POST",
-          // 可选字段**缺了就整个不写**：后端把 `版本: null` 当请求形状错误（BAD_REQUEST）。
-          body: JSON.stringify({
-            projectId: id,
-            path: input.path,
-            ...(input.版本 === undefined ? {} : { 版本: input.版本 }),
-            操作: input.操作,
-            ...(input.批次 === undefined ? {} : { 批次: input.批次 }),
-            ...(input.幂等键 === undefined ? {} : { 幂等键: input.幂等键 }),
+    写: async (input) =>
+      await 有项目时(input.projectId, async (id) => {
+        const 回 = await 请求带错误体<写结果>(
+          send,
+          `${PREFIX}/ops`,
+          体({
+            method: "POST",
+            // 可选字段**缺了就整个不写**：后端把 `版本: null` 当请求形状错误（BAD_REQUEST）。
+            body: JSON.stringify({
+              projectId: id,
+              path: input.path,
+              ...(input.版本 === undefined ? {} : { 版本: input.版本 }),
+              操作: input.操作,
+              ...(input.批次 === undefined ? {} : { 批次: input.批次 }),
+              ...(input.幂等键 === undefined ? {} : { 幂等键: input.幂等键 }),
+            }),
           }),
-        }),
-      )
-      if (回.kind === "ok") return { kind: "ok", value: 回.value }
+        )
+        if (回.kind === "ok") return { kind: "ok", value: 回.value }
 
-      const 错误体 = 回.错误体
-      const 最新版本 = typeof 错误体 === "object" && 错误体 !== null && "最新版本" in 错误体 ? 错误体.最新版本 : undefined
-      return {
-        kind: "error",
-        message: 回.message,
-        ...(回.code === undefined ? {} : { code: 回.code }),
-        ...(typeof 最新版本 === "string" ? { 最新版本 } : {}),
-      }
-    },
+        const 错误体 = 回.错误体
+        const 最新版本 =
+          typeof 错误体 === "object" && 错误体 !== null && "最新版本" in 错误体 ? 错误体.最新版本 : undefined
+        return {
+          kind: "error",
+          message: 回.message,
+          ...(回.code === undefined ? {} : { code: 回.code }),
+          ...(typeof 最新版本 === "string" ? { 最新版本 } : {}),
+        }
+      }),
 
-    导出许可: async ({ path }) => {
-      const id = projectId()
-      if (id === undefined) return 没项目结果()
-      return await 请求<{ 允许: true; 文件名: string }>(
-        send,
-        `${PREFIX}/export`,
-        体({ method: "POST", body: JSON.stringify({ projectId: id, path }) }),
-      )
-    },
+    导出许可: async ({ projectId, path }) =>
+      await 有项目时(projectId, async (id) => {
+        return await 请求<{ 允许: true; 文件名: string }>(
+          send,
+          `${PREFIX}/export`,
+          体({ method: "POST", body: JSON.stringify({ projectId: id, path }) }),
+        )
+      }),
   }
 }
