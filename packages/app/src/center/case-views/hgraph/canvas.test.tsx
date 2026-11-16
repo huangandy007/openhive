@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
-import { 画布, 是双指平移, type 画布动作, type 坐标换算 } from "./canvas"
+import { 画布, 是双指平移, type 画布动作, type 模式, type 坐标换算 } from "./canvas"
 import { 角色边 } from "./edge"
 
 const 挂过的: Array<() => void> = []
@@ -120,7 +120,7 @@ function 挂(
     readonly 选中?: readonly string[]
     readonly 动作?: 画布动作
     readonly 只读?: true
-    readonly 模式?: "指针" | "连线"
+    readonly 模式?: 模式
     readonly 坐标换算?: 坐标换算
     readonly 屏幕命中?: (x: number, y: number) => Element | null
     readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
@@ -755,6 +755,52 @@ describe("T006 · 滚轮判据（横向占优）与空格平移光标", () => {
 
     指针("pointerup", 60, 60)
     expect(容器().style.cursor).toBe("grab")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T015 / FR-012：「手」模式 = 左键拖任意位置平移（不选中、不拖节点、不框选）
+// ---------------------------------------------------------------------------
+
+describe("T015 · 手模式", () => {
+  const 变换 = () => 取("[data-slot='hgraph-viewport']")!.getAttribute("transform")
+  const 容器 = () => 取("[data-slot='hgraph-canvas']") as HTMLElement
+  const 指针 = (类型: "pointerdown" | "pointermove" | "pointerup", x: number, y: number) =>
+    容器().dispatchEvent(
+      new PointerEvent(类型, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        button: 0,
+        buttons: 类型 === "pointerup" ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }),
+    )
+
+  test("手模式 ⇒ 悬停 grab；左键从节点上拖动仍是平移，节点不移动", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("a", 100, 100)], []), undefined, {
+      模式: "手",
+      动作,
+      坐标换算: (屏幕) => ({ x: 屏幕.clientX, y: 屏幕.clientY }),
+    })
+    expect(容器().style.cursor).toBe("grab")
+    expect(变换()).toBe("translate(0 0) scale(1)")
+    // 手模式下节点不能自己盖回 `cursor-pointer`，否则悬停在节点上光标不是 grab（FR-012）。
+    expect((节点组("a")?.getAttribute("class") ?? "").includes("cursor-pointer")).toBe(false)
+
+    // 按在节点上：手模式下也是平移，不是拖节点。
+    指针("pointerdown", 10, 10)
+    expect(容器().style.cursor).toBe("grabbing")
+
+    指针("pointermove", 60, 70)
+    expect(变换()).toBe("translate(50 60) scale(1)")
+
+    指针("pointerup", 60, 70)
+    expect(容器().style.cursor).toBe("grab")
+    expect(计数.移动 === undefined).toBe(true)
+    expect(计数.选择 === undefined).toBe(true)
   })
 })
 

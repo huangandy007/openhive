@@ -8,8 +8,9 @@
  * ## 两条交互口径（FR-019 / FR-020 / FR-022）
  *
  * - **指针模式**：拖节点 = 移动，永不建边；拖空白 = 框选（`Shift` = 追加选中）。
- * - **平移画布**：空格 + 拖 / 中键拖 / 双指（触控板**横向分量占优**的滚动，设计 §5.15）；
- *   空白拖**不再**平移（FR-020）。空格按住 = 容器光标 `grab`，拖动中 `grabbing`。
+ * - **平移画布**：手模式左键拖 / 空格 + 拖 / 中键拖 / 双指（触控板**横向分量占优**的滚动，
+ *   设计 §5.15）；空白拖**不再**平移（FR-020）。空格按住或手模式 = 容器光标 `grab`，
+ *   拖动中 `grabbing`。
  * - **连线模式**：从节点拖到另一节点 = 加边；拖到空白**不建边**（`连线目标` 返回 `null`）；
  *   空白拖同样是框选（平移仍走空格 / 中键 / 双指）。
  * - 锁定节点（`锁定: true`）：不可拖动、不被框选命中（后者由 `框选命中` 保证）、也不进
@@ -170,7 +171,7 @@ export const 外环色表: Readonly<Record<string, string>> = {
   灰: "var(--v2-text-text-muted)",
 }
 
-export type 模式 = "指针" | "连线"
+export type 模式 = "指针" | "手" | "连线"
 
 export type 坐标换算 = (屏幕: { readonly clientX: number; readonly clientY: number }) => {
   readonly x: number
@@ -456,8 +457,13 @@ export function 画布(props: 画布Props): JSX.Element {
   const [空格按下, set空格按下] = createSignal(false)
   /** 空格式平移正在进行（pointerdown → pointerup）：光标 `grabbing`，松手回 `grab`。 */
   const [平移中, set平移中] = createSignal(false)
-  /** 容器光标：平移中 `grabbing` > 空格按住 `grab` > 默认。 */
-  const 光标 = () => (平移中() ? "grabbing" : 空格按下() ? "grab" : "default")
+  /** 容器光标：平移中 `grabbing` > 空格按住 / 手模式 `grab` > 默认。 */
+  const 光标 = () => (平移中() ? "grabbing" : 空格按下() || props.模式 === "手" ? "grab" : "default")
+  /**
+   * 对象光标（节点 / 文字 / 边）：指针与连线模式保持 `pointer`；手模式交给容器继承
+   * `grab`/`grabbing`，否则悬停在节点上仍显示 pointer，与「手」语义矛盾（FR-012）。
+   */
+  const 对象光标 = () => (props.模式 === "手" ? undefined : "cursor-pointer")
   /** 改名输入的收尾锁：Enter 提交后移除输入框会再触发一次 blur，不能提交两遍。 */
   let 改名收尾 = false
   createEffect(() => {
@@ -740,6 +746,22 @@ export function 画布(props: 画布Props): JSX.Element {
 
     // 中键无论在节点还是空白上都是平移（不是拖动节点 / 不是连线）。
     if (中键) {
+      指针 = {
+        类型: "画布",
+        起点屏x: 事件.clientX,
+        起点屏y: 事件.clientY,
+        起点x: 内容.x,
+        起点y: 内容.y,
+        原视口: 视口(),
+        移动: false,
+      }
+      return
+    }
+
+    // 「手」模式（T015 / FR-012）：左键在**任意位置**拖动都是平移——不选中、不拖节点、
+    // 不框选。按下即置 `平移中`，光标 `grabbing`；松手回 `grab`（模式本身仍是手）。
+    if (props.模式 === "手") {
+      set平移中(true)
       指针 = {
         类型: "画布",
         起点屏x: 事件.clientX,
@@ -1311,7 +1333,7 @@ export function 画布(props: 画布Props): JSX.Element {
                             stroke-width={线宽像素(档())}
                             stroke-opacity={档() <= 1 ? "0.55" : undefined}
                             stroke-dasharray={边虚线()}
-                            class="cursor-pointer"
+                            class={对象光标()}
                           />
                           {/* 只有有向边画箭头（方向是唯一被表达的信息；无向画了会误导）。 */}
                           <Show when={行.方向 === "有向"}>
@@ -1326,7 +1348,7 @@ export function 画布(props: 画布Props): JSX.Element {
                               text-anchor="middle"
                               font-size="11"
                               fill="var(--v2-text-text-muted)"
-                              class="cursor-pointer"
+                              class={对象光标()}
                             >
                               {行.标签}
                             </text>
@@ -1360,7 +1382,7 @@ export function 画布(props: 画布Props): JSX.Element {
                   data-selected={选中() ? "true" : undefined}
                   data-locked={点.锁定 === true ? "true" : undefined}
                   transform={`translate(${位().x} ${位().y})`}
-                  class="cursor-pointer"
+                  class={对象光标()}
                   onPointerEnter={() => set悬停id(点.id)}
                   onPointerLeave={() => set悬停id((旧) => (旧 === 点.id ? undefined : 旧))}
                 >
@@ -1487,7 +1509,7 @@ export function 画布(props: 画布Props): JSX.Element {
                   font-weight={行.加粗 === true ? "700" : "400"}
                   text-anchor={行.对齐 === "左" ? "start" : 行.对齐 === "右" ? "end" : "middle"}
                   fill={文字色(行.颜色)}
-                  class="cursor-pointer"
+                  class={对象光标()}
                 >
                   {/*
                     FR-024 / R-F11：按 `宽度` 折行（估算，见 `text-fold.ts`）。每行一个

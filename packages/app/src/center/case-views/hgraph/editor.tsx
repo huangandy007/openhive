@@ -2093,6 +2093,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         选中={选中()}
         文档={文档()}
         动作表={动作}
+        模式={模式()}
         标签开={标签开()}
         隔离中={隔离集() !== undefined}
       />
