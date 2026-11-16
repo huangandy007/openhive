@@ -41,6 +41,7 @@ import {
   边偏移,
   平行边序 as 算平行边序,
   线宽像素,
+  连接度数,
   外环档表,
   type 矩形,
   type 视口变换,
@@ -49,7 +50,7 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 多边形, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import { 形状, 填充, 多边形, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -724,7 +725,29 @@ export function 画布(props: 画布Props): JSX.Element {
   const 环档表 = () => props.档表 ?? 自动档表()
   const 环档 = (点: 节点) => 环档表().get(点.id) ?? 0
 
-  const 外环色 = (点: 节点) => 外环色表[点.外环?.颜色 ?? ""] ?? "var(--v2-border-border-strong)"
+  /**
+   * FR-033（terminal review final-fix1a）：外环「自动」= `外环.颜色` 缺省/空 ⇒ 取节点
+   * **类型色**（与检查器色点同一张 `graph.tsx` 映射；这里只做字段适配，不另抄色值）。
+   * 手动设色仍走 `外环色表`；表里查不到的自定义色名保持原兜底（不猜用户意图）。
+   */
+  const 类型色 = (点: 节点) =>
+    填充({
+      id: 点.id,
+      type: 点.类型,
+      value: 点.名称,
+      trust_state: 点.来源?.可信 ?? "",
+      中心: false,
+      跳数: 0,
+      关联数: 0,
+      度数: 0,
+    })
+  const 手动外环 = (点: 节点) => (点.外环?.颜色 ?? "") !== ""
+  const 外环色 = (点: 节点) =>
+    手动外环(点) ? (外环色表[点.外环!.颜色!] ?? "var(--v2-border-border-strong)") : 类型色(点)
+  /** 连接数角标的数据源：与档表/标签同一份口径（`geometry.ts` 的 `连接度数`）。 */
+  const 连接数表 = createMemo(() => 连接度数(props.文档.边))
+  /** 自动档 ≥3 才出角标；手动设色的节点不显示（FR-033 两条通道都只服务「自动」）。 */
+  const 显示角标 = (点: 节点) => !手动外环(点) && 环档(点) >= 3
 
   /**
    * 标签分级（R71）：`标签取舍` 由画布调用——缩放只有这里知道；`选中` / `悬停` / `开` /
@@ -1121,16 +1144,9 @@ export function 画布(props: 画布Props): JSX.Element {
       props.动作.复制所选?.(0)
       return
     }
-    // Delete 不在这里处理（T005）：它监听在编辑器根容器上——焦点在工具栏 / 检查器时
-    // 画布收不到键，两份并存还会双删。判据与入口见 `editor.tsx` 的 `命中删除键`。
-    if (事件.key === "F2") {
-      const 节点们 = props.选中.filter((id) => props.文档.节点.some((行) => 行.id === id))
-      if (节点们.length === 1) {
-        事件.preventDefault()
-        props.动作.重命名(节点们[0])
-      }
-      return
-    }
+    // Delete / F2 都不在这里处理（T005 / FR-014）：它们监听在编辑器根容器上并由其独家
+    // 接管——焦点在工具栏 / 检查器时画布收不到键，两份并存还会双删 / 双改名。
+    // 判据与入口见 `editor.tsx` 的 `命中删除键` 与根容器的 F2 分支。
     if (事件.key === "Escape") {
       if (忽略退出键) {
         忽略退出键 = false
@@ -1227,6 +1243,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const 菜单项 =
     "block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
 
+  // FR-051（terminal review final-fix1a）：画布 1px 描边 + 圆角 8 + 与外围（bg-base）
+  // 不同的底色阶；全部走已有 v2 token 类（不写 hex / 任意值）。
   return (
     <div
       ref={(元素) => (容器 = 元素)}
@@ -1236,7 +1254,7 @@ export function 画布(props: 画布Props): JSX.Element {
       tabindex={props.只读 === true ? undefined : "0"}
       role="application"
       aria-label="关系图画布"
-      class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-v2-background-bg-base outline-none"
+      class="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 outline-none"
       style={{ cursor: 光标() }}
       onPointerDown={按下}
       onPointerMove={移动中}
@@ -1535,6 +1553,32 @@ export function 画布(props: 画布Props): JSX.Element {
                     <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
                       {Array.from(点.类型 ?? "")[0] ?? ""}
                     </text>
+                  </Show>
+                  {/*
+                    FR-033 第二条通道：自动外环 ≥3 档的节点在右上角挂连接数角标。
+                    数字取自 `连接度数`（与档表/标签同一份口径）；手动设色的节点只有环、不挂角标。
+                  */}
+                  <Show when={显示角标(点)}>
+                    <g data-slot="hgraph-degree-badge">
+                      <circle
+                        cx={是事件() ? 事件卡宽 / 2 - 6 : 节点半径 - 2}
+                        cy={是事件() ? -事件卡高 / 2 + 6 : -(节点半径 - 2)}
+                        r={6.5}
+                        fill="var(--v2-background-bg-layer-01)"
+                        stroke={外环色(点)}
+                        stroke-width={1}
+                      />
+                      <text
+                        x={是事件() ? 事件卡宽 / 2 - 6 : 节点半径 - 2}
+                        y={是事件() ? -事件卡高 / 2 + 9.5 : -(节点半径 - 5.5)}
+                        text-anchor="middle"
+                        font-size="9"
+                        font-weight="600"
+                        fill="var(--v2-text-text-base)"
+                      >
+                        {连接数表().get(点.id) ?? 0}
+                      </text>
+                    </g>
                   </Show>
                   {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
                   <Show when={保留标签().has(点.id)}>

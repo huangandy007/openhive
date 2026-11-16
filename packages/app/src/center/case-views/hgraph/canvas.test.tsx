@@ -1215,3 +1215,78 @@ describe("T017 · 强度过滤", () => {
     expect(图例!.querySelector("[data-slot^='hgraph-strength']") === null).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// FR-051 / FR-033（terminal review final-fix1a）
+// ---------------------------------------------------------------------------
+
+describe("FR-051 · 画布边界", () => {
+  test("容器带 1px 描边、圆角 8、与外围不同的底色阶（全部走 v2 token 类）", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    const 容器 = 取("[data-slot='hgraph-canvas']")
+    // 前提：画布真的挂上了（`#013-12`：先立存在前提，不用 toBeNull 兜底）。
+    expect(容器 !== null).toBe(true)
+    expect(document.body.contains(容器!)).toBe(true)
+
+    const 类 = 容器!.classList
+    expect(类.contains("border")).toBe(true) // 1px 描边宽度
+    expect(类.contains("border-v2-border-border-muted")).toBe(true) // 描边色 token
+    expect(类.contains("rounded-lg")).toBe(true) // 圆角 8（Tailwind lg = 0.5rem）
+    // 与外围不同阶：外围是 bg-base，画布换成 layer-01。
+    expect(类.contains("bg-v2-background-bg-layer-01")).toBe(true)
+    expect(类.contains("bg-v2-background-bg-base")).toBe(false)
+
+    const 原样 = 容器!.getAttribute("class") ?? ""
+    expect(原样.includes("#")).toBe(false) // 不写 hex
+    expect(原样.includes("[")).toBe(false) // 不写任意值
+  })
+})
+
+describe("FR-033 · 外环双通道（类型色 + 连接数角标）", () => {
+  /** 1 颗高连接数节点 + 5 条边 ⇒ 外环自动档 = 3（阈值 [1,2,4,8]）。 */
+  function 高连接图(点补丁: Partial<节点> = {}): 图文件 {
+    return 造图(
+      [
+        造节点("a", 100, 100, 点补丁),
+        造节点("b", 200, 100),
+        造节点("c", 300, 100),
+        造节点("d", 200, 200),
+        造节点("e", 100, 200),
+        造节点("f", 300, 200),
+      ],
+      [
+        造边("e1", "a", "b"),
+        造边("e2", "a", "c"),
+        造边("e3", "a", "d"),
+        造边("e4", "a", "e"),
+        造边("e5", "a", "f"),
+      ],
+    )
+  }
+  const 外环 = (id: string) => 节点组(id)!.querySelector("[data-slot='hgraph-node-ring']")
+  const 角标 = (id: string) => 节点组(id)!.querySelector("[data-slot='hgraph-degree-badge']")
+
+  test("外环「自动」（无 `外环.颜色`）⇒ 颜色取节点类型色（账户 ⇒ success），不是统一灰", () => {
+    挂(高连接图({ 类型: "账户" }))
+    const 环 = 外环("a")
+    expect(环 !== null).toBe(true)
+    expect(环!.getAttribute("stroke")).toBe("var(--v2-state-bg-success)")
+  })
+
+  test("自动档 ≥3 ⇒ 角标文本 = 该节点连接数", () => {
+    挂(高连接图())
+    const 标 = 角标("a")
+    expect(标 !== null).toBe(true)
+    expect(标!.textContent?.trim()).toBe("5")
+    // 连接少的节点（b 只有 1 条边，档 1）不挂角标。
+    expect(角标("b") === null).toBe(true)
+  })
+
+  test("手动设色节点不显示角标：颜色照旧走预设色表", () => {
+    挂(高连接图({ 外环: { 颜色: "红" } }))
+    const 环 = 外环("a")
+    expect(环 !== null).toBe(true)
+    expect(环!.getAttribute("stroke")).toBe("var(--v2-state-border-danger)")
+    expect(角标("a") === null).toBe(true)
+  })
+})

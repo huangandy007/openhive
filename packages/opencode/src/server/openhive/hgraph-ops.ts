@@ -12,7 +12,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
 import { 应用操作, type 操作, type 应用结果 } from "./hgraph-edit"
-import { 必填字段, 空骨架, 解析图, 序列化图, 校验来源, type 图文件 } from "./hgraph-file"
+import { 事件兜底名称, 必填字段, 空骨架, 解析图, 序列化图, 校验来源, type 图文件 } from "./hgraph-file"
 import { 串行 } from "./hgraph-lock"
 import { OpenhivePg } from "./pg"
 import { 成员角色, 项目属主 } from "./project-actor"
@@ -549,6 +549,15 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
 
     const 校验 = 校验全图(解析.文档, 应用.文档)
     if (校验 !== undefined) return 校验
+
+    // FR-037 / contracts hgraph-format §2.3：事件名称为空 ⇒ 落盘前兜底
+    // `<类型> · <金额|时长> · <时间>`。排在全量校验**之后**：空时间由 `校验来源` 先拒，
+    // 兜底不能拿时间把「缺时间」这一关糊过去。加节点与改字段都走这一条写路径。
+    for (const 点 of 应用.文档.节点) {
+      if (点.来源?.kind !== "事件") continue
+      if (typeof 点.名称 === "string" && 点.名称.trim() !== "") continue
+      点.名称 = 事件兜底名称(点)
+    }
 
     应用.文档.更新于 = 现在ISO()
     const 文本 = 序列化图(解析.原文树, 应用.文档)

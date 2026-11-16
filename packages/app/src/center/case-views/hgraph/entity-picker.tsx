@@ -419,12 +419,14 @@ export function 选择器(props: 选择器Props): JSX.Element {
     props.onClose()
   }
 
+  // FR-042（terminal review final-fix1a）：层级高于画布右键菜单（z-20）；Esc / 点外部
+  // 由编辑器根容器统一收口（本组件不另挂 keydown，避免两处各判一次）。
   return (
     <div
       data-slot="hgraph-entity-picker"
       role="dialog"
       aria-label={绑定模式() ? "绑定到库实体" : "从库加入"}
-      class="absolute inset-0 z-20 flex flex-col gap-1 overflow-y-auto bg-v2-background-bg-layer-02 p-2"
+      class="absolute inset-0 z-30 flex flex-col gap-1 overflow-y-auto bg-v2-background-bg-layer-02 p-2"
     >
       <div class="flex items-center gap-1">
         <span class="text-13-medium text-v2-text-text-base">{绑定模式() ? "绑定到库实体" : "从库加入"}</span>

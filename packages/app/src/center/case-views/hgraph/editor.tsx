@@ -473,6 +473,33 @@ export function 命中删除键(
 }
 
 /**
+ * FR-014（terminal review final-fix1a）：F2 与 Delete **同一作用域**——都挂在编辑器根容器
+ * 并由其独家接管（画布已不监听同一按键）。输入框 / 可编辑目标守卫与 `命中删除键` 逐字一致：
+ * 在输入框里按 F2 不触发改名。
+ *
+ * 返回要重命名的节点 id；没有「恰好一个在文档里的选中节点」⇒ `undefined`（也意味着调用方
+ * 不该 `preventDefault`）。
+ */
+export function 命中重命名键(
+  事件: KeyboardEvent,
+  状态: {
+    readonly 演示中: boolean
+    readonly 选中: readonly string[]
+    readonly 节点们: readonly { readonly id: string }[]
+  },
+): string | undefined {
+  if (状态.演示中 || 事件.key !== "F2") return undefined
+  const 目标 = 事件.target
+  if (目标 !== null && "tagName" in 目标) {
+    const 名 = String(目标.tagName).toUpperCase()
+    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
+    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return undefined
+  }
+  const 节点们 = 状态.选中.filter((id) => 状态.节点们.some((行) => 行.id === id))
+  return 节点们.length === 1 ? 节点们[0] : undefined
+}
+
+/**
  * R85：判「文档内容变了」用的规范化键。
  *
  * 服务端每次**非空**写入都会刷新 `更新于` 并推进版本（同值补丁也算一次写，`hgraph-ops.ts`
@@ -1929,13 +1956,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 合并确认条当前保留者的名称（文案与下拉共用同一处取名）。 */
   const 合并保留名称 = () => 文档().节点.find((点) => 点.id === 合并保留())?.名称 ?? ""
 
+  const 在浮层内 = (目标: EventTarget | null, 选择器: string) =>
+    目标 instanceof Element && 目标.closest(选择器) !== null
+
   /**
-   * 菜单「点外面就关」：指针与键盘两条路径共用这一份判定。
-   * 菜单内部的点击由菜单项自己收尾（跳过，避免双收）。
+   * 菜单 / 浮层「点外面就关」：指针与键盘两条路径共用这一份判定。
+   * 浮层内部的点击由浮层自己收尾（跳过，避免双收）。
+   *
+   * FR-042（terminal review final-fix1a）：筛选面板与「从库加入」都在这里收口——它们的
+   * 开关按钮**不算外部**，否则 `pointerdown` 先关、紧接着的 `click` 又打开，再点一次
+   * 就永远收不起来。
    */
   const 收起菜单事件 = (事件: PointerEvent | MouseEvent) => {
     const 目标 = 事件.target
-    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    if (在浮层内(目标, "[data-slot='hgraph-menu']")) return
+    // 浮层的「点外部关闭」只认 `pointerdown`：真实点击必先有 pointerdown，而键盘激活
+    // （Enter/空格）只派发 click——若这也算外部，开启浮层的那颗按钮会在同一次激活里
+    // 先开（子监听）再被根容器关掉。菜单仍走 pointerdown + click 两条（T010 R33）。
+    if (事件.type === "pointerdown") {
+      if (筛选面板开() && !在浮层内(目标, "[data-slot='hgraph-filter-panel'], [data-slot='hgraph-filter-toggle']")) {
+        set筛选面板开(false)
+      }
+      if (选择器开() && !在浮层内(目标, "[data-slot='hgraph-entity-picker']")) {
+        set选择器开(false)
+        // 收起即放弃绑定：下次打开必须回到「加入」模式（与选择器自己的 onClose 同口径）。
+        set绑定目标(undefined)
+      }
+    }
     set收起菜单((旧) => 旧 + 1)
   }
 
@@ -1965,6 +2012,25 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         // 已被下游处理过的键不再处理：演示态的 Esc 会同步退出演示（`演示中()` 到这里
         // 已经是 false），若再按编辑态规则取消选中，就会把演示前的选中一并清掉。
         if (演示中() || 事件.defaultPrevented) return
+        // FR-042：浮层（筛选 / 从库加入）Esc 关闭。**排在输入框守卫之前**——焦点在面板
+        // 自己的 checkbox/select 上时也要能关；关掉即返回，不再落到「取消选中」分支。
+        if (事件.key === "Escape" && (筛选面板开() || 选择器开())) {
+          事件.preventDefault()
+          if (筛选面板开()) set筛选面板开(false)
+          if (选择器开()) {
+            set选择器开(false)
+            set绑定目标(undefined)
+          }
+          return
+        }
+        // FR-014：F2 与 Delete 同一作用域——根容器独家接管，画布已不处理；输入框守卫
+        // 与 `命中删除键` 同一条判据（`命中重命名键`）。
+        const 重命名谁 = 命中重命名键(事件, { 演示中: 演示中(), 选中: 选中(), 节点们: 文档().节点 })
+        if (重命名谁 !== undefined) {
+          事件.preventDefault()
+          动作.重命名(重命名谁)
+          return
+        }
         const 目标 = 事件.target
         if (目标 !== null && "tagName" in 目标) {
           const 名 = String(目标.tagName).toUpperCase()
@@ -2252,83 +2318,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </p>
       </Show>
 
-      {/* T017b（R72）＋ T017（FR-028）：筛选面板——类型（文档里出现过的）＋ 性质（全部/事实/推断）＋ 只看 ≥ N 档。 */}
-      <Show when={筛选面板开()}>
-        <div
-          data-slot="hgraph-filter-panel"
-          role="dialog"
-          aria-label="筛选"
-          class="flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
-        >
-          <span class="text-12-regular text-v2-text-text-muted">类型</span>
-          <For each={类型们()}>
-            {(类) => (
-              <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
-                <input
-                  type="checkbox"
-                  data-slot="hgraph-filter-type"
-                  value={类}
-                  checked={筛选类型().has(类)}
-                  onChange={(事件) => 切换筛选类型(类, 事件.currentTarget.checked)}
-                />
-                {类}
-              </label>
-            )}
-          </For>
-          <label class="text-12-regular text-v2-text-text-muted">
-            性质
-            <select
-              data-slot="hgraph-filter-kind"
-              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={筛选性质()}
-              onChange={(事件) => {
-                const 值 = 事件.currentTarget.value
-                if (值 === "全部" || 值 === "事实" || 值 === "推断") set筛选性质(值)
-              }}
-            >
-              <option value="全部">全部</option>
-              <option value="事实">事实</option>
-              <option value="推断">推断</option>
-            </select>
-          </label>
-          {/*
-            T017 / FR-028：「只看 ≥ N 档」。N 是边档下限（含边界），关闭 = 不过滤；
-            档位换算在画布（`边档`），这里只存阈值。恢复入口在画布角落提示里。
-          */}
-          <label class="text-12-regular text-v2-text-text-muted">
-            只看 ≥
-            <select
-              data-slot="hgraph-strength-filter"
-              aria-label="只看 ≥ N 档"
-              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={强度阈值() === undefined ? "关闭" : String(强度阈值())}
-              onChange={(事件) => {
-                const 值 = 事件.currentTarget.value
-                set强度阈值(值 === "关闭" ? undefined : Number(值))
-              }}
-            >
-              <option value="关闭">关闭</option>
-              <option value="0">0 档</option>
-              <option value="1">1 档</option>
-              <option value="2">2 档</option>
-              <option value="3">3 档</option>
-              <option value="4">4 档</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            data-slot="hgraph-filter-clear"
-            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
-            onClick={() => {
-              set筛选类型(new Set<string>())
-              set筛选性质("全部")
-            }}
-          >
-            清除筛选
-          </button>
-        </div>
-      </Show>
-
       {/* T017b（R72）：查找路径面板——命中列跳数与途经名称；不连通只说明，不改选中。 */}
       <Show when={路径面板() !== undefined}>
         <div
@@ -2603,6 +2592,86 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           强度阈值={演示中() ? undefined : 强度阈值()}
           恢复强度={() => set强度阈值(undefined)}
         />
+        {/*
+          T017b（R72）＋ T017（FR-028）＋ FR-042（terminal review final-fix1a）：筛选面板
+          是**画布内的绝对定位覆盖层**，不再是画布上方的 flex 兄弟——打开筛选不会把画布挤矮。
+          `z-30` 高于画布右键菜单（z-20）；Esc / 点外部由根容器统一收口。
+        */}
+        <Show when={筛选面板开()}>
+          <div
+            data-slot="hgraph-filter-panel"
+            role="dialog"
+            aria-label="筛选"
+            class="absolute left-2 top-2 z-30 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 px-2 py-2 shadow"
+          >
+            <span class="text-12-regular text-v2-text-text-muted">类型</span>
+            <For each={类型们()}>
+              {(类) => (
+                <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
+                  <input
+                    type="checkbox"
+                    data-slot="hgraph-filter-type"
+                    value={类}
+                    checked={筛选类型().has(类)}
+                    onChange={(事件) => 切换筛选类型(类, 事件.currentTarget.checked)}
+                  />
+                  {类}
+                </label>
+              )}
+            </For>
+            <label class="text-12-regular text-v2-text-text-muted">
+              性质
+              <select
+                data-slot="hgraph-filter-kind"
+                class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+                value={筛选性质()}
+                onChange={(事件) => {
+                  const 值 = 事件.currentTarget.value
+                  if (值 === "全部" || 值 === "事实" || 值 === "推断") set筛选性质(值)
+                }}
+              >
+                <option value="全部">全部</option>
+                <option value="事实">事实</option>
+                <option value="推断">推断</option>
+              </select>
+            </label>
+            {/*
+              T017 / FR-028：「只看 ≥ N 档」。N 是边档下限（含边界），关闭 = 不过滤；
+              档位换算在画布（`边档`），这里只存阈值。恢复入口在画布角落提示里。
+            */}
+            <label class="text-12-regular text-v2-text-text-muted">
+              只看 ≥
+              <select
+                data-slot="hgraph-strength-filter"
+                aria-label="只看 ≥ N 档"
+                class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+                value={强度阈值() === undefined ? "关闭" : String(强度阈值())}
+                onChange={(事件) => {
+                  const 值 = 事件.currentTarget.value
+                  set强度阈值(值 === "关闭" ? undefined : Number(值))
+                }}
+              >
+                <option value="关闭">关闭</option>
+                <option value="0">0 档</option>
+                <option value="1">1 档</option>
+                <option value="2">2 档</option>
+                <option value="3">3 档</option>
+                <option value="4">4 档</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              data-slot="hgraph-filter-clear"
+              class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+              onClick={() => {
+                set筛选类型(new Set<string>())
+                set筛选性质("全部")
+              }}
+            >
+              清除筛选
+            </button>
+          </div>
+        </Show>
         {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
         <Show when={!演示中() && 隐藏数() > 0}>
           <div

@@ -26,7 +26,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
-import { 编辑器, 图例应折叠, 命中删除键, 构图, 布局目标 } from "./editor"
+import { 编辑器, 图例应折叠, 命中删除键, 命中重命名键, 构图, 布局目标 } from "./editor"
 import { 适配视口 } from "./geometry"
 import { 排列模式们, 阶梯位置, type 排列模式 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
@@ -1506,12 +1506,18 @@ function 挂拼装(选项: { 选中?: readonly string[]; 文档?: 图文件 } = 
     render(
       () => (
         <div
-          // T005：Delete 监听在生产里挂在编辑器根容器上；夹具在这里挂同一份判定，
-          // 「工具栏按钮 / 画布 Delete 落到同一条动作」的断言才仍然成立。
+          // T005 / FR-014：Delete 与 F2 监听在生产里都挂在编辑器根容器上；夹具在这里挂
+          // 同一份判定，「工具栏按钮 / 画布按键落到同一条动作」的断言才仍然成立。
           onKeyDown={(事件) => {
-            if (!命中删除键(事件, { 演示中: false, 有选中: 选中().length > 0 })) return
+            if (命中删除键(事件, { 演示中: false, 有选中: 选中().length > 0 })) {
+              事件.preventDefault()
+              动作.删除所选()
+              return
+            }
+            const 重命名谁 = 命中重命名键(事件, { 演示中: false, 选中: 选中(), 节点们: 文档.节点 })
+            if (重命名谁 === undefined) return
             事件.preventDefault()
-            动作.删除所选()
+            动作.重命名(重命名谁)
           }}
         >
           <工具栏 选中={选中()} 文档={文档} 动作表={动作} />
@@ -1588,6 +1594,29 @@ describe("T010 · 单一出口", () => {
 
     expect(幽.总()).toBe(0)
     expect(节点组("n1")).not.toBeNull()
+  })
+
+  /**
+   * FR-014（terminal review final-fix1a）：F2 与 Delete 同一作用域——监听挂在编辑器
+   * **根容器**并由其独家接管。焦点在工具栏按钮上时画布的 keydown 收不到，只有根容器能接。
+   */
+  test("焦点在工具栏按钮按 F2 ⇒ 进入重命名（与 Delete 同一作用域）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+
+    const 钮 = 取("[data-slot='hgraph-toolbar-delete']") as HTMLButtonElement
+    expect(钮 !== null).toBe(true)
+    钮.focus()
+    按键(钮, { key: "F2" })
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    expect(输入 !== null).toBe(true)
+    expect(输入!.value).toBe("n1")
   })
 
   test("双击节点标签：出现改名输入框；回车一个 改字段（名称），Esc 零操作", async () => {
@@ -5584,5 +5613,119 @@ describe("T017 · 强度过滤", () => {
     expect(取("[data-slot='hgraph-strength-hidden-note']") === null).toBe(true)
     await 过防抖()
     expect(写们.length).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FR-042（terminal review final-fix1a）· 浮层统一
+// ---------------------------------------------------------------------------
+
+describe("FR-042 · 浮层统一（筛选 / 从库加入）", () => {
+  const 筛选框 = () => 取("[data-slot='hgraph-filter-panel']")
+  const 打开筛选 = async () => {
+    ;(取("[data-slot='hgraph-filter-toggle']") as HTMLButtonElement).click()
+    await flush()
+  }
+
+  test("筛选面板是画布内的绝对定位覆盖层：同一父容器、absolute、z-30（高于画布菜单 z-20）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+    await 打开筛选()
+
+    const 框 = 筛选框()
+    const 画布元素 = 画布()
+    expect(框 !== null).toBe(true)
+    expect(画布元素 !== null).toBe(true)
+    // happy-dom 量不出真实高度：钉结构——面板与画布同一个父容器（舞台），
+    // 且自身是 `absolute`（不参与 flex 排版）⇒ 不会像 flex 兄弟那样把画布顶矮。
+    expect(框!.parentElement === 画布元素!.parentElement).toBe(true)
+    expect(框!.classList.contains("absolute")).toBe(true)
+    expect(框!.classList.contains("z-30")).toBe(true)
+  })
+
+  test("筛选面板 Esc 关闭（焦点在面板内的下拉上也能关）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+    await 打开筛选()
+    expect(筛选框() !== null).toBe(true)
+
+    const 下拉 = 取("[data-slot='hgraph-filter-kind']")
+    expect(下拉 !== null).toBe(true)
+    按键(下拉!, { key: "Escape" })
+    await flush()
+    expect(筛选框() === null).toBe(true)
+  })
+
+  test("筛选面板点外部关闭（点画布）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+    await 打开筛选()
+    expect(筛选框() !== null).toBe(true)
+
+    const 画布元素 = 画布()
+    expect(画布元素 !== null).toBe(true)
+    按下(画布元素!, 100, 100)
+    松开(100, 100)
+    await flush()
+    expect(筛选框() === null).toBe(true)
+  })
+
+  function 挂库() {
+    const 写 = 假api()
+    const 实体 = 假实体([
+      {
+        id: "e1",
+        type: "人",
+        canonical_value: "张三",
+        trust_state: "已确认",
+        关联数: 0,
+        事件参与数: 0,
+        权重: 0,
+        分组: "核心",
+        created_at: 0,
+      },
+    ])
+    const 详情 = 假详情(() => ({ kind: "ok", value: 档案({ id: "e1", canonical_value: "张三", type: "人" }) }))
+    挂详情({ api: 写.api, 初始文档: 一份图(), 实体api: 实体.api, 详情api: 详情.api })
+    return 写
+  }
+
+  test("从库加入面板 Esc 关闭、层级高于画布右键菜单（z-30）", async () => {
+    const 写 = 挂库()
+    await flush()
+    按钮("hgraph-toolbar-from-library").click()
+    await T014落定()
+
+    const 器 = 选择器面板()
+    expect(器 !== null).toBe(true)
+    expect(器!.classList.contains("z-30")).toBe(true)
+
+    按键(器!, { key: "Escape" })
+    await flush()
+    expect(选择器面板() === null).toBe(true)
+
+    // 全程零写盘：浮层开关是本地 UI 态。
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
+  })
+
+  test("从库加入面板点外部关闭（点画布）", async () => {
+    const 写 = 挂库()
+    await flush()
+    按钮("hgraph-toolbar-from-library").click()
+    await T014落定()
+    expect(选择器面板() !== null).toBe(true)
+
+    const 画布元素 = 画布()
+    expect(画布元素 !== null).toBe(true)
+    按下(画布元素!, 100, 100)
+    松开(100, 100)
+    await flush()
+    expect(选择器面板() === null).toBe(true)
+    await 过防抖()
+    expect(写.写们.length).toBe(0)
   })
 })
