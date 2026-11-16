@@ -51,7 +51,8 @@ import { 时间文本 } from "../format"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
-import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 图例 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
@@ -533,6 +534,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [撤销栈, set撤销栈] = createSignal<撤销栈>(新建撤销栈())
   const [选中, set选中] = createSignal<readonly string[]>([])
   const [模式, set模式] = createSignal<模式>("指针")
+  /**
+   * 画布条宽（T013 / FR-057）：<900 图例折叠为「图例」按钮。
+   * happy-dom 没有布局 ⇒ `clientWidth` 恒 0（`#005-32`）；0 视为「还没量到」，
+   * 不据此折叠（真浏览器挂载后 ResizeObserver 会给出真宽）。
+   */
+  const [画布条宽, set画布条宽] = createSignal<number | undefined>(undefined)
+  /** 图例收起态：由画布条宽驱动，用户仍可点开/收起（受控传给 `图例`）。 */
+  const [图例收起, set图例收起] = createSignal(false)
+  let 画布条元素: HTMLDivElement | undefined
   /** 正在内联改名的节点；`undefined` = 没有输入框。 */
   const [重命名id, set重命名id] = createSignal<string | undefined>()
   /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
@@ -1275,6 +1285,23 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     轮询计时 = setInterval(() => void 轮询(), props.轮询毫秒 ?? 10_000)
   })
 
+  // T013 / FR-057：量画布条宽，<900 时图例折叠。只在宽度变化时改折叠态，
+  // 用户手动点开/收起不会在每次渲染时被打回。
+  onMount(() => {
+    if (画布条元素 === undefined) return
+    const 测量 = () => set画布条宽(画布条元素!.clientWidth)
+    测量()
+    if (typeof ResizeObserver === "undefined") return
+    const 观察 = new ResizeObserver(测量)
+    观察.observe(画布条元素)
+    onCleanup(() => 观察.disconnect())
+  })
+  createEffect(() => {
+    const 宽 = 画布条宽()
+    if (宽 === undefined || 宽 <= 0) return
+    set图例收起(宽 < 900)
+  })
+
   const 重新载入 = () => {
     if (待重载 === undefined) {
       set询问重载(false)
@@ -1733,13 +1760,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     return `${值.从} ${名(值.从)} → ${值.到} ${名(值.到)}`
   }
 
+  /** 加文字的唯一落批点：工具栏「加文字」与右键/双击等入口共用。 */
+  const 应用加文字 = (x: number, y: number) =>
+    应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }])
+
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
     加边: (从, 到) => 开新建连线(从, 到),
     补依据: (边id) => 开补依据(边id),
-    加文字: (x, y) =>
-      应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
+    加文字: 应用加文字,
+    // T013：模式条搬进工具栏后，落点按画布尺寸算（与旧画布内按钮同一公式）。
+    加文字在中心: () => 应用加文字(画布宽 / 2, 画布高 / 2 + 文档().文字.length * 28),
     加节点: (位置) => {
       // R29：UI 发起的加节点必须自带坐标（工具栏 = 画布中心阶梯偏移；右键/双击 = 点处）。
       // 阶梯公式与选择器共用一个出处（`阶梯位置`，#002-06）。
@@ -1903,82 +1935,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>
         <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
-        {/*
-          T017b（R72）：搜索框在编辑器左上。名称子串、大小写不敏感，结果顺序 = 文档顺序；
-          Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
-        */}
-        {/* `data-center-seq` 是验收 #13「一次 Enter 只推进一次序号」的可观测口径。 */}
-        <div data-slot="hgraph-search-wrap" data-center-seq={居中请求()?.序号 ?? 0} class="relative">
-          <input
-            data-slot="hgraph-search"
-            aria-label="搜索节点"
-            placeholder="搜索节点…"
-            class="w-40 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
-            value={搜索词()}
-            onInput={(事件) => {
-              set搜索词(事件.currentTarget.value)
-              set搜索光标(0)
-              set搜索收起(false)
-            }}
-            onKeyDown={(事件) => {
-              if (事件.key === "Enter") {
-                事件.preventDefault()
-                const 目标 = 搜索结果()[当前光标()]
-                if (目标 !== undefined) 选中搜索结果(目标.id)
-                return
-              }
-              if (事件.key === "ArrowDown") {
-                事件.preventDefault()
-                set搜索光标(Math.min(搜索结果().length - 1, 当前光标() + 1))
-                return
-              }
-              if (事件.key === "ArrowUp") {
-                事件.preventDefault()
-                set搜索光标(Math.max(0, 当前光标() - 1))
-              }
-            }}
-          />
-          <Show when={搜索词().trim() !== "" && !搜索收起()}>
-            <div
-              data-slot="hgraph-search-results"
-              class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
-            >
-              <Show
-                when={搜索结果().length > 0}
-                fallback={
-                  <p data-slot="hgraph-search-empty" class="px-2 py-1 text-12-regular text-v2-text-text-muted">
-                    没有匹配的节点
-                  </p>
-                }
-              >
-                <For each={搜索结果()}>
-                  {(点, 序) => (
-                    <button
-                      type="button"
-                      data-slot="hgraph-search-result"
-                      data-active={序() === 当前光标() ? "true" : undefined}
-                      class="block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
-                      onClick={() => 选中搜索结果(点.id)}
-                    >
-                      {点.名称 ?? 点.id}
-                    </button>
-                  )}
-                </For>
-              </Show>
-            </div>
-          </Show>
-        </div>
-        <button
-          type="button"
-          data-slot="hgraph-filter-toggle"
-          aria-label="筛选"
-          aria-pressed={筛选面板开() ? "true" : "false"}
-          title="按类型 / 性质筛选"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
-          onClick={() => set筛选面板开((旧) => !旧)}
-        >
-          筛选
-        </button>
+        {/* T013 / FR-043：搜索 / 筛选 / 计数已迁到画布条；顶栏只留撤销 / 重做 / 已保存。 */}
         <button
           type="button"
           data-slot="hgraph-undo"
@@ -2001,9 +1958,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         >
           重做
         </button>
-        <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
-          节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
-        </p>
         <span
           data-slot="hgraph-save-status"
           data-state={状态()}
@@ -2112,6 +2066,109 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         标签开={标签开()}
         隔离中={隔离集() !== undefined}
       />
+
+      {/*
+        T013 / FR-043：第三行——画布条。搜索 / 筛选 / 节点·边·文字计数 / 图例都在这里。
+        图例不再压画布：条宽 <900 折叠为「图例」按钮，点开为画布条下方浮层（FR-057）。
+      */}
+      <div
+        ref={(元素) => (画布条元素 = 元素)}
+        data-slot="hgraph-canvas-bar"
+        data-legend-collapsed={图例收起() ? "true" : undefined}
+        class="relative flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+      >
+        {/*
+          T017b（R72）：搜索框在画布条左端。名称子串、大小写不敏感，结果顺序 = 文档顺序；
+          Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
+        */}
+        {/* `data-center-seq` 是验收 #13「一次 Enter 只推进一次序号」的可观测口径。 */}
+        <div data-slot="hgraph-search-wrap" data-center-seq={居中请求()?.序号 ?? 0} class="relative">
+          <input
+            data-slot="hgraph-search"
+            aria-label="搜索节点"
+            placeholder="搜索节点…"
+            class="w-40 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            value={搜索词()}
+            onInput={(事件) => {
+              set搜索词(事件.currentTarget.value)
+              set搜索光标(0)
+              set搜索收起(false)
+            }}
+            onKeyDown={(事件) => {
+              if (事件.key === "Enter") {
+                事件.preventDefault()
+                const 目标 = 搜索结果()[当前光标()]
+                if (目标 !== undefined) 选中搜索结果(目标.id)
+                return
+              }
+              if (事件.key === "ArrowDown") {
+                事件.preventDefault()
+                set搜索光标(Math.min(搜索结果().length - 1, 当前光标() + 1))
+                return
+              }
+              if (事件.key === "ArrowUp") {
+                事件.preventDefault()
+                set搜索光标(Math.max(0, 当前光标() - 1))
+              }
+            }}
+          />
+          <Show when={搜索词().trim() !== "" && !搜索收起()}>
+            <div
+              data-slot="hgraph-search-results"
+              class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
+            >
+              <Show
+                when={搜索结果().length > 0}
+                fallback={
+                  <p data-slot="hgraph-search-empty" class="px-2 py-1 text-12-regular text-v2-text-text-muted">
+                    没有匹配的节点
+                  </p>
+                }
+              >
+                <For each={搜索结果()}>
+                  {(点, 序) => (
+                    <button
+                      type="button"
+                      data-slot="hgraph-search-result"
+                      data-active={序() === 当前光标() ? "true" : undefined}
+                      class="block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
+                      onClick={() => 选中搜索结果(点.id)}
+                    >
+                      {点.名称 ?? 点.id}
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
+          </Show>
+        </div>
+        <button
+          type="button"
+          data-slot="hgraph-filter-toggle"
+          aria-label="筛选"
+          aria-pressed={筛选面板开() ? "true" : "false"}
+          title="按类型 / 性质筛选"
+          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+          onClick={() => set筛选面板开((旧) => !旧)}
+        >
+          筛选
+        </button>
+        <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
+          节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
+        </p>
+        <div class="ml-auto flex items-center">
+          <svg
+            data-slot="hgraph-canvas-bar-legend"
+            aria-label="图例"
+            viewBox={图例收起() ? "0 0 52 22" : "0 0 196 108"}
+            width={图例收起() ? 52 : 196}
+            height={图例收起() ? 22 : 108}
+            class={图例收起() ? "block" : "absolute right-2 top-full z-20 block"}
+          >
+            <图例 收起={图例收起()} 收起变化={(值) => set图例收起(值)} 外置 />
+          </svg>
+        </div>
+      </div>
 
       {/*
         T017b（R71 / §5.10）：>300 提示拆图；>1000 只提示性能风险，**不拦、不截断**。
@@ -2436,6 +2493,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
           T018 / R74：演示态收起图例（设计 §5.14），退出演示恢复展开；导出走 T015 的
           隐藏只读渲染，不传 `图例初始收起` ⇒ 导出永远含展开图例。
+
+          T013 / FR-057：编辑态图例已搬到画布条（`不渲染图例`），画布内不再有图例；
+          演示态画布条整条收起，故仍由画布渲染那枚收起态「图例」按钮。
         */}
         <画布
           文档={文档()}
@@ -2455,6 +2515,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           标签开={标签开()}
           档表={档表()}
           图例初始收起={演示中()}
+          不渲染图例={!演示中()}
         />
         {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
         <Show when={!演示中() && 隐藏数() > 0}>

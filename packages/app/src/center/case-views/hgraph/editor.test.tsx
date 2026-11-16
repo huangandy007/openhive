@@ -5288,3 +5288,57 @@ describe("T012 · 加事件两入口", () => {
     expect(乙).toEqual(甲)
   })
 })
+
+// ---------------------------------------------------------------------------
+// T013 · 三行布局：画布条 / 撤掉画布内模式条 / 图例搬出画布
+// ---------------------------------------------------------------------------
+
+describe("T013 · 三行布局与图例搬家", () => {
+  test("画布条存在，搜索 / 筛选 / 计数 / 图例四个包围盒都在其中", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 条 = 取("[data-slot='hgraph-canvas-bar']")
+    expect(条 !== null).toBe(true)
+    // happy-dom 没有布局（`getBoundingClientRect()` 恒 0，`#005-32`）⇒ 用 DOM 归属当
+    // 「包围盒落在画布条内」的可判据；真宽由 T013 报告里的真栈补量说明。
+    for (const 选择 of [
+      "[data-slot='hgraph-search-wrap']",
+      "[data-slot='hgraph-filter-toggle']",
+      "[data-slot='hgraph-counts']",
+      "[data-slot='hgraph-legend']",
+    ]) {
+      const 元素 = 取(选择)
+      expect(元素 !== null).toBe(true)
+      expect(条!.contains(元素)).toBe(true)
+    }
+  })
+
+  test("画布内模式条不存在：无该槽位，旧模式按钮也不在画布内", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    // 布尔比较，不用 `toBeNull()`（`#013-12`：元素存在时它也通过过）。
+    expect(document.body.querySelector("[data-slot='hgraph-canvas-mode-bar']") === null).toBe(true)
+    expect(画布() !== null).toBe(true)
+    expect(画布()!.querySelector("[data-slot='hgraph-mode-pointer']") === null).toBe(true)
+    expect(画布()!.querySelector("[data-slot='hgraph-mode-connect']") === null).toBe(true)
+    expect(画布()!.querySelector("[data-slot='hgraph-add-text']") === null).toBe(true)
+  })
+
+  test("图例在画布外：画布内无图例，且没有以 hgraph-canvas 为祖先的图例", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 图例们 = document.body.querySelectorAll("[data-slot='hgraph-legend']")
+    expect(图例们.length > 0).toBe(true)
+    expect(画布() !== null).toBe(true)
+    expect(画布()!.querySelector("[data-slot='hgraph-legend']") === null).toBe(true)
+    for (const 图例 of 图例们) {
+      expect(图例.closest("[data-slot='hgraph-canvas']") === null).toBe(true)
+    }
+  })
+})

@@ -52,8 +52,8 @@ import { 形状, 多边形, 面板让位平移x, 面板宽, 面板边距, type �
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
-const 画布宽 = 760
-const 画布高 = 680
+export const 画布宽 = 760
+export const 画布高 = 680
 const 节点半径 = 15
 /** 手抖 1px 不算拖动（同 `graph.tsx` 的死区），否则「点一下看选中」会变成「挪半步」。 */
 const 拖动阈值 = 3
@@ -185,6 +185,11 @@ export interface 画布动作 {
    */
   readonly 补依据?: (边id: string) => void
   readonly 加文字: (x: number, y: number) => void
+  /**
+   * 画布中心加文字（T013）：原画布内模式条的「加文字」入口搬到工具栏后不再知道画布尺寸，
+   * 由编辑器按 `画布宽/画布高` 算落点，落同一条 `加文字`。省略 = 片段测试没有这个入口。
+   */
+  readonly 加文字在中心?: () => void
   readonly 改字段: (类别: "节点" | "边" | "文字", id: string, 补丁: Record<string, unknown>) => void
   readonly 删对象: (目标: readonly { readonly 类别: "节点" | "边" | "文字"; readonly id: string }[]) => void
   readonly 撤销: () => void
@@ -332,6 +337,11 @@ export interface 画布Props {
    * T015 的隐藏只读渲染不传 ⇒ 导出永远含展开图例。
    */
   readonly 图例初始收起?: boolean
+  /**
+   * T013：编辑态图例已搬到画布条 ⇒ 外壳传 `true` 时本画布**不渲染**图例。
+   * 省略（导出 / 演示 / 片段测试）⇒ 仍渲染在 svg 内（导出必须含图例，R74）。
+   */
+  readonly 不渲染图例?: boolean
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -1133,8 +1143,6 @@ export function 画布(props: 画布Props): JSX.Element {
     props.动作.改字段("文字", id, { 内容: 值 })
   }
 
-  const 加文字 = () => props.动作.加文字(画布宽 / 2, 画布高 / 2 + props.文档.文字.length * 28)
-
   const 菜单节点 = () => {
     const 现 = 菜单()
     return 现?.类型 === "节点" ? props.文档.节点.find((行) => 行.id === 现.id) : undefined
@@ -1161,13 +1169,6 @@ export function 画布(props: 画布Props): JSX.Element {
   const 菜单项 =
     "block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
 
-  const 模式键 = (目标: 模式) =>
-    `rounded border px-2 py-0.5 text-12-regular ${
-      目标 === props.模式
-        ? "border-v2-brand-gold-deep bg-v2-background-bg-layer-03 text-v2-text-text-base"
-        : "border-v2-border-border-muted text-v2-text-text-muted"
-    }`
-
   return (
     <div
       ref={(元素) => (容器 = 元素)}
@@ -1192,39 +1193,12 @@ export function 画布(props: 画布Props): JSX.Element {
       onDblClick={双击}
       onContextMenu={右键}
     >
+      {/*
+        T013 / FR-047：画布内模式条已删除（指针 / 连线 / 加文字迁到工具栏）。
+        本容器保留为画布内浮层槽位；当前无内容，因而不会盖住任何可交互内容。
+      */}
       <Show when={props.只读 !== true}>
-        <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1">
-        <button
-          type="button"
-          data-slot="hgraph-mode-pointer"
-          aria-label="指针模式"
-          title="指针模式：拖动移动节点"
-          class={模式键("指针")}
-          onClick={() => props.动作.切换模式("指针")}
-        >
-          指针
-        </button>
-        <button
-          type="button"
-          data-slot="hgraph-mode-connect"
-          aria-label="连线模式"
-          title="连线模式：从节点拖到另一节点成边"
-          class={模式键("连线")}
-          onClick={() => props.动作.切换模式("连线")}
-        >
-          连线
-        </button>
-        <button
-          type="button"
-          data-slot="hgraph-add-text"
-          aria-label="加文字"
-          title="加文字"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
-          onClick={加文字}
-        >
-          加文字
-        </button>
-        </div>
+        <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1" />
       </Show>
 
       {/* 悬空边角标（R-F4）：右上角，读侧事实，只读态也显示。 */}
@@ -1634,7 +1608,9 @@ export function 画布(props: 画布Props): JSX.Element {
           T018 图例：放 svg 内、viewport 之后（T015 只序列化这个 svg）——固定屏幕坐标，
           不吃缩放/平移；演示态由「初始收起」收掉，导出（不传）永远含展开图例。
         */}
-        <图例 初始收起={props.图例初始收起} />
+        <Show when={props.不渲染图例 !== true}>
+          <图例 初始收起={props.图例初始收起} />
+        </Show>
       </svg>
 
       <Show when={菜单()}>

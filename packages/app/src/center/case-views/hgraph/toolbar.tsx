@@ -56,6 +56,43 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
 
   return (
     <div data-slot="hgraph-toolbar" role="toolbar" aria-label="关系图工具栏" class="flex flex-wrap items-center gap-1 px-2 py-1">
+      {/*
+        T013 / FR-047：原画布内模式条（153×26）已删除，指针 / 连线 / 加文字迁到这里。
+        槽位名沿用旧值以便既有用例与工具接得上；T015 再换成四组图标与按下态。
+      */}
+      <button
+        type="button"
+        data-slot="hgraph-mode-pointer"
+        aria-label="指针模式"
+        title="指针模式：拖动移动节点"
+        class={按钮}
+        onClick={() => props.动作表.切换模式("指针")}
+      >
+        指针
+      </button>
+      <button
+        type="button"
+        data-slot="hgraph-mode-connect"
+        aria-label="连线模式"
+        title="连线模式：从节点拖到另一节点成边"
+        class={按钮}
+        onClick={() => props.动作表.切换模式("连线")}
+      >
+        连线
+      </button>
+      <button
+        type="button"
+        data-slot="hgraph-add-text"
+        aria-label="加文字"
+        title="加文字"
+        class={按钮}
+        onClick={() => props.动作表.加文字在中心?.()}
+      >
+        加文字
+      </button>
+
+      <span class="mx-1 h-4 w-px bg-v2-border-border-muted" aria-hidden="true" />
+
       <button
         type="button"
         data-slot="hgraph-toolbar-add-node"
