@@ -89,3 +89,68 @@ bun run lint
 真实触控板 `deltaY`/`deltaMode`、200% 缩放下标签 LOD、A3 300DPI 出图、窄屏 1280/1440 观感、共享常量改动后邻域图观感、深色主题（宪法不启用）。见 spec §Assumptions 与设计文档 §6。
 
 另有一条**必须真栈验**的：现网 `case_event_participant.role` 是否已按角色词表写入（`case-card-template.ts:34`）。PGlite 夹具里造得出，但不代表现网数据就是这样——真栈打开一个绑定事件看「角色」列，空/自由文本就记缺口。
+
+## 014 实施结果（2026-11-17）
+
+> 执行环境：Windows / Git Bash / bun 1.4.3（`c6da4a4d3`）/ worktree `014-hgraph-usability`。
+> 六条命令**串行**跑（并行门禁会造假红，`#003-01`），下面贴的是本机**实际**输出，不是计划预期。
+> **本机没有真栈**：§4 真栈主流程与远端 PG 项未跑，原样进缺口表；真栈由主会话另跑。
+
+### 1. 六条命令实测
+
+| # | 命令 | 实际结果 | 基线 → 现在 | exit |
+|---|---|---|---|---|
+| 1 | `packages/app`：hgraph 目录全量 | **558 pass / 0 fail**，2461 expect，**18 文件**，113.30s | 475 pass / 0 fail，17 文件，96.82s ⇒ +83 pass、+1 文件，0 fail | 0 |
+| 2 | `packages/app`：`graph.test.tsx` | **73 pass / 0 fail**，709 expect，1 文件，3.63s | 73 pass / 0 fail，4.20s ⇒ 条数持平，0 fail | 0 |
+| 3 | `packages/opencode`：后端 3 文件（file / edit / ops） | **109 pass / 0 fail**，514 expect，3 文件，7.67s | 基线只记了 edit 单文件 27 pass / 3.43s；本次 3 文件合计 109 pass | 0 |
+| 4 | 根 `bun run typecheck` | **32 successful / 32 total**（31 cached，`@opencode-ai/app` 实跑 `tsgo -b`），2.675s | 32/32 | 0 |
+| 5 | 根 `bun run lint` | **1 error**（既有，见 §4）+ 6895 warnings，4356 文件，32.6s | 同左（非本 feature 引入） | **1** |
+| 5b | 根 `bun run lint:openhive`（改动面口径） | **0 error** / 1072 warnings，486 文件，2.4s | 0 error | 0 |
+| 6 | `git diff --stat bun.lock` | **空输出**（工作区其余文件也 clean） | 必须为空 | 0 |
+
+补充（quickstart §1 同一条命令里的第 4 个文件，单跑）：`case-hgraph-tools.test.ts` **43 pass / 0 fail**（4.47s）；同目录其余 3 个 `case-hgraph-contract` / `citation-parity` / `whitelist-parity` **24 pass / 0 fail**（6.56s）。后端 7 个 hgraph 测试文件全绿。
+
+### 2. 缺口表（本机验不了，不假装覆盖）
+
+| # | 项 | 为什么本机验不了 | 怎么验 |
+|---|---|---|---|
+| G1 | **真栈主流程 5 步（SC-018）**：加手写事件 → 连参与方 → 存盘 → 重开 → 一次撤销 | 本工作区无真栈；组件/后端用例只覆盖各段，不覆盖真进程 + 真文件 + 真浏览器串联 | 主会话重启真栈后按 §4 逐步记录实际现象 |
+| G2 | **远端 PG**（`REAL_STACK_DB=remote`）下的写路径与幂等 | 后端测试全部用 PGlite/内存夹具；量不出远端往返、半开连接、连接槽占满 | 真栈带 `REAL_STACK_DB=remote` 走主流程，记录耗时与失败现象 |
+| G3 | 现网 `case_event_participant.role` 是否已按角色词表写入（`case-card-template.ts:34`） | PGlite 夹具造得出不代表现网数据如此 | 真栈打开一个绑定事件看「角色」列；空/自由文本即记缺口 |
+| G4 | **AI 工具造手写事件不带 `时间精度` 的口径** | `graph_add` 造的手写事件若缺 `时间精度`，前端 `是事件节点` 判据为 false ⇒ 渲染成普通形状而非事件卡（`canvas.test.tsx:1032` 只钉判据本身）；真模型/工具层会不会补、该不该补，本机无真模型 | 真栈让 AI 起一张带事件节点的图，看落盘属性与渲染；口径定了再决定是否在工具层补 |
+| G5 | 真浏览器几何：画布条四项矩形、画布高、检查器三态、工具栏底/画布顶 | happy-dom 没有真布局，`getBoundingClientRect` 是桩值；几何用例只钉信号与相对关系 | 真浏览器按固定窗口量矩形（`#006-06`：`overflow:visible` 恒 0 的坑） |
+| G6 | 真浏览器对比度/色相：品牌金选中态、12px 标签对比度 | 组件测试不解析 CSS 层叠与最终色值；深色主题宪法不启用、无 token 覆盖 | 真浏览器取 computed style + 对比度工具（参考 axe 配方） |
+| G7 | 悬停 300ms 说明浮层的**裁切与定位** | 用例用假计时器只验「出现/消失」，portal 在 happy-dom 里不产生真裁切 | 真浏览器把窗口压窄、贴边悬停，看浮层是否被父容器裁掉 |
+| G8 | 图例 <900 折叠的**真宽观感/热区**（FR-057 精修） | 组件用例只钉 `图例应折叠(宽)` 信号与 DOM 挂载，不量真宽与热区 | 真浏览器把画布条拉过/拉回 900，量折叠按钮热区与浮层位置 |
+| G9 | 真实触控板 `deltaY`/`deltaMode` | 本机无触控板；组件用合成 `WheelEvent` | 真机触控板逐档记录缩放/平移 |
+| G10 | 200% 缩放下标签 LOD | 缩放是浏览器级，组件环境无真 DPR/缩放 | 真浏览器 200% 缩放看标签分级 |
+| G11 | 窄屏 1280 / 1440 下工具栏单行不折行与观感 | 同上，无真窗口宽度 | 真浏览器两档宽度截图 + 横向溢出量 |
+| G12 | A3 300DPI 出图 | 导出走 canvas/SVG 光栅化，组件环境不产出可比位图 | 真浏览器导出后用图像工具核尺寸/DPI |
+| G13 | 深色主题 | 宪法规定不启用暗色模式，无 dark token 覆盖（已知 dark 选中态对比度缺陷，见 memory） | 待启用时统一处理，不在本轮 |
+
+### 3. 本轮未交付的规格项（spec / tasks 已裁延后）
+
+| FR | 未交付内容 | 现状/依据 |
+|---|---|---|
+| FR-045 | 「路径标注」按钮 | 动作表无条目、任何 FR 未定义行为 ⇒ **按裁定不挂死按钮**（`hgraph/toolbar.tsx:11`、`:399` 注释；`path-label` 图形键留待接管） |
+| FR-057 | 图例搬家后的**窄宽精修** | 主体已交付：图例已移出画布、`<900` 折叠为按钮（T013，用例守着）；浮层/热区/观感的真宽精修未做，见 G8 |
+| FR-025③ | 从库加入事件的**第三页签** | spec 明确延后（第三入口与①②不同批次） |
+| FR-026 | 从库加入事件的**整批生成 + 一次撤销** | spec 明确延后（依赖 FR-025③） |
+| FR-027 | **事件→事件**点线 + 箭头 + 「先/同时/同一事件」 | 事件→参与方实线 + 角色标签已交付；事件间那段延后 |
+| FR-039 | 行尾「↩ 撤销此字段」 | spec 明确延后（不另造历史，复用全局撤销栈的前提还在） |
+| FR-040 | 空图正中「从库加入 / 让 AI 起一张」引导 | spec 明确延后 |
+| FR-041 | 演示模式「先填出现序」提示 | spec 明确延后 |
+| FR-049 | 检查器面板密度与字段形态精修 | 最小骨架已交付（尺寸/贴边/四段/收起）；精修延后 |
+| FR-053 | 选中态 `#FEF3C7` + `#B45309` 2px 精修 | 品牌金选中态已生效；精修延后 |
+| FR-054 | 边标签 12px + 2px 同底 halo | spec 明确延后 |
+| FR-058 | 开发态 HUD（`?hud=1`） | spec 明确延后 |
+| FR-060 | 字号 12px 口径（画布标签 / 面板 12–13px） | spec 明确延后 |
+
+### 4. 已知既有红（非本 feature 引入，未改动、不粉饰）
+
+| 项 | 实测 | 归属证据 |
+|---|---|---|
+| `packages/app/src/workspace/design-token-refs.test.ts` | **4 pass / 1 fail**（exit 1）：`引用完整性：写了 bg-v2-x 这类工具类，就得有 --color-v2-x 孪生`，缺 `v2-background-bg-accent-soft` 孪生 | 报错面在 `material-facts.tsx:296/307`；该文件最后改动 `557f778b97`（2026-11-16，012 修复轮），`git log 8062d55d17^..HEAD -- material-facts.tsx` 为空 ⇒ 014 未碰 |
+| 根 `bun run lint` 唯一 1 error | `'0'-prefixed octal literals and octal escape sequences are deprecated`，`packages/session-ui/src/v2/components/prompt-input/index.tsx:163:19` | 该文件最后改动 `edc8d1d91e`（2026-08-04 `chore: generate`）；014 改动面 55 文件里不含 `session-ui` ⇒ 与 014 无关 |
+
+> 根 lint 的 6895 条 warning 不计入退出码，本次未逐条判定新增/既有；改动面以 `lint:openhive` 的 **0 error** 为准。
