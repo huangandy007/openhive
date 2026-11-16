@@ -212,10 +212,15 @@ function 目标数组(值: unknown): unknown[] {
   return 值
 }
 
-/** 核心失败码 → 工具错误码（R51 的**唯一**映射；`话术` 不在这里改写）。 */
+/**
+ * 核心失败码 → 工具错误码（R51 的**唯一**映射；`话术` 不在这里改写）。
+ *
+ * `DUPLICATE_ID` 按契约 hgraph-format §2 是**内部错误**（不是客户端的形状错误）⇒ `write_failed`；
+ * 归 `bad_input` 会让模型以为「改改参数再试」就能过（R-F6，2026-11-16）。
+ */
 export function 映射失败码(code: 失败码): 工具错误码 {
   if (code === "NOT_FOUND") return "not_found"
-  if (code === "WRITE_FAILED" || code === "GIT_LOCKED") return "write_failed"
+  if (code === "WRITE_FAILED" || code === "GIT_LOCKED" || code === "DUPLICATE_ID") return "write_failed"
   return "bad_input"
 }
 

@@ -13,7 +13,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import { 没项目, type HgraphApi } from "@/project/hgraph-api"
-import { 创建HgraphView } from "./hgraph-view"
+import type { 材料视图 } from "@/project/case-materials-api"
+import { 建打开出处, 创建HgraphView } from "./hgraph-view"
 
 const 挂过的: Array<() => void> = []
 
@@ -325,5 +326,126 @@ describe("关系图视图 · T014 打开档案接线（R63）", () => {
     expect(调用).toEqual(["读"])
     expect(document.body.querySelector("[data-slot='hgraph-canvas']")).not.toBeNull()
     expect(document.body.querySelector("[data-slot='hgraph-open-archive']")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T6b · R-F23 出处材料段 id → 路径
+//
+// 出处串的材料段是**材料 id**（`mat_x`），材料页却按**路径**取数。这一组不经 DOM，
+// 直接钉解析函数：期望值写死字面量（不从被测实现里取），每条正向都配一条负向对照。
+// ---------------------------------------------------------------------------
+
+/** 材料视图夹具：字段写全，`status` 取闭集里的合法值（`解析状态们` 之一）。 */
+function 一份材料(值: { id: string; path: string }): 材料视图 {
+  return {
+    id: 值.id,
+    path: 值.path,
+    kind: "表格",
+    status: "已解析",
+    detail: null,
+    queueAhead: 0,
+    factCount: 0,
+    numberCount: 0,
+    parseable: true,
+  }
+}
+
+const 清单含 = (...材料们: 材料视图[]) => ({
+  kind: "ok" as const,
+  value: { materials: 材料们, parseableExtensions: [".xlsx"] },
+})
+
+describe("出处材料段 id → 路径（R-F23）", () => {
+  test("命中：`mat_x` 换成清单里的 `材料/话单.xlsx`（不把 id 原样交出去）", async () => {
+    const 收到: Array<[string, string, number]> = []
+    const api = { read: async () => 清单含(一份材料({ id: "mat_x", path: "材料/话单.xlsx" })) }
+
+    建打开出处("p 1", (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]), api)(
+      "mat_x",
+      12,
+    )
+    await flush()
+
+    expect(收到).toEqual([["p 1", "材料/话单.xlsx", 12]])
+    // 负向对照：拿到的是路径，不是 id。
+    expect(收到[0]?.[1]).not.toBe("mat_x")
+  })
+
+  test("未命中：材料不在清单里 ⇒ **原样降级**交通道（材料页自己会说取不到）", async () => {
+    const 收到: Array<[string, string, number]> = []
+    const api = { read: async () => 清单含(一份材料({ id: "mat-别的", path: "材料/别的.xlsx" })) }
+
+    建打开出处("p 1", (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]), api)(
+      "mat_x",
+      3,
+    )
+    await flush()
+
+    expect(收到).toEqual([["p 1", "mat_x", 3]])
+    // 负向对照：没把清单里**另一条**材料的路径安上去。
+    expect(收到[0]?.[1]).not.toBe("材料/别的.xlsx")
+  })
+
+  test("read 返回 error ⇒ 原样降级交通道，且不抛到调用方", async () => {
+    const 收到: Array<[string, string, number]> = []
+    const api = { read: async () => ({ kind: "error" as const, message: "清单挂了" }) }
+
+    建打开出处("p 1", (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]), api)(
+      "mat_x",
+      5,
+    )
+    await flush()
+
+    expect(收到).toEqual([["p 1", "mat_x", 5]])
+    expect(收到[0]?.[1]).not.toBe("材料/话单.xlsx")
+  })
+
+  test("read 抛错 / 拒绝 ⇒ 吞掉，原样降级交通道", async () => {
+    const 收到: Array<[string, string, number]> = []
+    const api = {
+      read: async (): Promise<never> => {
+        throw new Error("网络断了")
+      },
+    }
+
+    建打开出处("p 1", (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]), api)(
+      "mat_x",
+      8,
+    )
+    await flush()
+
+    expect(收到).toEqual([["p 1", "mat_x", 8]])
+  })
+
+  test("未注入材料api ⇒ 旧壳兼容：原样交出去，一条请求都不发", async () => {
+    const 收到: Array<[string, string, number]> = []
+
+    建打开出处("p 1", (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]))(
+      "mat_x",
+      9,
+    )
+    await flush()
+
+    expect(收到).toEqual([["p 1", "mat_x", 9]])
+  })
+
+  test("项目 id 为空（未定义 / 空串）⇒ 什么也不做：不发请求、不调打开材料", async () => {
+    let 读次数 = 0
+    const api = {
+      read: async () => {
+        读次数 += 1
+        return 清单含(一份材料({ id: "mat_x", path: "材料/话单.xlsx" }))
+      },
+    }
+
+    for (const 空 of [undefined, ""] as const) {
+      const 收到: Array<[string, string, number]> = []
+      const 打开 = 建打开出处(空, (项目id, 材料路径, 行号) => 收到.push([项目id, 材料路径, 行号]), api)
+      打开("mat_x", 12)
+      await flush()
+      expect(收到).toEqual([])
+    }
+    expect(读次数).toBe(0)
   })
 })

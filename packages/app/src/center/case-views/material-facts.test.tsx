@@ -5,6 +5,7 @@ import { MaterialFacts } from "./material-facts"
 import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api"
 import type { 结果 } from "../../project/entity-api"
 import { CenterTabsProvider, useCenterTabs } from "../tab-context"
+import { 请求定位, 清待定位 } from "./hgraph/pending-row"
 
 async function 等(条件: () => boolean) {
   for (let i = 0; i < 100; i += 1) {
@@ -22,6 +23,8 @@ function mount(element: () => JSX.Element) {
 }
 afterEach(() => {
   document.body.innerHTML = ""
+  // 待定位是模块级单例：不清会把上一条的目标带进下一条（`#005-03` 同口径）。
+  清待定位()
 })
 
 const 清单: 材料事实清单结果 = {
@@ -982,5 +985,110 @@ describe("没认出的列（弹窗里人工确认）", () => {
     await 等(() => host.querySelector("[data-slot='material-facts-status']")?.textContent === "解析中")
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(host.querySelector("[data-slot='material-facts-unrecognized-badge']")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 待定位行（T6 / FR-033 / R-F10）
+// ---------------------------------------------------------------------------
+
+/** 两行事实（row 5 / 7）：用于定位与「行不存在」两类断言。 */
+const 定位清单: 材料事实清单结果 = {
+  ...清单,
+  分组: [
+    {
+      sheet: "Sheet#1",
+      行们: [
+        { row_no: 5, 事实们: [{ fact_type: "entity", fact_id: "e-5", 值: "甲", trust_state: "自动抽取" }] },
+        { row_no: 7, 事实们: [{ fact_type: "entity", fact_id: "e-7", 值: "乙", trust_state: "自动抽取" }] },
+      ],
+    },
+  ],
+  缺口: [],
+}
+
+const 定位api = (路径: string = "材料/话单.xlsx") =>
+  假api({
+    materialFacts: async (_projectId, path) => ({
+      kind: "ok",
+      value: { ...定位清单, 材料: { ...定位清单.材料, path, file_name: path } },
+    }),
+  })
+
+/** happy-dom 没有布局：探针只记「滚的是谁、传了什么」，不量位置（`#004-03`）。 */
+function 装滚动探针() {
+  const 原型 = Element.prototype as unknown as { scrollIntoView?: (选项?: unknown) => void }
+  const 原 = 原型.scrollIntoView
+  const 到过: Element[] = []
+  const 选项们: unknown[] = []
+  原型.scrollIntoView = function (this: Element, 选项?: unknown) {
+    到过.push(this)
+    选项们.push(选项)
+  }
+  return {
+    到过,
+    选项们,
+    还原: () => {
+      if (原 === undefined) delete 原型.scrollIntoView
+      else 原型.scrollIntoView = 原
+    },
+  }
+}
+
+const 行 = (host: HTMLElement, 号: number) =>
+  host.querySelector<HTMLElement>(`[data-slot='material-facts-row'][data-row='${号}']`)
+
+describe("材料抽取结果 · 待定位行（T6）", () => {
+  test("先请求定位再载入 ⇒ 该行 data-focused、滚到中间", async () => {
+    const 探针 = 装滚动探针()
+    try {
+      请求定位("p", "材料/话单.xlsx", 7)
+      const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={定位api()} />)
+      await 等(() => 行(host, 7)?.getAttribute("data-focused") === "true")
+
+      const 目标 = 行(host, 7)!
+      expect(目标.getAttribute("data-focused")).toBe("true")
+      expect(目标.className).toContain("bg-v2-background-bg-accent-soft")
+      // 其它行不高亮。
+      expect(行(host, 5)!.getAttribute("data-focused")).toBeNull()
+      // `#009-01`：失败信息里**不能放 DOM 节点**（bun 序列化环形引用会挂死）——
+      // 用长度 ＋ 同一性布尔断言，判据等价、失败可读。
+      expect(探针.到过.length).toBe(1)
+      expect(探针.到过[0] === 目标).toBe(true)
+      expect(探针.选项们).toEqual([{ block: "center" }])
+    } finally {
+      探针.还原()
+    }
+  })
+
+  test("定位到不存在的行 ⇒ 不高亮、不抛", async () => {
+    请求定位("p", "材料/话单.xlsx", 9)
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={定位api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-row']").length === 2)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelectorAll("[data-focused]").length).toBe(0)
+  })
+
+  test("项目对不上 ⇒ 不高亮", async () => {
+    请求定位("别的项目", "材料/话单.xlsx", 7)
+    const host = mount(() => <MaterialFacts projectId="p" path="材料/话单.xlsx" api={定位api()} />)
+    await 等(() => host.querySelectorAll("[data-slot='material-facts-row']").length === 2)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelectorAll("[data-focused]").length).toBe(0)
+  })
+
+  test("材料切换 ⇒ 旧高亮不残留", async () => {
+    const [路径, set路径] = createSignal("材料/话单.xlsx")
+    const host = mount(() => <MaterialFacts projectId="p" path={路径()} api={定位api()} />)
+    await 等(() => 行(host, 7) !== null)
+
+    请求定位("p", "材料/话单.xlsx", 7)
+    await 等(() => 行(host, 7)?.getAttribute("data-focused") === "true")
+
+    set路径("材料/另一份.xlsx")
+    await 等(() => host.querySelector("[data-slot='material-facts-title']")?.textContent?.includes("另一份") === true)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.querySelectorAll("[data-slot='material-facts-row']").length).toBe(2)
+    expect(host.querySelectorAll("[data-focused]").length).toBe(0)
   })
 })

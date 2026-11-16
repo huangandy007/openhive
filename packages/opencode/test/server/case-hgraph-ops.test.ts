@@ -515,6 +515,114 @@ describe("T006 · 幂等键与整批原子", () => {
     }),
   )
 
+  /**
+   * R-F2 + R-F3 集成（修复轮 2026-11-16）：白名单扩展后，改后的对象仍由 `校验全图` 逐个跑
+   * `校验来源`——白名单只决定「能不能写」，取值合法性没有被放松。
+   */
+  it("R-F3 集成：改字段把 `来源.kind` 改成乱写 ⇒ BAD_SHAPE，不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/改来源乱写.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("改来源乱写"),
+        节点: [{ id: "n1", ...手写节点("张三"), x: 10, y: 20 }],
+      })
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "改字段",
+            目标: [{ 类别: "节点", id: "n1", 补丁: { 来源: { kind: "乱写" } } }],
+          },
+        ],
+      })
+      expect(响应.status).toBe(400)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("BAD_SHAPE")
+      expect(体.error).toContain("字段写法不对")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("R-F3 集成：边 `可信度` 改成「极高」⇒ BAD_SHAPE，不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/改可信度乱写.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("改可信度乱写"),
+        节点: [{ id: "n1", ...手写节点("张三"), x: 10, y: 20 }],
+        边: [
+          {
+            id: "e1",
+            从: "n1",
+            到: "n1",
+            标签: "转账",
+            性质: "事实",
+            方向: "有向",
+            来源: { kind: "手写" },
+            出处: ["mat_x#Sheet1#1"],
+            时间: { 首: "", 末: "" },
+          },
+        ],
+      })
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [{ 操作: "改字段", 目标: [{ 类别: "边", id: "e1", 补丁: { 可信度: "极高" } }] }],
+      })
+      expect(响应.status).toBe(400)
+      expect((yield* 读回<{ code: string }>(响应)).code).toBe("BAD_SHAPE")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("R-F2 集成：节点改 来源(实体快照)/属性/出处/时间、边改 可信度 ⇒ 200 且落盘", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/改字段扩展.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("改字段扩展"),
+        节点: [{ id: "n1", ...手写节点("张三"), x: 10, y: 20 }],
+        边: [
+          {
+            id: "e1",
+            从: "n1",
+            到: "n1",
+            标签: "转账",
+            性质: "事实",
+            方向: "有向",
+            来源: { kind: "手写" },
+            出处: ["mat_x#Sheet1#1"],
+            时间: { 首: "", 末: "" },
+          },
+        ],
+      })
+
+      const 来源 = { kind: "实体", 实体: "ent_1", 值: "张三", 库类型: "人", 可信: "已确认" }
+      const 属性 = [{ 键: "手机号", 值: "13800000000", 出处: ["mat_x#Sheet1#1"] }]
+      const 时间 = { 首: "2026-01-01", 末: "2026-01-02" }
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "改字段",
+            目标: [
+              { 类别: "节点", id: "n1", 补丁: { 来源, 属性, 出处: ["mat_x#Sheet1#12"], 时间 } },
+              { 类别: "边", id: "e1", 补丁: { 可信度: "高" } },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      expect(图.文档.节点[0]).toMatchObject({ 来源, 属性, 出处: ["mat_x#Sheet1#12"], 时间 })
+      expect(图.文档.边[0].可信度).toBe("高")
+    }),
+  )
+
   it("老图里已有重复 id ⇒ 500 DUPLICATE_ID（契约定为内部错误），不写", () =>
     Effect.gen(function* () {
       const 相对 = "原子/重复id.hgraph"

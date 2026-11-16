@@ -161,6 +161,7 @@ function 挂上(
   初始文档: 图文件 = 一份图(),
   初始版本 = "v1",
   换算: 坐标换算 = ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
+  打开材料?: (材料: string, 行号: number) => void,
 ) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -174,6 +175,7 @@ function 挂上(
           初始文档={初始文档}
           初始版本={初始版本}
           坐标换算={换算}
+          打开材料={打开材料}
         />
       ),
       host,
@@ -666,9 +668,18 @@ describe("画布 · 模式与选择", () => {
     ])
   })
 
-  test("连线模式从节点拖到另一节点 ⇒ 一条加边（从/到）", async () => {
+  test("连线模式从节点拖到另一节点 ⇒ 先弹连线浮层（零写）；填依据/标签/可信度确认后一条加边", async () => {
     const { api, 写们 } = 假api()
-    挂上(api)
+    // 名称与 id 不同：证明浮层文案取的是节点名称（缺省才退回 id）。
+    const 图 = {
+      ...一份图(),
+      节点: [
+        造节点("n1", 100, 100, { 名称: "张三" }),
+        造节点("n2", 200, 100, { 名称: "李四" }),
+        造节点("n3", 300, 100, { 名称: "王五", 锁定: true }),
+      ],
+    }
+    挂上(api, 图)
     await flush()
 
     ;(取("[data-slot='hgraph-mode-connect']") as HTMLButtonElement).click()
@@ -678,18 +689,159 @@ describe("画布 · 模式与选择", () => {
     拖(节点组("n1")!, 100, 100, 200, 100)
     await 过防抖()
 
+    // R-F1：落下不写盘，先收必填项；否则会生成后端必拒的无依据推断边。
+    expect(写们.length).toBe(0)
+    const 条 = 取("[data-slot='hgraph-connect-bar']")
+    expect(条).not.toBeNull()
+    expect(条!.getAttribute("role")).toBe("alertdialog")
+    expect(条!.getAttribute("aria-label")).toBe("连线")
+    expect(文案("hgraph-connect-title")).toBe("n1 张三 → n2 李四")
+
+    const 确认 = 取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement
+    // 依据必填：空着时确认不可点。
+    expect(确认.disabled).toBe(true)
+    expect((取("[data-slot='hgraph-connect-confidence']") as HTMLSelectElement).value).toBe("中")
+
+    const 依据 = 取("[data-slot='hgraph-connect-basis']") as HTMLInputElement
+    expect(依据.getAttribute("aria-label")).toBe("连线依据")
+    const 标签 = 取("[data-slot='hgraph-connect-label']") as HTMLInputElement
+    依据.value = "两人同日同酒店入住"
+    依据.dispatchEvent(new Event("input", { bubbles: true }))
+    标签.value = "同住"
+    标签.dispatchEvent(new Event("input", { bubbles: true }))
+    const 可信度 = 取("[data-slot='hgraph-connect-confidence']") as HTMLSelectElement
+    可信度.value = "高"
+    可信度.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+    expect(确认.disabled).toBe(false)
+
+    确认.click()
+    await 过防抖()
+
     expect(写们.length).toBe(1)
     expect(写们[0]!.操作.length).toBe(1)
     const 操作 = 写们[0]!.操作[0]!
     expect(操作.操作).toBe("加边")
     if (操作.操作 !== "加边") throw new Error("不是加边")
     expect(操作.边.length).toBe(1)
-    expect(操作.边[0]!.从).toBe("n1")
-    expect(操作.边[0]!.到).toBe("n2")
-    // 服务端必填（V-04：事实边要有出处/证据；手画边标推断 + 来源「手写」才过闸）。
-    expect(操作.边[0]!.标签).toBe("")
-    expect(操作.边[0]!.性质).toBe("推断")
-    expect(操作.边[0]!.来源).toEqual({ kind: "手写" })
+    const 边 = 操作.边[0]!
+    expect(边.从).toBe("n1")
+    expect(边.到).toBe("n2")
+    expect(边.标签).toBe("同住")
+    expect(边.性质).toBe("推断")
+    expect(边.来源).toEqual({ kind: "手写", 依据: "两人同日同酒店入住" })
+    expect(边.可信度).toBe("高")
+    // 确认后浮层收起。
+    expect(取("[data-slot='hgraph-connect-bar']")).toBeNull()
+  })
+
+  test("连线浮层：依据为空 ⇒ 确认置灰，点了也不发写；取消 ⇒ 条消失、零写", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-mode-connect']") as HTMLButtonElement).click()
+    await flush()
+    拖(节点组("n1")!, 100, 100, 200, 100)
+    await flush()
+
+    const 确认 = 取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement
+    expect(确认.disabled).toBe(true)
+    // 禁用按钮上的 click 会被 happy-dom 直接吃掉；先摘掉 disabled 再派发，验证处理函数
+    // 自己还有第二道闸（`可连线`）——不只靠属性。
+    确认.disabled = false
+    确认.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))
+    await 过防抖()
+    expect(写们.length).toBe(0)
+    expect(取("[data-slot='hgraph-connect-bar']")).not.toBeNull()
+
+    ;(取("[data-slot='hgraph-connect-cancel']") as HTMLButtonElement).click()
+    await flush()
+    expect(取("[data-slot='hgraph-connect-bar']")).toBeNull()
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("连线浮层：依据输入框上 Escape ⇒ 取消（条消失、零写）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-mode-connect']") as HTMLButtonElement).click()
+    await flush()
+    拖(节点组("n1")!, 100, 100, 200, 100)
+    await flush()
+
+    const 依据 = 取("[data-slot='hgraph-connect-basis']") as HTMLInputElement
+    依据.value = "半截依据"
+    依据.dispatchEvent(new Event("input", { bubbles: true }))
+    按键(依据, { key: "Escape" })
+    await flush()
+
+    expect(取("[data-slot='hgraph-connect-bar']")).toBeNull()
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("补依据路径：检查器把缺依据的事实边改成推断 ⇒ 复用浮层，补完一次改字段（来源保留 kind）", async () => {
+    const { api, 写们 } = 假api()
+    const 图: 图文件 = {
+      ...一份图(),
+      边: [
+        {
+          id: "e1",
+          从: "n1",
+          到: "n2",
+          标签: "转账",
+          性质: "事实",
+          方向: "有向",
+          // 来源带 kind 以外的字段：补依据必须展开保留，不能整块换成 `{kind, 依据}`。
+          来源: { kind: "实体", 实体: "ent-1" },
+          时间: { 首: "", 末: "" },
+        },
+      ],
+    }
+    挂上(api, 图)
+    await flush()
+
+    // 点边线选中（R-F12 前置）：n1(100,100) → n2(200,100) 的线在 y=100 上。
+    按下(取("[data-slot='hgraph-edge-line']")!, 150, 100)
+    松开(150, 100)
+    await flush()
+
+    const 性质 = 取("[data-slot='hgraph-field-边性质']") as HTMLSelectElement
+    expect(性质).not.toBeNull()
+    性质.value = "推断"
+    性质.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+
+    // 缺依据/可信度 ⇒ 不直接改字段，改开连线浮层（补依据模式）。
+    expect(写们.length).toBe(0)
+    expect(文案("hgraph-connect-title")).toBe("n1 → n2（补依据）")
+    // 补依据模式不渲染标签输入。
+    expect(取("[data-slot='hgraph-connect-label']")).toBeNull()
+
+    const 依据 = 取("[data-slot='hgraph-connect-basis']") as HTMLInputElement
+    依据.value = "两人同居"
+    依据.dispatchEvent(new Event("input", { bubbles: true }))
+    await flush()
+    ;(取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement).click()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      {
+        操作: "改字段",
+        目标: [
+          {
+            类别: "边",
+            id: "e1",
+            补丁: { 性质: "推断", 来源: { kind: "实体", 实体: "ent-1", 依据: "两人同居" }, 可信度: "中" },
+          },
+        ],
+      },
+    ])
+    expect(取("[data-slot='hgraph-connect-bar']")).toBeNull()
   })
 
   test("连线模式拖到空白 ⇒ 不成边（一次写都没有）", async () => {
@@ -706,17 +858,54 @@ describe("画布 · 模式与选择", () => {
     expect(写们.length).toBe(0)
   })
 
-  test("Shift 拖空白框选：命中圆圈内的普通节点，锁定节点不被命中", async () => {
+  test("拖空白（无 Shift）框选：命中圆圈内的普通节点，锁定节点不被命中", async () => {
     const { api } = 假api()
     挂上(api)
     await flush()
 
-    拖(画布()!, 50, 50, 350, 150, { shiftKey: true })
+    拖(画布()!, 50, 50, 350, 150)
 
     expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
     expect(节点组("n2")!.getAttribute("data-selected")).toBe("true")
     // n3 的圆心 (300,100) 在框内，但 `锁定` ⇒ 框选不命中。
     expect(节点组("n3")!.getAttribute("data-selected")).toBeNull()
+  })
+
+  test("Shift 拖空白 = 追加框选（不清掉已有选中）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    // 先点选 n1。
+    按下(节点组("n1")!, 100, 100)
+    松开(100, 100)
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    // 框 (150,50)-(250,150) 只盖住 n2；Shift ⇒ 并集保留 n1。
+    拖(画布()!, 150, 50, 250, 150, { shiftKey: true })
+    await flush()
+
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+    expect(节点组("n2")!.getAttribute("data-selected")).toBe("true")
+  })
+
+  test("无 Shift 框选替换选中集（不是追加）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    按下(节点组("n1")!, 100, 100)
+    松开(100, 100)
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    // 同一只盖住 n2 的框，不带 Shift ⇒ n1 被换掉。
+    拖(画布()!, 150, 50, 250, 150)
+    await flush()
+
+    expect(节点组("n1")!.getAttribute("data-selected")).toBeNull()
+    expect(节点组("n2")!.getAttribute("data-selected")).toBe("true")
   })
 
   test("Shift 点击是加减选；普通点击换成只选它", async () => {
@@ -806,20 +995,84 @@ describe("画布 · 模式与选择", () => {
 // ---------------------------------------------------------------------------
 
 describe("画布 · 视口与指针捕获", () => {
-  test("拖空白 = 平移画布；按下捕获指针、松手释放", async () => {
+  test("空格 + 拖空白 = 平移画布；按下捕获指针、松手释放", async () => {
     const { api, 写们 } = 假api()
     挂上(api)
     await flush()
 
+    按键(画布()!, { key: " " })
     按下(画布()!, 10, 10)
     expect(画布()!.hasPointerCapture(1)).toBe(true)
     for (let 序 = 1; 序 <= 10; 序++) 指针移动(10 + 序 * 2, 10 + 序 * 3)
+    // 空格按住时是平移，不是框选。
+    expect(取("[data-slot='hgraph-marquee']")).toBeNull()
     松开(30, 40)
     await flush()
 
     expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(20 30) scale(1)")
     expect(画布()!.hasPointerCapture(1)).toBe(false)
     // 平移是视口操作，不写文件。
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("无空格拖空白 ⇒ 视口 transform 不变（框选顶替平移）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 视口 = 取("[data-slot='hgraph-viewport']")!
+    const 前 = 视口.getAttribute("transform")
+
+    按下(画布()!, 10, 10)
+    指针移动(20, 30)
+    指针移动(30, 40)
+    // 框选矩形出现（视觉反馈），但视口没动。
+    expect(取("[data-slot='hgraph-marquee']")).not.toBeNull()
+    expect(视口.getAttribute("transform")).toBe(前)
+    松开(30, 40)
+    await flush()
+
+    expect(视口.getAttribute("transform")).toBe(前)
+    expect(取("[data-slot='hgraph-marquee']")).toBeNull()
+  })
+
+  test("松开空格后拖空白恢复框选（不放任永久平移态）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 视口 = 取("[data-slot='hgraph-viewport']")!
+    按键(画布()!, { key: " " })
+    画布()!.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true }))
+    const 前 = 视口.getAttribute("transform")
+
+    按下(画布()!, 10, 10)
+    指针移动(30, 40)
+    松开(30, 40)
+    await flush()
+
+    expect(视口.getAttribute("transform")).toBe(前)
+  })
+
+  test("中键拖空白 = 平移画布（选中不变）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    // 先选中 n1，证明平移不改选中。
+    按下(节点组("n1")!, 100, 100)
+    松开(100, 100)
+    await flush()
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+
+    按下(画布()!, 10, 10, { button: 1, buttons: 4 })
+    for (let 序 = 1; 序 <= 10; 序++) 指针移动(10 + 序 * 2, 10 + 序 * 3)
+    松开(30, 40)
+    await flush()
+
+    expect(取("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe("translate(20 30) scale(1)")
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
     await 过防抖()
     expect(写们.length).toBe(0)
   })
@@ -2583,7 +2836,9 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     expect(按钮("hgraph-undo").disabled).toBe(true)
   })
 
-  test("R94 AI 改了白名单外字段（来源）⇒ 不压栈、撤销不可用、提示不能自动撤销", async () => {
+  // R-F2（修复轮 2026-11-16）：节点 `来源` 已进改字段白名单（AI 改它现在可整体撤销），
+  // 口径改用旁边仍未入白名单的 `链接`（`#002-06`：同一前提只留一处判据）。
+  test("R94 AI 改了白名单外字段（链接）⇒ 不压栈、撤销不可用、提示不能自动撤销", async () => {
     const 服 = 假服务端(一份图())
     挂轮询(服.api, { 轮询毫秒: 25 })
     await flush()
@@ -2592,7 +2847,7 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
       ...服.现图(),
       更新于: "2026-11-16T13:30:00+08:00",
       节点: 服.现图().节点.map((点) =>
-        点.id === "n1" ? { ...点, 来源: { kind: "实体" as const, 实体: "e9", 值: "n1" } } : 点,
+        点.id === "n1" ? { ...点, 链接: "case://e9" } : 点,
       ),
     }
     服.设远端(改后, "a1")
@@ -4387,5 +4642,171 @@ describe("T019a · 阶梯位置（R29）", () => {
       { x: 324, y: 312 },
       { x: 352, y: 340 },
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 修复轮 T5 · 绑定到库实体（FR-027 / R-F9）
+// ---------------------------------------------------------------------------
+
+describe("T5 · 绑定到库实体", () => {
+  const 库行 = (id: string, 值: string): 实体清单项 => ({
+    id,
+    type: "人",
+    canonical_value: 值,
+    trust_state: "已确认",
+    关联数: 0,
+    事件参与数: 0,
+    权重: 0,
+    分组: "核心",
+    created_at: 0,
+  })
+
+  function 绑定现场() {
+    const 写 = 假api()
+    const 实体 = 假实体([库行("e9", "王五")])
+    const 详情 = 假详情((id) =>
+      id === "e9"
+        ? {
+            kind: "ok",
+            value: 档案({
+              id: "e9",
+              canonical_value: "王五",
+              type: "人",
+              trust_state: "已确认",
+              attrs: { 开户行: "招商银行" },
+              关系: [档案关系(秒(2025, 12, 1), 秒(2026, 3, 1))],
+            }),
+          }
+        : { kind: "error", message: "不该取别的实体" },
+    )
+    挂详情({ api: 写.api, 初始文档: 绑定图(), 实体api: 实体.api, 详情api: 详情.api })
+    return { 写, 实体, 详情 }
+  }
+
+  test("手写节点 → 绑定 → 恰一条「改字段」：来源/属性/出处/时间，不含名称", async () => {
+    const { 写, 详情 } = 绑定现场()
+    await flush()
+
+    点选("n2", 200, 100)
+    await T014落定()
+
+    const 绑 = 取("[data-slot='hgraph-bind']") as HTMLButtonElement | null
+    expect(绑).not.toBeNull()
+    绑!.click()
+    await T014落定()
+
+    // 选择器进绑定模式：只有绑定按钮，不渲染「加入」路径。
+    expect(选择器面板()).not.toBeNull()
+    expect(取("[data-slot='entity-picker-bind']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-picker-add']")).toBeNull()
+
+    ;(取("[data-slot='hgraph-picker-row'][data-entity-id='e9']") as HTMLElement).click()
+    await flush()
+    ;(取("[data-slot='entity-picker-bind']") as HTMLButtonElement).click()
+    await T014落定()
+    await 过防抖()
+
+    expect(详情.调用).toEqual([["p 1", "e9"]])
+    // 一次绑定 = 一个批次、一条「改字段」，不走「加节点」。
+    expect(写.写们.length).toBe(1)
+    const 操作们 = 写.写们[0]!.操作
+    expect(操作们.length).toBe(1)
+    expect(操作们[0]!.操作).toBe("改字段")
+    if (操作们[0]!.操作 !== "改字段") throw new Error("形状不对")
+    expect(操作们[0]!.目标.length).toBe(1)
+    const 目标 = 操作们[0]!.目标[0]!
+    expect(目标.类别).toBe("节点")
+    expect(目标.id).toBe("n2")
+    expect(目标.补丁.来源).toEqual({
+      kind: "实体",
+      实体: "e9",
+      值: "王五",
+      库类型: "人",
+      可信: "已确认",
+    })
+    expect(目标.补丁.属性).toEqual([{ 键: "开户行", 值: "招商银行" }])
+    expect(目标.补丁.出处).toEqual([])
+    expect(目标.补丁.时间).toEqual({ 首: "2025-12-01", 末: "2026-03-01" })
+    expect("名称" in 目标.补丁).toBe(false)
+    expect("类型" in 目标.补丁).toBe(false)
+
+    // 绑定完成即收起面板。
+    expect(选择器面板()).toBeNull()
+  })
+
+  test("取消 ⇒ 零写；再次「从库加入」回到加入模式", async () => {
+    const { 写, 详情 } = 绑定现场()
+    await flush()
+
+    点选("n2", 200, 100)
+    await T014落定()
+    ;(取("[data-slot='hgraph-bind']") as HTMLButtonElement).click()
+    await T014落定()
+    expect(取("[data-slot='entity-picker-bind']")).not.toBeNull()
+
+    // 收起 = 放弃绑定：不取档案、不写盘。
+    ;(取("[data-slot='hgraph-picker-close']") as HTMLButtonElement).click()
+    await T014落定()
+    await 过防抖()
+    expect(选择器面板()).toBeNull()
+    expect(详情.调用.length).toBe(0)
+    expect(写.写们.length).toBe(0)
+
+    // 下次从工具栏打开必须是「加入」模式（绑定目标已清）。
+    按钮("hgraph-toolbar-from-library").click()
+    await T014落定()
+    expect(选择器面板()).not.toBeNull()
+    expect(取("[data-slot='hgraph-picker-add']")).not.toBeNull()
+    expect(取("[data-slot='entity-picker-bind']")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 出处可点接线（T6 / FR-033）
+// ---------------------------------------------------------------------------
+
+describe("编辑器 · 出处可点接线（T6）", () => {
+  /** 选中节点后按一下检查器里的出处按钮。 */
+  async function 点出处(id = "n1") {
+    点选(id, 100, 100)
+    await flush()
+    const 键 = 取("[data-slot='hgraph-citation']") as HTMLButtonElement | null
+    expect(键).not.toBeNull()
+    键!.click()
+    await flush()
+  }
+
+  test("注入 打开材料 ⇒ 点节点出处收 (材料, 行号)", async () => {
+    const 收到: Array<[string, number]> = []
+    const 图: 图文件 = {
+      ...一份图(),
+      节点: [造节点("n1", 100, 100, { 出处: ["m1#t#12"] })],
+    }
+    const { api } = 假api()
+    挂上(
+      api,
+      图,
+      "v1",
+      ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
+      (材料, 行号) => 收到.push([材料, 行号]),
+    )
+
+    await 点出处()
+    expect(收到).toEqual([["m1", 12]])
+  })
+
+  test("未注入 打开材料 ⇒ 检查器里没有出处按钮", async () => {
+    const 图: 图文件 = {
+      ...一份图(),
+      节点: [造节点("n1", 100, 100, { 出处: ["m1#t#12"] })],
+    }
+    const { api } = 假api()
+    挂上(api, 图)
+
+    点选("n1", 100, 100)
+    await flush()
+    expect(取("[data-slot='hgraph-readonly-出处']")?.textContent).toBe("m1#t#12")
+    expect(取("[data-slot='hgraph-citation']")).toBeNull()
   })
 })

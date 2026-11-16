@@ -45,12 +45,13 @@
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
-import type { EntityApi } from "@/project/entity-api"
+import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 选择器, 时间跨度 } from "./entity-picker"
+import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
 import { 工具栏 } from "./toolbar"
@@ -72,6 +73,7 @@ import {
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
+import { 手画边, 可连线 } from "./edge"
 
 export interface 编辑器Props {
   readonly path: string
@@ -97,6 +99,11 @@ export interface 编辑器Props {
   readonly 详情api?: Pick<CaseDetailApi, "profile">
   /** 打开实体档案（R63）：由上层注入；省略 = 检查器不渲染按钮。 */
   readonly 打开档案?: (实体id: string, 标题: string) => void
+  /**
+   * 打开出处（T6 / FR-033）：由上层注入；省略 = 检查器里出处一律纯文本。
+   * 只把 (材料, 行号) 交回去——开 tab 与「待定位行」都归视图层（它才知道 tab provider）。
+   */
+  readonly 打开材料?: (材料: string, 行号: number) => void
   /** 导出（T015）标题块里的项目名；省略 = 空串（标题块默认关，不进图）。 */
   readonly 项目名?: string
   /** 导出人（标题块），上层传 `useAuthSession()?.identity.name`。 */
@@ -481,6 +488,19 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [待确认合并, set待确认合并] = createSignal<readonly string[] | undefined>()
   /** 确认条里选中的保留者；默认 = 候选中文档顺序第一（R79）。 */
   const [合并保留, set合并保留] = createSignal<string | undefined>()
+  /**
+   * 连线浮层（R-F1）：落下只开浮层、零写盘，依据/可信度收齐后才发一条 `加边`；
+   * 「补依据」复用同一个浮层（检查器把缺依据的事实边改成推断时走这里，不直接 `改字段`）。
+   */
+  const [待连线, set待连线] = createSignal<
+    | { readonly 从: string; readonly 到: string; readonly 模式: "新建" }
+    | { readonly 边id: string; readonly 模式: "补依据" }
+    | undefined
+  >()
+  const [连线依据, set连线依据] = createSignal("")
+  const [连线标签, set连线标签] = createSignal("")
+  /** 默认「中」（brief 固定默认）；只有 UI 选择，不替构造器定默认。 */
+  const [连线可信度, set连线可信度] = createSignal<"高" | "中" | "低">("中")
   /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
   const [布局模式, set布局模式] = createSignal<排列模式>()
   /** 收起右键菜单的请求计数：共同父容器点到菜单外时递增（不用 window 监听，FR-040）。 */
@@ -507,6 +527,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [撤销提示, set撤销提示] = createSignal<string | undefined>()
   /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
   const [选择器开, set选择器开] = createSignal(false)
+  /** 修复轮 T5：绑定目标节点；`undefined` = 选择器是「加入」模式（同一次面板两用）。 */
+  const [绑定目标, set绑定目标] = createSignal<string | undefined>()
   /** T015：导出选项面板（本地 UI 态，不写文件、不进撤销栈）。 */
   const [导出面板开, set导出面板开] = createSignal(false)
   const [导出尺寸, set导出尺寸] = createSignal<导出尺寸>("屏幕")
@@ -1220,7 +1242,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   /**
    * 「刷新此节点」（R61）：重取档案；**只有** 名称/类型/细类 与文档不同才发**一次** `改字段`
-   * （白名单即这三个，`hgraph-edit.ts` 的可改键）。属性/出处/时间是只读快照，不写回。
+   * （这里刻意只发这三个键；改字段白名单本身见 `whitelist.ts` / `hgraph-edit.ts`）。
+   * 属性/出处/时间是只读快照，不写回。
    */
   const 刷新节点 = async (id: string) => {
     const api = props.详情api
@@ -1268,6 +1291,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 从库加入的落点与选择器接线：一次批量、一次撤销；成功后选中新节点。 */
   const 打开选择器 = () => {
     if (props.实体api === undefined || props.详情api === undefined) return
+    // 「从库加入」永远进加入模式：面板开着时再点工具栏也不能沿用上一次的绑定目标。
+    set绑定目标(undefined)
     set选择器开(true)
   }
 
@@ -1282,6 +1307,28 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     )
     应用(操作们)
     if (ids.length > 0) set选中(ids)
+  }
+
+  /**
+   * 绑定到库实体（修复轮 T5 / FR-027）：先记住目标节点，再用同一个选择器以「绑定」模式
+   * 打开；取档案与写盘都由本组件收口（选择器只交回 `(实体行, 档案)`）。
+   */
+  const 打开绑定 = (id: string) => {
+    set绑定目标(id)
+    set选择器开(true)
+  }
+
+  const 绑定到实体 = (实体: 实体清单项, 档案: 实体档案) => {
+    const id = 绑定目标()
+    if (id === undefined) return
+    // 与「从库加入」同一条快照缓存：绑定后检查器「库里现在」立刻有值，不必等选中 effect 再取。
+    // 回填 `已取快照` 是必须的：来源改成实体后选中 effect 会把它当「还没取过」再打一次接口。
+    存快照(实体.id, 快照映射(档案))
+    已取快照.add(实体.id)
+    // 一次性补丁：来源/属性/出处/时间；名称/类型/细类/可信度保持用户写的。
+    应用([{ 操作: "改字段", 目标: [{ 类别: "节点", id, 补丁: 绑定补丁(档案) }] }])
+    set绑定目标(undefined)
+    set选择器开(false)
   }
 
   const 撤销一步 = () => {
@@ -1449,28 +1496,79 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     void 退出全屏(舞台)
   })
 
+  /** 收起连线浮层并清空草稿（确认/取消/Esc 共用同一个复位）。 */
+  const 关连线 = () => {
+    set待连线(undefined)
+    set连线依据("")
+    set连线标签("")
+    set连线可信度("中")
+  }
+
+  /** 画布连线拖拽落下：只开浮层，**不写盘**（R-F1）。 */
+  const 开新建连线 = (从: string, 到: string) => {
+    set连线依据("")
+    set连线标签("")
+    set连线可信度("中")
+    set待连线({ 从, 到, 模式: "新建" })
+  }
+
+  /** 检查器「事实 → 推断」缺依据：复用同一个浮层收必填项，不直接发 `改字段`。 */
+  const 开补依据 = (边id: string) => {
+    const 条 = 文档().边.find((行) => 行.id === 边id)
+    set连线依据(条?.来源?.依据 ?? "")
+    set连线标签("")
+    set连线可信度(条?.可信度 ?? "中")
+    set待连线({ 边id, 模式: "补依据" })
+  }
+
+  /**
+   * 连线浮层确认：新建 ⇒ 一条 `加边`（`手画边` 的固定规则只在 `edge.ts` 一份，`#002-06`）；
+   * 补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
+   */
+  const 确认连线 = () => {
+    const 值 = 待连线()
+    if (值 === undefined) return
+    const 依据 = 连线依据()
+    if (!可连线(依据)) return
+    const 可信度 = 连线可信度()
+    if (值.模式 === "新建") {
+      // `操作.边` 的元素类型是 `Record<string, unknown>`；`边` 是接口（无隐式索引签名），
+      // 展开成对象字面量再交出去，不改协议类型（#002-06：规则仍在 edge.ts 一份）。
+      应用([{ 操作: "加边", 边: [{ ...手画边(值.从, 值.到, { 依据, 可信度, 标签: 连线标签() }) }] }])
+      关连线()
+      return
+    }
+    const 条 = 文档().边.find((行) => 行.id === 值.边id)
+    if (条 === undefined) {
+      关连线()
+      return
+    }
+    应用([
+      {
+        操作: "改字段",
+        目标: [{ 类别: "边", id: 值.边id, 补丁: { 性质: "推断", 来源: { ...条.来源, 依据 }, 可信度 } }],
+      },
+    ])
+    关连线()
+  }
+
+  /** 浮层标题：新建 = `<id> <名称> → <id> <名称>`（缺省回退 id）；补依据 = `从 → 到（补依据）`。 */
+  const 连线标题 = () => {
+    const 值 = 待连线()
+    if (值 === undefined) return ""
+    const 名 = (id: string) => 文档().节点.find((点) => 点.id === id)?.名称 || id
+    if (值.模式 === "补依据") {
+      const 条 = 文档().边.find((行) => 行.id === 值.边id)
+      return 条 === undefined ? "" : `${条.从} → ${条.到}（补依据）`
+    }
+    return `${值.从} ${名(值.从)} → ${值.到} ${名(值.到)}`
+  }
+
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
-    加边: (从, 到) =>
-      应用([
-        {
-          操作: "加边",
-          边: [
-            {
-              id: 临时id("e"),
-              从,
-              到,
-              // 手画边没有库里出处 ⇒ 标「推断」（事实边必须有出处/证据，V-04）；标签由检查器改。
-              标签: "",
-              性质: "推断",
-              方向: "有向",
-              来源: { kind: "手写" },
-              时间: { 首: "", 末: "" },
-            },
-          ],
-        },
-      ]),
+    加边: (从, 到) => 开新建连线(从, 到),
+    补依据: (边id) => 开补依据(边id),
     加文字: (x, y) =>
       应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
     加节点: (位置) => {
@@ -2022,6 +2120,74 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           </button>
         </div>
       </Show>
+
+      {/* R-F1：连线浮层——拖完不写盘，依据必填 + 可信度（默认中）+ 标签可选；确认才一条 `加边`。 */}
+      <Show when={待连线()}>
+        <div
+          data-slot="hgraph-connect-bar"
+          role="alertdialog"
+          aria-label="连线"
+          class="flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        >
+          <span data-slot="hgraph-connect-title" class="text-12-regular text-v2-text-text-muted">
+            {连线标题()}
+          </span>
+          <Show when={待连线()?.模式 === "新建"}>
+            <input
+              data-slot="hgraph-connect-label"
+              aria-label="连线标签"
+              placeholder="标签（可选）"
+              class="w-28 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={连线标签()}
+              onInput={(事件) => set连线标签(事件.currentTarget.value)}
+            />
+          </Show>
+          <input
+            data-slot="hgraph-connect-basis"
+            aria-label="连线依据"
+            placeholder="依据（必填）"
+            class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+            value={连线依据()}
+            onInput={(事件) => set连线依据(事件.currentTarget.value)}
+            onKeyDown={(事件) => {
+              if (事件.key !== "Escape") return
+              事件.preventDefault()
+              关连线()
+            }}
+          />
+          <select
+            data-slot="hgraph-connect-confidence"
+            aria-label="可信度"
+            class="rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+            value={连线可信度()}
+            onChange={(事件) => {
+              const 值 = 事件.currentTarget.value
+              if (值 === "高" || 值 === "中" || 值 === "低") set连线可信度(值)
+            }}
+          >
+            <option value="高">高</option>
+            <option value="中">中</option>
+            <option value="低">低</option>
+          </select>
+          <button
+            type="button"
+            data-slot="hgraph-connect-ok"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
+            disabled={!可连线(连线依据())}
+            onClick={确认连线}
+          >
+            确认
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-connect-cancel"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+            onClick={关连线}
+          >
+            取消
+          </button>
+        </div>
+      </Show>
       </Show>
 
       {/*
@@ -2101,6 +2267,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             刷新节点={props.详情api === undefined ? undefined : (库id) => void 刷新节点(库id)}
             刷新提示={刷新提示()}
             打开档案={props.打开档案}
+            打开出处={props.打开材料}
+            绑定={
+              props.实体api !== undefined && props.详情api !== undefined
+                ? (id) => 打开绑定(id)
+                : undefined
+            }
           />
         </Show>
         {/* T014：选择器是舞台内覆盖面板（挡住画布交互），不参与演示态。 */}
@@ -2111,8 +2283,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             详情api={props.详情api!}
             已有节点={文档().节点}
             摆放={(序) => 阶梯位置(文档().节点.length + 序)}
+            模式={绑定目标() === undefined ? "加入" : "绑定"}
             onAdd={收下新节点}
-            onClose={() => set选择器开(false)}
+            onBind={绑定到实体}
+            onClose={() => {
+              set选择器开(false)
+              // 收起即放弃绑定：下次打开必须回到「加入」模式。
+              set绑定目标(undefined)
+            }}
           />
         </Show>
         <Show when={演示中()}>

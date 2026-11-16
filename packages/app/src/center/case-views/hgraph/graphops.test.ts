@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import type { 操作 } from "@/project/hgraph-api"
-import type { 边, 图文件, 节点 } from "./file"
+import { 解析图, type 边, type 图文件, type 节点 } from "./file"
 import { 逆操作 } from "./history"
 import { 复制计划, 合并计划 } from "./graphops"
 
@@ -217,6 +217,39 @@ describe("复制计划", () => {
 
     expect(复制计划(文档, [], 24)).toEqual([])
     expect(复制计划(文档, ["t1", "e1"], 24)).toEqual([])
+  })
+
+  /**
+   * I1（修复轮 2026-11-16）：复制走的是「解析后的文档」，边 `可信度` 若没被投影下来，
+   * 复制出的推断边就丢了可信度。夹具刻意**先序列化再解析**，走真实管道而不是直接构造对象
+   * ——直接构造会在修复前也绿（对象里本来就有那个键），是假绿。
+   */
+  test("复制推断边保留 `可信度`（I1）", () => {
+    const 解析 = 解析图(
+      JSON.stringify({
+        ...一份图({ 节点: [造节点("n1"), 造节点("n2", 200, 100)], 边: [] }),
+        边: [
+          {
+            id: "e1",
+            从: "n1",
+            到: "n2",
+            标签: "联系",
+            性质: "推断",
+            方向: "有向",
+            来源: { kind: "手写", 依据: "甲" },
+            可信度: "中",
+            时间: { 首: "", 末: "" },
+          },
+        ],
+      }),
+    )
+    if (!解析.ok) throw new Error(`不该失败：${解析.说明}`)
+
+    const 计划 = 复制计划(解析.文档, ["n1", "n2"], 24)
+    const 加边 = 计划.find((条) => 条.操作 === "加边")
+    if (加边 === undefined || 加边.操作 !== "加边") throw new Error("期望加边")
+    expect(加边.边).toHaveLength(1)
+    expect((加边.边[0] as Record<string, unknown>).可信度).toBe("中")
   })
 
   test("边快照过滤（剪贴板）：第 4 个参数只复制点名过的边", () => {

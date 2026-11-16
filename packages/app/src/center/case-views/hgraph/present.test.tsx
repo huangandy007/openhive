@@ -884,9 +884,13 @@ describe("编辑器 · 演示态", () => {
     await flush()
 
     // 先平移视口（transform 变化是可断言的实得值），再选中 n1。
+    // FR-020 / R-F5：平移是**空格 + 拖**（空白拖是框选）；旧前提「空白拖 = 平移」已被 R-F5 推翻
+    // （本用例是 T3 同类落点 grep 的漏网处，2026-11-16 修复轮补上）。
+    按键(画布()!, { key: " " })
     按下(画布()!, 400, 400)
     指针移动(420, 430)
     松开(420, 430)
+    画布()!.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true }))
     await flush()
     expect(变换()).toBe("translate(20 30) scale(1)")
     点选("n1", 200, 100)

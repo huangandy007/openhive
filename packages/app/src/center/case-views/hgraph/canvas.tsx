@@ -7,8 +7,11 @@
  *
  * ## 两条交互口径（FR-019 / FR-020 / FR-022）
  *
- * - **指针模式**：拖节点 = 移动，永不建边；拖空白 = 平移画布；Shift + 拖空白 = 框选。
- * - **连线模式**：从节点拖到另一节点 = 加边；拖到空白**不建边**（`连线目标` 返回 `null`）。
+ * - **指针模式**：拖节点 = 移动，永不建边；拖空白 = 框选（`Shift` = 追加选中）。
+ * - **平移画布**：空格 + 拖 / 中键拖 / 双指（触控板横向或像素级纵向滚动，设计 §5.15）；
+ *   空白拖**不再**平移（FR-020）。
+ * - **连线模式**：从节点拖到另一节点 = 加边；拖到空白**不建边**（`连线目标` 返回 `null`）；
+ *   空白拖同样是框选（平移仍走空格 / 中键 / 双指）。
  * - 锁定节点（`锁定: true`）：不可拖动、不被框选命中（后者由 `框选命中` 保证）、也不进
  *   整组拖动；点选与删除这类显式命令仍可用（data-model §3）。
  * - 拖动中只改本地 `拖影`，**松手时才**发一次 `移动`（T009「拖动只在 dragend 进待发」）。
@@ -43,6 +46,7 @@ import {
   type 等距轴,
 } from "./geometry"
 import { 图例 } from "./legend"
+import { 字号像素, 折行行们 } from "./text-fold"
 import { 形状, 多边形, type 位点 } from "../graph"
 import type { 排列模式 } from "../graph-layout"
 
@@ -71,6 +75,37 @@ const 内嵌界面 = "[data-slot='hgraph-menu'], [data-slot='hgraph-legend'], bu
 const 落在内嵌界面 = (目标: EventTarget | null) =>
   目标 instanceof Element && 目标.closest(内嵌界面) !== null
 
+/**
+ * 滚轮是否来自触控板双指平移（设计 §5.15）：平移 = 空格 + 拖 / 中键拖 / **双指**。
+ * 判据：没有 Ctrl（Ctrl + 滚轮是捏合缩放），且有横向分量或纵向是像素级小数
+ * （鼠标滚轮是整数档）。真机触控板无法在本机自动化验证，单测只钉判定式。
+ */
+export function 是双指平移(事件: { readonly deltaX: number; readonly deltaY: number; readonly ctrlKey?: boolean }): boolean {
+  return 事件.ctrlKey !== true && (事件.deltaX !== 0 || 事件.deltaY % 1 !== 0)
+}
+
+/**
+ * 文字预设色表（data-model §4：`颜色` 存的是**预设色名**，不是 CSS 值）。
+ * 检查器「文字」段的颜色下拉复用这一份（`#002-06`：色名 → 主题槽位只写一处）。
+ * 查不到（含空 / 自由色名）⇒ 默认色，与 `外环色表` 同一兜底口径。
+ */
+const 默认文字色 = "var(--v2-text-text-base)"
+export const 文字色表: Readonly<Record<string, string>> = {
+  默认: 默认文字色,
+  黑: 默认文字色,
+  红: "var(--v2-state-fg-danger)",
+  橙: "var(--v2-state-fg-warning)",
+  绿: "var(--v2-state-fg-success)",
+  蓝: "var(--v2-state-fg-info)",
+  金: "var(--v2-brand-gold-deep)",
+  灰: "var(--v2-text-text-muted)",
+}
+
+/** 预设色名 → CSS 值；未知 / 空 ⇒ 默认色（不把色名直接当 CSS 值填进 `fill`）。 */
+export function 文字色(颜色: string | undefined): string {
+  return 文字色表[颜色 ?? ""] ?? 默认文字色
+}
+
 export type 模式 = "指针" | "连线"
 
 export type 坐标换算 = (屏幕: { readonly clientX: number; readonly clientY: number }) => {
@@ -96,6 +131,12 @@ export interface 画布动作 {
   readonly 选择: (ids: readonly string[], 追加: boolean) => void
   readonly 移动: (目标: readonly 移动目标[]) => void
   readonly 加边: (从: string, 到: string) => void
+  /**
+   * 给已有边补依据（R-F12 / R-F1 的 UI 一半）：检查器把一条缺依据/可信度的边改成推断时，
+   * 走连线浮层收必填项——**不直接发 `改字段`**（否则必被 `校验来源` 拒）。省略 = 这个壳
+   * 没有浮层（拼装测试）；检查器据此置灰并说明，不半成品执行。
+   */
+  readonly 补依据?: (边id: string) => void
   readonly 加文字: (x: number, y: number) => void
   readonly 改字段: (类别: "节点" | "边" | "文字", id: string, 补丁: Record<string, unknown>) => void
   readonly 删对象: (目标: readonly { readonly 类别: "节点" | "边" | "文字"; readonly id: string }[]) => void
@@ -262,8 +303,22 @@ type 对象拖 = {
 type 指针态 =
   | 对象拖
   | { 类型: "画布"; 起点屏x: number; 起点屏y: number; 起点x: number; 起点y: number; 原视口: 视口变换; 移动: boolean }
-  | { 类型: "框选"; 起点屏x: number; 起点屏y: number; 起点x: number; 起点y: number; 移动: boolean }
+  | {
+      类型: "框选"
+      起点屏x: number
+      起点屏y: number
+      起点x: number
+      起点y: number
+      /** FR-020：按下时按住 Shift = 与已有选中取并集（追加），否则替换。 */
+      追加: boolean
+      移动: boolean
+    }
   | { 类型: "连线"; 从: string; 起点屏x: number; 起点屏y: number; 移动: boolean }
+  /**
+   * 边点选（R-F12 前置）：边不可拖、不平移，`移动中` 只置标记；`松开` 才落选中
+   * （Shift = 在选中集里切换）。与节点/文字共用「按下—松开」的阈值判定。
+   */
+  | { 类型: "边选"; id: string; shift: boolean; 移动: boolean }
 
 /** 右键菜单的落点：四类入口（FR-025）；空白额外带内容坐标（加节点用）。 */
 type 菜单目标 =
@@ -287,6 +342,11 @@ export function 画布(props: 画布Props): JSX.Element {
   const [菜单, set菜单] = createSignal<菜单目标 | undefined>()
 
   let 指针: 指针态 | undefined
+  /**
+   * 空格按住 = 平移态（FR-020 / 设计 §5.15）。不用信号：只在指针按下的瞬间读一次；
+   * 键抬起（`onKeyUp`）与容器失焦（`onBlur`）都清零，避免空格丢在别处后永久平移。
+   */
+  let 空格 = false
   /** 改名输入的收尾锁：Enter 提交后移除输入框会再触发一次 blur，不能提交两遍。 */
   let 改名收尾 = false
   createEffect(() => {
@@ -428,6 +488,15 @@ export function 画布(props: 画布Props): JSX.Element {
     props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
 
   const 节点表 = createMemo(() => new Map(props.文档.节点.map((点) => [点.id, 点])))
+  /**
+   * 悬空边角标（R-F4 / contracts/hgraph-format §1）：端点在 `节点` 里缺失的边画不出线，
+   * 但**文件不动**（读时不丢弃、不静默改）——界面只报条数。用现成的 `节点表()`，不另建索引；
+   * 这是读侧事实，只读态也显示。隐藏（可见集过滤）不算悬空。
+   */
+  const 悬空数 = createMemo(() => {
+    const 表 = 节点表()
+    return props.文档.边.filter((行) => !表.has(行.从) || !表.has(行.到)).length
+  })
   // 演示态过滤（T011）：`可见` 不传 = 全显。文字不过滤（R35）。
   const 可见节点们 = createMemo(() =>
     props.可见 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => props.可见!.节点.has(点.id)),
@@ -491,7 +560,8 @@ export function 画布(props: 画布Props): JSX.Element {
     // 菜单内部的点击交给菜单项自己；点外面则收起菜单。
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
     set菜单(undefined)
-    if (事件.button !== 0) return
+    // 中键（button === 1）是平移入口（设计 §5.15）；其它非左键不处理。
+    if (事件.button !== 0 && 事件.button !== 1) return
     if (落在内嵌界面(目标)) return
     if (目标 instanceof HTMLElement && 目标.isContentEditable) return
     容器?.focus()
@@ -499,9 +569,27 @@ export function 画布(props: 画布Props): JSX.Element {
     // window 监听；指针用捕获，不用全局监听）。
     容器?.setPointerCapture(事件.pointerId)
 
+    const 中键 = 事件.button === 1
+    // 中键按下默认会进「自动滚动」，那会抢走 pointermove；显式拦掉。
+    if (中键) 事件.preventDefault()
+
     const 内容 = 到内容(事件)
     const 节点id = 读属性(目标, "data-node-id")
     const 文字id = 读属性(目标, "data-text-id")
+
+    // 中键无论在节点还是空白上都是平移（不是拖动节点 / 不是连线）。
+    if (中键) {
+      指针 = {
+        类型: "画布",
+        起点屏x: 事件.clientX,
+        起点屏y: 事件.clientY,
+        起点x: 内容.x,
+        起点y: 内容.y,
+        原视口: 视口(),
+        移动: false,
+      }
+      return
+    }
 
     if (props.模式 === "连线" && 节点id !== undefined) {
       指针 = { 类型: "连线", 从: 节点id, 起点屏x: 事件.clientX, 起点屏y: 事件.clientY, 移动: false }
@@ -601,20 +689,37 @@ export function 画布(props: 画布Props): JSX.Element {
       return
     }
 
-    if (事件.shiftKey) {
-      指针 = { 类型: "框选", 起点屏x: 事件.clientX, 起点屏y: 事件.clientY, 起点x: 内容.x, 起点y: 内容.y, 移动: false }
-      set框({ x0: 内容.x, y0: 内容.y, x1: 内容.x, y1: 内容.y })
+    // 边点选（R-F12 前置）：节点/文字都未命中才轮到边。边不可拖、不平移，
+    // 松开才落选中（Shift = 切换）；双击边不建节点仍由 `双击` 里的 data-edge-id 拦截。
+    const 边id = 读属性(目标, "data-edge-id")
+    if (边id !== undefined) {
+      指针 = { 类型: "边选", id: 边id, shift: 事件.shiftKey, 移动: false }
+      return
+    }
+
+    // 空白按下：空格按住 ⇒ 平移；否则框选（Shift = 追加，FR-020）。
+    if (空格) {
+      指针 = {
+        类型: "画布",
+        起点屏x: 事件.clientX,
+        起点屏y: 事件.clientY,
+        起点x: 内容.x,
+        起点y: 内容.y,
+        原视口: 视口(),
+        移动: false,
+      }
       return
     }
     指针 = {
-      类型: "画布",
+      类型: "框选",
       起点屏x: 事件.clientX,
       起点屏y: 事件.clientY,
       起点x: 内容.x,
       起点y: 内容.y,
-      原视口: 视口(),
+      追加: 事件.shiftKey,
       移动: false,
     }
+    set框({ x0: 内容.x, y0: 内容.y, x1: 内容.x, y1: 内容.y })
   }
 
   const 移动中 = (事件: PointerEvent) => {
@@ -624,6 +729,11 @@ export function 画布(props: 画布Props): JSX.Element {
     // 永远挂在半路（指针残留会让下次进入画布不按键也继续拖）。
     if (事件.buttons === 0) {
       松开(事件)
+      return
+    }
+    // 边不可拖：移动中只置标记，松手仍按「点选」落选中（R-F12 前置）。
+    if (现.类型 === "边选") {
+      现.移动 = true
       return
     }
     const 屏距 = Math.hypot(事件.clientX - 现.起点屏x, 事件.clientY - 现.起点屏y)
@@ -705,9 +815,9 @@ export function 画布(props: 画布Props): JSX.Element {
       const 框现 = 框()
       set框(undefined)
       if (现.移动 && 框现 !== undefined) {
-        // `框选命中` 已经把 `已选` 取并集（Shift 追加口径），这里直接落成新选集。
+        // `框选命中` 的 `已选` 是并集口径：Shift 追加时传当前选中，否则传空数组（替换）。
         // 只框可见节点：隔离/筛选后不可见的节点不能被选中（否则 Delete/对齐会作用到看不见的对象）。
-        props.动作.选择(框选命中(框现, 可见节点们(), props.选中), false)
+        props.动作.选择(框选命中(框现, 可见节点们(), 现.追加 ? props.选中 : []), false)
       } else {
         props.动作.选择([], false)
       }
@@ -716,6 +826,19 @@ export function 画布(props: 画布Props): JSX.Element {
 
     if (现.类型 === "画布") {
       if (!现.移动) props.动作.选择([], false)
+      return
+    }
+
+    if (现.类型 === "边选") {
+      if (现.shift) {
+        // 切换：已在选中里 ⇒ 移除，否则追加（与节点 Shift 点选同一口径）。
+        const 下 = props.选中.includes(现.id)
+          ? props.选中.filter((id) => id !== 现.id)
+          : [...props.选中, 现.id]
+        props.动作.选择(下, false)
+      } else {
+        props.动作.选择([现.id], false)
+      }
       return
     }
 
@@ -740,6 +863,12 @@ export function 画布(props: 画布Props): JSX.Element {
     }
     // 除 Esc 之外的任何键都解除「退出后首个 Esc 抑制」。
     if (事件.key !== "Escape") 忽略退出键 = false
+    // 空格 = 平移修饰键（FR-020）：只记状态、不产生动作；拦掉默认行为（页面滚动）。
+    if (事件.key === " ") {
+      事件.preventDefault()
+      空格 = true
+      return
+    }
     const 主键 = 事件.ctrlKey || 事件.metaKey
     if (主键 && (事件.key === "z" || 事件.key === "Z")) {
       事件.preventDefault()
@@ -797,6 +926,13 @@ export function 画布(props: 画布Props): JSX.Element {
   const 滚轮 = (事件: WheelEvent) => {
     事件.preventDefault()
     const 旧 = 视口()
+    // 触控板双指 = 平移（设计 §5.15）：按滚动量移动视口，缩放不变。
+    if (是双指平移(事件)) {
+      set视口({ 缩放: 旧.缩放, x: 旧.x - 事件.deltaX, y: 旧.y - 事件.deltaY })
+      开始运动()
+      结束运动()
+      return
+    }
     const 内容 = 到内容(事件)
     const 新缩放 = Math.min(3, Math.max(0.5, 旧.缩放 * (事件.deltaY < 0 ? 1.15 : 1 / 1.15)))
     // 光标下的内容点保持不动：p = c·s + t ⇒ t' = t + c·(s − s')。
@@ -891,6 +1027,10 @@ export function 画布(props: 画布Props): JSX.Element {
       onPointerUp={松开}
       onPointerCancel={松开}
       onKeyDown={按键}
+      onKeyUp={(事件) => {
+        if (事件.key === " ") 空格 = false
+      }}
+      onBlur={() => (空格 = false)}
       onWheel={滚轮}
       onDblClick={双击}
       onContextMenu={右键}
@@ -927,6 +1067,17 @@ export function 画布(props: 画布Props): JSX.Element {
         >
           加文字
         </button>
+        </div>
+      </Show>
+
+      {/* 悬空边角标（R-F4）：右上角，读侧事实，只读态也显示。 */}
+      <Show when={悬空数() > 0}>
+        <div
+          data-slot="hgraph-dangling-badge"
+          title={`有 ${悬空数()} 条边指向不存在的节点：读时不丢弃、不静默改文件`}
+          class="absolute right-2 top-2 z-10 text-12-regular text-v2-text-text-muted"
+        >
+          {悬空数()} 条边指向不存在的节点
         </div>
       </Show>
 
@@ -987,6 +1138,7 @@ export function 画布(props: 画布Props): JSX.Element {
                     data-edge-id={行.id}
                     data-edge-offset={String(偏移())}
                     data-edge-tier={String(档())}
+                    data-selected={props.选中.includes(行.id) ? "true" : undefined}
                   >
                     <Show when={几何()}>
                       {(几) => (
@@ -1001,6 +1153,7 @@ export function 画布(props: 画布Props): JSX.Element {
                             stroke-width={线宽像素(档())}
                             stroke-opacity={档() <= 1 ? "0.55" : undefined}
                             stroke-dasharray={行.性质 === "推断" ? "4 3" : undefined}
+                            class="cursor-pointer"
                           />
                           {/* 只有有向边画箭头（方向是唯一被表达的信息；无向画了会误导）。 */}
                           <Show when={行.方向 === "有向"}>
@@ -1015,6 +1168,7 @@ export function 画布(props: 画布Props): JSX.Element {
                               text-anchor="middle"
                               font-size="11"
                               fill="var(--v2-text-text-muted)"
+                              class="cursor-pointer"
                             >
                               {行.标签}
                             </text>
@@ -1129,13 +1283,24 @@ export function 画布(props: 画布Props): JSX.Element {
                   data-selected={props.选中.includes(行.id) ? "true" : undefined}
                   x={位().x}
                   y={位().y}
-                  font-size={行.字号 === "小" ? "11" : 行.字号 === "大" ? "22" : "16"}
+                  font-size={`${字号像素(行.字号)}`}
                   font-weight={行.加粗 === true ? "700" : "400"}
                   text-anchor={行.对齐 === "左" ? "start" : 行.对齐 === "右" ? "end" : "middle"}
-                  fill={行.颜色 ?? "var(--v2-text-text-base)"}
+                  fill={文字色(行.颜色)}
                   class="cursor-pointer"
                 >
-                  {行.内容}
+                  {/*
+                    FR-024 / R-F11：按 `宽度` 折行（估算，见 `text-fold.ts`）。每行一个
+                    `tspan`；`x` 在每行重设（居中/右对齐逐行生效），`dy` 第一行为 0（基线
+                    就是元素 y），后续按 字号 × 1.35 下移。
+                  */}
+                  <For each={折行行们(行.内容, 行.宽度, 行.字号)}>
+                    {(行文, 序) => (
+                      <tspan x={位().x} dy={序() === 0 ? 0 : 字号像素(行.字号) * 1.35}>
+                        {行文}
+                      </tspan>
+                    )}
+                  </For>
                 </text>
               )
             }}

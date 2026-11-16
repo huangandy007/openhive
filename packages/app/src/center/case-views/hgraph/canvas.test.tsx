@@ -8,8 +8,8 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { 边, 图文件, 节点, 设置 } from "./file"
-import { 画布, type 画布动作 } from "./canvas"
+import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
+import { 画布, 是双指平移, type 画布动作 } from "./canvas"
 
 const 挂过的: Array<() => void> = []
 
@@ -56,7 +56,7 @@ function 造边(id: string, 从: string, 到: string, 补丁: Partial<边> = {})
   }
 }
 
-function 造图(节点们: 节点[], 边们: 边[], 设置补丁: Partial<设置> = {}): 图文件 {
+function 造图(节点们: 节点[], 边们: 边[], 设置补丁: Partial<设置> = {}, 文字们: 文字[] = []): 图文件 {
   return {
     格式: 1,
     标题: "画布测试",
@@ -65,8 +65,12 @@ function 造图(节点们: 节点[], 边们: 边[], 设置补丁: Partial<设置
     设置: { ...默认设置, ...设置补丁 },
     节点: 节点们,
     边: 边们,
-    文字: [],
+    文字: 文字们,
   }
+}
+
+function 造文字(内容: string, 补丁: Partial<文字> = {}): 文字 {
+  return { id: "t1", 内容, x: 100, y: 100, 字号: "中", ...补丁 }
 }
 
 function 幽灵动作表(): 画布动作 {
@@ -150,7 +154,11 @@ const 点 = (选择器: string) => {
 }
 
 /** 按一次完整指针序列（down → up），目标元素上的事件会冒泡到画布容器。 */
-const 按一下 = (元素: Element, 起: { readonly x: number; readonly y: number }) => {
+const 按一下 = (
+  元素: Element,
+  起: { readonly x: number; readonly y: number },
+  修饰: PointerEventInit = {},
+) => {
   元素.dispatchEvent(
     new PointerEvent("pointerdown", {
       bubbles: true,
@@ -160,6 +168,7 @@ const 按一下 = (元素: Element, 起: { readonly x: number; readonly y: numbe
       buttons: 1,
       clientX: 起.x,
       clientY: 起.y,
+      ...修饰,
     }),
   )
   元素.dispatchEvent(
@@ -171,6 +180,7 @@ const 按一下 = (元素: Element, 起: { readonly x: number; readonly y: numbe
       buttons: 0,
       clientX: 起.x,
       clientY: 起.y,
+      ...修饰,
     }),
   )
 }
@@ -490,5 +500,177 @@ describe("T018 · 标签档表接线（R75）", () => {
     )
     expect(节点组("a")!.querySelector("[data-slot='hgraph-node-label']")).not.toBeNull()
     expect(节点组("b")!.querySelector("[data-slot='hgraph-node-label']")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 修复轮 2026-11-16：R-F4（悬空边角标）/ R-F5（双指平移）/ R-F11（文字折行）
+// ---------------------------------------------------------------------------
+
+describe("T019a · 悬空边角标（R-F4）", () => {
+  test("一条悬空边 ⇒ 角标「1 条边指向不存在的节点」＋ 可读 title", () => {
+    挂(造图([造节点("n1", 100, 100)], [造边("悬空", "n1", "n2")]))
+    const 角标 = 取("[data-slot='hgraph-dangling-badge']")
+    expect(角标).not.toBeNull()
+    expect(角标!.textContent?.trim()).toBe("1 条边指向不存在的节点")
+    expect(角标!.getAttribute("title")).toBe("有 1 条边指向不存在的节点：读时不丢弃、不静默改文件")
+  })
+
+  test("两条悬空 ⇒ 「2 条」；悬空边本身仍不画线", () => {
+    挂(造图([造节点("n1", 100, 100)], [造边("甲", "n1", "n2"), 造边("乙", "n3", "n1")]))
+    expect(取("[data-slot='hgraph-dangling-badge']")!.textContent?.trim()).toBe("2 条边指向不存在的节点")
+    expect(边组们().length).toBe(0)
+  })
+
+  test("无悬空 ⇒ 角标不存在（正常边不算）", () => {
+    挂(造图([造节点("n1", 100, 100), 造节点("n2", 300, 100)], [造边("e1", "n1", "n2")]))
+    expect(取("[data-slot='hgraph-dangling-badge']")).toBeNull()
+  })
+
+  test("只读态也显示（读侧事实，只读不是不提示的理由）", () => {
+    挂(造图([造节点("n1", 100, 100)], [造边("悬空", "n1", "n2")]), undefined, { 只读: true })
+    expect(取("[data-slot='hgraph-dangling-badge']")!.textContent?.trim()).toBe("1 条边指向不存在的节点")
+  })
+})
+
+describe("T019a · 文字宽度与自动换行（R-F11 / FR-024）", () => {
+  test("宽度 32 / 中号 ⇒ 4 个字折成 2 行（每行 2 字），字号走 16", () => {
+    挂(造图([], [], {}, [造文字("甲乙丙丁", { 宽度: 32 })]))
+    const 文 = 取("[data-slot='hgraph-text']")
+    expect(文).not.toBeNull()
+    // 选中 / 拖动仍按文字 id 找元素。
+    expect(文!.getAttribute("data-text-id")).toBe("t1")
+    expect(文!.getAttribute("font-size")).toBe("16")
+
+    const 行们 = [...文!.querySelectorAll("tspan")]
+    expect(行们.map((行) => 行.textContent)).toEqual(["甲乙", "丙丁"])
+    // 第一行基线对齐元素 y；后续行按 字号 × 1.35 下移。
+    expect(行们[0].getAttribute("dy")).toBe("0")
+    expect(Number(行们[1].getAttribute("dy"))).toBeCloseTo(16 * 1.35, 5)
+  })
+
+  test("5 个字 / 宽度 32 ⇒ 3 个 tspan（2 + 2 + 1）", () => {
+    挂(造图([], [], {}, [造文字("甲乙丙丁戊", { 宽度: 32 })]))
+    const 行们 = [...取("[data-slot='hgraph-text']")!.querySelectorAll("tspan")]
+    expect(行们.map((行) => 行.textContent)).toEqual(["甲乙", "丙丁", "戊"])
+  })
+
+  test("无宽度 ⇒ 1 个 tspan（不自动折），data-text-id 仍在", () => {
+    挂(造图([], [], {}, [造文字("甲乙丙丁")]))
+    const 文 = 取("[data-slot='hgraph-text']")
+    expect(文!.getAttribute("data-text-id")).toBe("t1")
+    const 行们 = [...文!.querySelectorAll("tspan")]
+    expect(行们.map((行) => 行.textContent)).toEqual(["甲乙丙丁"])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 修复轮 2026-11-16：R-F12 前置（边可点选）/ R-F11 UI（文字预设色）
+// ---------------------------------------------------------------------------
+
+describe("T019a · 边可点选（R-F12 前置）", () => {
+  const 两节点一边 = (补丁: Partial<边> = {}) =>
+    造图([造节点("a", 100, 100), 造节点("b", 300, 100)], [造边("e1", "a", "b", 补丁)])
+
+  test("点边线 ⇒ 选择([\"e1\"], false)，且该边带 data-selected", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两节点一边(), undefined, { 动作 })
+
+    const 线 = 取("[data-slot='hgraph-edge-line']")
+    expect(线).not.toBeNull()
+    expect(线!.getAttribute("class") ?? "").toContain("cursor-pointer")
+    按一下(线!, { x: 200, y: 100 })
+
+    expect(计数.选择).toEqual([[["e1"], false]])
+  })
+
+  test("Shift 点已选中的边 ⇒ 从选中里移除（保留其它选中）", () => {
+    const { 动作, 计数 } = 记动作表()
+    // 两条平行边都选中：Shift 移除 e1 后必须还剩 e2——空集会是「点空白」的答案，
+    // 区分不开「切换语义」与「根本没命中边」。
+    挂(
+      造图([造节点("a", 100, 100), 造节点("b", 300, 100)], [造边("e1", "a", "b"), 造边("e2", "a", "b")]),
+      undefined,
+      { 动作, 选中: ["e1", "e2"] },
+    )
+    expect(取("[data-edge-id='e1']")!.getAttribute("data-selected")).toBe("true")
+
+    按一下(取("[data-slot='hgraph-edge-line']")!, { x: 200, y: 100 }, { shiftKey: true })
+
+    expect(计数.选择).toEqual([[["e2"], false]])
+  })
+
+  test("拖边（按下后移动再松手）⇒ 零次「移动」、选中仍落到该边", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两节点一边(), undefined, { 动作 })
+
+    拖一下(取("[data-slot='hgraph-edge-line']")!, { x: 100, y: 100 }, { x: 240, y: 160 })
+
+    expect(计数.移动).toBeUndefined()
+    expect(计数.选择).toEqual([[["e1"], false]])
+  })
+
+  test("双击边不建节点（保持现有语义）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两节点一边(), undefined, { 动作 })
+
+    取("[data-slot='hgraph-edge-line']")!.dispatchEvent(
+      new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: 200, clientY: 100 }),
+    )
+
+    expect(计数.加节点).toBeUndefined()
+  })
+})
+
+describe("T019a · 文字预设色表（R-F11 UI）", () => {
+  test("颜色 红 ⇒ fill 是 var(--v2-state-fg-danger)（不是原名「红」）", () => {
+    挂(造图([], [], {}, [造文字("甲", { 颜色: "红" })]))
+    expect(取("[data-slot='hgraph-text']")!.getAttribute("fill")).toBe("var(--v2-state-fg-danger)")
+  })
+
+  test("每个预设色名都落到主题槽位（默认/黑/红/橙/绿/蓝/金/灰）", () => {
+    const 期望: Record<string, string> = {
+      默认: "var(--v2-text-text-base)",
+      黑: "var(--v2-text-text-base)",
+      红: "var(--v2-state-fg-danger)",
+      橙: "var(--v2-state-fg-warning)",
+      绿: "var(--v2-state-fg-success)",
+      蓝: "var(--v2-state-fg-info)",
+      金: "var(--v2-brand-gold-deep)",
+      灰: "var(--v2-text-text-muted)",
+    }
+    for (const [名, 色] of Object.entries(期望)) {
+      document.body.innerHTML = ""
+      挂(造图([], [], {}, [造文字("甲", { 颜色: 名 })]))
+      expect(取("[data-slot='hgraph-text']")!.getAttribute("fill")).toBe(色)
+    }
+  })
+
+  test("未知色名 / 未设颜色 ⇒ 默认色", () => {
+    挂(造图([], [], {}, [造文字("甲", { 颜色: "紫" })]))
+    expect(取("[data-slot='hgraph-text']")!.getAttribute("fill")).toBe("var(--v2-text-text-base)")
+
+    document.body.innerHTML = ""
+    挂(造图([], [], {}, [造文字("甲")]))
+    expect(取("[data-slot='hgraph-text']")!.getAttribute("fill")).toBe("var(--v2-text-text-base)")
+  })
+})
+
+describe("T019a · 滚轮手势判定：双指平移 vs 滚轮缩放（R-F5）", () => {
+  test("鼠标滚轮（横向 0、整数档）⇒ false", () => {
+    expect(是双指平移({ deltaX: 0, deltaY: 100 })).toBe(false)
+    expect(是双指平移({ deltaX: 0, deltaY: -100 })).toBe(false)
+  })
+
+  test("触控板横向分量 ⇒ true", () => {
+    expect(是双指平移({ deltaX: 3, deltaY: 0 })).toBe(true)
+  })
+
+  test("触控板像素级纵向（非整数档）⇒ true", () => {
+    expect(是双指平移({ deltaX: 0, deltaY: 12.5 })).toBe(true)
+  })
+
+  test("Ctrl + 滚轮是捏合缩放 ⇒ false", () => {
+    expect(是双指平移({ deltaX: 0, deltaY: 12.5, ctrlKey: true })).toBe(false)
   })
 })

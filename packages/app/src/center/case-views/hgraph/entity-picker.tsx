@@ -22,9 +22,13 @@ import { For, Show, createMemo, createSignal, onCleanup, onMount, type JSX } fro
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { 操作 } from "@/project/hgraph-api"
 import type { CaseDetailApi, 实体档案, 档案关系 } from "../../case-detail-api"
-import { 日期文本 } from "../format"
-import type { 属性, 节点, 时间 } from "./file"
+import type { 属性, 节点, 边 } from "./file"
 import { 临时id } from "./temp-id"
+import { 来源快照, 时间跨度 } from "./bind"
+import { 日期文本 } from "../format"
+
+/** 加入节点与绑定补丁共用同一份首末时间口径；这里保留原有导出（编辑器与用例从本模块取）。 */
+export { 时间跨度 }
 
 export interface 选择器Props {
   readonly projectId: string
@@ -36,6 +40,12 @@ export interface 选择器Props {
   readonly 摆放: (序号: number) => { readonly x: number; readonly y: number }
   readonly onAdd: (操作们: readonly 操作[]) => void
   readonly onClose: () => void
+  /**
+   * 修复轮 T5（FR-027）：默认仍是「加入」；「绑定」只换行选择与 footer，不改加入路径。
+   */
+  readonly 模式?: "加入" | "绑定"
+  /** 绑定确认：编辑器负责发那一条 `改字段`；本组件只取档案并交回。 */
+  readonly onBind?: (实体: 实体清单项, 档案: 实体档案) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -60,32 +70,30 @@ export function 属性们(attrs: Record<string, unknown>): 属性[] {
   )
 }
 
-/**
- * 首末时间 = 全部关系里 `首` 的 min / `末` 的 max（不是首条）。
- * 没有任何可用值 ⇒ `{首:"",末:""}`（不编时刻）。
- */
-export function 时间跨度(关系们: readonly 档案关系[]): 时间 {
-  const 首们 = 关系们.flatMap((行) => (行.首 === null ? [] : [行.首]))
-  const 末们 = 关系们.flatMap((行) => (行.末 === null ? [] : [行.末]))
-  return {
-    首: 首们.length === 0 ? "" : 日期文本(Math.min(...首们)),
-    末: 末们.length === 0 ? "" : 日期文本(Math.max(...末们)),
-  }
-}
-
 /** 类型下拉是**前端筛当前页结果**（不改搜索条件，contracts/ui.md §6）。 */
 export function 按类型筛(行们: readonly 实体清单项[], 类型: string): readonly 实体清单项[] {
   return 类型 === "全部" ? 行们 : 行们.filter((行) => 行.type === 类型)
+}
+
+/** 图上节点对应的库实体 id（`来源.kind === "实体"` 才算；空串不算）。 */
+function 库实体id(点: 节点): string | undefined {
+  const 来源 = 点.来源
+  return 来源?.kind === "实体" && typeof 来源.实体 === "string" && 来源.实体 !== "" ? 来源.实体 : undefined
 }
 
 /** 图上已绑库的实体 id 集合（`来源.kind === "实体"` 才算）。 */
 export function 已在图上(节点们: readonly 节点[]): ReadonlySet<string> {
   return new Set(
     节点们.flatMap((点) => {
-      const 来源 = 点.来源
-      return 来源?.kind === "实体" && typeof 来源.实体 === "string" && 来源.实体 !== "" ? [来源.实体] : []
+      const id = 库实体id(点)
+      return id === undefined ? [] : [id]
     }),
   )
+}
+
+/** 图上已绑该库实体的节点 id（关系加边复用它当端点；前提与 `已在图上` 同源）。 */
+function 图上节点id(节点们: readonly 节点[], 库id: string): string | undefined {
+  return 节点们.find((点) => 库实体id(点) === 库id)?.id
 }
 
 /**
@@ -103,13 +111,7 @@ export function 快照节点(
     名称: 档案.canonical_value,
     类型: 档案.type,
     ...(细类 === undefined ? {} : { 细类 }),
-    来源: {
-      kind: "实体",
-      实体: 档案.id,
-      值: 档案.canonical_value,
-      库类型: 档案.type,
-      可信: 档案.trust_state,
-    },
+    来源: 来源快照(档案),
     属性: 属性们(档案.attrs),
     // R59：行级出处拿不到 ⇒ 空数组，界面标「未取到出处」。
     出处: [],
@@ -119,6 +121,51 @@ export function 快照节点(
     x: Math.round(位置.x),
     y: Math.round(位置.y),
   }
+}
+
+/**
+ * 库 `trust_state` → 边的可信度（R-F8，2026-11-16 细化）：`已确认`/`已修正` → 高
+ * （已修正是人做出的决定，与已确认同档）；`自动抽取` → 中；其余（存疑/已排除/未知）→ 低。
+ */
+export function 可信度映射(trust_state: string): "高" | "中" | "低" {
+  if (trust_state === "已确认" || trust_state === "已修正") return "高"
+  if (trust_state === "自动抽取") return "中"
+  return "低"
+}
+
+/** 库中关系没写依据时的固定话术（不编条款/页码，R59）。 */
+const 无依据 = "库中关系（库中未记录依据）"
+
+/**
+ * `档案关系` → `边`（R-F8 / FR-031）。
+ *
+ * 库中引用只有切片 locator（R59）⇒ `性质` 恒「推断」、`证据`/`出处` 不写。
+ * `从/到` 按关系方向：`出` ⇒ 本→对方；`入` ⇒ 对方→本。
+ */
+export function 关系边(关系: 档案关系, 本节点id: string, 对方节点id: string, id?: string): 边 {
+  const 出 = 关系.方向 === "出"
+  return {
+    id: id ?? 临时id("e"),
+    从: 出 ? 本节点id : 对方节点id,
+    到: 出 ? 对方节点id : 本节点id,
+    标签: 关系.type,
+    性质: "推断",
+    方向: "有向",
+    来源: { kind: "关系", 关系们: [关系.id], 依据: 关系.basis === null || 关系.basis === "" ? 无依据 : 关系.basis },
+    可信度: 可信度映射(关系.trust_state),
+    时间: {
+      首: 关系.首 === null ? "" : 日期文本(关系.首),
+      末: 关系.末 === null ? "" : 日期文本(关系.末),
+    },
+  }
+}
+
+/** 关系行文案：`对方值 · 对方类型(·细类) · 方向 · type · 首~末 · trust_state`。 */
+function 关系行文本(关: 档案关系): string {
+  const 细类 = 关.对方细类 === null || 关.对方细类 === "" ? "" : ` · ${关.对方细类}`
+  const 首 = 关.首 === null ? "—" : 日期文本(关.首)
+  const 末 = 关.末 === null ? "—" : 日期文本(关.末)
+  return `${关.对方值} · ${关.对方类型}${细类} · ${关.方向} · ${关.type} · ${首}~${末} · ${关.trust_state}`
 }
 
 // ---------------------------------------------------------------------------
@@ -135,16 +182,39 @@ export function 选择器(props: 选择器Props): JSX.Element {
   const [选中, set选中] = createSignal<ReadonlySet<string>>(new Set())
   const [载入, set载入] = createSignal(false)
   const [加入中, set加入中] = createSignal(false)
+  const [绑定中, set绑定中] = createSignal(false)
   const [错误, set错误] = createSignal<string | undefined>()
+
+  // 修复轮 T7（FR-031 / R-F8）：关系页——选中实体既有关系，勾选后一次批次加边。
+  const [页, set页] = createSignal<"实体" | "关系">("实体")
+  const [关系实体, set关系实体] = createSignal<实体清单项 | undefined>()
+  const [关系实体档案, set关系实体档案] = createSignal<实体档案 | undefined>()
+  const [关系们, set关系们] = createSignal<readonly 档案关系[]>([])
+  const [关系选中, set关系选中] = createSignal<ReadonlySet<string>>(new Set())
+  const [关系载入, set关系载入] = createSignal(false)
+  const [加边中, set加边中] = createSignal(false)
+
+  const 绑定模式 = () => props.模式 === "绑定"
+  /** 绑定模式的单选：只有一个选中 id；多选残留也按「没有单选」处理。 */
+  const 选中id = () => {
+    const 集 = 选中()
+    return 集.size === 1 ? [...集][0] : undefined
+  }
 
   const 已绑 = createMemo(() => 已在图上(props.已有节点))
   const 类型们 = createMemo(() => ["全部", ...new Set(行们().map((行) => 行.type))])
   const 显示行们 = createMemo(() => 按类型筛(行们(), 类型()))
   const 可加入 = createMemo(() => 显示行们().filter((行) => 选中().has(行.id) && !已绑().has(行.id)))
+  const 选中关系们 = createMemo(() => {
+    const 集 = 关系选中()
+    return 关系们().filter((关) => 集.has(关.id))
+  })
 
   // 请求代（`alerts.tsx` 同款失效守卫）：慢响应的 q 可能已经不是当前搜索词，
   // 后到就整段作废，不覆盖新结果、不关掉新请求的「载入中」。
   let 搜索代 = 0
+  // 关系页请求代：连点两个实体的「关系」时，先发的慢响应不得覆盖后发的结果（同 `搜索代`）。
+  let 关系代 = 0
 
   const 搜索 = async (q: string) => {
     const 代 = ++搜索代
@@ -185,6 +255,129 @@ export function 选择器(props: 选择器Props): JSX.Element {
       else 新.delete(id)
       return 新
     })
+  }
+
+  /** 绑定模式：选中永远是单个（再点另一行就换，不累加）。 */
+  const 单选 = (id: string) => set选中(new Set([id]))
+
+  /** 绑定：取一次档案，交回编辑器（它发 `改字段`）；失败保留面板与错误，不调 `onBind`。 */
+  const 绑定 = async () => {
+    const id = 选中id()
+    if (id === undefined || 绑定中()) return
+    const 行 = 行们().find((行) => 行.id === id)
+    if (行 === undefined) return
+    set绑定中(true)
+    set错误(undefined)
+    const 回 = await props.详情api.profile(props.projectId, id)
+    if (已关) return
+    set绑定中(false)
+    if (回.kind === "ok") props.onBind?.(行, 回.value)
+    else set错误(回.message)
+  }
+
+  /**
+   * 实体行「关系」：取该实体档案的 `关系` 列表。
+   *
+   * 失败 ⇒ 错误 + 空列表，**不切页**（留在实体页，用户还能换一个实体）。
+   * 请求代作废慢响应：连点两个实体时，先发后到的不得覆盖后点的那个。
+   */
+  const 开关系 = async (行: 实体清单项) => {
+    const 代 = ++关系代
+    set关系实体(行)
+    set关系实体档案(undefined)
+    set关系们([])
+    set关系选中(new Set<string>())
+    set关系载入(true)
+    set错误(undefined)
+    const 回 = await props.详情api.profile(props.projectId, 行.id)
+    if (代 !== 关系代 || 已关) return
+    set关系载入(false)
+    if (回.kind !== "ok") {
+      set错误(回.message)
+      return
+    }
+    set关系实体档案(回.value)
+    set关系们(回.value.关系)
+    set页("关系")
+  }
+
+  const 切关系 = (id: string, 勾: boolean) => {
+    set关系选中((旧) => {
+      const 新 = new Set(旧)
+      if (勾) 新.add(id)
+      else 新.delete(id)
+      return 新
+    })
+  }
+
+  /**
+   * 关系加边（R-F8）：一次批次、一次撤销。
+   *
+   * 端点按「图上已有 → 档案快照」补；每个对方只 `profile` 一次（成功失败都算一次）。
+   * 某个对方取不到 ⇒ 跳过该条、点名字，其余照加；一条边都凑不出 ⇒ 不调 `onAdd`
+   * （与加入实体同口径：全失败不落盘）。
+   */
+  const 加入关系 = async () => {
+    const 实体 = 关系实体()
+    const 档案 = 关系实体档案()
+    const 要加 = 选中关系们()
+    if (实体 === undefined || 档案 === undefined || 要加.length === 0 || 加边中()) return
+    set加边中(true)
+    set错误(undefined)
+
+    const 新增节点: 节点[] = []
+    const 图上本 = 图上节点id(props.已有节点, 实体.id)
+    const 本节点id = 图上本 ?? 临时id("n")
+    if (图上本 === undefined) 新增节点.push(快照节点(档案, 本节点id, props.摆放(0)))
+
+    const 对端 = new Map<string, string>()
+    const 缺档 = new Map<string, string>()
+    for (const 关 of 要加) {
+      if (对端.has(关.对方id) || 缺档.has(关.对方id)) continue
+      // 自指关系：对方就是本实体，端点用本节点，别再建一颗同实体的节点。
+      if (关.对方id === 实体.id) {
+        对端.set(关.对方id, 本节点id)
+        continue
+      }
+      const 图上 = 图上节点id(props.已有节点, 关.对方id)
+      if (图上 !== undefined) {
+        对端.set(关.对方id, 图上)
+        continue
+      }
+      const 回 = await props.详情api.profile(props.projectId, 关.对方id)
+      if (已关) return
+      if (回.kind === "ok") {
+        const id = 临时id("n")
+        新增节点.push(快照节点(回.value, id, props.摆放(新增节点.length)))
+        对端.set(关.对方id, id)
+      } else {
+        缺档.set(关.对方id, 关.对方值)
+      }
+    }
+    set加边中(false)
+
+    const 边们 = 要加.flatMap((关) => {
+      const 端 = 对端.get(关.对方id)
+      return 端 === undefined ? [] : [关系边(关, 本节点id, 端)]
+    })
+    if (边们.length === 0) {
+      set错误(`取不到档案，未加入：${[...缺档.values()].join("、")}`)
+      return
+    }
+
+    // 一次批量、一次撤销：节点与边塞进同一个 `操作` 数组。节点形状由 `快照节点` 定、
+    // 边由 `关系边` 定；这里只摊成线格式（`操作` 的元素是 `Record<string, unknown>`）。
+    const 操作们: 操作[] = []
+    if (新增节点.length > 0) 操作们.push({ 操作: "加节点", 节点: 新增节点.map((点) => ({ ...点 })) })
+    操作们.push({ 操作: "加边", 边: 边们.map((边) => ({ ...边 })) })
+    props.onAdd(操作们)
+    set关系选中(new Set<string>())
+
+    if (缺档.size > 0) {
+      set错误(`取不到档案，未加入：${[...缺档.values()].join("、")}`)
+      return
+    }
+    props.onClose()
   }
 
   const 加入 = async () => {
@@ -230,49 +423,86 @@ export function 选择器(props: 选择器Props): JSX.Element {
     <div
       data-slot="hgraph-entity-picker"
       role="dialog"
-      aria-label="从库加入"
+      aria-label={绑定模式() ? "绑定到库实体" : "从库加入"}
       class="absolute inset-0 z-20 flex flex-col gap-1 overflow-y-auto bg-v2-background-bg-layer-02 p-2"
     >
       <div class="flex items-center gap-1">
-        <span class="text-13-medium text-v2-text-text-base">从库加入</span>
+        <span class="text-13-medium text-v2-text-text-base">{绑定模式() ? "绑定到库实体" : "从库加入"}</span>
         <span class="min-w-0 flex-1" />
         <button type="button" data-slot="hgraph-picker-close" class={按钮} onClick={关闭}>
           收起
         </button>
       </div>
 
-      <div class="flex items-center gap-1">
-        <input
-          data-slot="hgraph-picker-q"
-          aria-label="搜索实体"
-          placeholder="搜索名称或别名"
-          class="min-w-0 flex-1 rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
-          value={搜索词()}
-          onInput={(事件) => set搜索词(事件.currentTarget.value)}
-          onKeyDown={(事件) => {
-            if (事件.key === "Enter") void 搜索(搜索词())
-          }}
-        />
-        <button
-          type="button"
-          data-slot="hgraph-picker-search"
-          aria-label="搜索"
-          class={按钮}
-          disabled={载入()}
-          onClick={() => void 搜索(搜索词())}
-        >
-          搜索
-        </button>
-        <select
-          data-slot="hgraph-picker-type"
-          aria-label="按类型筛选"
-          class="rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
-          value={类型()}
-          onChange={(事件) => set类型(事件.currentTarget.value)}
-        >
-          <For each={类型们()}>{(项) => <option value={项}>{项}</option>}</For>
-        </select>
-      </div>
+      <Show when={绑定模式()}>
+        <p data-slot="hgraph-picker-subtitle" class="text-12-regular text-v2-text-text-muted">
+          选一个库实体，把当前节点绑上去（名称、类型保持你写的）
+        </p>
+      </Show>
+
+      {/* 关系页只属于「加入」：绑定只选一个实体，不渲染页签（R-F8）。 */}
+      <Show when={!绑定模式()}>
+        <div class="flex items-center gap-1" role="tablist">
+          <button
+            type="button"
+            data-slot="hgraph-picker-tab"
+            data-tab="实体"
+            role="tab"
+            aria-selected={页() === "实体"}
+            class={按钮}
+            onClick={() => set页("实体")}
+          >
+            实体
+          </button>
+          <button
+            type="button"
+            data-slot="hgraph-picker-tab"
+            data-tab="关系"
+            role="tab"
+            aria-selected={页() === "关系"}
+            class={按钮}
+            onClick={() => set页("关系")}
+          >
+            关系
+          </button>
+        </div>
+      </Show>
+
+      {/* 「实体」页：搜索 + 类型筛选 + 清单（原有加入路径，语义不动；绑定模式也用它）。 */}
+      <Show when={绑定模式() || 页() === "实体"}>
+        <div class="flex items-center gap-1">
+          <input
+            data-slot="hgraph-picker-q"
+            aria-label="搜索实体"
+            placeholder="搜索名称或别名"
+            class="min-w-0 flex-1 rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
+            value={搜索词()}
+            onInput={(事件) => set搜索词(事件.currentTarget.value)}
+            onKeyDown={(事件) => {
+              if (事件.key === "Enter") void 搜索(搜索词())
+            }}
+          />
+          <button
+            type="button"
+            data-slot="hgraph-picker-search"
+            aria-label="搜索"
+            class={按钮}
+            disabled={载入()}
+            onClick={() => void 搜索(搜索词())}
+          >
+            搜索
+          </button>
+          <select
+            data-slot="hgraph-picker-type"
+            aria-label="按类型筛选"
+            class="rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
+            value={类型()}
+            onChange={(事件) => set类型(事件.currentTarget.value)}
+          >
+            <For each={类型们()}>{(项) => <option value={项}>{项}</option>}</For>
+          </select>
+        </div>
+      </Show>
 
       <Show when={错误()}>
         <p data-slot="hgraph-picker-error" role="alert" class="text-12-regular text-v2-state-fg-danger">
@@ -280,57 +510,157 @@ export function 选择器(props: 选择器Props): JSX.Element {
         </p>
       </Show>
 
-      <ul data-slot="hgraph-picker-list" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-        <Show when={!载入() && 显示行们().length === 0}>
-          <li data-slot="hgraph-picker-empty" class="text-12-regular text-v2-text-text-muted">
-            没有符合条件的实体
-          </li>
-        </Show>
-        <For each={显示行们()}>
-          {(行) => {
-            const 在图上 = () => 已绑().has(行.id)
-            return (
+      <Show when={绑定模式() || 页() === "实体"}>
+        <ul data-slot="hgraph-picker-list" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+          <Show when={!载入() && 显示行们().length === 0}>
+            <li data-slot="hgraph-picker-empty" class="text-12-regular text-v2-text-text-muted">
+              没有符合条件的实体
+            </li>
+          </Show>
+          <For each={显示行们()}>
+            {(行) => {
+              const 在图上 = () => 已绑().has(行.id)
+              return (
+                <li
+                  data-slot="hgraph-picker-row"
+                  data-entity-id={行.id}
+                  class="flex items-center gap-2 py-0.5 text-12-regular text-v2-text-text-base"
+                  onClick={绑定模式() ? () => 单选(行.id) : undefined}
+                >
+                  <input
+                    type={绑定模式() ? "radio" : "checkbox"}
+                    name={绑定模式() ? "hgraph-picker-entity" : undefined}
+                    data-slot="hgraph-picker-check"
+                    data-entity-id={行.id}
+                    aria-label={`选择 ${行.canonical_value}`}
+                    checked={选中().has(行.id)}
+                    disabled={!绑定模式() && 在图上()}
+                    onChange={(事件) =>
+                      绑定模式() ? 单选(行.id) : 切换(行.id, 事件.currentTarget.checked)
+                    }
+                  />
+                  <span data-slot={`hgraph-picker-row-${行.id}`} class="min-w-0 flex-1 break-all">
+                    {行.canonical_value} · {行.type}
+                    {行.subtype === undefined || 行.subtype === "" ? "" : ` · ${行.subtype}`} · {行.trust_state}
+                    <Show when={在图上()}>
+                      <span data-slot="hgraph-picker-in-graph" class="ml-1 text-v2-text-text-muted">
+                        已在图上
+                      </span>
+                    </Show>
+                  </span>
+                  <Show when={!绑定模式()}>
+                    <button
+                      type="button"
+                      data-slot="hgraph-picker-relations"
+                      data-entity-id={行.id}
+                      class={按钮}
+                      onClick={() => void 开关系(行)}
+                    >
+                      关系
+                    </button>
+                  </Show>
+                </li>
+              )
+            }}
+          </For>
+        </ul>
+      </Show>
+
+      {/* 「关系」页（R-F8）：选中实体的既有关系，勾选后一次批次加边。 */}
+      <Show when={!绑定模式() && 页() === "关系"}>
+        <div class="flex items-center gap-1">
+          <span
+            data-slot="hgraph-picker-relation-title"
+            class="min-w-0 flex-1 text-12-regular text-v2-text-text-base"
+          >
+            {关系实体() === undefined
+              ? "先在「实体」页选一个实体"
+              : `${关系实体()?.canonical_value} 的既有关系`}
+          </span>
+          <Show when={关系载入()}>
+            <span class="text-12-regular text-v2-text-text-muted">载入中…</span>
+          </Show>
+        </div>
+
+        <ul
+          data-slot="hgraph-picker-relation-list"
+          class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto"
+        >
+          <Show when={!关系载入() && 关系实体() !== undefined && 关系们().length === 0}>
+            <li data-slot="hgraph-picker-relation-empty" class="text-12-regular text-v2-text-text-muted">
+              库中没有这个实体的关系
+            </li>
+          </Show>
+          <For each={关系们()}>
+            {(关) => (
               <li
-                data-slot="hgraph-picker-row"
-                data-entity-id={行.id}
+                data-slot="hgraph-picker-relation-row"
+                data-relation-id={关.id}
                 class="flex items-center gap-2 py-0.5 text-12-regular text-v2-text-text-base"
               >
                 <input
                   type="checkbox"
-                  data-slot="hgraph-picker-check"
-                  data-entity-id={行.id}
-                  aria-label={`选择 ${行.canonical_value}`}
-                  checked={选中().has(行.id)}
-                  disabled={在图上()}
-                  onChange={(事件) => 切换(行.id, 事件.currentTarget.checked)}
+                  data-slot="hgraph-picker-relation-check"
+                  data-relation-id={关.id}
+                  aria-label={`选择关系 ${关.对方值}`}
+                  checked={关系选中().has(关.id)}
+                  onChange={(事件) => 切关系(关.id, 事件.currentTarget.checked)}
                 />
-                <span data-slot={`hgraph-picker-row-${行.id}`} class="min-w-0 flex-1 break-all">
-                  {行.canonical_value} · {行.type}
-                  {行.subtype === undefined || 行.subtype === "" ? "" : ` · ${行.subtype}`} · {行.trust_state}
-                  <Show when={在图上()}>
-                    <span data-slot="hgraph-picker-in-graph" class="ml-1 text-v2-text-text-muted">
-                      已在图上
-                    </span>
-                  </Show>
-                </span>
+                <span class="min-w-0 flex-1 break-all">{关系行文本(关)}</span>
               </li>
-            )
-          }}
-        </For>
-      </ul>
+            )}
+          </For>
+        </ul>
 
-      <div class="flex items-center gap-2">
-        <button
-          type="button"
-          data-slot="hgraph-picker-add"
-          class={按钮}
-          disabled={可加入().length === 0 || 加入中()}
-          onClick={() => void 加入()}
-        >
-          加入选中的 {可加入().length} 个
-        </button>
-        <span class="text-12-regular text-v2-text-text-muted">加入后出处为空（未取到出处）</span>
-      </div>
+        <p data-slot="hgraph-picker-relation-note" class="text-12-regular text-v2-text-text-muted">
+          关系加入后按「推断」记：库中关系没有行级出处，出处留空
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            data-slot="hgraph-picker-relation-add"
+            class={按钮}
+            disabled={选中关系们().length === 0 || 加边中()}
+            onClick={() => void 加入关系()}
+          >
+            加入选中的 {选中关系们().length} 条关系
+          </button>
+        </div>
+      </Show>
+
+      {/* 绑定模式不渲染「加入」路径；footer 换成一次性的绑定确认。 */}
+      <Show
+        when={绑定模式()}
+        fallback={
+          <Show when={页() === "实体"}>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                data-slot="hgraph-picker-add"
+                class={按钮}
+                disabled={可加入().length === 0 || 加入中()}
+                onClick={() => void 加入()}
+              >
+                加入选中的 {可加入().length} 个
+              </button>
+              <span class="text-12-regular text-v2-text-text-muted">加入后出处为空（未取到出处）</span>
+            </div>
+          </Show>
+        }
+      >
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            data-slot="entity-picker-bind"
+            class={按钮}
+            disabled={选中id() === undefined || 绑定中()}
+            onClick={() => void 绑定()}
+          >
+            绑定到所选实体
+          </button>
+          <span class="text-12-regular text-v2-text-text-muted">绑定后出处为空（未取到出处）</span>
+        </div>
+      </Show>
     </div>
   )
 }

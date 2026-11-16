@@ -86,6 +86,33 @@ git diff --stat 9a03c48031..HEAD -- bun.lock                              # 空
 git diff --stat 9a03c48031..HEAD -- packages/app/src/project/entity-api.ts # 空（全程未改）
 ```
 
+### 1.7 修复轮（2026-11-16）最终门禁（实得）
+
+命令均 `timeout 300`；前端每条命令带 `--conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts`（`export.test.ts` 同）。
+
+| 批次 | 实得 |
+|---|---|
+| 后端 10 文件（`case-hgraph-{edit,file,ops,tools,contract,whitelist-parity,citation-parity}` + `openhive-case-{citation,mcp-server,mcp-tools}`） | **293 pass / 0 fail / 1265 expect()** |
+| `packages/opencode` typecheck（`tsgo --noEmit`） | **EXIT=0** |
+| `packages/app` typecheck（`tsgo -b`） | **EXIT=0** |
+| 前端纯函数 2 批（`file/geometry/graphops/history/undo/hgraph-api/openhive-file-ops` + `citation/pending-row` 等） | **249 pass / 0 fail** |
+| 组件 8 文件（`graph` / `canvas` / `legend` / `inspector` / `hgraph-view` / `views/index` / `file-create-dialog` / `material-facts`） | **264 pass / 0 fail** |
+| `editor.test.tsx` | **139 pass / 0 fail** |
+| `present.test.tsx` | **25 pass / 0 fail / 163 expect()** |
+| `export.test.ts` | **15 pass / 0 fail** |
+| `file-tree.test.tsx` | **195 pass / 0 fail** |
+| 根 oxlint（改动涉及的 52 文件，含单测） | **604 warnings / 0 errors，EXIT=0**；warning 全落在修复轮之前已存在的文件（`history.ts` 23 / `editor.tsx` 20 / `hgraph-file.ts` 8 / `hgraph-edit.ts` 8 / `file.ts` 7 / `case-hgraph-tools.ts` 6 / `case-mcp-server.ts` 5 / `canvas.tsx` 3 / `material-facts.tsx` 1），**本轮新增源文件（`bind`/`citation`/`edge`/`pending-row`/`text-fold`/`whitelist` 等）0 warning** |
+
+**R-F26（present #5 用例前提过期，非产品缺陷）**：收尾门禁时 `present.test.tsx` 单文件从
+25/0 变 **24/1**，红在 `#5 演示零写盘…退出后选中与视口保持进入前的值`：
+`Expected "translate(20 30) scale(1)" / Received "translate(0 0) scale(1)"`。
+根因：该用例用「空白拖」平移视口，而 T3 已按 FR-020 / R-F5 改为「空白拖 = 框选，
+平移 = 空格 + 拖 / 中键 / 双指」；T3 的同类落点 grep 只扫了 `editor.test.tsx`，漏了此文件
+（`#002-06`）。修法**只改用例前提**（`按键(画布,{key:" "})` → 拖 → keyup，与 `editor.test.tsx`
+同型），产品代码未动；变异（`适配请求={演示中() ? 适配请求()+1 : …}`，即进入演示即适配）
+实得恰红该条、停在 transform 断言（`Expected "translate(20 30)" / Received "translate(80 240)"`，
+`#003-03` 类①），还原后 **25 pass / 0 fail / 163 expect()**。
+
 ---
 
 ## 2. TDD 与变异（摘要）
@@ -173,6 +200,31 @@ M6 的推断校验、M7/M8 的演示步进、M13 的 409 重载、M14 的非法 
 | 5xx 码（`WRITE_FAILED`/`DUPLICATE_ID`/`timeout`）无直接用例 | 可重试性由「4xx 补集」写法保证；若有人误把 500 码加进不可重试集，现无红 |
 | 保留批 + 继续编辑时「重试」按钮在自动发送排队期仍显示 | 视觉多一颗钮，点击被 `正在发` 兜住，无害；未修 |
 | 终态下飞行中应答仍可能改写状态文案；Ctrl+Z 仍可改撤销栈 | 写闸（`应用`/`发送`）不受影响，`hgraph-gone` 常驻；只影响文案/本地栈一致性，未修 |
+
+### 4.1 修复轮（2026-11-16）新增缺口
+
+| 缺口 | 状态 / 原因 |
+|---|---|
+| 触控板双指平移 | 只钉判定式（`是双指平移` 单测）；真实触控板/浏览器的像素级 delta 与 ctrlKey 捏合未在真栈验证（R-F5） |
+| 空格清零的 `onBlur` 兜底 | 无用例（`onKeyUp` 有变异守护）；happy-dom 的 blur 派发不稳定，属「测不了的防御分支」 |
+| 上游 `graph.tsx` 手势口径 | 仍是「空白拖 = 平移」，与 `.hgraph` 画布「空白拖 = 框选」不一致；改上游 = 加合并冲突面，未动 |
+| 画布角标与真机观感 | 悬空边角标只验 DOM 与文案；视觉位置/可读性未人眼验收 |
+| 连线浮层 / 边检查器 / 文字检查器的真机视觉与交互 | 只跑 happy-dom 组件测试；真栈浏览器观感未验 |
+| `补依据 → 校验来源` 端到端 | 后端未改；拒收路径由跨层契约测试覆盖，真栈整链未跑 |
+| 绑定：`onClose` 与 `打开选择器` 两处清 `绑定目标` 互为兜底 | 单拆不红，已成对拆验；属两处同前提（`#002-06`），未收敛 |
+| 绑定目标在 profile 往返期间被删 / 合并 | 会发一条失效 id 的 `改字段`，后端拒绝并回滚；无用例（R-F22） |
+| 绑定到已在图上的实体 | 允许多产生一颗同实体节点（brief 未限制），无用例（R-F22） |
+| 出处材料段是材料 **id**、材料页按**路径**取数 | 出处串按 data-model §5.6 存材料 id（`get_citation` row 分支按 materialId 用）；T6 首版原样透传给材料页是断点。T6b 在视图工厂用材料清单接口解析 id → 路径；清单读失败或查不到 id 时降级为原值（静默，真栈上不可观测区分） |
+| 出处跳转的生产 tab 接线（`center.open` 那三行） | 无组件测试：只测 `建打开出处` 的解析段与可注入形状；工厂里漏传 `材料api` 现有用例不会红 |
+| 真栈「点出处 → 切材料 tab → 滚动高亮」 | 未跑；happy-dom 探针只证滚的是该行、参数正确，不证物理位置与真实路由（T6/T6b） |
+| `entity-profile.tsx` 的结构化 `引用` 不可点 | 形状是 (materialId + locator) 而非出处串，范围外；未改 |
+| `待定位` 目标不消费 | 之后手动重开同一材料会再高亮一次旧行；若消费，定位 effect 会随即清掉刚上的高亮（改动面大于收益），未改（R-F25） |
+| 选择器「关系」页真栈端到端 | 点实体行 → 关系页 → 勾选 → 加入 → 画布出新边未跑（happy-dom 只证批次形状）；关系页视觉/滚动未人眼验收（R-F8 / 2026-11-16） |
+| 后端同批 `[加节点, 加边]` 的悬空边 / 临时 id 映射 | 只有代码阅读结论；无端到端用例（`packages/opencode` 本轮未改）（R-F8） |
+| 关系页两条异步守卫 | 「请求代」防旧响应覆盖、`已关` 防收起后落盘，均无专门用例（R-F8） |
+| 关系页错误槽与实体页共用 | 切页时上一页错误文案短暂可见（未清、未测）；`时间` / `来源.关系们` / `disabled` / `不切页` / `面板不关` 几条断言未被变异证到（假绿第 4 问）（R-F8） |
+| 关系页无缓存 | 每点一次实体「关系」都重新 `profile`；同一实体重复点重复取数（范围外） |
+| 自指关系 | `对方id === 本实体` 时用本节点当端点，有守卫无用例（正常关系图罕见）（R-F8） |
 
 ---
 

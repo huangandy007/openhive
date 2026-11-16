@@ -4,6 +4,7 @@ import type { CaseDetailApi, 材料事实清单结果 } from "../case-detail-api
 import type { 解析状态 } from "../../project/case-materials-api"
 import { 案件伪路径 } from "../case-route"
 import { useCenterTabs } from "../tab-context"
+import { 取待定位 } from "./hgraph/pending-row"
 import { ArtifactReview } from "./artifact-review"
 
 export interface MaterialFactsProps {
@@ -217,6 +218,12 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   const [记住错误, set记住错误] = createSignal<string | undefined>()
   const [已记住, set已记住] = createSignal<string[]>([])
 
+  /**
+   * T6 / FR-033 的滚动容器：点检查器里的出处后，关系图视图先 `请求定位` 再打开本页。
+   * 行由 `For` 渲染，定位时**现查**（与 `entity-profile.tsx` 的落点取向一致，不另存 ref 数组）。
+   */
+  let 容器: HTMLDivElement | undefined
+
   const center = useCenterTabs()
   const 打开卡片模板 = () =>
     center.open(
@@ -269,6 +276,39 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   })
 
   /**
+   * 待定位行（T6 / FR-033）：依赖 `清单()` 与 `取待定位()`——清单落地之前 DOM 里还没有行，
+   * 必须等它到了再查。
+   *
+   * 每次重跑**先清掉全部高亮**再按当前 (项目, 材料) 重新判定：材料切换 / 换项目后旧行不残留，
+   * 已不存在的行也不留半截状态。**行不存在 ⇒ 不高亮、不报错**（材料里本来就没有这一行的事实）。
+   * `scrollIntoView` 在 happy-dom 里可能没有 ⇒ 可选调用，不抛。
+   */
+  createEffect(() => {
+    const 目标 = 取待定位()
+    const 当前清单 = 清单()
+    const 当前项目 = props.projectId
+    const 当前材料 = props.path
+
+    const 行们 = 容器?.querySelectorAll<HTMLElement>("[data-slot='material-facts-row']")
+    if (行们 !== undefined) {
+      for (const 旧行 of 行们) {
+        旧行.removeAttribute("data-focused")
+        旧行.classList.remove("bg-v2-background-bg-accent-soft")
+      }
+    }
+    if (目标 === undefined || 当前清单 === undefined) return
+    if (目标.项目 !== 当前项目 || 目标.材料 !== 当前材料) return
+
+    const 命中 = 容器?.querySelector<HTMLElement>(
+      `[data-slot='material-facts-row'][data-row='${目标.行号}']`,
+    )
+    if (命中 === null || 命中 === undefined) return
+    命中.setAttribute("data-focused", "true")
+    命中.classList.add("bg-v2-background-bg-accent-soft")
+    命中.scrollIntoView?.({ block: "center" })
+  })
+
+  /**
    * 把「这列是什么」写成一条别名（一次一列）。
    *
    * 与待确认按钮同一套防迟到规则：回包跨了材料就整条丢掉（`#005-03`），否则旧材料的 403
@@ -302,7 +342,11 @@ export function MaterialFacts(props: MaterialFactsProps): JSX.Element {
   }
 
   return (
-    <div data-component="material-facts" class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-2">
+    <div
+      ref={(元素) => (容器 = 元素)}
+      data-component="material-facts"
+      class="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-2"
+    >
       {/* 开关必须在 `Show when={清单()}` **之外**（与 `entity-profile.tsx` 同构）：请求在飞或失败时
           清单仍是 `undefined`，塞在 `Show` 里会让用户切到「含排除」后遇到一次失败就再也点不回去。
           产物没有事实可排除，清单落地后按 kind 隐藏。 */}

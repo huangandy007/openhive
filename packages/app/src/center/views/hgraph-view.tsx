@@ -28,10 +28,12 @@ import { useAuthSession } from "@/auth/session-context"
 import { createHgraphApi, 没项目, type HgraphApi } from "@/project/hgraph-api"
 import { createEntityApi, type EntityApi } from "@/project/entity-api"
 import { createCaseDetailApi, type CaseDetailApi } from "@/center/case-detail-api"
+import { createCaseMaterialsApi, type CaseMaterialsApi } from "@/project/case-materials-api"
 import { 案件伪路径 } from "@/center/case-route"
 import { useCenterTabs } from "@/center/tab-context"
 import { 解析图, type 解析失败码, type 图文件 } from "@/center/case-views/hgraph/file"
 import { 编辑器 } from "@/center/case-views/hgraph/editor"
+import { 请求定位 } from "@/center/case-views/hgraph/pending-row"
 
 type 视图状态 =
   | { readonly kind: "失败"; readonly message: string }
@@ -65,6 +67,40 @@ function 文件名(path: string): string {
 }
 
 /**
+ * 出处串 `材料#工作表#行号` 的材料段是**材料 id**（`mat_x`），而材料页按**路径**取数
+ * （`MaterialFacts` 用 `props.path`）。这里解析一次 id → 路径，再把路径交给打开通道。
+ *
+ * - 项目 id 为空 ⇒ 返回空操作（一条请求都不发）；
+ * - 未注入 `材料api` ⇒ 原样交出去（旧壳兼容）；
+ * - 清单读不到 / 查不到该 id ⇒ 原样交出去（材料页自己会说取不到，不编路径）。
+ *
+ * `项目id` 是**挂载期快照**：回调里不再读单例，切项目不会把定位挪走（`#010-06`）。
+ */
+export function 建打开出处(
+  项目id: string | undefined,
+  打开材料: (项目id: string, 材料路径: string, 行号: number) => void,
+  材料api?: Pick<CaseMaterialsApi, "read">,
+): (材料: string, 行号: number) => void {
+  if (项目id === undefined || 项目id === "") return () => {}
+  const 项目 = 项目id
+  return (材料, 行号) => {
+    if (材料api === undefined) {
+      打开材料(项目, 材料, 行号)
+      return
+    }
+    void 材料api.read(项目).then(
+      (结果) => {
+        const 命中 =
+          结果.kind === "ok" ? 结果.value.materials.find((项) => 项.id === 材料) : undefined
+        打开材料(项目, 命中?.path ?? 材料, 行号)
+      },
+      // 清单读失败不抛到组件里：如实降级成原样，材料页自己会说取不到。
+      () => 打开材料(项目, 材料, 行号),
+    )
+  }
+}
+
+/**
  * T014 接缝：实体库 / 档案 / 打开档案（R63）。省略 = 这个壳没有库。
  *
  * `打开档案` 的 `项目id` 是**挂载时**读到的那个（不是点击时再读单例）：视图还开着、
@@ -74,6 +110,13 @@ export interface HgraphView依赖 {
   readonly 实体api?: Pick<EntityApi, "list">
   readonly 详情api?: Pick<CaseDetailApi, "profile">
   readonly 打开档案?: (项目id: string, 实体id: string, 标题: string) => void
+  /** 出处材料段是材料 id；材料页按路径取数，故在工厂里解析一次。 */
+  readonly 材料api?: Pick<CaseMaterialsApi, "read">
+  /**
+   * 打开出处（T6 / FR-033）：`项目id` 同 `打开档案`，是**挂载时**读到的那个（`#010-06`）。
+   * `材料路径` 已由 `建打开出处` 把 id 解析成路径（查不到时原样），这里不再解析。
+   */
+  readonly 打开材料?: (项目id: string, 材料路径: string, 行号: number) => void
 }
 
 /**
@@ -95,6 +138,8 @@ export function 创建HgraphView(
     const 导出人 = useAuthSession()?.identity?.name
     // 依赖里的回调先取出来：下面按 `undefined` 分支，不用非空断言。
     const 打开 = 依赖?.打开档案
+    const 打开材料 = 依赖?.打开材料
+    const 材料api = 依赖?.材料api
     const [状态] = createResource(
       () => props.path,
       (path) => 载入(api, 项目id, path),
@@ -171,6 +216,11 @@ export function 创建HgraphView(
                       打开档案={
                         打开 === undefined ? undefined : (实体id, 标题) => 打开(id(), 实体id, 标题)
                       }
+                      打开材料={
+                        打开材料 === undefined
+                          ? undefined
+                          : 建打开出处(id(), 打开材料, 材料api)
+                      }
                     />
                   )}
                 </Show>
@@ -186,6 +236,7 @@ export function 创建HgraphView(
 /** 生产接缝只在第一次用到时建：模块级常量会让测试替身与生产实例混住。 */
 let 默认实体api: EntityApi | undefined
 let 默认详情api: CaseDetailApi | undefined
+let 默认材料api: CaseMaterialsApi | undefined
 const 默认hgraphapi = createHgraphApi()
 
 /**
@@ -200,6 +251,7 @@ export const HgraphView: ViewComponent = (props) => {
   const 组装 = 创建HgraphView(默认hgraphapi, () => currentProject()?.id, {
     实体api: (默认实体api ??= createEntityApi()),
     详情api: (默认详情api ??= createCaseDetailApi()),
+    材料api: (默认材料api ??= createCaseMaterialsApi()),
     打开档案: (projectId, 实体id, 标题) => {
       if (projectId === "") return
       center.open(
@@ -207,6 +259,26 @@ export const HgraphView: ViewComponent = (props) => {
           module: center.module() ?? "project",
           title: 标题,
           path: 案件伪路径({ projectId, view: "entity", arg: 实体id }),
+        },
+        center.activePane(),
+      )
+    },
+    /**
+     * T6 / FR-033：先把「待定位行」放进模块级通道，再开材料 tab——`MaterialFacts` 挂载后
+     * 自己滚动并高亮。顺序不能反：反过来时材料页可能已渲染完才收到定位，那一轮就漏了
+     * （本题材页的兼容做法是「等清单落地再查」，但信号必须已经写好）。
+     *
+     * 收到的 `材料路径` 已被 `建打开出处` 解析成路径（材料页按 `props.path` 判命中），
+     * 这里不再解析。
+     */
+    打开材料: (projectId, 材料路径, 行号) => {
+      if (projectId === "") return
+      请求定位(projectId, 材料路径, 行号)
+      center.open(
+        {
+          module: center.module() ?? "project",
+          title: 材料路径,
+          path: 案件伪路径({ projectId, view: "material", arg: 材料路径 }),
         },
         center.activePane(),
       )

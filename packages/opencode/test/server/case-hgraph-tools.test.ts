@@ -538,7 +538,7 @@ describe("graph_update", () => {
     expect(字节哈希(绝对)).toBe(前)
 
     // 同一条边，盘上补齐 `来源.依据` + `可信度` 之后，同一改法能过（闸不是把推断一律拒掉）。
-    // `改字段` 白名单不含 `来源`/`可信度`，所以「补足」只能经由盘上夹具（或 graph_add）。
+    // R-F2 起 `改字段` 白名单已含 `来源`/`可信度`；这里仍用盘上夹具直接造出「已补齐」的状态。
     const 补足 = 摆图("update/性质闸补足.hgraph", {
       ...空图("性质闸补足"),
       节点: [手写节点("张三", { id: "n1", x: 10, y: 20 })],
@@ -890,7 +890,7 @@ describe("映射失败码", () => {
     BAD_SHAPE: "bad_input",
     BAD_OP: "bad_input",
     DANGLING_EDGE: "bad_input",
-    DUPLICATE_ID: "bad_input",
+    DUPLICATE_ID: "write_failed",
     FACTS_NEED_SOURCE: "bad_input",
     INFERENCE_NEEDS_BASIS: "bad_input",
     INFERENCE_NEEDS_CONFIDENCE: "bad_input",

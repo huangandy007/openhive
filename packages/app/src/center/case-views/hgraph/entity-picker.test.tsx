@@ -9,12 +9,13 @@
  * 本文件的 #4 钉节点载荷为空数组，`inspector.test.tsx` 钉那两句文案。
  */
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 实体档案, 档案关系, 引用 } from "@/center/case-detail-api"
 import type { 操作 } from "@/project/hgraph-api"
 import type { 节点 } from "./file"
-import { 选择器, 时间跨度, 属性们 } from "./entity-picker"
+import { 选择器, 可信度映射, 关系边, 时间跨度, 属性们 } from "./entity-picker"
 
 const 挂过的: Array<() => void> = []
 
@@ -149,10 +150,12 @@ function 挂选择器(选项: {
     | ReturnType<CaseDetailApi["profile"]>
   已有节点?: readonly 节点[]
   摆放?: (序号: number) => { readonly x: number; readonly y: number }
+  模式?: "加入" | "绑定"
 } = {}) {
   const list调用: 列表入参[] = []
   const profile调用: Array<[string, string]> = []
   const 加过: 操作[][] = []
+  const 绑定过: Array<[实体清单项, 实体档案]> = []
   let 关过 = 0
 
   const 实体api: Pick<EntityApi, "list"> = {
@@ -183,7 +186,9 @@ function 挂选择器(选项: {
           详情api={详情api}
           已有节点={选项.已有节点 ?? []}
           摆放={选项.摆放 ?? ((序号) => ({ x: 100 + 序号 * 10, y: 200 + 序号 * 10 }))}
+          模式={选项.模式}
           onAdd={(操作们) => 加过.push([...操作们])}
+          onBind={(行, 值) => 绑定过.push([行, 值])}
           onClose={() => {
             关过 += 1
           }}
@@ -193,7 +198,7 @@ function 挂选择器(选项: {
     ),
   )
 
-  return { list调用, profile调用, 加过, 关过: () => 关过 }
+  return { list调用, profile调用, 加过, 绑定过, 关过: () => 关过 }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +237,44 @@ function 勾选(id: string, 状态 = true) {
 function 点加入() {
   ;(取("[data-slot='hgraph-picker-add']") as HTMLButtonElement).click()
 }
+
+/** 绑定模式：点整行（不是勾选框）——「再点另一行就换」是行选择语义。 */
+function 点行(id: string) {
+  const 行 = 取(`[data-slot='hgraph-picker-row'][data-entity-id='${id}']`)
+  if (行 === null) throw new Error(`没有行 ${id}`)
+  行.click()
+}
+
+const 绑定键 = () => 取("[data-slot='entity-picker-bind']") as HTMLButtonElement | null
+
+// 关系页（修复轮 T7 / FR-031）
+
+const 页签 = (tab: "实体" | "关系") =>
+  取(`[data-slot='hgraph-picker-tab'][data-tab='${tab}']`) as HTMLButtonElement | null
+
+function 点页签(tab: "实体" | "关系") {
+  const 钮 = 页签(tab)
+  if (钮 === null) throw new Error(`没有页签 ${tab}`)
+  钮.click()
+}
+
+function 点关系(id: string) {
+  const 钮 = 取(`[data-slot='hgraph-picker-relations'][data-entity-id='${id}']`) as HTMLButtonElement | null
+  if (钮 === null) throw new Error(`没有「关系」按钮 ${id}`)
+  钮.click()
+}
+
+const 关系行 = (id: string) => 取(`[data-slot='hgraph-picker-relation-row'][data-relation-id='${id}']`)
+const 关系行数 = () => document.body.querySelectorAll("[data-slot='hgraph-picker-relation-row']").length
+
+function 勾选关系(id: string, 状态 = true) {
+  const 框 = 取(`[data-slot='hgraph-picker-relation-check'][data-relation-id='${id}']`) as HTMLInputElement | null
+  if (框 === null) throw new Error(`没有关系勾选框 ${id}`)
+  框.checked = 状态
+  框.dispatchEvent(new Event("change", { bubbles: true }))
+}
+
+const 加关系键 = () => 取("[data-slot='hgraph-picker-relation-add']") as HTMLButtonElement | null
 
 // ---------------------------------------------------------------------------
 // 验收 #1 · 搜索
@@ -521,6 +564,75 @@ describe("选择器 · 加入节点", () => {
 })
 
 // ---------------------------------------------------------------------------
+// 绑定模式（FR-027 / R-F9）
+// ---------------------------------------------------------------------------
+
+describe("选择器 · 绑定模式", () => {
+  test("单选：点 A 再点 B ⇒ 只有 B 选中；加入 footer 不在、绑定按钮在", async () => {
+    const 器 = 挂选择器({ 模式: "绑定" })
+    await 落定()
+
+    expect(绑定键()).not.toBeNull()
+    expect(取("[data-slot='hgraph-picker-add']")).toBeNull()
+    // 未选中：绑定按钮 disabled。
+    expect(绑定键()!.disabled).toBe(true)
+
+    点行("e1")
+    await flush()
+    expect(勾选框("e1")!.checked).toBe(true)
+    expect(绑定键()!.disabled).toBe(false)
+
+    点行("e2")
+    await flush()
+    expect(勾选框("e1")!.checked).toBe(false)
+    expect(勾选框("e2")!.checked).toBe(true)
+    expect(器.绑定过.length).toBe(0)
+  })
+
+  test("点「绑定到所选实体」⇒ profile(projectId, id) 一次，onBind 收到行与档案", async () => {
+    const 器 = 挂选择器({ 模式: "绑定" })
+    await 落定()
+
+    点行("e2")
+    await flush()
+    绑定键()!.click()
+    await 落定()
+
+    expect(器.profile调用).toEqual([["p 1", "e2"]])
+    expect(器.绑定过.length).toBe(1)
+    expect(器.绑定过[0]![0].id).toBe("e2")
+    expect(器.绑定过[0]![1].id).toBe("e2")
+    // 绑定不落「加入」批，也不借用 onAdd。
+    expect(器.加过.length).toBe(0)
+  })
+
+  test("profile 失败 ⇒ 零 onBind、错误文案、按钮仍可点", async () => {
+    const 器 = 挂选择器({
+      模式: "绑定",
+      profile: () => ({ kind: "error", message: "实体不存在", code: "NOT_FOUND" }),
+    })
+    await 落定()
+
+    点行("e1")
+    await flush()
+    绑定键()!.click()
+    await 落定()
+
+    expect(器.绑定过.length).toBe(0)
+    expect(文本("hgraph-picker-error") ?? "").toContain("实体不存在")
+    expect(绑定键()!.disabled).toBe(false)
+  })
+
+  test("默认仍是加入模式：加入按钮在、绑定按钮不在（既有路径不被换掉）", async () => {
+    挂选择器()
+    await 落定()
+
+    expect(取("[data-slot='hgraph-picker-add']")).not.toBeNull()
+    expect(绑定键()).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 纯函数（可单测的映射）
 // ---------------------------------------------------------------------------
 
@@ -546,5 +658,387 @@ describe("选择器 · 纯函数", () => {
 
   test("T019a 属性值为 null：与缺值同义，不进属性表（不写 \"null\"）", () => {
     expect(属性们({ 开户行: "招商银行", 空: null })).toEqual([{ 键: "开户行", 值: "招商银行", 出处: [] }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 关系页（修复轮 T7 · FR-031 / R-F8）
+// ---------------------------------------------------------------------------
+
+/** r1：出 → A（有依据、已确认、有时间）。 */
+const 关系A: 档案关系 = {
+  id: "r1",
+  type: "转账",
+  方向: "出",
+  对方id: "a1",
+  对方值: "王某",
+  对方类型: "人",
+  对方细类: null,
+  source_kind: "交易",
+  basis: "银行流水第 12 页",
+  trust_state: "已确认",
+  首: 秒(2024, 1, 2),
+  末: 秒(2024, 2, 3),
+  次数: 3,
+  金额: "5000.00",
+}
+
+/** r2：入 ← B（无依据、自动抽取、无时间、对方有细类）。 */
+const 关系B: 档案关系 = {
+  id: "r2",
+  type: "收款",
+  方向: "入",
+  对方id: "b1",
+  对方值: "李某的卡",
+  对方类型: "账号",
+  对方细类: "银行卡",
+  source_kind: "交易",
+  basis: null,
+  trust_state: "自动抽取",
+  首: null,
+  末: null,
+  次数: 1,
+  金额: null,
+}
+
+/** 同一对方的第二条关系（钉「每个对方只取一次档案」）。 */
+const 关系A二: 档案关系 = { ...关系A, id: "r3", type: "收款" }
+
+const 张三档案 = 档案({ id: "e1", canonical_value: "张三", type: "人", 关系: [关系A, 关系B] })
+const 张三档案全连A = 档案({ id: "e1", canonical_value: "张三", type: "人", 关系: [关系A, 关系A二] })
+const 王某档案 = 档案({ id: "a1", canonical_value: "王某", type: "人" })
+const 李某卡档案 = 档案({ id: "b1", canonical_value: "李某的卡", type: "账号", subtype: "银行卡" })
+
+/** 本实体与 A 都已在图上（B 不在）。 */
+const 图上本实体: 节点 = {
+  id: "n1",
+  名称: "张三",
+  类型: "人",
+  来源: { kind: "实体", 实体: "e1", 值: "张三" },
+  时间: { 首: "", 末: "" },
+  x: 100,
+  y: 100,
+}
+const 图上A: 节点 = {
+  id: "n2",
+  名称: "王某",
+  类型: "人",
+  来源: { kind: "实体", 实体: "a1", 值: "王某" },
+  时间: { 首: "", 末: "" },
+  x: 200,
+  y: 100,
+}
+
+function profile按表(表: Record<string, 实体档案>) {
+  return (id: string): Awaited<ReturnType<CaseDetailApi["profile"]>> => {
+    const 档 = 表[id]
+    return 档 === undefined
+      ? { kind: "error", message: "实体不存在", code: "NOT_FOUND" }
+      : { kind: "ok", value: 档 }
+  }
+}
+
+const 三档表 = profile按表({ e1: 张三档案, a1: 王某档案, b1: 李某卡档案 })
+
+describe("选择器 · 关系页", () => {
+  test("R-F8-1 点实体行「关系」⇒ 切到关系页、列出该实体既有关系", async () => {
+    const 器 = 挂选择器({ profile: 三档表, 已有节点: [图上本实体, 图上A] })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+
+    expect(器.profile调用).toEqual([["p 1", "e1"]])
+    expect(关系行数()).toBe(2)
+    expect(文本("hgraph-picker-relation-title")).toContain("张三 的既有关系")
+    // 行文案：对方值 · 对方类型(·细类) · 方向 · type · 首~末 · trust_state
+    expect(关系行("r1")!.textContent).toContain("王某 · 人 · 出 · 转账 · 2024-01-02~2024-02-03 · 已确认")
+    expect(关系行("r2")!.textContent).toContain("李某的卡 · 账号 · 银行卡 · 入 · 收款")
+    expect(关系行("r2")!.textContent).toContain("—~—")
+    // R59：脚注说明「按推断记、出处留空」。
+    expect(文本("hgraph-picker-relation-note")).toContain("库中关系没有行级出处")
+  })
+
+  test("R-F8-2 选 r1（两端都在图上）⇒ 只有一条「加边」，逐字断言边载荷", async () => {
+    const 器 = 挂选择器({ profile: 三档表, 已有节点: [图上本实体, 图上A] })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r1")
+    expect(加关系键()!.disabled).toBe(false)
+    加关系键()!.click()
+    await 落定()
+
+    expect(器.加过.length).toBe(1)
+    expect(器.加过[0]!.length).toBe(1)
+    const 操作 = 器.加过[0]![0]!
+    expect(操作.操作).toBe("加边")
+    if (操作.操作 !== "加边") throw new Error("形状不对")
+    expect(操作.边.length).toBe(1)
+    const 边 = 操作.边[0]!
+    expect(边.从).toBe("n1")
+    expect(边.到).toBe("n2")
+    expect(边.标签).toBe("转账")
+    expect(边.性质).toBe("推断")
+    expect(边.方向).toBe("有向")
+    expect(边.来源).toEqual({ kind: "关系", 关系们: ["r1"], 依据: "银行流水第 12 页" })
+    expect(边.可信度).toBe("高")
+    expect(边.时间).toEqual({ 首: "2024-01-02", 末: "2024-02-03" })
+    expect(String(边.id)).toMatch(/^临时e\d+$/)
+    // R59：不给行级出处，证据/出处都不写。
+    expect(边.证据).toBeUndefined()
+    expect(边.出处).toBeUndefined()
+    expect(器.关过()).toBe(1)
+    // A 已在图上 ⇒ 不再为对方取档案。
+    expect(器.profile调用).toEqual([["p 1", "e1"]])
+  })
+
+  test("R-F8-3 B 不在图上 ⇒ 先补 B 快照「加节点」，再「加边」（从=B、到=本节点）", async () => {
+    const 器 = 挂选择器({ profile: 三档表, 已有节点: [图上本实体] })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r2")
+    加关系键()!.click()
+    await 落定()
+
+    expect(器.加过.length).toBe(1)
+    const 操作们 = 器.加过[0]!
+    expect(操作们.map((操作) => 操作.操作)).toEqual(["加节点", "加边"])
+    const 加节点 = 操作们[0]!
+    if (加节点.操作 !== "加节点") throw new Error("形状不对")
+    expect(加节点.节点.length).toBe(1)
+    const 新点 = 加节点.节点[0]!
+    expect(新点.名称).toBe("李某的卡")
+    expect(新点.类型).toBe("账号")
+    expect(新点.细类).toBe("银行卡")
+    const 加边 = 操作们[1]!
+    if (加边.操作 !== "加边") throw new Error("形状不对")
+    expect(加边.边.length).toBe(1)
+    expect(加边.边[0]!.从).toBe(新点.id)
+    expect(加边.边[0]!.到).toBe("n1")
+    // 无依据 ⇒ 固定话术；自动抽取 ⇒ 中；时间 null ⇒ 空串。
+    expect(加边.边[0]!.来源).toEqual({ kind: "关系", 关系们: ["r2"], 依据: "库中关系（库中未记录依据）" })
+    expect(加边.边[0]!.可信度).toBe("中")
+    expect(加边.边[0]!.时间).toEqual({ 首: "", 末: "" })
+    expect(器.profile调用).toEqual([["p 1", "e1"], ["p 1", "b1"]])
+    expect(器.关过()).toBe(1)
+  })
+
+  test("R-F8-4 某个对方档案取不到 ⇒ 跳过该条、点名、其余照加、面板不关", async () => {
+    const 器 = 挂选择器({
+      profile: (id) => (id === "b1" ? { kind: "error", message: "实体不存在", code: "NOT_FOUND" } : 三档表(id)),
+      已有节点: [图上本实体, 图上A],
+    })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r1")
+    勾选关系("r2")
+    加关系键()!.click()
+    await 落定()
+
+    expect(器.加过.length).toBe(1)
+    const 操作们 = 器.加过[0]!
+    expect(操作们.map((操作) => 操作.操作)).toEqual(["加边"])
+    const 加边 = 操作们[0]!
+    if (加边.操作 !== "加边") throw new Error("形状不对")
+    expect(加边.边.length).toBe(1)
+    expect(加边.边[0]!.来源).toMatchObject({ 关系们: ["r1"] })
+
+    const 错 = 文本("hgraph-picker-error") ?? ""
+    expect(错).toContain("取不到档案，未加入")
+    expect(错).toContain("李某的卡")
+    expect(器.关过()).toBe(0)
+  })
+
+  test("R-F8-5 全部对方取不到 ⇒ 不调 onAdd、错误保留、面板不关", async () => {
+    const 器 = 挂选择器({
+      profile: (id) =>
+        id === "b1"
+          ? { kind: "error", message: "实体不存在", code: "NOT_FOUND" }
+          : { kind: "ok", value: id === "e1" ? 张三档案 : 王某档案 },
+      已有节点: [图上本实体],
+    })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r2")
+    加关系键()!.click()
+    await 落定()
+
+    expect(器.加过.length).toBe(0)
+    expect(器.关过()).toBe(0)
+    expect(文本("hgraph-picker-error") ?? "").toContain("取不到档案，未加入")
+  })
+
+  test("R-F8-6 点「关系」时档案取不到 ⇒ 错误文案、留在实体页（空列表）", async () => {
+    挂选择器({ profile: () => ({ kind: "error", message: "实体不存在", code: "NOT_FOUND" }) })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+
+    expect(文本("hgraph-picker-error") ?? "").toContain("实体不存在")
+    expect(关系行数()).toBe(0)
+    // 不切页：实体页的搜索框还在，关系页标题不在。
+    expect(取("[data-slot='hgraph-picker-q']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-picker-relation-title']")).toBeNull()
+  })
+
+  test("R-F8-7 本实体不在图上 ⇒ 同一批先补本实体快照（摆放 0）、再补对方（摆放 1）", async () => {
+    const 器 = 挂选择器({ profile: 三档表, 已有节点: [] })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r1")
+    加关系键()!.click()
+    await 落定()
+
+    const 操作们 = 器.加过[0]!
+    expect(操作们.map((操作) => 操作.操作)).toEqual(["加节点", "加边"])
+    const 加节点 = 操作们[0]!
+    if (加节点.操作 !== "加节点") throw new Error("形状不对")
+    expect(加节点.节点.length).toBe(2)
+    expect(加节点.节点[0]!.名称).toBe("张三")
+    expect([加节点.节点[0]!.x, 加节点.节点[0]!.y]).toEqual([100, 200])
+    expect(加节点.节点[1]!.名称).toBe("王某")
+    expect([加节点.节点[1]!.x, 加节点.节点[1]!.y]).toEqual([110, 210])
+    const 加边 = 操作们[1]!
+    if (加边.操作 !== "加边") throw new Error("形状不对")
+    expect(加边.边[0]!.从).toBe(加节点.节点[0]!.id)
+    expect(加边.边[0]!.到).toBe(加节点.节点[1]!.id)
+  })
+
+  test("R-F8-8 两个关系指向同一对方（不在图上）⇒ 对方档案只取一次、只补一颗节点", async () => {
+    const 器 = 挂选择器({
+      profile: (id) =>
+        id === "e1" ? { kind: "ok", value: 张三档案全连A } : id === "a1" ? { kind: "ok", value: 王某档案 } : { kind: "error", message: "实体不存在" },
+      已有节点: [图上本实体],
+    })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    勾选关系("r1")
+    勾选关系("r3")
+    加关系键()!.click()
+    await 落定()
+
+    const 操作们 = 器.加过[0]!
+    expect(操作们.map((操作) => 操作.操作)).toEqual(["加节点", "加边"])
+    const 加节点 = 操作们[0]!
+    if (加节点.操作 !== "加节点") throw new Error("形状不对")
+    expect(加节点.节点.length).toBe(1)
+    const 加边 = 操作们[1]!
+    if (加边.操作 !== "加边") throw new Error("形状不对")
+    expect(加边.边.length).toBe(2)
+    // 出边：从=本节点（n1），到=同一颗补出来的对方节点。
+    expect(加边.边.map((边) => 边.从)).toEqual(["n1", "n1"])
+    expect(加边.边.map((边) => 边.到)).toEqual([加节点.节点[0]!.id, 加节点.节点[0]!.id])
+    expect(器.profile调用).toEqual([["p 1", "e1"], ["p 1", "a1"]])
+  })
+
+  test("R-F8-10 面板开着从关系页被切到绑定模式 ⇒ 仍显示实体清单（不留空白）", async () => {
+    const [模式, set模式] = createSignal<"加入" | "绑定">("加入")
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    挂过的.push(
+      render(
+        () => (
+          <选择器
+            projectId="p 1"
+            实体api={{ list: async () => ({ kind: "ok", value: { 行们, 总数: 行们.length, 缺口: [] } }) }}
+            详情api={{ profile: async (_项目, id) => 三档表(id) }}
+            已有节点={[]}
+            摆放={() => ({ x: 0, y: 0 })}
+            模式={模式()}
+            onAdd={() => {}}
+            onBind={() => {}}
+            onClose={() => {}}
+          />
+        ),
+        host,
+      ),
+    )
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+    expect(关系行数()).toBe(2)
+
+    set模式("绑定")
+    await flush()
+
+    // 绑定模式没有页签，也不该被上一轮的「关系」页卡成空白：实体清单还在。
+    expect(页签("实体")).toBeNull()
+    expect(行数()).toBe(4)
+    expect(绑定键()).not.toBeNull()
+  })
+
+  test("R-F8-9 未勾选关系 ⇒ 加入按钮 disabled；绑定模式无页签与「关系」按钮", async () => {
+    挂选择器({ profile: 三档表 })
+    await 落定()
+
+    expect(页签("实体")).not.toBeNull()
+    expect(页签("关系")).not.toBeNull()
+    点页签("关系")
+    await flush()
+    expect(文本("hgraph-picker-relation-title")).toContain("先在「实体」页选一个实体")
+    expect(加关系键()!.disabled).toBe(true)
+
+    document.body.innerHTML = ""
+    挂选择器({ profile: 三档表, 模式: "绑定" })
+    await 落定()
+    expect(页签("实体")).toBeNull()
+    expect(取("[data-slot='hgraph-picker-relations']")).toBeNull()
+  })
+})
+
+describe("选择器 · 关系页纯函数", () => {
+  test("可信度映射：已确认/已修正→高，自动抽取→中，存疑/已排除/未知→低", () => {
+    expect(可信度映射("已确认")).toBe("高")
+    expect(可信度映射("已修正")).toBe("高")
+    expect(可信度映射("自动抽取")).toBe("中")
+    expect(可信度映射("存疑")).toBe("低")
+    expect(可信度映射("已排除")).toBe("低")
+    expect(可信度映射("未知")).toBe("低")
+  })
+
+  test("关系边：出⇒从本到对方，入⇒从对方到本；性质推断、方向有向、id 缺省临时e", () => {
+    const 出 = 关系边(关系A, "n1", "n2")
+    expect(出.从).toBe("n1")
+    expect(出.到).toBe("n2")
+    expect(出.性质).toBe("推断")
+    expect(出.方向).toBe("有向")
+    expect(出.标签).toBe("转账")
+    expect(出.id).toMatch(/^临时e\d+$/)
+
+    const 入 = 关系边(关系B, "n1", "n2")
+    expect(入.从).toBe("n2")
+    expect(入.到).toBe("n1")
+
+    expect(关系边(关系A, "n1", "n2", "临时e99").id).toBe("临时e99")
+  })
+
+  test("关系边：依据非空逐字用、null 用固定话术；时间 null ⇒ 空串；不写证据/出处", () => {
+    const 有 = 关系边(关系A, "n1", "n2")
+    expect(有.来源).toEqual({ kind: "关系", 关系们: ["r1"], 依据: "银行流水第 12 页" })
+    expect(有.可信度).toBe("高")
+    expect(有.时间).toEqual({ 首: "2024-01-02", 末: "2024-02-03" })
+
+    const 无 = 关系边(关系B, "n1", "n2")
+    expect(无.来源).toEqual({ kind: "关系", 关系们: ["r2"], 依据: "库中关系（库中未记录依据）" })
+    expect(无.可信度).toBe("中")
+    expect(无.时间).toEqual({ 首: "", 末: "" })
+
+    // R59：没有行级出处 ⇒ 这两个键不出现（不是空数组占位）。
+    expect(有.证据).toBeUndefined()
+    expect(有.出处).toBeUndefined()
   })
 })

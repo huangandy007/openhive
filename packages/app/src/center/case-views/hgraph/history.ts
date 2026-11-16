@@ -26,14 +26,13 @@
  *
  * `diff逆操作(旧, 新)` 把 AI 一整批变更折成一步的**正/逆操作**。能逐字还原才返回 `ok: true`：
  *
- * - 只认改字段白名单 + `x/y`（移动）；白名单外字段（来源/出处/属性/证据/时间/可信度/链接）
- *   一变 ⇒ `ok: false`；
+ * - 只认改字段白名单 + `x/y`（移动）；白名单外字段（节点的 `链接`、边的 `证据`/`出处`/
+ *   `时间`/`次数`/`金额` 等）一变 ⇒ `ok: false`；
  * - 存活边的 `从`/`到` 一变 ⇒ `ok: false`（改字段白名单不含端点，改回去只能重建对象）；
  * - 顶层 `标题/创建于/设置/格式` 一变 ⇒ `ok: false`（操作代数表达不了）；
  * - `更新于` 是账务字段，忽略（与 T013 `内容键` 同口径）。
  *
- * 白名单白区**镜像后端**（`hgraph-edit.ts:120-124`，data-model §7 是唯一来源）——前端不 import
- * 服务端包，故逐字镜像并在此注明出处，避免两处各写一份判断（`#002-06`）。
+ * 白名单在 `./whitelist`（零依赖纯模块）——镜像 `hgraph-edit.ts` 的 `可改键`，data-model §7 是唯一来源。
  *
  * ## id（R93）
  *
@@ -47,6 +46,7 @@
 import type { 操作 } from "@/project/hgraph-api"
 import type { 边, 图文件, 节点, 文字 } from "./file"
 import type { 副本 } from "./undo"
+import { 可改键, type 类别 } from "./whitelist"
 
 export interface 逆结果 {
   readonly 逆操作: readonly 操作[]
@@ -61,17 +61,9 @@ export interface 差量 {
 
 export type 差量结果 = ({ readonly ok: true } & 差量) | { readonly ok: false; readonly 原因: string }
 
-type 类别 = "节点" | "边" | "文字"
 type 行 = Record<string, unknown>
 
 const 类别前缀: Readonly<Record<类别, string>> = { 节点: "n", 边: "e", 文字: "t" }
-
-/** 镜像 `hgraph-edit.ts:120-124`（data-model §7 表）；`x`/`y` 只能走「移动」。 */
-const 可改键: Readonly<Record<类别, ReadonlySet<string>>> = {
-  节点: new Set(["名称", "类型", "细类", "外环", "备注", "出现序", "锁定", "样式"]),
-  边: new Set(["标签", "性质", "方向", "备注", "线宽档", "出现序"]),
-  文字: new Set(["内容", "字号", "加粗", "颜色", "对齐", "宽度", "出现序"]),
-}
 
 // ---------------------------------------------------------------------------
 // 小工具

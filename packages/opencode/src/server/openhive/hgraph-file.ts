@@ -465,7 +465,8 @@ const 校验话术: Readonly<Record<校验失败码, string>> = {
   INFERENCE_NEEDS_BASIS: "标了推断但没写依据：推断必须写明依据",
   INFERENCE_NEEDS_CONFIDENCE: "推断必须给可信度（高/中/低）",
   BAD_CITATION: "出处要写成 材料#工作表#行号，比如 mat_x#Sheet1#12",
-  BAD_SHAPE: "出处/证据的写法不对：出处要是数组，证据要是 {关系, 出处} 的数组",
+  BAD_SHAPE:
+    "字段写法不对：来源必须是 {kind: 实体/关系/推断/手写} 的对象，可信度只能是 高/中/低，出处要是数组，证据要是 {关系, 出处} 的数组",
 }
 
 function 拒(code: 校验失败码): 校验结果 {
@@ -509,6 +510,45 @@ function 出处证据形状合法(出处: unknown, 证据: unknown): boolean {
   return 证据.every(是普通对象)
 }
 
+/** R-F3 取值闸的枚举（写侧；读侧仍放宽，见 `解析图`）。 */
+const 来源类别们 = new Set(["实体", "关系", "推断", "手写"])
+const 可信度取值们 = new Set(["高", "中", "低"])
+const 性质取值们 = new Set(["事实", "推断"])
+const 方向取值们 = new Set(["有向", "无向"])
+
+/**
+ * 取值闸（R-F3，2026-11-16）：形状合法之外，**取值**也要合法。
+ *
+ * 只在写侧强制（本函数只被写入口调用；`解析图` 读侧保持放宽，坏值不会让文件打不开）。
+ * - `来源` 存在时必须是普通对象，且 `kind` ∈ 四个类别之一；
+ * - `可信度` 存在且非空时 ∈ {高,中,低}（空串等同缺省：推断仍由 `INFERENCE_NEEDS_CONFIDENCE` 拒）；
+ * - `性质` / `方向` 存在时 ∈ 各自两值（纵深防御；`加边`/`改字段` 的枚举校验仍在 `hgraph-edit.ts`）。
+ *
+ * 判据是「键存在」（`!== undefined`）：`null` 也算存在，不是普通对象 ⇒ BAD_SHAPE。改字段删
+ * `来源`/`时间`（节点必填）在更早的必填键闸就被拒，这里的 null 只接盘上坏数据或绕过入口的写入。
+ */
+function 取值合法(视图: Record<string, unknown>): boolean {
+  const 来源 = 视图.来源
+  if (来源 !== undefined) {
+    if (!是普通对象(来源)) return false
+    if (!(typeof 来源.kind === "string" && 来源类别们.has(来源.kind))) return false
+  }
+
+  const 可信度 = 视图.可信度
+  if (可信度 !== undefined && 可信度 !== null) {
+    if (typeof 可信度 !== "string") return false
+    if (可信度.trim() !== "" && !可信度取值们.has(可信度)) return false
+  }
+
+  if (视图.性质 !== undefined && 视图.性质 !== null) {
+    if (!(typeof 视图.性质 === "string" && 性质取值们.has(视图.性质))) return false
+  }
+  if (视图.方向 !== undefined && 视图.方向 !== null) {
+    if (!(typeof 视图.方向 === "string" && 方向取值们.has(视图.方向))) return false
+  }
+  return true
+}
+
 /**
  * `证据` 的元素是 `{ 关系, 出处 }`：`出处` 必须是**单行**（data-model §5.3/§5.6：一条证据
  * 对应一条库关系，出处单串、不做区间）。R9 的判据是「起 !== 末」——`12-12`（区间写法但两端
@@ -528,8 +568,8 @@ function 证据出处们合法(值: unknown): boolean {
  * 写入前的来源硬闸（contracts/hgraph-format §2 / data-model §6 V-04、V-05、V-06、V-09）：
  * **全仓唯一实现**，HTTP 手工、AI 工具、检查器改性质三条入口都只调它，不各写一份。
  *
- * 检查顺序，**首个不通过即返回**：`BAD_SHAPE`（`出处`/`证据` 的形状）→ `FACTS_NEED_SOURCE`
- * → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
+ * 检查顺序，**首个不通过即返回**：`BAD_SHAPE`（`出处`/`证据` 的形状，随后是 R-F3 的取值）
+ * → `FACTS_NEED_SOURCE` → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
  * 形状排最前：它是后两条语义闸的前提（`证据: [null]` 否则能绕过事实闸）。
  * 推断的判据有两处入口、同一组码：`来源.kind = 推断` 与边 `性质 = 推断`（R56：`改字段`
  * 只改性质时不能绕过）。节点、边、文字都能传（`文字` 没有来源字段，天然通过）。
@@ -543,13 +583,15 @@ export function 校验来源(对象: unknown): 校验结果 {
   const 证据 = 视图.证据
 
   if (!出处证据形状合法(出处, 证据)) return 拒("BAD_SHAPE")
+  // R-F3：形状之后、语义闸之前判取值（枚举）——形状是取值的前提，语义闸再压在合法取值上。
+  if (!取值合法(视图)) return 拒("BAD_SHAPE")
 
   // 只对边生效：节点没有 `性质` 字段；`事实` 的硬闸只压在标了事实的边上（V-04）。
   if (视图.性质 === "事实" && !(Array.isArray(出处) && 出处.length > 0) && !(Array.isArray(证据) && 证据.length > 0)) {
     return 拒("FACTS_NEED_SOURCE")
   }
 
-  // 推断的判据对节点与边一致（data-model §5.1 / V-05、V-06）。`可信度` 只判非空，不判枚举值。
+  // 推断的判据对节点与边一致（data-model §5.1 / V-05、V-06）。`可信度` 的枚举值归上面的取值闸。
   const 来源视图 = 是普通对象(视图.来源) ? 视图.来源 : {}
   if (来源视图.kind === "推断") {
     if (!非空串(来源视图.依据)) return 拒("INFERENCE_NEEDS_BASIS")
