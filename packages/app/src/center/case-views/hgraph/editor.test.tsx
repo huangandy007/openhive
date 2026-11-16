@@ -5453,3 +5453,59 @@ describe("T013 · 三行布局与图例搬家", () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// T017 · 强度过滤（画布条控件 → 画布内过滤 → 角落一键恢复）
+// ---------------------------------------------------------------------------
+
+/** 四条边，档位分别 1 / 2 / 3 / 4（`线宽档` 手动值由 `边档` 原样返回）。 */
+function 四档边图(): 图文件 {
+  return {
+    ...一份图(),
+    节点: [
+      造节点("q1", 100, 100),
+      造节点("q2", 250, 100),
+      造节点("q3", 400, 100),
+      造节点("q4", 550, 100),
+      造节点("q5", 680, 100),
+    ],
+    边: [
+      { ...造边("s1", "q1", "q2"), 线宽档: 1 },
+      { ...造边("s2", "q2", "q3"), 线宽档: 2 },
+      { ...造边("s3", "q3", "q4"), 线宽档: 3 },
+      { ...造边("s4", "q4", "q5"), 线宽档: 4 },
+    ],
+    文字: [],
+  }
+}
+
+describe("T017 · 强度过滤", () => {
+  test("画布条选 N=3 ⇒ 只留 3/4 档边，角落提示写实际隐藏数；一键恢复 ⇒ 全部回来", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 四档边图())
+    await flush()
+
+    ;(取("[data-slot='hgraph-filter-toggle']") as HTMLButtonElement).click()
+    await flush()
+    const 控件 = 取("[data-slot='hgraph-strength-filter']") as HTMLSelectElement
+    expect(控件 !== null).toBe(true)
+    控件.value = "3"
+    控件.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+
+    expect(边数()).toBe(2)
+    // 过滤只作用于边：五颗节点一颗不少。
+    expect(节点数()).toBe(5)
+    expect(文案("hgraph-strength-hidden-text")).toBe("已隐藏 2 条较弱关系")
+
+    const 恢复 = 取("[data-slot='hgraph-strength-restore']")
+    expect(恢复 !== null).toBe(true)
+    ;(恢复 as HTMLButtonElement).click()
+    await flush()
+
+    expect(边数()).toBe(4)
+    expect(取("[data-slot='hgraph-strength-hidden-note']") === null).toBe(true)
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+})

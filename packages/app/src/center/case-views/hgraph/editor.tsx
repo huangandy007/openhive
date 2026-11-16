@@ -609,6 +609,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** T017b（R72）：性质筛选作用在边上（全部 / 事实 / 推断）。 */
   const [筛选性质, set筛选性质] = createSignal<"全部" | "事实" | "推断">("全部")
   const [筛选面板开, set筛选面板开] = createSignal(false)
+  /**
+   * T017 / FR-028：强度过滤阈值。`undefined` = 关闭；0..4 ⇒ 只显示 `边档 >= N` 的边。
+   * 只是渲染态，不进文档、不写盘；画布在同一处过滤并回传实际隐藏条数。
+   */
+  const [强度阈值, set强度阈值] = createSignal<number | undefined>()
   /** T017b（R71）：>800 节点默认关标签，这个开关强制打开。 */
   const [全部标签, set全部标签] = createSignal(false)
   /** T017b（R72）：搜索框的词与结果光标（结果顺序 = 文档顺序）。 */
@@ -2178,7 +2183,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           data-slot="hgraph-filter-toggle"
           aria-label="筛选"
           aria-pressed={筛选面板开() ? "true" : "false"}
-          title="按类型 / 性质筛选"
+          title="按类型 / 性质 / 强度筛选"
           class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
           onClick={() => set筛选面板开((旧) => !旧)}
         >
@@ -2224,7 +2229,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </p>
       </Show>
 
-      {/* T017b（R72）：筛选面板——类型（文档里出现过的）＋ 性质（全部/事实/推断）。度量筛选待 T018。 */}
+      {/* T017b（R72）＋ T017（FR-028）：筛选面板——类型（文档里出现过的）＋ 性质（全部/事实/推断）＋ 只看 ≥ N 档。 */}
       <Show when={筛选面板开()}>
         <div
           data-slot="hgraph-filter-panel"
@@ -2261,6 +2266,30 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               <option value="全部">全部</option>
               <option value="事实">事实</option>
               <option value="推断">推断</option>
+            </select>
+          </label>
+          {/*
+            T017 / FR-028：「只看 ≥ N 档」。N 是边档下限（含边界），关闭 = 不过滤；
+            档位换算在画布（`边档`），这里只存阈值。恢复入口在画布角落提示里。
+          */}
+          <label class="text-12-regular text-v2-text-text-muted">
+            只看 ≥
+            <select
+              data-slot="hgraph-strength-filter"
+              aria-label="只看 ≥ N 档"
+              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={强度阈值() === undefined ? "关闭" : String(强度阈值())}
+              onChange={(事件) => {
+                const 值 = 事件.currentTarget.value
+                set强度阈值(值 === "关闭" ? undefined : Number(值))
+              }}
+            >
+              <option value="关闭">关闭</option>
+              <option value="0">0 档</option>
+              <option value="1">1 档</option>
+              <option value="2">2 档</option>
+              <option value="3">3 档</option>
+              <option value="4">4 档</option>
             </select>
           </label>
           <button
@@ -2547,6 +2576,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           档表={档表()}
           图例初始收起={演示中()}
           不渲染图例={!演示中()}
+          强度阈值={演示中() ? undefined : 强度阈值()}
+          恢复强度={() => set强度阈值(undefined)}
         />
         {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
         <Show when={!演示中() && 隐藏数() > 0}>

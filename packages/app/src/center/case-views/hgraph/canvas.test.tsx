@@ -7,6 +7,7 @@
  * 深色主题不验（宪法 §八）。
  */
 import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
 import { 画布, 是双指平移, type 画布动作, type 模式, type 坐标换算 } from "./canvas"
@@ -126,6 +127,9 @@ function 挂(
     readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
     readonly 检查器宽?: number
     readonly 让位请求?: { readonly id: string; readonly 序号: number }
+    readonly 可见?: { readonly 节点: ReadonlySet<string>; readonly 边: ReadonlySet<string> }
+    readonly 强度阈值?: number
+    readonly 恢复强度?: () => void
   } = {},
 ) {
   const host = document.createElement("div")
@@ -147,6 +151,9 @@ function 挂(
           容器尺寸={额外.容器尺寸}
           检查器宽={额外.检查器宽}
           让位请求={额外.让位请求}
+          可见={额外.可见}
+          强度阈值={额外.强度阈值}
+          恢复强度={额外.恢复强度}
         />
       ),
       host,
@@ -1082,5 +1089,129 @@ describe("T012 · 边线型渲染", () => {
     const 元素 = 线("e3")
     expect(元素 !== null).toBe(true)
     expect(元素!.getAttribute("stroke-dasharray")).toBe("1 3")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T017 · 强度过滤「只看 ≥ N 档」
+// ---------------------------------------------------------------------------
+
+/**
+ * 五颗节点、四条边，档位分别 1 / 2 / 3 / 4（`边.线宽档` 手动值 ⇒ `边档` 原样返回）。
+ * 节点比边端点多一颗（e 只接 e4）：过滤只该动边，不该让任何节点消失。
+ */
+function 四档图(): 图文件 {
+  return 造图(
+    [
+      造节点("a", 80, 100),
+      造节点("b", 220, 100),
+      造节点("c", 360, 100),
+      造节点("d", 500, 100),
+      造节点("e", 640, 100),
+    ],
+    [
+      造边("e1", "a", "b", { 线宽档: 1 }),
+      造边("e2", "b", "c", { 线宽档: 2 }),
+      造边("e3", "c", "d", { 线宽档: 3 }),
+      造边("e4", "d", "e", { 线宽档: 4 }),
+    ],
+  )
+}
+
+const 边id们 = () =>
+  [...document.querySelectorAll("[data-slot='hgraph-edge']")]
+    .map((组) => 组.getAttribute("data-edge-id"))
+    .sort((甲, 乙) => {
+      const 左 = 甲 ?? ""
+      const 右 = 乙 ?? ""
+      return 左 < 右 ? -1 : 左 > 右 ? 1 : 0
+    })
+
+describe("T017 · 强度过滤", () => {
+  test("N=3：1–2 档边不渲染，正好 3 档与 4 档仍渲染（含边界），节点一颗不少", () => {
+    挂(四档图(), undefined, { 强度阈值: 3 })
+
+    expect(边id们()).toEqual(["e3", "e4"])
+    expect(取("[data-edge-id='e3']")!.getAttribute("data-edge-tier")).toBe("3")
+    expect(取("[data-edge-id='e4']")!.getAttribute("data-edge-tier")).toBe("4")
+    // 过滤只作用于边：五颗节点全部仍在。
+    expect(全部("[data-slot='hgraph-node']").length).toBe(5)
+  })
+
+  test("角落提示的条数 = 实际隐藏数（不是阈值，也不含演示可见已排除的边）", () => {
+    // 第 5 条边被 `可见` 排除：它本来就不渲染，不能被算进「已隐藏 N 条」。
+    const 图 = 造图(
+      [
+        造节点("a", 80, 100),
+        造节点("b", 220, 100),
+        造节点("c", 360, 100),
+        造节点("d", 500, 100),
+        造节点("e", 640, 100),
+      ],
+      [
+        造边("e1", "a", "b", { 线宽档: 1 }),
+        造边("e2", "b", "c", { 线宽档: 2 }),
+        造边("e3", "c", "d", { 线宽档: 3 }),
+        造边("e4", "d", "e", { 线宽档: 4 }),
+        造边("e5", "e", "a", { 线宽档: 1 }),
+      ],
+    )
+    挂(图, undefined, {
+      强度阈值: 3,
+      可见: { 节点: new Set(图.节点.map((点) => 点.id)), 边: new Set(["e1", "e2", "e3", "e4"]) },
+    })
+
+    // 实际隐藏 2 条（e1 / e2）；阈值是 3，演示可见已排除的 e5 不计入。
+    const 文案元素 = 取("[data-slot='hgraph-strength-hidden-text']")
+    expect(文案元素 !== null).toBe(true)
+    expect(文案元素!.textContent?.trim()).toBe("已隐藏 2 条较弱关系")
+    expect(取("[data-slot='hgraph-strength-hidden-note']") !== null).toBe(true)
+  })
+
+  test("一键恢复：点恢复后阈值回关闭，全部边回来、提示消失", () => {
+    const 图 = 四档图()
+    const [阈, set阈] = createSignal<number | undefined>(3)
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    挂过的.push(
+      render(
+        () => (
+          <画布
+            文档={图}
+            选中={[]}
+            模式="指针"
+            动作={幽灵动作表()}
+            强度阈值={阈()}
+            恢复强度={() => set阈(undefined)}
+          />
+        ),
+        host,
+      ),
+    )
+
+    expect(边id们()).toEqual(["e3", "e4"])
+    const 恢复 = 取("[data-slot='hgraph-strength-restore']")
+    expect(恢复 !== null).toBe(true)
+    ;(恢复 as HTMLButtonElement).click()
+
+    expect(边id们()).toEqual(["e1", "e2", "e3", "e4"])
+    // `#013-12`：DOM 节点「不存在」用布尔比较，不用 toBeNull。
+    expect(取("[data-slot='hgraph-strength-hidden-note']") === null).toBe(true)
+  })
+
+  test("图例保持纯说明：容器内没有 input / select / 档位控件", () => {
+    挂(四档图())
+
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    // 先立前提：图例确实在文档里，且四条说明都在——避免「容器没渲染」造成的假绿。
+    expect(图例 !== null).toBe(true)
+    expect(document.body.contains(图例!)).toBe(true)
+    expect(条目数()).toBe(4)
+
+    expect(
+      图例!.querySelectorAll("input, select, textarea, [role='checkbox'], [role='slider'], [role='switch']").length,
+    ).toBe(0)
+    // 强度过滤控件 / 提示 / 恢复入口都不许长在图例里。
+    expect(图例!.querySelector("[data-slot^='hgraph-strength']") === null).toBe(true)
   })
 })

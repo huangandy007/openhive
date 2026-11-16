@@ -360,6 +360,17 @@ export interface 画布Props {
    * 省略（导出 / 演示 / 片段测试）⇒ 仍渲染在 svg 内（导出必须含图例，R74）。
    */
   readonly 不渲染图例?: boolean
+  /**
+   * 强度过滤（T017 / FR-028）：`undefined` = 关闭；`0..4` ⇒ 只渲染 `边档 >= N` 的边。
+   * 与 `可见` 取交集（渲染集合 = 演示可见 ∩ 强度可见），**只作用于边**——节点一律不隐藏。
+   * 档位换算复用 `geometry.ts` 的 `边档`（内部即 `线宽档`），这里不另算（`#002-06`）。
+   */
+  readonly 强度阈值?: number
+  /**
+   * 角落提示的「一键恢复」：把外壳的阈值置回关闭。画布不持有这个 UI 态，只发意图；
+   * 省略时提示只报条数、不渲染恢复按钮（导出 / 片段渲染）。
+   */
+  readonly 恢复强度?: () => void
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -680,9 +691,22 @@ export function 画布(props: 画布Props): JSX.Element {
   const 可见节点们 = createMemo(() =>
     props.可见 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => props.可见!.节点.has(点.id)),
   )
-  const 可见边们 = createMemo(() =>
+  /** 外壳给的可见边（演示步进 / 隔离·筛选）；强度过滤只在这里再叠一个条件。 */
+  const 基础可见边们 = createMemo(() =>
     props.可见 === undefined ? props.文档.边 : props.文档.边.filter((行) => props.可见!.边.has(行.id)),
   )
+  /**
+   * T017 / FR-028：渲染边 = 演示可见 ∩ `边档 >= N`（同一处叠加，不新建过滤层）。
+   * `边档` 是唯一档位出处（手动档优先、阈值度量兜底），画布不自算。
+   */
+  const 可见边们 = createMemo(() => {
+    const 阈 = props.强度阈值
+    const 基础 = 基础可见边们()
+    if (阈 === undefined) return 基础
+    return 基础.filter((行) => 边档(行, props.文档.设置) >= 阈)
+  })
+  /** 角落提示的条数 = **实际被强度过滤隐藏**的边数（阈值本身不是条数）。 */
+  const 强度隐藏数 = createMemo(() => 基础可见边们().length - 可见边们().length)
   // --- T018：视觉规格（形状 / 边几何 / 外环） --------------------------------------------
 
   /**
@@ -1235,6 +1259,32 @@ export function 画布(props: 画布Props): JSX.Element {
           class="absolute right-2 top-2 z-10 text-12-regular text-v2-text-text-muted"
         >
           {悬空数()} 条边指向不存在的节点
+        </div>
+      </Show>
+
+      {/*
+        强度过滤角落提示（T017 / FR-028）：条数 = 实际隐藏数；一键恢复交回外壳。
+        放左上角：右下角被检查器（320px、right:0、height:100%）盖住，恢复按钮会点不到；
+        左下角归「已隐藏 N 个节点」角标。容器 `pointer-events-none` 不吃画布拖拽，
+        只放行按钮自身。
+      */}
+      <Show when={强度隐藏数() > 0}>
+        <div
+          data-slot="hgraph-strength-hidden-note"
+          role="status"
+          class="pointer-events-none absolute left-2 top-2 z-10 flex items-center gap-2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 px-2 py-1 text-12-regular text-v2-text-text-muted shadow"
+        >
+          <span data-slot="hgraph-strength-hidden-text">已隐藏 {强度隐藏数()} 条较弱关系</span>
+          <Show when={props.恢复强度 !== undefined}>
+            <button
+              type="button"
+              data-slot="hgraph-strength-restore"
+              class="pointer-events-auto rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+              onClick={() => props.恢复强度?.()}
+            >
+              恢复
+            </button>
+          </Show>
         </div>
       </Show>
 
