@@ -6,6 +6,8 @@
  * 胶囊是**可选开关**：默认不选 = 普通文件（否则「新建文件」从此每个都变成 `.hgraph`）；
  * 选中才把后缀补到名字后面。目录类型不显示胶囊（目录不能变成图文件）。
  */
+import { 关系图扩展名 } from "@/center/file-type-extensions"
+
 export interface 可新建类型 {
   readonly 标签: string
   /** 带点、小写（与 `extensionOf` / 视图注册表同口径）。 */
@@ -20,8 +22,10 @@ export interface 可新建类型 {
 /**
  * 关系图的后缀（小写带点）。**建文件那一侧也用它**：新建成功后要不要补初始内容，
  * 判的就是这个名字结尾——两处各写一份 `.hgraph` 迟早只改一边（`#002-06`）。
+ *
+ * 字面量只在 `@/center/file-type-extensions` 的 `关系图扩展名` 里出现一次（013 · T2）。
  */
-export const 关系图后缀 = ".hgraph"
+export const 关系图后缀 = 关系图扩展名[0]
 
 export const 可新建类型: readonly 可新建类型[] = Object.freeze([
   Object.freeze({ 标签: "关系图", 后缀: 关系图后缀, 初始内容: undefined }),

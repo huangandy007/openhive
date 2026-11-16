@@ -23,7 +23,7 @@
  */
 
 import { contentTabKey, type ContentTab } from "./tab-store"
-import { 表格扩展名 } from "./views"
+import { 表格扩展名 } from "./file-type-extensions"
 import { extensionOf } from "./view-registry"
 
 /** 闸门的两档阈值（字节）。用户 2026-10-12 裁定：**表格 5 MB，其余 10 MB**。 */
