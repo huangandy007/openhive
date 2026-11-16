@@ -58,7 +58,7 @@ import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
 import { 工具栏 } from "./toolbar"
-import { 检查器, type 节点快照 } from "./inspector"
+import { 检查器, 收起宽, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
@@ -623,11 +623,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** T008：检查器让位请求——选中变化时递增一次；同一选中期间拖动不再递增。 */
   const [让位请求, set让位请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
   /**
-   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
-   * 对象）；当前展开态 ⇒ 320。T014 的 40px 收起态接入后在这里按收起状态给值，
-   * 画布只消费这个数、不再自己假定面板宽度。
+   * T014 / FR-050：检查器收起态。`Esc` 收起、点窄条 / 按 `I` 展开；收起后选中另一个
+   * 对象仍保持收起（用户的选择），宽度由 `检查器占用宽` 换算成 40。
    */
-  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 面板宽)
+  const [详情收起, set详情收起] = createSignal(false)
+  /**
+   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
+   * 对象）；展开 ⇒ 320；收起 ⇒ 40（T014 / FR-050）。画布只消费这个数、不再自己假定
+   * 面板宽度——收起后仍按 320 让位会把画面无故推走。
+   */
+  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 详情收起() ? 收起宽 : 面板宽)
   /**
    * T008 / FR-015：选中变化 ⇒ 请画布让位一次（检查器浮在右侧，会盖住底下那一列）。
    * 只有「单个选中 id」真的变了才递增序号——拖动改的是文档坐标、不改选中，所以后续
@@ -1927,9 +1932,34 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // T005：Delete 由本容器独家接管（画布已不处理）。焦点在工具栏按钮 / 检查器上时
       // 画布容器的 keydown 收不到；输入守卫与演示静默共用 `命中删除键` 一份判据。
       onKeyDown={(事件) => {
-        if (!命中删除键(事件, { 演示中: 演示中(), 有选中: 选中().length > 0 })) return
-        事件.preventDefault()
-        动作.删除所选()
+        if (命中删除键(事件, { 演示中: 演示中(), 有选中: 选中().length > 0 })) {
+          事件.preventDefault()
+          动作.删除所选()
+          return
+        }
+        // T014 / FR-050：`I` 展开、「Esc」先取消选中再收起。同样收口在根容器——
+        // 焦点在工具栏 / 检查器时画布的 keydown 收不到。
+        //
+        // 已被下游处理过的键不再处理：演示态的 Esc 会同步退出演示（`演示中()` 到这里
+        // 已经是 false），若再按编辑态规则取消选中，就会把演示前的选中一并清掉。
+        if (演示中() || 事件.defaultPrevented) return
+        const 目标 = 事件.target
+        if (目标 !== null && "tagName" in 目标) {
+          const 名 = String(目标.tagName).toUpperCase()
+          const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
+          if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
+        }
+        if ((事件.key === "i" || 事件.key === "I") && !事件.ctrlKey && !事件.metaKey && !事件.altKey) {
+          if (选中().length === 0) return
+          事件.preventDefault()
+          set详情收起(false)
+          return
+        }
+        if (事件.key === "Escape") {
+          事件.preventDefault()
+          if (选中().length > 0) 动作.选择([], false)
+          set详情收起(true)
+        }
       }}
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
@@ -2542,6 +2572,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             选中={选中()}
             文档={文档()}
             动作表={动作}
+            收起={详情收起()}
+            收起变化={set详情收起}
             快照={props.详情api === undefined ? undefined : 快照表()}
             载入中={快照载入()}
             刷新节点={props.详情api === undefined ? undefined : (库id) => void 刷新节点(库id)}

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 图文件, 节点, 边, 文字 } from "./file"
-import type { 画布动作 } from "./canvas"
+import { 外环色表, type 画布动作 } from "./canvas"
 import { 检查器, type 节点快照 } from "./inspector"
 
 const 挂过的: Array<() => void> = []
@@ -136,6 +136,8 @@ function 挂检查器(选项: {
   打开档案?: (实体id: string, 标题: string) => void
   绑定?: (节点id: string) => void
   打开出处?: (材料: string, 行号: number) => void
+  收起?: boolean
+  收起变化?: (值: boolean) => void
 }) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -143,6 +145,8 @@ function 挂检查器(选项: {
   const 文档 = 选项.文档 ?? 造图()
   // 选中用信号：M3 要断言「换选再回来」时提示消失。
   const [选中, set选中] = createSignal<readonly string[]>(选项.选中)
+  // T014 收起态：默认展开；用例可注入初值，也可读回点击后的状态。
+  const [收起, set收起] = createSignal(选项.收起 ?? false)
   挂过的.push(
     render(
       () => (
@@ -157,12 +161,14 @@ function 挂检查器(选项: {
           打开档案={选项.打开档案}
           绑定={选项.绑定}
           打开出处={选项.打开出处}
+          收起={收起()}
+          收起变化={选项.收起变化 ?? set收起}
         />
       ),
       host,
     ),
   )
-  return { ...幽, set选中 }
+  return { ...幽, set选中, 收起, set收起 }
 }
 
 const 取 = (选择器: string) => document.body.querySelector(选择器) as HTMLElement | null
@@ -455,11 +461,12 @@ describe("检查器 · 批量态", () => {
     expect(取("[data-slot='hgraph-field-名称']")).not.toBeNull()
   })
 
-  test("没有选中：只给提示，不显示空属性或伪造快照", () => {
+  test("没有选中：检查器整个不渲染（不显示空属性或伪造快照）", () => {
     挂检查器({ 选中: [] })
-    expect(文本("hgraph-inspector-hint")).toContain("选中")
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-snapshot-empty']")).toBeNull()
+    // T014 / FR-050 必要更替：旧口径是「空面板里给一句提示」，新口径是未选中不渲染。
+    expect(document.body.querySelector("[data-slot='hgraph-inspector']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-snapshot-empty']") === null).toBe(true)
   })
 })
 
@@ -1052,12 +1059,13 @@ describe("检查器 · T011 事件两态与参与方", () => {
     document.body.innerHTML = ""
     // 绑定态：九格里没有输入框，值仍以只读文本可见。
     挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
-    expect(输入们().length).toBe(3)
+    // T014 / FR-032 必要更替：外环颜色由自由文本输入框改为预设下拉（不再是 input）。
+    expect(输入们().length).toBe(2)
     expect(输入们().map((项) => 项.getAttribute("data-slot"))).toEqual([
       "hgraph-field-外环档",
-      "hgraph-field-外环颜色",
       "hgraph-field-备注",
     ])
+    expect(取("[data-slot='hgraph-field-外环颜色']")?.tagName).toBe("SELECT")
     expect(文本("hgraph-field-名称")).toBe("库转账")
     expect(文本("hgraph-field-类型")).toBe("资金交易")
   })
@@ -1099,5 +1107,118 @@ describe("检查器 · T011 事件两态与参与方", () => {
     // 不建节点、不改字段：参与方段只读文档。
     expect(幽.计数.加节点 ?? 0).toBe(0)
     expect(幽.计数.改字段 ?? 0).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T014 · 四段骨架 / 收起窄条 / 未选中不渲染 / 档位与色值收口（FR-031/032/034/050）
+// ---------------------------------------------------------------------------
+
+describe("检查器 · T014 四段骨架与收起", () => {
+  test("选中节点 ⇒ 头 / 可改 / 只读 / 操作脚四段齐", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+
+    // 段名沿用既有：可改区是 `hgraph-inspector-edit`，只读区是 `hgraph-inspector-readonly`。
+    for (const 段 of [
+      "hgraph-inspector-head",
+      "hgraph-inspector-edit",
+      "hgraph-inspector-readonly",
+      "hgraph-inspector-actions",
+    ]) {
+      expect(document.body.querySelector(`[data-slot='${段}']`) === null).toBe(false)
+    }
+
+    // 只读区：灰底 + 🔒 + 悬停说明（FR-034）。
+    const 只读 = 取("[data-slot='hgraph-inspector-readonly']") as HTMLElement
+    expect(只读.className).toContain("bg-v2-background-bg-layer-01")
+    expect((只读.textContent ?? "").includes("🔒")).toBe(true)
+    expect(
+      只读.querySelector("[data-slot='hgraph-inspector-readonly-lock']")?.getAttribute("title"),
+    ).toBe("来自库快照，请在库中修改")
+
+    // 头段：名称 / 类型·细类 / 来源徽标 / 收起入口（FR-034）。
+    expect(文本("hgraph-inspector-head-title")).toBe("张三")
+    const 头 = 文本("hgraph-inspector-head") ?? ""
+    expect(头).toContain("人物 · 嫌疑人")
+    expect(头).toContain("实体")
+    expect(取("[data-slot='hgraph-inspector-collapse']") === null).toBe(false)
+
+    // 操作脚：左主操作、右删除。
+    expect(取("[data-slot='hgraph-inspector-neighbors']") === null).toBe(false)
+    expect(取("[data-slot='hgraph-inspector-delete']") === null).toBe(false)
+  })
+
+  test("收起态是 40px 竖条「详情」+ 类型色点；展开体不在 DOM", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 收起: true, 快照 })
+
+    const 容器 = 取("[data-slot='hgraph-inspector']") as HTMLElement
+    expect(容器.style.width).toBe("40px")
+
+    const 条 = 取("[data-slot='hgraph-inspector-collapsed']") as HTMLButtonElement
+    expect(条 === null).toBe(false)
+    expect((条.textContent ?? "").includes("详情")).toBe(true)
+
+    const 点 = 条.querySelector<HTMLElement>("[data-slot='hgraph-inspector-collapsed-dot']")
+    expect(点 === null).toBe(false)
+    expect((点!.style.background ?? "") === "").toBe(false)
+
+    // 收起时只剩窄条：头段与展开体都不渲染。
+    expect(取("[data-slot='hgraph-inspector-head']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-actions']") === null).toBe(true)
+
+    // 点窄条 ⇒ 展开（FR-050）。
+    条.click()
+    expect(幽.收起()).toBe(false)
+  })
+
+  test("未选中 ⇒ 检查器不渲染（不是空壳、不占位）", () => {
+    挂检查器({ 选中: [] })
+
+    expect(document.body.querySelector("[data-slot='hgraph-inspector']") === null).toBe(true)
+    expect(document.body.querySelector("[data-slot='hgraph-inspector-collapsed']") === null).toBe(true)
+    expect(document.body.querySelector("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
+  })
+
+  test("外环档 12 ⇒ 就地提示且不调用改字段（与线宽档同一实现点）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-外环档']") as HTMLInputElement
+
+    输入.value = "12"
+    失焦(输入)
+
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+    expect(文本("hgraph-field-外环档-提示")).toBe("要填 0–4 的整数")
+  })
+
+  test("外环档清空 ⇒ 删键：外环只留颜色（与线宽档同语义）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-外环档']") as HTMLInputElement
+
+    输入.value = ""
+    失焦(输入)
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: { 颜色: "红" } }])
+  })
+
+  test("外环颜色是 <select>：7 预设 + 自动 = 8 个选项（色名取自外环色表）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 颜色: "红" } }), 快照 })
+
+    const 选 = 取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement
+    expect(选.tagName).toBe("SELECT")
+    const 值们 = [...选.querySelectorAll("option")].map((项) => 项.value)
+    expect(值们.length).toBe(8)
+    expect(值们[0]).toBe("自动")
+    expect(值们.slice(1)).toEqual(Object.keys(外环色表))
+
+    选择(选, "蓝")
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: { 颜色: "蓝" } }])
+  })
+
+  test("外环颜色选「自动」⇒ 删键（外环整键 null）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 颜色: "红" } }), 快照 })
+
+    选择(取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement, "自动")
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: null }])
   })
 })

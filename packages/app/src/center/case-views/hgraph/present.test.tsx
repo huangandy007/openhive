@@ -545,7 +545,12 @@ describe("编辑器 · 演示态", () => {
     await flush()
     expect(取("[data-slot='hgraph-present']")).toBeNull()
     expect(取("[data-slot='hgraph-toolbar']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-inspector']")).not.toBeNull()
+    // T014 / FR-050 必要更替：未选中 ⇒ 检查器不渲染（旧口径是空壳里给一句提示）。
+    // 「回来」改用下面这一步证明：选中节点后面板才出现。
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(true)
+    点选("n1", 100, 100)
+    await flush()
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(false)
     // 编辑态的完整图回来（演示只过滤渲染，不改文档）。
     expect(节点组("n2")).not.toBeNull()
     expect(画布()!.getAttribute("data-readonly")).toBeNull()

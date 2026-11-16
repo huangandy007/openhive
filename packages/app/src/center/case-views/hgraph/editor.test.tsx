@@ -1187,6 +1187,62 @@ describe("检查器让位（T008）", () => {
 
     expect(变换()).toBe(让位后)
   })
+
+  test("T014 收起后换选 ⇒ 让位按 40px 算（不是常量 320）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, {
+      ...一份图(),
+      节点: [造节点("n1", 100, 100), 造节点("n2", 600, 100)],
+      边: [],
+      文字: [],
+    })
+    await flush()
+
+    // 先选中一个没被遮的节点：展开态也不该让位（100 ≤ 440）。
+    点选("n1", 100, 100)
+    await flush()
+    expect((取("[data-slot='hgraph-inspector']") as HTMLElement).style.width).toBe("320px")
+    expect(变换()).toBe("translate(0 0) scale(1)")
+
+    // 收起成 40px 竖条。
+    ;(取("[data-slot='hgraph-inspector-collapse']") as HTMLButtonElement).click()
+    await flush()
+    expect((取("[data-slot='hgraph-inspector']") as HTMLElement).style.width).toBe("40px")
+
+    // 再选 n2(600)：收起态未覆盖右界 = 760 - 40 = 720 ⇒ 600 本来就没被盖住，画面不动。
+    // 若 `检查器占用宽` 仍按 320 算（右界 440）⇒ 会被误判成遮挡并平移 -380。
+    点选("n2", 600, 100)
+    await flush()
+    expect(变换()).toBe("translate(0 0) scale(1)")
+
+    await 过防抖()
+    expect(写们.length).toBe(0)
+  })
+
+  test("T014 Esc 先取消选中（面板消失）；再选中是收起态，按 I 展开", async () => {
+    const { api } = 假api()
+    挂上(api, { ...一份图(), 节点: [造节点("n1", 100, 100), 造节点("n2", 300, 100)], 边: [], 文字: [] })
+    await flush()
+
+    点选("n1", 100, 100)
+    await flush()
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(false)
+
+    // Esc 落在画布上：先取消选中 ⇒ 未选中不渲染（FR-050）。
+    按键(画布()!, { key: "Escape" })
+    await flush()
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(true)
+
+    // 再选中另一节点：面板是收起态（Esc 已经把面板收起）。
+    点选("n2", 300, 100)
+    await flush()
+    expect((取("[data-slot='hgraph-inspector']") as HTMLElement).style.width).toBe("40px")
+
+    // `I` ⇒ 展开回 320。
+    按键(取("[data-slot='hgraph-editor']")!, { key: "i" })
+    await flush()
+    expect((取("[data-slot='hgraph-inspector']") as HTMLElement).style.width).toBe("320px")
+  })
 })
 
 // ---------------------------------------------------------------------------

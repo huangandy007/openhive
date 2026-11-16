@@ -153,6 +153,23 @@ export function 文字色(颜色: string | undefined): string {
   return 文字色表[颜色 ?? ""] ?? 默认文字色
 }
 
+/**
+ * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
+ * 查不到（含空 / 自定义色名）⇒ 默认描边色，不猜用户意图。
+ *
+ * **模块作用域 + 导出**（T014）：检查器「外环颜色」下拉的选项必须取自同一张表
+ * （`#002-06`：色名清单只写一处），不要在 inspector 里另抄一份。
+ */
+export const 外环色表: Readonly<Record<string, string>> = {
+  红: "var(--v2-state-border-danger)",
+  橙: "var(--v2-state-border-warning)",
+  黄: "var(--v2-state-border-warning)",
+  绿: "var(--v2-state-border-success)",
+  蓝: "var(--v2-state-border-info)",
+  金: "var(--v2-brand-gold-deep)",
+  灰: "var(--v2-text-text-muted)",
+}
+
 export type 模式 = "指针" | "连线"
 
 export type 坐标换算 = (屏幕: { readonly clientX: number; readonly clientY: number }) => {
@@ -672,19 +689,6 @@ export function 画布(props: 画布Props): JSX.Element {
   const 环档表 = () => props.档表 ?? 自动档表()
   const 环档 = (点: 节点) => 环档表().get(点.id) ?? 0
 
-  /**
-   * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
-   * 查不到（含空 / 自定义色名）⇒ 默认描边色，不猜用户意图。
-   */
-  const 外环色表: Readonly<Record<string, string>> = {
-    红: "var(--v2-state-border-danger)",
-    橙: "var(--v2-state-border-warning)",
-    黄: "var(--v2-state-border-warning)",
-    绿: "var(--v2-state-border-success)",
-    蓝: "var(--v2-state-border-info)",
-    金: "var(--v2-brand-gold-deep)",
-    灰: "var(--v2-text-text-muted)",
-  }
   const 外环色 = (点: 节点) => 外环色表[点.外环?.颜色 ?? ""] ?? "var(--v2-border-border-strong)"
 
   /**
