@@ -98,7 +98,7 @@ function 描边(点: 图节点): string {
  * 节点描边色（点选时换品牌金深）。**图标也读这一份**：点选后边框换了色、图标还是灰的，
  * 看上去像两个节点各画了一半。
  */
-export function 描边色(点: 图节点, 焦点: boolean): string {
+function 描边色(点: 图节点, 焦点: boolean): string {
   return 焦点 ? "var(--v2-brand-gold-deep)" : 描边(点)
 }
 

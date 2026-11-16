@@ -88,6 +88,11 @@ export interface 编辑器Props {
   readonly 初始版本: string
   /** 测试缝：happy-dom 没有布局，坐标换算见 `canvas.tsx` 头注释。 */
   readonly 坐标换算?: 坐标换算
+  /**
+   * 屏幕命中测试缝（T007 / FR-047）：happy-dom 没有 `elementFromPoint`，注入「坐标下面是
+   * 哪个元素」；省略 = 画布自己的默认实现。只用于验证按下按坐标命中节点，不是产品入口。
+   */
+  readonly 屏幕命中?: (x: number, y: number) => Element | null
   /** 外部改动轮询间隔（毫秒，R54）；默认 10 秒，测试缝。 */
   readonly 轮询毫秒?: number
   /**
@@ -2580,6 +2585,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           选中={演示中() ? [] : 选中()}
           模式={模式()}
           坐标换算={props.坐标换算}
+          屏幕命中={props.屏幕命中}
           动作={动作}
           重命名id={演示中() ? undefined : 重命名id()}
           收起菜单={收起菜单()}

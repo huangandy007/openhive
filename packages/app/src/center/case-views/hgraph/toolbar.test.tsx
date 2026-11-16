@@ -12,7 +12,7 @@
  * 这里只钉「没有 flex-wrap」「没有 overflow 滚动类」与「提示不在工具栏内」，
  * 真栈补量写进 task-15 报告（`#013-12` 同族）。
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, vi } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
@@ -113,17 +113,15 @@ const 钮 = (slot: string) => 取(`[data-slot='${slot}']`) as HTMLButtonElement 
 const 组们 = () => [...document.querySelectorAll("[data-slot='hgraph-toolbar-group']")]
 
 /**
- * 悬停：监听挂在按钮外层的 `hgraph-toolbar-hover` 上（`pointerenter/leave` 不冒泡，
- * 也不合成祖先事件），所以直接派发到那一层，而不是按钮本身。
+ * 悬停落在 **TooltipV2 的 Trigger 元素本身**（`pointerenter/leave` 不冒泡）。
+ * 组件在祖先 `hgraph-toolbar-hover` 上用捕获阶段收——这样真浏览器里从按钮外进入
+ * 触发器与测试直接派发到触发器走同一条路，不会因为派发层不同而绕开实现。
  */
+const 触发器 = (按钮: Element) => 按钮.closest("[data-component='tooltip-v2-trigger']") ?? 按钮
 const 悬停 = (按钮: Element) =>
-  (按钮.closest("[data-slot='hgraph-toolbar-hover']") ?? 按钮).dispatchEvent(
-    new PointerEvent("pointerenter", { bubbles: false }),
-  )
+  触发器(按钮).dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerType: "mouse" }))
 const 移开 = (按钮: Element) =>
-  (按钮.closest("[data-slot='hgraph-toolbar-hover']") ?? 按钮).dispatchEvent(
-    new PointerEvent("pointerleave", { bubbles: false }),
-  )
+  触发器(按钮).dispatchEvent(new PointerEvent("pointerleave", { bubbles: false, pointerType: "mouse" }))
 
 describe("T015 · 工具栏分组与模式按下态", () => {
   test("五组齐，逐钮归属正确（含「手」「连线」「强度过滤」）", () => {
@@ -249,31 +247,43 @@ describe("T015 · 工具栏分组与模式按下态", () => {
 describe("T015 · 悬停 300ms 出说明（含快捷键）", () => {
   const 等 = (毫秒: number) => new Promise((解) => setTimeout(解, 毫秒))
 
-  // 计时器由本组件持有。挂 20+ 个 `TooltipV2` 的渲染耗时不可忽略，卡「在 100ms 时还没出」
-  // 会与 300ms 计时器抢跑；这里改为：常量 = 300（FR-045）+ 悬停当下不出 + 350ms 后出。
-  test("悬停当下不出、约 350ms 后出；说明含快捷键；移开后收回", async () => {
+  test("299ms 未出、300ms 出；说明含快捷键；移开 ⇒ forceOpen 链路关闭", async () => {
     expect(悬停毫秒).toBe(300)
-    挂工具栏()
-    const 手 = 钮("hgraph-mode-hand")!
-    const 提示 = () => document.querySelector("[data-slot='hgraph-toolbar-tip']")
+    // 假定时器钉边界：真延时会在 CI 上两条都「已出」，等于没钉（`#005-18`）。
+    vi.useFakeTimers()
+    try {
+      挂工具栏()
+      const 手 = 钮("hgraph-mode-hand")!
+      const 提示 = () => document.querySelector("[data-slot='hgraph-toolbar-tip']")
 
-    悬停(手)
-    expect(提示() === null).toBe(true)
+      // 前提：事件确实落在 TooltipV2 的 Trigger 上，而不是被测试助手改派到别的层。
+      expect(触发器(手).getAttribute("data-component")).toBe("tooltip-v2-trigger")
 
-    await 等(350)
-    expect(提示() !== null).toBe(true)
-    expect(提示()!.textContent ?? "").toContain("空格")
+      悬停(手)
+      vi.advanceTimersByTime(299)
+      await Promise.resolve()
+      expect(提示() === null).toBe(true)
 
-    // C3：提示必须走 portal / 不在工具栏这个（过去会 `overflow-x:auto` 的）祖先里。
-    // happy-dom 量不出几何可见性，这条只证明「没有任何可裁剪祖先包住它」。
-    expect(提示()!.closest("[data-slot='hgraph-toolbar']") === null).toBe(true)
-    expect(提示()!.closest("[data-component='tooltip-v2']") !== null).toBe(true)
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+      expect(提示() !== null).toBe(true)
+      expect(提示()!.textContent ?? "").toContain("空格")
 
-    移开(手)
-    await 等(20)
-    // happy-dom 不派发 CSS `animationend`，Kobalte 的 Presence 会停在 `data-closed`（关闭态）
-    // 而不卸载；真浏览器 80ms 后卸载。这里钉「已进入关闭态」。
-    expect(提示()!.closest("[data-component='tooltip-v2']")?.hasAttribute("data-closed")).toBe(true)
+      // C3：提示必须走 portal / 不在工具栏这个（过去会 `overflow-x:auto` 的）祖先里。
+      // happy-dom 量不出几何可见性，这条只证明「没有任何可裁剪祖先包住它」。
+      expect(提示()!.closest("[data-slot='hgraph-toolbar']") === null).toBe(true)
+      const 内容 = 提示()!.closest("[data-component='tooltip-v2']")
+      expect(内容 !== null).toBe(true)
+      expect(内容!.getAttribute("data-force-open")).toBe("true")
+
+      移开(手)
+      await Promise.resolve()
+      // happy-dom 不派发 CSS `animationend`，Kobalte Presence 会留在 DOM；这里不看
+      // `data-closed`，而是直接钉「forceOpen 链路已被关掉」（true → false）。
+      expect(提示()!.closest("[data-component='tooltip-v2']")?.getAttribute("data-force-open")).toBe("false")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test("删除按钮的说明带 Delete 快捷键", async () => {

@@ -1210,6 +1210,8 @@ describe("检查器 · T014 四段骨架与收起", () => {
     // 文字面板没有只读段（没有库快照来源），只有可改段。
     set选中(["t1"])
     await Promise.resolve()
+    // 前提：确实切到了文字面板；否则两个「不存在」断言在空面板上也绿（`#005-18`）。
+    expect(取("[data-slot='hgraph-inspector-text']") !== null).toBe(true)
     expect(取("[data-slot='hgraph-inspector-readonly']") === null).toBe(true)
     expect(取("[data-slot='hgraph-inspector-edge-readonly']") === null).toBe(true)
   })

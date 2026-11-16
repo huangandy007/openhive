@@ -162,6 +162,7 @@ function 挂上(
   初始版本 = "v1",
   换算: 坐标换算 = ({ clientX, clientY }) => ({ x: clientX, y: clientY }),
   打开材料?: (材料: string, 行号: number) => void,
+  屏幕命中?: (x: number, y: number) => Element | null,
 ) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -175,6 +176,7 @@ function 挂上(
           初始文档={初始文档}
           初始版本={初始版本}
           坐标换算={换算}
+          屏幕命中={屏幕命中}
           打开材料={打开材料}
         />
       ),
@@ -5463,17 +5465,36 @@ describe("T013 · 三行布局与图例搬家", () => {
     expect(钮!.querySelector("[data-slot='icon-svg']") !== null).toBe(true)
   })
 
-  test("FR-047：原 153×26 模式条区域中心点击命中下方节点（模式 / 文字数不变）", async () => {
+  test("工具栏「强度过滤」（找组）⇒ 打开画布条筛选浮层", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 钮 = 取("[data-slot='hgraph-toolbar-strength-filter']") as HTMLButtonElement | null
+    expect(钮 !== null).toBe(true)
+    // 重排后它在「找」组；只看按钮存在会漏掉归错组。
+    expect(钮!.closest("[data-slot='hgraph-toolbar-group']")?.getAttribute("data-group")).toBe("找")
+    expect(取("[data-slot='hgraph-filter-panel']") === null).toBe(true)
+
+    钮!.click()
+    await flush()
+    expect(取("[data-slot='hgraph-filter-panel']") !== null).toBe(true)
+  })
+
+  test("FR-047：原 153×26 模式条区域中心按坐标命中下方节点（模式 / 文字数不变）", async () => {
     const { api } = 假api()
     // 旧 chrome: `left-2 top-2`（8,8）+ 153×26 ⇒ 中心约 (84.5, 21)。
     const 文档: 图文件 = { ...一份图(), 节点: [造节点("n1", 84, 21)], 文字: [] }
-    挂上(api, 文档)
+    // 按下落在画布本身（`pointerdown.target` 没有 `data-node-id`，等价于被透明条盖住）；
+    // 坐标命中缝返回节点 ⇒ 必须按坐标选中。若只信事件 target，这条会红。
+    挂上(api, 文档, "v1", undefined, undefined, () => 节点组("n1"))
     await flush()
 
     expect(画布()!.getAttribute("data-mode")).toBe("指针")
     expect(节点组("n1") !== null).toBe(true)
+    expect(画布()!.getAttribute("data-node-id") === null).toBe(true)
 
-    按下(节点组("n1")!, 84, 21)
+    按下(画布()!, 84, 21)
     松开(84, 21)
     await flush()
 

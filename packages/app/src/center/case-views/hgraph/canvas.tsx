@@ -770,8 +770,11 @@ export function 画布(props: 画布Props): JSX.Element {
     if (中键) 事件.preventDefault()
 
     const 内容 = 到内容(事件)
-    const 节点id = 读属性(目标, "data-node-id")
-    const 文字id = 读属性(目标, "data-text-id")
+    // T007 / FR-047：`pointerdown.target` 可能是盖在画布上的透明条（没有对象 id），
+    // 这时按坐标问命中缝；target 自己命中对象时以它为准（连线起点等既有语义不变）。
+    const 命中 = 屏幕命中元素(事件.clientX, 事件.clientY)
+    const 节点id = 读属性(目标, "data-node-id") ?? 读属性(命中, "data-node-id")
+    const 文字id = 读属性(目标, "data-text-id") ?? 读属性(命中, "data-text-id")
 
     // 中键无论在节点还是空白上都是平移（不是拖动节点 / 不是连线）。
     if (中键) {

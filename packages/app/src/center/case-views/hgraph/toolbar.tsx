@@ -17,7 +17,7 @@
  * - 对齐 / 等距各有 6 / 2 个变体，13 枚图形键里只有一枚通用 glyph；变体沿用文字标签，
  *   图形键用在该簇的组图标上（换成同一枚图标会无法区分方向）。
  */
-import { For, Show, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { 排列模式们, type 排列模式 } from "../graph-layout"
@@ -81,6 +81,7 @@ interface 工具钮Props {
 function 工具钮(props: 工具钮Props): JSX.Element {
   const [出, set出] = createSignal(false)
   let 定时: ReturnType<typeof setTimeout> | undefined
+  let 壳: HTMLSpanElement | undefined
   const 清 = () => {
     if (定时 !== undefined) {
       clearTimeout(定时)
@@ -96,23 +97,33 @@ function 工具钮(props: 工具钮Props): JSX.Element {
     清()
     set出(false)
   }
+  // 捕获阶段：`pointerenter` 不冒泡，而且 TooltipV2 把子节点又包进自己的 Trigger `<div>`；
+  // 监听必须挂在能盖住 Trigger 的祖先上并走捕获，才能覆盖「指针进的是 Trigger 本身」。
+  onMount(() => {
+    const 元素 = 壳
+    if (元素 === undefined) return
+    元素.addEventListener("pointerenter", 进, true)
+    元素.addEventListener("pointerleave", 离, true)
+    onCleanup(() => {
+      元素.removeEventListener("pointerenter", 进, true)
+      元素.removeEventListener("pointerleave", 离, true)
+    })
+  })
 
   const 类 = () => (props.危险 === true ? 钮危 : props.种类 === "mode" && props.按下 === true ? 钮按 : 钮动)
 
   return (
     // C3：300ms 由本组件计时，弹层复用 v2 `TooltipV2` 的 Kobalte portal——内容挂在
     // body 下，不会被工具栏祖先（过去是 `overflow-x:auto`）裁剪。
-    <span
-      data-slot="hgraph-toolbar-hover"
-      class="relative inline-flex"
-      onPointerEnter={进}
-      onPointerLeave={离}
-    >
+    // 必须关掉 Trigger 自身的 hover 打开（`triggerOnFocusOnly`）：否则 Kobalte 用
+    // `openDelay` 自行开提示，真浏览器里 300ms 形同虚设。指针事件在捕获阶段收，
+    // 既覆盖触发器自身（pointerenter 不冒泡），也避免与 Kobalte 的 Trigger 重复计时。
+    <span ref={壳} data-slot="hgraph-toolbar-hover" class="relative inline-flex">
       <TooltipV2
         value={<span data-slot="hgraph-toolbar-tip">{props.说明}</span>}
         class="inline-flex"
         forceOpen={出()}
-        openDelay={0}
+        triggerOnFocusOnly
         placement="bottom"
       >
         <button
