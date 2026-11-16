@@ -892,14 +892,8 @@ export function 画布(props: 画布Props): JSX.Element {
       props.动作.复制所选?.(0)
       return
     }
-    if (事件.key === "Delete") {
-      // 选中到类型的翻译归编辑器（同一个出口只认 `删除所选`）。
-      if (props.选中.length > 0) {
-        事件.preventDefault()
-        props.动作.删除所选()
-      }
-      return
-    }
+    // Delete 不在这里处理（T005）：它监听在编辑器根容器上——焦点在工具栏 / 检查器时
+    // 画布收不到键，两份并存还会双删。判据与入口见 `editor.tsx` 的 `命中删除键`。
     if (事件.key === "F2") {
       const 节点们 = props.选中.filter((id) => props.文档.节点.some((行) => 行.id === id))
       if (节点们.length === 1) {

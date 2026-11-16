@@ -26,7 +26,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
-import { 编辑器, 构图, 布局目标 } from "./editor"
+import { 编辑器, 命中删除键, 构图, 布局目标 } from "./editor"
 import { 适配视口 } from "./geometry"
 import { 阶梯位置 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
@@ -1263,6 +1263,75 @@ describe("画布 · 键盘作用域", () => {
 })
 
 // ---------------------------------------------------------------------------
+// T005 · Delete 由编辑器根容器独家接管
+// ---------------------------------------------------------------------------
+
+describe("编辑器 · Delete 由根容器独家接管（T005）", () => {
+  test("点过工具栏按钮后按 Delete ⇒ 节点被删、写 1 次", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    // 前提：节点确实在文档里（`#013-12`：存在性断言用布尔比较，且先立前提）。
+    expect(节点组("n1") !== null).toBe(true)
+
+    // 点一个不改文档的工具栏按钮（导出面板只是本地 UI 态）：焦点/事件目标落在按钮上，
+    // 画布容器收不到这一下 keydown。
+    const 按钮 = 取("[data-slot='hgraph-toolbar-export']") as HTMLButtonElement
+    按钮.click()
+    await flush()
+
+    按键(按钮, { key: "Delete" })
+    await flush()
+    await 过防抖()
+
+    expect(节点组("n1") === null).toBe(true)
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n1" }] }])
+  })
+
+  test("焦点在检查器输入框内按 Delete ⇒ 只删字不删对象", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+    expect(节点组("n1") !== null).toBe(true)
+
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    expect(输入 !== null).toBe(true)
+    输入.focus()
+    按键(输入, { key: "Delete" })
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(0)
+    expect(节点组("n1") !== null).toBe(true)
+  })
+
+  test("演示态按 Delete ⇒ 无副作用", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    ;(取("[data-slot='hgraph-toolbar-present']") as HTMLButtonElement).click()
+    await flush()
+    const 舞台 = 取("[data-slot='hgraph-stage']")
+    expect(舞台 !== null).toBe(true)
+
+    按键(舞台!, { key: "Delete" })
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(0)
+    expect(节点组("n1") !== null).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // T010 · 动作单一出口（工具栏 / 快捷键 / 右键 / 检查器）
 // ---------------------------------------------------------------------------
 
@@ -1321,7 +1390,15 @@ function 挂拼装(选项: { 选中?: readonly string[]; 文档?: 图文件 } = 
   挂过的.push(
     render(
       () => (
-        <div>
+        <div
+          // T005：Delete 监听在生产里挂在编辑器根容器上；夹具在这里挂同一份判定，
+          // 「工具栏按钮 / 画布 Delete 落到同一条动作」的断言才仍然成立。
+          onKeyDown={(事件) => {
+            if (!命中删除键(事件, { 演示中: false, 有选中: 选中().length > 0 })) return
+            事件.preventDefault()
+            动作.删除所选()
+          }}
+        >
           <工具栏 选中={选中()} 文档={文档} 动作表={动作} />
           <画布组件
             文档={文档}
@@ -1346,7 +1423,7 @@ function 点选(id: string, x = 100, y = 100, 修饰: PointerEventInit = {}) {
 }
 
 describe("T010 · 单一出口", () => {
-  test("删除：工具栏按钮与画布 Delete 打到同一个动作条目；各 1 个批次", async () => {
+  test("删除：工具栏按钮与根容器 Delete 打到同一个动作条目；各 1 个批次", async () => {
     // 幽灵侧：两个入口必须落到同一个 `删除所选` spy，且都不自己拼操作。
     const { 幽 } = 挂拼装()
     await flush()

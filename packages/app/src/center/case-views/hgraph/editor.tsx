@@ -431,6 +431,29 @@ export function 布局目标(
 }
 
 /**
+ * Delete 键的唯一判定（T005）：监听在**编辑器根容器**上——焦点落在工具栏按钮 / 检查器
+ * 上时，画布容器的 keydown 根本收不到（点过工具栏后快捷键失效）。
+ *
+ * 判据原样搬自画布旧监听：演示（只读）静默；`input` / `textarea` / `select` /
+ * contentEditable 内不删对象（框里的 Delete 归浏览器删字）；空选中不接管（不吞默认行为）。
+ *
+ * 导出只为让「同一出口」拼装夹具挂同一份判定，不给生产新增第二个调用点。
+ */
+export function 命中删除键(
+  事件: KeyboardEvent,
+  状态: { readonly 演示中: boolean; readonly 有选中: boolean },
+): boolean {
+  if (状态.演示中) return false
+  const 目标 = 事件.target
+  if (目标 !== null && "tagName" in 目标) {
+    const 名 = String(目标.tagName).toUpperCase()
+    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
+    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return false
+  }
+  return 事件.key === "Delete" && 状态.有选中
+}
+
+/**
  * R85：判「文档内容变了」用的规范化键。
  *
  * 服务端每次**非空**写入都会刷新 `更新于` 并推进版本（同值补丁也算一次写，`hgraph-ops.ts`
@@ -1787,6 +1810,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // `pointerdown`，只挂上面那条收不到 ⇒ 过期菜单留着，再点菜单项会作用到已换过的选中。
       // 同一判定再走一遍 click 路径。
       onClick={收起菜单事件}
+      // T005：Delete 由本容器独家接管（画布已不处理）。焦点在工具栏按钮 / 检查器上时
+      // 画布容器的 keydown 收不到；输入守卫与演示静默共用 `命中删除键` 一份判据。
+      onKeyDown={(事件) => {
+        if (!命中删除键(事件, { 演示中: 演示中(), 有选中: 选中().length > 0 })) return
+        事件.preventDefault()
+        动作.删除所选()
+      }}
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>
