@@ -346,6 +346,8 @@ export async function graph_add(
     操作: 操作们,
     批次: args.批次,
     幂等键: 幂等键("graph_add", args.幂等键),
+    // 唯一显式开启 R7 署名复用的调用点：AI 同一批反复提到「张三」⇒ 复用同一个节点。
+    同名复用: true,
   })
   if (!写.ok) 抛核心失败(写)
 

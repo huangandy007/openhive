@@ -382,6 +382,20 @@ describe("graph_add", () => {
     expect(读回图("add/复用.hgraph").节点).toHaveLength(1)
   })
 
+  // T003：核心的「同名复用」改成显式开关，只有 AI 的 `graph_add` 传 `true`。同一批里两个同名
+  // 节点 ⇒ 复用命中 1 个（映射都指向它），节点数不变——这钉住工具层确实把开关打开了。
+  test("同名 ⇒ 复用命中 1 个（同一批两个同名节点也复用）", async () => {
+    摆图("add/同名一份.hgraph", 空图("同名一份"))
+    const 结果 = await graph_add(ctx(), {
+      路径: "add/同名一份.hgraph",
+      节点: [手写节点("张三", { 临时id: "tmp1" }), 手写节点("张三", { 临时id: "tmp2" })],
+    })
+    expect(结果.新增).toEqual({ 节点: 1, 边: 0 })
+    expect(结果.复用).toEqual(["张三"])
+    expect(结果.映射).toEqual({ tmp1: "n1", tmp2: "n1" })
+    expect(读回图("add/同名一份.hgraph").节点).toHaveLength(1)
+  })
+
   test("整批原子：30 条里第 30 条缺 `来源` ⇒ 一条都不写，版本（内容哈希）不变", async () => {
     const 绝对 = 摆图("add/原子.hgraph", 空图("原子"))
     const 前版本 = 内容版本(readFileSync(绝对))

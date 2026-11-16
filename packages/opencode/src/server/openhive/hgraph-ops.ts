@@ -130,6 +130,8 @@ export interface 写入入参 extends 路径入参 {
   readonly 操作: readonly 操作[]
   readonly 批次?: string
   readonly 幂等键?: string
+  /** R7 署名复用（缺省 false）：只有 AI 的 `graph_add` 传 `true`，见 `应用操作` 的 `选项`。 */
+  readonly 同名复用?: boolean
 }
 
 export type 读结果 = { ok: true; 内容: string; 版本: string } | 核心失败
@@ -542,7 +544,7 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
     const 解析 = 解析图(原文)
     if (!解析.ok) return { ok: false, code: 解析.code, 话术: 解析.说明 }
 
-    const 应用: 应用结果 = 应用操作(解析.文档, 入参.操作)
+    const 应用: 应用结果 = 应用操作(解析.文档, 入参.操作, { 同名复用: 入参.同名复用 === true })
     if (!应用.ok) return { ok: false, code: 应用.code, 话术: 应用.话术 }
 
     const 校验 = 校验全图(解析.文档, 应用.文档)
