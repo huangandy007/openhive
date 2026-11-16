@@ -28,7 +28,8 @@
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
-import type { 边, 图文件, 节点, 文字 } from "./file"
+import { 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 边线型 } from "./edge"
 import {
   适配视口,
   截断标签,
@@ -64,9 +65,6 @@ const 拖动阈值 = 3
 const 事件卡宽 = 96
 const 事件卡高 = 34
 const 事件卡圆角 = 6
-
-/** 对象类别优先于「类型 → 形状」映射：事件节点一律画事件卡（FR-056）。 */
-const 是事件节点 = (点: 节点) => 点.来源?.kind === "事件"
 
 /** 读保留属性键（`金额` / `时间精度`）；空串按缺失处理，不把空值拼进文案。 */
 const 属性值 = (点: 节点, 键: string): string | undefined => {
@@ -1264,6 +1262,18 @@ export function 画布(props: 画布Props): JSX.Element {
               const 乙 = () => props.文档.节点.find((点) => 点.id === 行.到)
               const 偏移 = () => 边偏移(平行序().get(行.id) ?? 0)
               const 档 = () => 边档(行, props.文档.设置)
+              // 线型只由 `edge.ts` 判一次（T012 裁定二），这里仅翻译成 SVG 虚线样式。
+              const 线型 = () => 边线型(行, 甲(), 乙())
+              const 边虚线 = () => {
+                switch (线型()) {
+                  case "虚线":
+                    return "4 3"
+                  case "点线":
+                    return "1 3"
+                  default:
+                    return undefined
+                }
+              }
               const 线色 = () =>
                 行.性质 === "事实" ? "var(--v2-border-border-strong)" : "var(--v2-text-text-muted)"
               /**
@@ -1322,7 +1332,7 @@ export function 画布(props: 画布Props): JSX.Element {
                             stroke={线色()}
                             stroke-width={线宽像素(档())}
                             stroke-opacity={档() <= 1 ? "0.55" : undefined}
-                            stroke-dasharray={行.性质 === "推断" ? "4 3" : undefined}
+                            stroke-dasharray={边虚线()}
                             class="cursor-pointer"
                           />
                           {/* 只有有向边画箭头（方向是唯一被表达的信息；无向画了会误导）。 */}

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
 import { 画布, 是双指平移, type 画布动作, type 坐标换算 } from "./canvas"
+import { 角色边 } from "./edge"
 
 const 挂过的: Array<() => void> = []
 
@@ -953,5 +954,87 @@ describe("T010 · 事件卡", () => {
     const 选择 = 计数["选择"] ?? []
     expect(选择.length).toBe(1)
     expect(选择[0]).toEqual([["ev"], false])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T012 · 手写事件识别与边线型渲染
+// ---------------------------------------------------------------------------
+
+describe("T012 · 手写事件的事件卡", () => {
+  test("手写节点带 `时间精度` ⇒ 渲染 event-card", () => {
+    挂(
+      造图([
+        造节点("h", 100, 100, {
+          来源: { kind: "手写" },
+          属性: [{ 键: "时间精度", 值: "分" }],
+        }),
+      ], []),
+    )
+    const 形状们 = [...节点组("h")!.querySelectorAll("[data-slot='hgraph-node-shape']")]
+    expect(形状们.length).toBe(1)
+    expect(形状们[0].getAttribute("data-node-shape")).toBe("event-card")
+  })
+
+  test("手写节点无 `时间精度` ⇒ 普通形状，不是事件卡", () => {
+    挂(
+      造图([
+        造节点("h", 100, 100, {
+          来源: { kind: "手写" },
+          属性: [{ 键: "金额", 值: "12000元" }],
+        }),
+      ], []),
+    )
+    const 形状们 = [...节点组("h")!.querySelectorAll("[data-slot='hgraph-node-shape']")]
+    expect(形状们.length).toBe(1)
+    expect(形状们[0].getAttribute("data-node-shape") === "event-card").toBe(false)
+  })
+})
+
+describe("T012 · 边线型渲染", () => {
+  const 线 = (id: string) =>
+    document.querySelector<SVGLineElement>(`[data-edge-id='${id}'] [data-slot='hgraph-edge-line']`)
+
+  test("角色边 ⇒ 实线（无 stroke-dasharray）", () => {
+    const 事件 = 造节点("ev", 100, 100, {
+      来源: { kind: "手写" },
+      属性: [{ 键: "时间精度", 值: "分" }],
+    })
+    const 参与 = 造节点("p", 400, 100)
+    挂(造图([事件, 参与], [角色边(事件, "p", "付款方", "中", "e1")]))
+
+    const 元素 = 线("e1")
+    expect(元素 !== null).toBe(true)
+    expect(元素!.getAttribute("stroke-dasharray") === null).toBe(true)
+  })
+
+  test("普通推断边 ⇒ 虚线 `4 3`", () => {
+    挂(造图(
+      [造节点("a", 100, 100), 造节点("b", 400, 100)],
+      [造边("e2", "a", "b", { 性质: "推断", 标签: "联系" })],
+    ))
+
+    const 元素 = 线("e2")
+    expect(元素 !== null).toBe(true)
+    expect(元素!.getAttribute("stroke-dasharray")).toBe("4 3")
+  })
+
+  test("两事件之间的时序边 ⇒ 点线 `1 3`", () => {
+    const 甲 = 造节点("e1", 100, 100, {
+      来源: { kind: "手写" },
+      属性: [{ 键: "时间精度", 值: "分" }],
+    })
+    const 乙 = 造节点("e2", 400, 100, {
+      来源: { kind: "手写" },
+      属性: [{ 键: "时间精度", 值: "分" }],
+    })
+    挂(造图(
+      [甲, 乙],
+      [造边("e3", "e1", "e2", { 性质: "推断", 标签: "先" })],
+    ))
+
+    const 元素 = 线("e3")
+    expect(元素 !== null).toBe(true)
+    expect(元素!.getAttribute("stroke-dasharray")).toBe("1 3")
   })
 })

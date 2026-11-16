@@ -5231,6 +5231,8 @@ describe("T012 · 加事件两入口", () => {
     expect(typeof 时间.首).toBe("string")
     expect(时间格式.test(String(时间.首))).toBe(true)
     expect(时间.末).toBe(时间.首)
+    // 手写事件靠 `时间精度` 被识别为事件卡（T012 裁定一）；值域只有 日/时/分。
+    expect(点.属性).toEqual([{ 键: "时间精度", 值: "分" }])
     expect(typeof 点.id).toBe("string")
   })
 

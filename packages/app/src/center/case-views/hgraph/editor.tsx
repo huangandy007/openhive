@@ -1783,6 +1783,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               名称: "新事件",
               类型: "未分类",
               来源: { kind: "手写" },
+              属性: [{ 键: "时间精度", 值: "分" }],
               时间: { 首: 时间, 末: 时间 },
               x: Math.round(位.x),
               y: Math.round(位.y),
