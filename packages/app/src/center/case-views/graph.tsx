@@ -28,23 +28,27 @@ export const 面板边距 = 0
 
 /**
  * 面板让位的平移量（关系图与 hgraph 检查器共用这一份，`#002-06`）：
- * 对象在屏幕上的 x 已经越过「未被面板覆盖」的右界时，才把它挪到 `目标屏x`。
+ * 对象在屏幕上的 x 已经越过「未被面板覆盖」的右界时，才把它挪过去。
  *
+ * - `面板占宽` / `边距` 必须与 `画布宽` **同一坐标单位**：关系图里 viewBox = 容器像素，
+ *   直接传常量；hgraph 的 viewBox 固定 760×680，调用方先把 CSS px 按容器缩放比换算。
  * - 返回新的视口 `x`；本来没被盖住 ⇒ `undefined`（画面不动，别乱晃）。
- * - `目标屏x` 默认是未覆盖区右界（关系图只求「从面板底下挪出来」）；hgraph 传未覆盖区
- *   中心，满足 FR-015「居中于剩余可视区」。
+ * - `居中` 为真 ⇒ 目标 = 未覆盖区中心（FR-015）；否则只挪到右界（关系图的最小让位）。
  * - 让得太多会把对象自己顶出左边界：以「对象仍在画布内」为下限。
  */
 export function 面板让位平移x(
   点: { readonly x: number },
   视口: { readonly 缩放: number; readonly x: number },
   画布宽: number,
-  目标屏x: number = 画布宽 - 面板宽 - 面板边距,
+  面板占宽: number,
+  边距 = 0,
+  居中 = false,
 ): number | undefined {
-  const 右界 = 画布宽 - 面板宽 - 面板边距
+  const 右界 = 画布宽 - 面板占宽 - 边距
   const 屏x = 点.x * 视口.缩放 + 视口.x
   if (屏x <= 右界) return undefined
-  return Math.max(视口.x - (屏x - 目标屏x), 面板边距 - 点.x * 视口.缩放)
+  const 目标屏x = 居中 ? (边距 + 右界) / 2 : 右界
+  return Math.max(视口.x - (屏x - 目标屏x), 边距 - 点.x * 视口.缩放)
 }
 
 // 布局纯函数住在 `graph-layout.ts`（关系图编辑器共用同一套）。这里保留同名 re-export，
@@ -620,7 +624,7 @@ export function Graph(props: GraphProps): JSX.Element {
    * 点选就把它让出来：平移画布，不改布局坐标。
    */
   const 让出面板 = (行: 位点) => {
-    const 新 = 面板让位平移x(行, { 缩放: 缩放(), x: 平移().x }, 尺寸().宽)
+    const 新 = 面板让位平移x(行, { 缩放: 缩放(), x: 平移().x }, 尺寸().宽, 面板宽, 面板边距)
     if (新 === undefined) return
     set平移({ ...平移(), x: 新 })
   }

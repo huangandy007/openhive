@@ -122,6 +122,9 @@ function 挂(
     readonly 模式?: "指针" | "连线"
     readonly 坐标换算?: 坐标换算
     readonly 屏幕命中?: (x: number, y: number) => Element | null
+    readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
+    readonly 检查器宽?: number
+    readonly 让位请求?: { readonly id: string; readonly 序号: number }
   } = {},
 ) {
   const host = document.createElement("div")
@@ -140,6 +143,9 @@ function 挂(
           只读={额外.只读}
           坐标换算={额外.坐标换算}
           屏幕命中={额外.屏幕命中}
+          容器尺寸={额外.容器尺寸}
+          检查器宽={额外.检查器宽}
+          让位请求={额外.让位请求}
         />
       ),
       host,
@@ -828,5 +834,38 @@ describe("T007 · 连线松手命中", () => {
     expect(命中元素!.getAttribute("data-slot")).toBe("hgraph-connect")
     expect(计数["加边"]).toBeUndefined()
     expect(提示文案()).toBe("松手不在节点上，未建立连线")
+  })
+})
+
+describe("T008 · 检查器让位：容器缩放比与面板实宽", () => {
+  const 变换 = () => 取("[data-slot='hgraph-viewport']")!.getAttribute("transform")
+
+  test("容器比 < 1 时仍让位（面板 320 CSS px 换算成 viewBox 单位）", () => {
+    // 380×340 容器 ⇒ 比 = min(380/760, 340/680) = 0.5；面板占 640 viewBox 单位，
+    // 未覆盖区 = [0, 120]，中心 60。节点 200 ⇒ 平移 60 - 200 = -140。
+    挂(造图([造节点("n1", 200, 100)], []), undefined, {
+      容器尺寸: { 宽: 380, 高: 340 },
+      让位请求: { id: "n1", 序号: 1 },
+    })
+    expect(变换()).toBe("translate(-140 0) scale(1)")
+  })
+
+  test("容器比 > 1 时居中位置按换算后的未覆盖区算", () => {
+    // 1520×1360 ⇒ 比 = 2；面板占 160 单位，未覆盖区 = [0, 600]，中心 300。
+    // 节点 700 ⇒ 平移 300 - 700 = -400（直接减 CSS px 会得到 -480）。
+    挂(造图([造节点("n1", 700, 100)], []), undefined, {
+      容器尺寸: { 宽: 1520, 高: 1360 },
+      让位请求: { id: "n1", 序号: 1 },
+    })
+    expect(变换()).toBe("translate(-400 0) scale(1)")
+  })
+
+  test("检查器宽 40 ⇒ 让位距离按 40 算（不是常量 320）", () => {
+    // 比 = 1：未覆盖区 = [0, 720]，中心 360；节点 740 ⇒ 平移 -380（按 320 算会是 -520）。
+    挂(造图([造节点("n1", 740, 100)], []), undefined, {
+      检查器宽: 40,
+      让位请求: { id: "n1", 序号: 1 },
+    })
+    expect(变换()).toBe("translate(-380 0) scale(1)")
   })
 })

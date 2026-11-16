@@ -249,6 +249,17 @@ export interface 画布Props {
    */
   readonly 让位请求?: { readonly id: string; readonly 序号: number }
   /**
+   * 检查器当前在**屏幕上**占用的宽度（CSS px，T008 / FR-015）：编辑器按状态给值
+   * （展开 320 / 收起 40 / 未选中 0）。视口是 viewBox 单位，画布按容器缩放比换算，
+   * 不再假定「1 CSS px = 1 viewBox 单位」。省略 = 320（历史行为）。
+   */
+  readonly 检查器宽?: number
+  /**
+   * 容器尺寸测试缝（T008 fix1）：happy-dom 无布局、`getBoundingClientRect()` 恒 0，
+   * 量不出 viewBox → 容器的缩放比。省略时量真实容器；量不到按 1:1。
+   */
+  readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
+  /**
    * 标签分级的 `开`（T017b / R71）：`false` ⇒ 只留选中与悬停（>800 节点默认关标签的落点）；
    * `undefined` ⇒ 按缩放档位取舍。`true` = 工具栏强制打开。
    */
@@ -467,8 +478,24 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   /**
+   * viewBox → 容器的缩放比（`preserveAspectRatio="xMidYMid meet"` 取较小的那一维）。
+   * 容器测不到尺寸（happy-dom）时按 1:1——与 `默认换算` 的退化口径一致。
+   */
+  const 视图缩放比 = () => {
+    const 矩 =
+      props.容器尺寸 === undefined
+        ? 容器?.getBoundingClientRect()
+        : { width: props.容器尺寸.宽, height: props.容器尺寸.高 }
+    if (矩 === undefined || 矩.width <= 0 || 矩.height <= 0) return 1
+    return Math.min(矩.width / 画布宽, 矩.height / 画布高) || 1
+  }
+
+  /**
    * 检查器让位（T008 / FR-015）：**只在请求序号变化时**平移一次——拖动改的是节点坐标，
    * 不改请求，视口因此不会持续跟随。目标 = 未覆盖区中心；对象本来没被盖住就不动画面。
+   *
+   * 面板宽度是**屏幕 CSS px**，视口是 viewBox 单位：先按容器缩放比换算，否则窄容器下
+   * 320 会被当成 320 个 viewBox 单位、右界算大而完全不触发（T008 fix1 / D1）。
    */
   let 上次让位: number | undefined
   createEffect(() => {
@@ -478,7 +505,15 @@ export function 画布(props: 画布Props): JSX.Element {
     const 锚 = 选中锚点(请求.id)
     if (锚 === undefined) return
     const 视 = 视口()
-    const 新x = 面板让位平移x(锚, { 缩放: 视.缩放, x: 视.x }, 画布宽, (画布宽 - 面板宽 - 面板边距) / 2)
+    const 比 = 视图缩放比()
+    const 新x = 面板让位平移x(
+      锚,
+      { 缩放: 视.缩放, x: 视.x },
+      画布宽,
+      (props.检查器宽 ?? 面板宽) / 比,
+      面板边距 / 比,
+      true,
+    )
     if (新x === undefined) return
     set视口({ ...视, x: 新x })
   })

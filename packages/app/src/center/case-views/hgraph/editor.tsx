@@ -48,6 +48,7 @@ import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
+import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 选择器, 时间跨度 } from "./entity-picker"
@@ -610,6 +611,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [适配请求, set适配请求] = createSignal<number | undefined>()
   /** T008：检查器让位请求——选中变化时递增一次；同一选中期间拖动不再递增。 */
   const [让位请求, set让位请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
+  /**
+   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
+   * 对象）；当前展开态 ⇒ 320。T014 的 40px 收起态接入后在这里按收起状态给值，
+   * 画布只消费这个数、不再自己假定面板宽度。
+   */
+  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 面板宽)
   /**
    * T008 / FR-015：选中变化 ⇒ 请画布让位一次（检查器浮在右侧，会盖住底下那一列）。
    * 只有「单个选中 id」真的变了才递增序号——拖动改的是文档坐标、不改选中，所以后续
@@ -2413,6 +2420,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           居中请求={演示中() ? undefined : 居中请求()}
           适配请求={适配请求()}
           让位请求={演示中() ? undefined : 让位请求()}
+          检查器宽={检查器占用宽()}
           标签开={标签开()}
           档表={档表()}
           图例初始收起={演示中()}
