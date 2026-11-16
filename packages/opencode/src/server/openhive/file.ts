@@ -161,6 +161,7 @@ import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-wo
 import { enqueueMaterial } from "./case-ingest"
 import { 解析方式 } from "./case-parseable"
 import { 迁移材料路径, type MaterialKind, type Queryable } from "./case-store"
+import { 模板字节 } from "./file-templates"
 import { OpenhivePg } from "./pg"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
@@ -1107,11 +1108,16 @@ function handleCreate(request: HttpServerRequest.HttpServerRequest, root: string
 
     if (yield* exists(target)) return badRequest("这个位置已经有同名的东西了")
 
+    // 013 T1：文件按后缀写一份最小可用的预置模板（`.docx` / `.xlsx` / `.pdf` / 图片…）；
+    // 未列出的后缀（含 `.md` / `.txt` / `.csv`）仍是 0 字节。前端勾选的结果就是「名字带该后缀」，
+    // 故 API 契约不变（`spec.md` §4.3）。
+    const 模板 = kind === "file" ? yield* Effect.promise(() => 模板字节(name)) : undefined
+
     // 目录：`mkdir` **不递归**（落点目录刚验过、确实存在，多出来的层次一律是笔误）。
     // 文件：`wx` = 已存在就失败、**不覆盖**（同复制 / 上传那两处一个口径——预检挡常规情形，
     // 这个标志挡预检与真写之间那一瞬间）。
     const failed = yield* attempt(() =>
-      kind === "directory" ? mkdir(target) : writeFile(target, "", { flag: "wx" }),
+      kind === "directory" ? mkdir(target) : writeFile(target, 模板 ?? "", { flag: "wx" }),
     )
     if (failed !== undefined) {
       if (errorCode(failed) === "EEXIST") return badRequest("这个位置已经有同名的东西了")

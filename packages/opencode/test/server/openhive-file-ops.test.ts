@@ -1542,6 +1542,36 @@ describe("T018 · 新建 / 重命名 / 删除三个出口（FR-005）", () => {
   )
 
   /**
+   * **013 T1：按后缀写预置模板**（`file-templates.ts`）。
+   *
+   * 判据读**磁盘**：`.docx` 建出来必须是**非 0 字节**的 zip（前两字节 `PK`），
+   * `.md` 仍留 0 字节——文本类刻意不做内容模板（`spec.md` §4.5）；`.hgraph` 也不在后端模板表
+   * （骨架由前端 `/hgraph/init` 生成，§4.4）⇒ 同样是 0 字节。
+   * 成对写：只钉 `.docx` 非空的话，「所有后缀都塞模板」也算绿，而那与本轮裁定相反。
+   */
+  it.live(
+    "建 .docx ⇒ 文件非 0 字节且前两字节是 PK；对照：建 .md / .hgraph ⇒ 仍是 0 字节",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const docx = yield* 建("file", "", "新建文档.docx")
+        const md = yield* 建("file", "", "新建笔记.md")
+        const hgraph = yield* 建("file", "", "新建关系图.hgraph")
+
+        const docx字节 = readFileSync(path.join(项目根, "新建文档.docx"))
+        expect(docx字节.length).toBeGreaterThan(0)
+        expect([docx字节[0], docx字节[1]]).toEqual([0x50, 0x4b])
+        expect(readFileSync(path.join(项目根, "新建笔记.md")).length).toBe(0)
+        expect(readFileSync(path.join(项目根, "新建关系图.hgraph")).length).toBe(0)
+        expect(docx.status).toBe(200)
+        expect(md.status).toBe(200)
+        expect(hgraph.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
    * **同名已存在 ⇒ 拒，且原文件一个字节都不许变**（数据安全）。
    *
    * 这条与 T020 复制那条同因：`writeFile` 默认覆盖，而「新建把用户已有的同名文件清成空」
