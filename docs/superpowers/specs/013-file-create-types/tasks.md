@@ -40,6 +40,6 @@
 
 ## T4 收尾
 
-- [ ] 文档：本目录 `VERIFICATION.md`（门禁实得 + 变异记录 + 缺口表）；`file-create-types.ts` 头注释改写
-- [ ] 门禁：两包 `bun run typecheck`、受影响测试文件逐个跑、根 `bun run lint`
-- [ ] `grep` 同类落点（`#002-06`）：`file-create-type` / `可新建类型` / `补类型后缀` 全部落点
+- [x] 文档：本目录 `VERIFICATION.md`（门禁实得 + 变异记录 + 审查裁定 + 缺口表）；`file-create-types.ts` 头注释改写
+- [x] 门禁：两包 `bun run typecheck`、受影响测试文件逐个跑、根 `bun run lint`（仅 1 个既有 error，在 session-ui）
+- [x] `grep` 同类落点（`#002-06`）：`file-create-type` / `可新建类型` / `补类型后缀` / `关系图后缀` 全部落点已核

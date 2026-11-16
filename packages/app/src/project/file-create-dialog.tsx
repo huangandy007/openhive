@@ -35,9 +35,9 @@
  *
  * ## 类型区：从「胶囊」换成「大类 + 后缀勾选」（用户 2026-11-16 裁定）
  *
- * 012 只有一枚「关系图」胶囊；13 种可建类型铺成一排胶囊既列不下、也分不清类别。现改为
+ * 012 只有一枚「关系图」胶囊；9 个大类共 64 个后缀铺成一排既列不下、也分不清类别。现改为
  * **9 个大类**（文档 / 表格 / 图文 / 关系图 / 思维导图 / PDF / 图片 / 网页 / 代码），每个后缀
- * 前一个勾选框，同一时刻至多勾一个；大类标题只是分组标题、不可点。代码大类默认折叠、列表区可滚。
+ * 前一个勾选框，同一时刻至多勾一个；大类标题只是分组标题、不可点。代码大类（48 项）默认折叠。
  *
  * **「默认不选 = 普通文件」的语义不变**：不勾任何后缀 ⇒ 名字原样交出去（0 字节文件），
  * 与胶囊时代一致；勾了才补后缀（已带同后缀不重复加，见 `补类型后缀`）。
@@ -121,7 +121,11 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
   }
 
   return (
-    <DialogV2 class="w-[min(28rem,calc(100vw-3rem))]">
+    // `fit`：容器默认写死 `height: 368px`（`dialog-v2.css:24`），9 大类一屏只看得见约两类；
+    // `fit` 把高度交还内容，`containerClass` 再封顶到视口——多出来的部分由 body 自己滚。
+    // 只是把清单的 `max-h-[45vh]` 调小没用：它作为 flex item 的最小高是 0，照样被 body 压扁
+    // （2026-11-16 审查 R1，同 `capability-submit-dialog.tsx` 的既有解）。
+    <DialogV2 fit containerClass="max-h-[calc(100vh-2rem)]" class="w-[min(28rem,calc(100vw-3rem))]">
       <form
         data-slot="file-create-dialog"
         class="contents"
@@ -133,7 +137,9 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
         <DialogHeader>
           <DialogTitle>{是文件夹() ? "新建文件夹" : "新建文件"}</DialogTitle>
         </DialogHeader>
-        <DialogBody class="flex w-full flex-col gap-2 px-4 pt-4 pb-2">
+        {/* `!overflow-y-auto`：`[data-slot="dialog-body"]` 自带 `overflow: hidden`（不带 @layer），
+            普通 utility 压不过；封顶后多出来的高度靠这里滚，footer 留在滚动区外。 */}
+        <DialogBody class="flex w-full flex-col gap-2 px-4 pt-4 pb-2 !overflow-y-auto">
           <Field>
             <Field.Label>名称</Field.Label>
             {/* `autofocus` 由 `DialogV2` 的 `onOpenAutoFocus` 认（它按 `[autofocus]` 找）——
@@ -156,7 +162,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
               只在「新建文件」里出现——目录不能变成 `.docx/.hgraph`（`kind === "directory"` 不显示）。
               大类标题只是分组标题（不可点）；代码大类默认折叠，列表区自身可滚。 */}
           <Show when={!是文件夹()}>
-            <div data-slot="file-create-catalog" class="flex max-h-[45vh] flex-col gap-3 overflow-y-auto pr-1">
+            <div data-slot="file-create-catalog" class="flex flex-col gap-3">
               <For each={新建大类}>
                 {(大类) => {
                   const 选中 = () => 大类选中(大类)
@@ -165,11 +171,12 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                     <section
                       data-slot="file-create-category"
                       data-category={大类.名称}
-                      data-selected={选中() ? "true" : undefined}
+                      data-selected={选中() ? "true" : "false"}
                       class="flex flex-col gap-2"
                     >
                       <div class="flex items-center justify-between gap-2">
                         <span
+                          id={`file-create-category-${大类.名称}`}
                           data-slot="file-create-category-title"
                           class={
                             选中()
@@ -184,6 +191,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                             type="button"
                             data-slot="file-create-category-toggle"
                             aria-expanded={展开()}
+                            aria-controls={`file-create-suffixes-${大类.名称}`}
                             class="text-[12px] text-v2-text-text-muted hover:text-v2-text-text-base"
                             onClick={() =>
                               set展开大类((当前) =>
@@ -197,8 +205,15 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                           </button>
                         </Show>
                       </div>
-                      <Show when={展开()}>
-                        <div class="flex flex-wrap gap-2">
+                      {/* 容器**始终在 DOM 里**（即使收起）：`aria-controls` 得指得到一个真实节点；
+                          收起时里面为空，读屏不会念任何后缀。 */}
+                      <div
+                        id={`file-create-suffixes-${大类.名称}`}
+                        role="group"
+                        aria-labelledby={`file-create-category-${大类.名称}`}
+                        class="flex flex-wrap gap-2"
+                      >
+                        <Show when={展开()}>
                           <For each={大类.后缀们}>
                             {(后缀) => {
                               const 勾中 = () => 选中后缀() === 后缀
@@ -226,8 +241,8 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                               )
                             }}
                           </For>
-                        </div>
-                      </Show>
+                        </Show>
+                      </div>
                     </section>
                   )
                 }}

@@ -63,6 +63,38 @@ describe("新建文件清单（file-create-catalog）", () => {
     }
   })
 
+  /**
+   * 全量快照：9 大类 × 每个后缀逐字钉住（2026-11-16 审查 R2）。
+   *
+   * 这是「前端清单 ↔ 后端模板表」之间的**那道闸**：两份表分属两个 package，没法互相 import，
+   * 于是任何新增后缀（例如给「图片」加 `.svg`）都必然让这条红。改动者被迫去确认
+   * `packages/opencode/src/server/openhive/file-templates.ts` 里有没有对应模板——
+   * 没有的话，用户会建出一份 0 字节的 `.svg`，而所有其它用例都是绿的（`#005-18` 假绿四问）。
+   */
+  test("清单全量快照（增删后缀必须过这条）", () => {
+    expect(新建大类.map((大类) => ({ 名称: 大类.名称, 后缀们: [...大类.后缀们] }))).toEqual([
+      { 名称: "文档", 后缀们: [".docx"] },
+      { 名称: "表格", 后缀们: [".xlsx", ".csv"] },
+      { 名称: "图文", 后缀们: [".md", ".txt"] },
+      { 名称: "关系图", 后缀们: [".hgraph"] },
+      { 名称: "思维导图", 后缀们: [".xmind"] },
+      { 名称: "PDF", 后缀们: [".pdf"] },
+      { 名称: "图片", 后缀们: [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"] },
+      { 名称: "网页", 后缀们: [".html", ".htm"] },
+      {
+        名称: "代码",
+        后缀们: [
+          ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+          ".py", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".cs", ".swift", ".scala", ".lua", ".r", ".pl", ".m",
+          ".c", ".h", ".cc", ".cpp", ".hpp",
+          ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
+          ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env", ".properties",
+          ".xml", ".css", ".scss", ".less",
+        ],
+      },
+    ])
+  })
+
   /** §4 裁定 1：`.doc` / `.xls` 是 legacy 二进制，没有可靠模板生成器 ⇒ 不列（既有文件仍可打开）。 */
   test("文档只列 .docx（.doc 不列）、表格只列 .xlsx/.csv（.xls 不列）", () => {
     expect(新建大类.find((大类) => 大类.名称 === "文档")?.后缀们).toEqual([".docx"])

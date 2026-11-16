@@ -71,5 +71,6 @@
 | 缺口 | 原因 | 谁来补 |
 |---|---|---|
 | docx/xlsx/pdf/图片模板在**真查看器**里打开的效果 | 本机仅做结构校验；`docx-preview`/`pdf.js`/图片解码的真栈打开需起栈 | 真栈验收（起栈后逐类新建并打开） |
-| `.xmind` 模板在**真 XMind** 里打开 | 本机只验 zip 内 `content.json` 可被 `parseMindmap` 结构解析 | 真栈 + XMind 客户端 |
-| 代码大类 ~90 项在窄屏下的滚动观感 | 组件测试量不了视觉 | 真栈视觉验收 |
+| `.xmind` 模板在**真 XMind** 里打开 | 本机只做 zip 条目与 `content.json` 的**结构**断言（未调 `parseMindmap`，也未开 XMind） | 真栈 + XMind 客户端 |
+| 代码大类 48 项（全清单 64 项）在窄屏下的观感与键盘 Tab 次数 | 组件测试量不了视觉/焦点链 | 真栈视觉与 a11y 验收 |
+| 弹窗 `fit` + body 滚动的真实布局（footer 固定、9 大类可滚） | happy-dom 不算 CSS；只钉了 DOM 结构 | 真栈视觉验收 |

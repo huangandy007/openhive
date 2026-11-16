@@ -329,7 +329,7 @@ describe("新建弹窗（FileCreateDialog）", () => {
     await 打开({ kind: "file", parent: "" })
     const 项 = 后缀项(".docx")
     const 勾选框 = 项.querySelector<HTMLElement>("[data-slot='file-create-suffix-check']")
-    const 标签 = 勾选框?.nextElementSibling as HTMLElement | null
+    const 标签 = 勾选框?.nextElementSibling
     if (!勾选框 || !标签) throw new Error("勾选框或后缀标签缺失——前提不成立")
 
     expect(勾选框.compareDocumentPosition(标签) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -343,7 +343,37 @@ describe("新建弹窗（FileCreateDialog）", () => {
     expect(大类们().length).toBe(9)
     expect(后缀们().length).toBeGreaterThan(0)
     expect(后缀们().map((el) => el.getAttribute("aria-checked"))).toEqual(后缀们().map(() => "false"))
-    expect(大类们().map((el) => el.dataset.selected)).toEqual(大类们().map(() => undefined))
+    expect(大类们().map((el) => el.dataset.selected)).toEqual(大类们().map(() => "false"))
+  })
+
+  /**
+   * 标题不可点不只看标签名（2026-11-16 审查 R15）：若把标题包进一个带 `onClick` 的非 button
+   * 容器，`tagName !== "BUTTON"` 照样绿。这里用**行为**钉：点标题后没有任何后缀被勾、提交名不变。
+   */
+  test("点大类标题 ⇒ 什么也不发生（不选中、不补后缀）", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三")
+    const title = 大类("文档").querySelector<HTMLElement>("[data-slot='file-create-category-title']")
+    if (!title) throw new Error("没有大类标题——这条用例的前提不成立")
+    title.click()
+    await flush()
+
+    expect(后缀们().every((el) => el.getAttribute("aria-checked") === "false")).toBe(true)
+    提交()
+    expect(收到).toEqual(["张三"])
+  })
+
+  /**
+   * 选中样式与选中态同源（2026-11-16 审查 R6）：只断 `aria-checked` 的话，把两个 class
+   * 三元分支改成同一串，用例照样全绿（`#005-18`）。这里钉「视觉分支确实不同」。
+   */
+  test("勾中的后缀与未勾的样式类不同（高亮不是只写在 aria 上）", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    勾(".docx")
+
+    expect(后缀项(".docx").className).not.toBe(后缀项(".xlsx").className)
   })
 
   test("勾 .docx ⇒ 提交名补 .docx、该项打勾、所属大类高亮", async () => {
@@ -358,7 +388,7 @@ describe("新建弹窗（FileCreateDialog）", () => {
     expect(项.querySelector("[data-slot='file-create-suffix-check']")?.textContent).toBe("V")
     expect(大类("文档").dataset.selected).toBe("true")
     for (const 其它 of 大类们()) {
-      if (其它.dataset.category !== "文档") expect(其它.dataset.selected).toBeUndefined()
+      if (其它.dataset.category !== "文档") expect(其它.dataset.selected).toBe("false")
     }
 
     提交()
@@ -387,7 +417,7 @@ describe("新建弹窗（FileCreateDialog）", () => {
     勾(".docx")
 
     expect(后缀们().every((el) => el.getAttribute("aria-checked") === "false")).toBe(true)
-    expect(大类们().every((el) => el.dataset.selected === undefined)).toBe(true)
+    expect(大类们().every((el) => el.dataset.selected === "false")).toBe(true)
 
     提交()
     expect(收到).toEqual(["张三"])
@@ -429,6 +459,47 @@ describe("新建弹窗（FileCreateDialog）", () => {
     toggle.click()
     await flush()
     expect(document.body.querySelector("[data-suffix='.ts']")).toBeNull()
+  })
+
+  /**
+   * 折叠是**看**的动作，不是选的动作（2026-11-16 裁定）：选中 `.ts` 后收起「代码」，
+   * 提交名仍补 `.ts`，且「代码」标题保持高亮——否则用户看不出自己选了什么。
+   * 反过来说，如果把「收起」实现成「清空选中」，这条会红，改动者必须显式决定。
+   */
+  test("选中代码后缀后收起大类 ⇒ 选择保留、提交名仍补后缀、标题仍高亮", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("脚本")
+    const toggle = 大类("代码").querySelector<HTMLButtonElement>("[data-slot='file-create-category-toggle']")
+    if (!toggle) throw new Error("代码大类没有折叠开关——前提不成立")
+    toggle.click()
+    await flush()
+    勾(".ts")
+    expect(大类("代码").dataset.selected).toBe("true")
+
+    toggle.click()
+    await flush()
+    expect(document.body.querySelector("[data-suffix='.ts']")).toBeNull()
+    expect(大类("代码").dataset.selected).toBe("true")
+
+    提交()
+    expect(收到).toEqual(["脚本.ts"])
+  })
+
+  /**
+   * 布局结构（2026-11-16 审查 R1）：`dialog-container` 默认写死 368px，而 9 大类装不下。
+   * 修法是 `fit` + body 自己滚，footer 必须在滚动区之外——否则「展开代码」后确定/取消会被推走。
+   * happy-dom 量不了 CSS，这里只钉结构；真实观感进缺口表（真栈视觉验收）。
+   */
+  test("确定按钮不在滚动清单里（footer 固定）", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    const catalog = document.body.querySelector("[data-slot='file-create-catalog']")
+    const ok = document.body.querySelector("[data-slot='file-create-ok']")
+    if (!catalog || !ok) throw new Error("清单或确定按钮缺失——前提不成立")
+
+    expect(catalog.contains(ok)).toBe(false)
+    expect(catalog.closest("[data-slot='dialog-body']")).not.toBeNull()
   })
 
   test("新建文件夹的弹窗里没有清单（目录不能变成 .docx/.hgraph）", async () => {

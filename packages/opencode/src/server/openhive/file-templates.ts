@@ -69,7 +69,11 @@ const 生成docx = () =>
 
 // ─────────────────────────────────────────────────────────────── xlsx
 
-/** 惰性 `import("xlsx")`：只有真的新建表格时才付这个包的加载成本。 */
+/**
+ * `import("xlsx")` 写成惰性**不是为了省加载时间**（2026-11-16 审查 R10：同一进程里
+ * `case-sheet.ts` 已经静态引了 xlsx，服务启动时就已加载），只是为了不在本模块顶部
+ * 再挂一条静态依赖、让「模板」与「解析」两条路保持互不牵连。
+ */
 async function 生成xlsx(): Promise<Uint8Array> {
   const XLSX = await import("xlsx")
   const book = XLSX.utils.book_new()
@@ -227,18 +231,27 @@ async function 生成(后缀: string): Promise<Uint8Array | undefined> {
 /**
  * 按 `name` 的后缀返回预置模板字节；未列出的后缀回 `undefined`（调用方仍写 0 字节）。
  *
- * 缓存的是 **Promise**：同后缀的并发调用也只跑一趟生成（`#002-06` 同一个前提不两处各算）。
+ * 并发只跑一趟（在飞表），但**只缓存成功结果**（2026-11-16 审查 R9）：早先缓存的是 Promise
+ * 本身，某次生成因瞬时原因抛错后，这个后缀在进程余下的生命周期里**永远失败**——没有失效路径。
  */
-const 缓存 = new Map<string, Promise<Uint8Array | undefined>>()
+const 已完成 = new Map<string, Uint8Array>()
+const 在飞 = new Map<string, Promise<Uint8Array | undefined>>()
 
 export async function 模板字节(name: string): Promise<Uint8Array | undefined> {
   const 后缀 = 取后缀(name)
   if (后缀 === undefined) return undefined
 
-  const 已有 = 缓存.get(后缀)
+  const 已有 = 已完成.get(后缀)
   if (已有 !== undefined) return 已有
+  const 飞着的 = 在飞.get(后缀)
+  if (飞着的 !== undefined) return 飞着的
 
   const 生成中 = 生成(后缀)
-  缓存.set(后缀, 生成中)
+    .then((bytes) => {
+      if (bytes !== undefined) 已完成.set(后缀, bytes)
+      return bytes
+    })
+    .finally(() => 在飞.delete(后缀))
+  在飞.set(后缀, 生成中)
   return 生成中
 }

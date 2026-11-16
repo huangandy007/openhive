@@ -1074,7 +1074,8 @@ function handleStat(request: HttpServerRequest.HttpServerRequest, root: string) 
 }
 
 /**
- * 新建（T018）：在 `dir` 下面造一个**空文件**或一个**空目录**。
+ * 新建（T018）：在 `dir` 下面造一个**目录**，或一个文件——文件按后缀写入最小预置模板
+ * （013 · T1，`file-templates.ts`；未列出的后缀仍写 0 字节）。
  *
  * ⚠️ **目标路径走 `inside()` 拼，绝不用 `join()`**：`join(project, "sub", "a:b")` 在 win32 上
  * 会静默写进备用数据流（实测）。但 `inside` **只**在「首段就是那个名字」时拦得住——`sub/a:b`

@@ -30,8 +30,13 @@ const 全部常量: ReadonlyArray<readonly [string, readonly string[]]> = [
 ]
 
 describe("文件类型扩展名常量（注册表与新建清单的共同出处）", () => {
-  test("九个常量都在表里（少一个就是有人绕开单一出处）", () => {
-    expect(全部常量).toHaveLength(9)
+  /**
+   * 用**命名空间 import** 对导出键集合（2026-11-16 审查 R14）：只断言本文件这张表的长度是 9，
+   * 那么新增第 10 个导出（例如把「代码」再拆一份）时表还是 9，用例照样绿，单一出处悄悄多出一份。
+   */
+  test("模块导出的键与这张表逐项相等（新增导出必须登记进来）", async () => {
+    const 模块 = await import("./file-type-extensions")
+    expect(Object.keys(模块).sort()).toEqual(全部常量.map(([名]) => 名).sort())
   })
 
   for (const [名, 数组] of 全部常量) {
