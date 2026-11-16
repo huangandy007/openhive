@@ -232,7 +232,7 @@ function 抛核心失败(失败: { readonly code: 失败码; readonly 话术: st
 export function 写失败回报(写: 核心失败, 缺失: string | undefined): 工具错误 {
   // 只有核心回的正是「缺目标」那一条（`BAD_OP` 且话术以 **`「<id>」`** 点名）才折 `not_found`。
   // `hgraph-edit` 的缺失话术是 `图上没有<类别>「<id>」`（唯一出处），故判据必须带引号；`缺失`
-  // 还要非空——空串会让 `includes("")` 恒真，把同批別的 `BAD_OP` 全折成 `not_found`（修复轮 1 M-2）。
+  // 还要非空——空串会让 `includes("")` 恒真，把同批别的 `BAD_OP` 全折成 `not_found`（修复轮 1 M-2）。
   if (缺失 !== undefined && 缺失 !== "" && 写.code === "BAD_OP" && 写.话术.includes(`「${缺失}」`)) {
     return new 工具错误("not_found", `图上没有 ${缺失}`)
   }
