@@ -13,10 +13,13 @@
  * - 每个动作先**本地乐观应用**（画布要立刻看到结果），500ms 防抖后把这段时间攒下的
  *   操作作为**一个批次**发一次 `写`（拖动只在 `dragend` 进待发 ⇒ 一次拖拽 = 一次写）。
  * - 成功 ⇒ 版本取应答里的 `版本`，临时 id 按应答的 `映射` 换成正式 id，**压一步撤销**。
- * - 失败（网络 / 超时 / 409）⇒ 文档回改前（最近一次已存）的值、清掉待发、状态停在
- *   「待发」并提示**「没存上」**；**不自动重试**（写操作重打就是重复写入）。
- * - 409 额外把服务端给的 `最新版本` 留在状态里：T013 要用它问「重新载入？」。本轮
- *   只保证信息不丢，不做询问界面（FR-012：不静默合并、不替用户选）。
+ * - 失败按 `回.code` 分流（R113 / FR-049）：
+ *   - **可重试**（网络断开 / 无 code / 5xx / 未知 code）⇒ 文档**不回滚**，整批放回待发头部、
+ *     状态「没存上」并出「重试」按钮；**绝不自动重发**（防重试风暴）。
+ *   - **409 `VERSION_CONFLICT`** ⇒ 回滚，文案「这份图在你打开之后被改过」，并打开
+ *     「重新载入？」询问（先 `读` 一次把盘上最新填进 `待重载`）。
+ *   - **404 `NOT_FOUND`** ⇒ 回滚并进入**终态只读**：文件被外部删除，此后禁止一切写、停轮询。
+ *   - **其余非可重试**（BAD_OP / BAD_JSON / 其它 4xx）⇒ 回滚，文案优先用 `回.message`。
  *
  * ## 撤销
  *
@@ -426,6 +429,38 @@ interface 外部变更 {
   readonly 文档?: 图文件
 }
 
+/**
+ * T019d（R113）：哪些**写失败**可以「重试」——唯一判定（`#002-06`）。
+ *
+ * 码表来源是后端 `hgraph-ops.ts` 的 `失败码` 与末尾 `状态码` 表：只有 `DUPLICATE_ID` /
+ * `WRITE_FAILED` 是 500，其余都是 4xx；网络断开 / 非 JSON 2xx 时前端拿不到 code
+ * （`entity-api.ts` 的 catch），超时是客户端自己合成的 `timeout`。R113 裁定「无 code /
+ * 5xx / 未知 code 都可重试」⇒ 用**已知不可重试码的补集**表达，别反过来写白名单
+ * （后端将来新增的码不该默认变成「不可重试」）。
+ */
+const 已知不可重试码: ReadonlySet<string> = new Set([
+  "OUTSIDE_PROJECT",
+  "LINK_ESCAPE",
+  "GIT_LOCKED",
+  "NOT_HGRAPH",
+  "NOT_FOUND",
+  "VERSION_CONFLICT",
+  "BAD_JSON",
+  "BAD_VERSION",
+  "NEWER_VERSION",
+  "BAD_SHAPE",
+  "BAD_OP",
+  "DANGLING_EDGE",
+  "FACTS_NEED_SOURCE",
+  "INFERENCE_NEEDS_BASIS",
+  "INFERENCE_NEEDS_CONFIDENCE",
+  "BAD_CITATION",
+  "BAD_REQUEST",
+])
+
+const 可重试失败 = (回: { readonly code?: string }) =>
+  回.code === undefined || !已知不可重试码.has(回.code)
+
 let 批次序号 = 0
 
 export function 编辑器(props: 编辑器Props): JSX.Element {
@@ -458,6 +493,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [聚焦请求, set聚焦请求] = createSignal(0)
   /** 外部改动询问条：有未发出改动 / 新内容解析失败时只问不重载（FR-012）。 */
   const [询问重载, set询问重载] = createSignal(false)
+  /**
+   * 可重试失败后「有一批改动保留着、等用户点重试」（R113）。只由发送结果写：
+   * 可重试失败 ⇒ true；成功 / 其它失败 / 点重试 / 重载 / 终态 ⇒ false。
+   * 不用 `错误() === "没存上"` 反推：非可重试失败的空 message 也回退这句话，会误出按钮。
+   */
+  const [可重试, set可重试] = createSignal(false)
+  /** 404 终态：文件被外部删除 ⇒ 只能查看，禁止一切后续写、停轮询（R113 §3）。 */
+  const [文件已不存在, set文件已不存在] = createSignal(false)
   /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
   const [重载提示, set重载提示] = createSignal(false)
   /** AI 改动无法整体还原时的提示（R94）；只压不写，也不压半还原的步。 */
@@ -707,8 +750,71 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     已卸载 = true
   })
 
+  /**
+   * 一次**非可重试**失败的机械收尾（R113；409 / 404 / 其余 4xx 三条分支共用，`#002-06`）：
+   * 文档回滚到服务端已接受态、弹出步放回栈、按回滚后的文档重算飞行中待发的逆操作、
+   * 只清「发送时快照里有、回滚后不存在」的临时 id。
+   */
+  const 回滚失败批 = (参数: {
+    前: 图文件
+    快照id们: ReadonlySet<string>
+    批弹出: readonly { 方向: "撤销" | "重做"; 步: 撤销步 }[]
+  }) => {
+    const 回滚后 = 待发.reduce(应用本地, 参数.前)
+    set文档(回滚后)
+    set已存文档(参数.前)
+    // 写失败：撤销/重做弹出的步放回原栈（反向遍历恢复弹出前的顺序）。这样失败的那次
+    // `Ctrl+Z` 可以原样重试，而不是先按重做把步挪回来。期间被重载清空的步不会被塞回。
+    let 复位栈 = 撤销栈()
+    for (const 项 of [...参数.批弹出].reverse()) 复位栈 = 放回一步(复位栈, 项.步, 项.方向)
+    set撤销栈(复位栈)
+    // 该批草稿已随发送摘下并丢弃；飞行中新增的待发按回滚后的文档重算一份，
+    // 否则撤销会退到「失败批仍生效时」的位置。
+    const 重算 = 求逆操作(参数.前, 待发)
+    草稿逆操作 = [...重算.逆操作]
+    草稿副本 = [...(重算.副本 ?? [])]
+    const 现存 = new Set([...回滚后.节点, ...回滚后.边, ...回滚后.文字].map((行) => 行.id))
+    // R81：只清「发送时快照里有、回滚后不存在」的临时 id。失败前就在的临时 id
+    // （例如飞行中刚加、还没发过的对象）不能误删——它仍指向文档里真实存在的对象。
+    // 不变量：`回滚后 = 待发.reduce(应用本地, 前)`，且 `前`（已存文档）不含临时 id ⇒
+    // 「快照里有、回滚后没有」与「属于失败批」等价，`快照id们.has(id)` 因此是**冗余**校验
+    // （去掉它用例仍绿，`#003-03` 第三类）；保留只为防御，别把它当主守卫。
+    const 该清 = (id: string) => 是临时id(id) && 参数.快照id们.has(id) && !现存.has(id)
+    set选中((旧) => 旧.filter((id) => !该清(id)))
+    set重命名id((旧) => (旧 !== undefined && 该清(旧) ? undefined : 旧))
+  }
+
+  /** 404 终态（R113 §3）：文件被外部删除 ⇒ 只能查看；停轮询，`应用` / `发送` 双闸拦住后续写。 */
+  const 进入文件已不存在 = () => {
+    set文件已不存在(true)
+    set可重试(false)
+    set错误("文件已不存在")
+    set最新版本(undefined)
+    set状态("待发")
+    待重载 = undefined
+    set询问重载(false)
+    if (轮询计时 !== undefined) {
+      clearInterval(轮询计时)
+      轮询计时 = undefined
+    }
+  }
+
+  /** 409 之后把盘上最新取回来填「待重载」，让现有「重新载入」按钮可用（R113 §2）。 */
+  const 取回最新版本 = async (代: number) => {
+    try {
+      const 读 = await props.api.读({ projectId: props.projectId, path: props.path })
+      // 期间已被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
+      if (已卸载 || 代 !== 文档代 || 文件已不存在()) return
+      if (读.kind !== "ok") return
+      const 解析 = 解析图(读.value.内容)
+      待重载 = 解析.ok ? { 版本: 读.value.版本, 文档: 解析.文档 } : { 版本: 读.value.版本 }
+    } catch {
+      // `读` 失败什么都不做：下一轮询 tick 会自行问 / 静默重载（R113 §2）。
+    }
+  }
+
   const 发送 = async () => {
-    if (正在发 || 待发.length === 0) return
+    if (正在发 || 待发.length === 0 || 文件已不存在()) return
     正在发 = true
     const 批 = 待发
     待发 = []
@@ -745,6 +851,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // R89：await 期间文档被外部重载替换过 ⇒ 这批应答相对旧文档，文档/版本/栈/选中映射
     // 一律不落地（成功失败都一样）。只续上重载后新产生的待发，状态以当前文档为准。
     if (代 !== 文档代) {
+      // 这批应答跟着旧文档一起作废：之前的「可重试」保留批也已被重载丢弃。
+      set可重试(false)
       if (状态() === "发送中") set状态(待发.length > 0 ? "待发" : "已存")
       if (待发.length > 0) 排发()
       return
@@ -787,44 +895,65 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       }
       set错误(undefined)
       set最新版本(undefined)
+      set可重试(false)
       // 还有没发出去的改动就不算「已保存」。
       set状态(待发.length > 0 ? "待发" : "已存")
-    } else {
-      // 失败的批丢弃（回改到服务端已接受值）；飞行中新增、从未发出的待发重折回来。
-      // 两类失败都停在「待发」、只说「没存上」；不自动重试、不替用户合并。
-      const 回滚后 = 待发.reduce(应用本地, 前)
-      set文档(回滚后)
-      set已存文档(前)
-      // 写失败：撤销/重做弹出的步放回原栈（反向遍历恢复弹出前的顺序）。这样失败的那次
-      // `Ctrl+Z` 可以原样重试，而不是先按重做把步挪回来。期间被重载清空的步不会被塞回。
-      let 复位栈 = 撤销栈()
-      for (const 项 of [...批弹出].reverse()) 复位栈 = 放回一步(复位栈, 项.步, 项.方向)
-      set撤销栈(复位栈)
-      // 该批草稿已随发送摘下并丢弃；飞行中新增的待发按回滚后的文档重算一份，
-      // 否则撤销会退到「失败批仍生效时」的位置。
-      const 重算 = 求逆操作(前, 待发)
-      草稿逆操作 = [...重算.逆操作]
-      草稿副本 = [...(重算.副本 ?? [])]
-      const 现存 = new Set([...回滚后.节点, ...回滚后.边, ...回滚后.文字].map((行) => 行.id))
-      // R81：只清「发送时快照里有、回滚后不存在」的临时 id。失败前就在的临时 id
-      // （例如飞行中刚加、还没发过的对象）不能误删——它仍指向文档里真实存在的对象。
-      // 不变量：`回滚后 = 待发.reduce(应用本地, 前)`，且 `前`（已存文档）不含临时 id ⇒
-      // 「快照里有、回滚后没有」与「属于失败批」等价，`快照id们.has(id)` 因此是**冗余**校验
-      // （去掉它用例仍绿，`#003-03` 第三类）；保留只为防御，别把它当主守卫。
-      const 该清 = (id: string) => 是临时id(id) && 快照id们.has(id) && !现存.has(id)
-      set选中((旧) => 旧.filter((id) => !该清(id)))
-      set重命名id((旧) => (旧 !== undefined && 该清(旧) ? undefined : 旧))
+    } else if (可重试失败(回)) {
+      // R113 §1（FR-049）：可重试失败**保留改动**——文档 / 已存文档 / 版本都不回滚，
+      // 整批放回待发**头部**（失败批在前，飞行中那批在后），草稿与弹出步一并向后接。
+      // 顺序与 `应用` 同一口径：草稿是「后做的在前」，所以更早的批接在草稿**尾部**。
+      const 保留前待发为空 = 待发.length === 0
+      待发 = [...批, ...待发]
+      草稿逆操作 = [...草稿逆操作, ...批逆操作]
+      if (批副本.length > 0) 草稿副本 = [...草稿副本, ...批副本]
+      草稿弹出 = [...批弹出, ...草稿弹出]
+      // 空草稿不是一次新操作：与 `应用` 里 `待发.length === 0 ? …` 同一判定。
+      草稿仅撤销重做 = 仅撤销重做 && (保留前待发为空 || 草稿仅撤销重做)
+      草稿含合并撤销 = 批含合并撤销 || 草稿含合并撤销
       set错误("没存上")
-      set最新版本(回.code === "VERSION_CONFLICT" ? 回.最新版本 : undefined)
+      // 「最新版本」只属于 409：非 409 的失败不能把它留着（与改动前的分支口径一致）。
+      set最新版本(undefined)
+      set可重试(true)
+      set状态("待发")
+      // 关键：**不**自动重发。除了不走下面的 `排发()`，还要撤掉飞行中编辑已经排上的那次
+      // 防抖定时器——否则它会带着保留批自己发出去，等于自动重试（重试风暴）。
+      clearTimeout(计时)
+      return
+    } else {
+      // 非可重试失败：回滚到服务端已接受态；飞行中新增、从未发出的待发重折回来。
+      回滚失败批({ 前, 快照id们, 批弹出 })
+      set可重试(false)
+      if (回.code === "VERSION_CONFLICT") {
+        // R113 §2：回滚照旧，但明说原因并打开「重新载入？」；同时把盘上最新取回待用。
+        set错误("这份图在你打开之后被改过")
+        set最新版本(回.最新版本)
+        set询问重载(true)
+        void 取回最新版本(代)
+      } else if (回.code === "NOT_FOUND") {
+        // R113 §3：文件被外部删除 ⇒ 终态只读（不提供「重试」）。
+        进入文件已不存在()
+        return
+      } else {
+        // R113 §4：优先用服务端的 message；空则回退「没存上」。
+        set错误(回.message === "" ? "没存上" : 回.message)
+        set最新版本(undefined)
+      }
       set状态("待发")
     }
 
-    if (待发.length > 0) 排发()
+    if (待发.length > 0 && !文件已不存在()) 排发()
   }
 
   const 排发 = () => {
     clearTimeout(计时)
     计时 = setTimeout(() => void 发送(), 防抖毫秒)
+  }
+
+  /** 用户点「重试」：只发这一次（保留批已在待发头部）；绝不自动循环。 */
+  const 重试保存 = () => {
+    set错误(undefined)
+    set可重试(false)
+    排发()
   }
 
   /** 重载成功提示（R55）：文案逐字；5 秒后自动消失，不常驻。 */
@@ -876,6 +1005,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     set状态("已存")
     set错误(undefined)
     set最新版本(undefined)
+    set可重试(false)
     // 旧历史一律清掉（US6 场景 4）；随后把 AI 那一步压成栈里唯一的一步（顺序按发生时间）。
     const 空栈 = 清空(撤销栈())
     set撤销栈(
@@ -910,12 +1040,17 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * - 否则静默重载。
    */
   const 轮询 = async () => {
-    if (已卸载 || 演示中() || 正在查) return
+    if (已卸载 || 演示中() || 文件已不存在() || 正在查) return
     正在查 = true
     try {
       const 回 = await props.api.读({ projectId: props.projectId, path: props.path })
       // `读` 在途时可能已进入演示：应答回来后要复检，否则会在演示中静默换文档（m-1）。
-      if (已卸载 || 演示中() || 回.kind !== "ok") return
+      if (已卸载 || 演示中()) return
+      if (回.kind !== "ok") {
+        // R113 §3：读发现文件被外部删除 ⇒ 与保存 404 同一终态（停轮询、禁一切写）。
+        if (回.kind === "error" && 回.code === "NOT_FOUND") 进入文件已不存在()
+        return
+      }
       const 新版本 = 回.value.版本
       if (新版本 === 版本()) {
         // 差异已被自己的一次保存抹平：别拿旧的「待重载」再问用户。
@@ -968,7 +1103,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * 一批里先后两次 `应用` 时，撤销要「后做的先退」，所以新逆操作放在已有草稿之前。
    */
   const 应用 = (操作们: readonly 操作[], 选项: { 仅撤销重做?: boolean } = {}) => {
-    if (操作们.length === 0) return
+    // R113 §3 双闸之一：文件被外部删除后，本地改动连待发都不进（否则会在界面上越攒越多）。
+    if (操作们.length === 0 || 文件已不存在()) return
     const 旧 = 文档()
     const 逆 = 求逆操作(旧, 操作们)
     草稿逆操作 = [...逆.逆操作, ...草稿逆操作]
@@ -1573,6 +1709,19 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         >
           {状态文案()}
         </span>
+        {/* R113 §5：只有「保留着一批改动、且没有自动发送在跑」时才出（判定只此一处）。 */}
+        <Show when={可重试()}>
+          <button
+            type="button"
+            data-slot="hgraph-save-retry"
+            aria-label="重试保存"
+            title="重试保存"
+            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            onClick={重试保存}
+          >
+            重试
+          </button>
+        </Show>
         {/* T015：导出回执与保存状态同在一条状态栏（不新增第二套提示样式）。 */}
         <Show when={导出提示()}>
           <span data-slot="hgraph-export-status" role="status" class="text-12-regular text-v2-text-text-muted">
@@ -1607,6 +1756,17 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             保留我的改动
           </button>
         </div>
+      </Show>
+
+      {/* R113 §3：文件被外部删除 ⇒ 终态只读；改动不会再保存，也不给「重试」。 */}
+      <Show when={文件已不存在()}>
+        <p
+          data-slot="hgraph-gone"
+          role="alert"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          文件已不存在，只能查看（改动不会再保存）
+        </p>
       </Show>
 
       <Show when={重载提示()}>

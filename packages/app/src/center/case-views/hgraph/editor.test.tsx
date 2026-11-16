@@ -106,11 +106,18 @@ function 成功(版本: string, 映射: Record<string, string> = {}): 写应答 
  * 只实现 `写`；`读` / `初始化` / `导出许可` 一被调用就抛——编辑器必须**不**自己载入
  * （载入归 T007 的打开通道），也不导出。`写` 默认真打一次就成功。
  */
-function 假api(剧本: { 写?: (输入: 写入参) => 写应答 | Promise<写应答> } = {}) {
+function 假api(剧本: {
+  写?: (输入: 写入参) => 写应答 | Promise<写应答>
+  /** 只有 409 后「取回盘上最新」会用（T019d）；不写剧本 = 编辑器不该自己读。 */
+  读?: () => 读回 | Promise<读回>
+} = {}) {
   const 写们: 写入参[] = []
+  let 读数 = 0
   const api: HgraphApi = {
     读: async () => {
-      throw new Error("编辑器不该自己读文件")
+      读数 += 1
+      if (剧本.读 === undefined) throw new Error("编辑器不该自己读文件")
+      return await 剧本.读()
     },
     初始化: async () => {
       throw new Error("编辑器不该 init")
@@ -123,7 +130,7 @@ function 假api(剧本: { 写?: (输入: 写入参) => 写应答 | Promise<写�
       throw new Error("编辑器不该导出")
     },
   }
-  return { api, 写们 }
+  return { api, 写们, 取读数: () => 读数 }
 }
 
 /** 每次 `写` 都挂起，由用例逐次 `解(序, 应答)`——覆盖「请求飞行中再操作」。 */
@@ -269,7 +276,7 @@ describe("编辑器 · 保存状态机", () => {
     expect(文案("hgraph-save-status")).toBe("已保存")
   })
 
-  test("保存失败（网络）⇒ 节点回改前位置 + 「没存上」+ 不自动重试", async () => {
+  test("保存失败（网络）⇒ 改动保留在画布 + 「没存上」+ 出「重试」+ 不自动重试", async () => {
     let 解!: (回: 写应答) => void
     const 闸 = new Promise<写应答>((收) => (解 = 收))
     const { api, 写们 } = 假api({ 写: () => 闸 })
@@ -278,7 +285,7 @@ describe("编辑器 · 保存状态机", () => {
 
     拖(节点组("n1")!, 100, 100, 180, 100)
     await flush()
-    // 先证明「字段真的变过」——否则「回改前值」可能只是从来没改（假绿）。
+    // 先证明「字段真的变过」——否则「保留」可能只是从来没改（假绿）。
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
 
     await 过防抖()
@@ -287,20 +294,26 @@ describe("编辑器 · 保存状态机", () => {
     await flush()
     await flush()
 
-    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    // FR-049：可重试失败**保留改动**（文档不回滚），并给一个「重试」按钮。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
     expect(文案("hgraph-save-status")).toContain("没存上")
     expect(文案("hgraph-save-status")).not.toContain("已保存")
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
+    expect(取("[data-slot='hgraph-save-retry']")).not.toBeNull()
 
-    // 不自动重试：再等一个防抖周期，仍然只有那一次。
+    // 绝不自动重发：再等一个防抖周期，仍然只有那一次。
     await 过防抖()
     expect(写们.length).toBe(1)
   })
 
-  test("409 版本冲突 ⇒ 回改前值 + 「没存上」+ 保留服务端的最新版本、不重试", async () => {
+  test("409 版本冲突 ⇒ 回改前值 + 「被改过」+ 打开询问条 + 保留服务端的最新版本、不重试", async () => {
     let 解!: (回: 写应答) => void
     const 闸 = new Promise<写应答>((收) => (解 = 收))
-    const { api, 写们 } = 假api({ 写: () => 闸 })
+    const { api, 写们 } = 假api({
+      写: () => 闸,
+      // 409 后会把盘上最新取回来填「待重载」；本用例只钉询问条，读回失败即可。
+      读: () => ({ kind: "error", message: "网络断了", code: "network" }),
+    })
     挂上(api)
     await flush()
 
@@ -308,13 +321,15 @@ describe("编辑器 · 保存状态机", () => {
     await 过防抖()
     expect(写们.length).toBe(1)
     解({ kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: "v9" })
-    await flush()
-    await flush()
+    await 等到条件(() => 取("[data-slot='hgraph-reload-ask']") !== null)
 
+    // 409 仍是回滚（本地收敛到服务端已接受态），但要明说原因并问「重新载入？」。
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
-    expect(文案("hgraph-save-status")).toContain("没存上")
+    expect(文案("hgraph-save-status")).toContain("被改过")
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
-    // T013 要拿它问「重新载入？」——本轮不实现界面，只保证信息不丢。
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-save-retry']")).toBeNull()
+    // 409 的「最新版本」数据属性照旧（T013 据此问重新载入）。
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-latest-version")).toBe("v9")
     await 过防抖()
     expect(写们.length).toBe(1)
@@ -324,7 +339,7 @@ describe("编辑器 · 保存状态机", () => {
   // 方向 A：飞行中再拖一次，第一批**失败** ⇒ 失败的批丢弃，但飞行中那次从未发出，
   // 必须折回可见文档并继续发；不能出现「第二批成功、界面却停在回改值」。
   // ```
-  test("飞行中再拖：第一批失败 ⇒ 只丢失败的批，飞行中的待发重折后继续发", async () => {
+  test("飞行中再拖：第一批网络失败 ⇒ 两批都保留（不自动重发），重试一次一起发", async () => {
     const { api, 写们, 解 } = 闸门api()
     挂上(api)
     await flush()
@@ -342,16 +357,22 @@ describe("编辑器 · 保存状态机", () => {
     await flush()
     await flush()
 
-    // 失败的批（→180）丢弃；飞行中那一批（→260）从未发出，重折后仍可见。
+    // FR-049：可重试失败**不丢批**——已发批（→180）与飞行中那批（→260）一起保留。
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(260 100)")
     expect(文案("hgraph-save-status")).toContain("没存上")
     expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
     expect(写们.length).toBe(1)
 
-    // 第二批只含飞行中那条，不是重试失败批。
+    // 绝不自动重发（防重试风暴）。
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    // 点「重试」把两批按原顺序一起发（失败批在前，飞行中那批在后）。
+    按钮("hgraph-save-retry").click()
     await 过防抖()
     expect(写们.length).toBe(2)
     expect(写们[1]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 180, y: 100 }] },
       { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 260, y: 100 }] },
     ])
     解(1, 成功("v2"))
@@ -364,8 +385,9 @@ describe("编辑器 · 保存状态机", () => {
   // ```text
   // 方向 B：飞行中拖 n2，第一批**成功** ⇒ 新基线只能含已发批（n2 还在 200）；
   // 若拿当前乐观文档当基线，n2 的 300 会被误当成「服务端已接受」。
+  // 第二批用**非可重试**失败（BAD_OP）：这一类才回滚，正好用来钉基线（R113）。
   // ```
-  test("飞行中拖 n2：第一批成功 ⇒ 基线不含未发操作；第二批失败回改到已接受值", async () => {
+  test("飞行中拖 n2：第一批成功 ⇒ 基线不含未发操作；第二批非可重试失败回改到已接受值", async () => {
     const { api, 写们, 解 } = 闸门api()
     挂上(api)
     await flush()
@@ -392,14 +414,16 @@ describe("编辑器 · 保存状态机", () => {
     expect(写们[1]!.操作).toEqual([
       { 操作: "移动", 目标: [{ 类别: "节点", id: "n2", x: 300, y: 100 }] },
     ])
-    解(1, { kind: "error", message: "写不进去", code: "INTERNAL" })
+    解(1, { kind: "error", message: "这一批操作不合法", code: "BAD_OP" })
     await flush()
     await flush()
 
     // n2 回到服务端真正接受过的 200；n1 停在已接受的 180。
     expect(节点组("n2")!.getAttribute("transform")).toBe("translate(200 100)")
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
-    expect(文案("hgraph-save-status")).toContain("没存上")
+    // R113 §4：非可重试失败优先用回.message，且不提供「重试」。
+    expect(文案("hgraph-save-status")).toContain("这一批操作不合法")
+    expect(取("[data-slot='hgraph-save-retry']")).toBeNull()
 
     // 失败批不自动重试。
     await 过防抖()
@@ -446,6 +470,178 @@ describe("编辑器 · 保存状态机", () => {
 
     expect((取("[data-slot='hgraph-undo']") as HTMLButtonElement).disabled).toBe(true)
     expect(文案("hgraph-save-status")).toContain("没存上")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T019d · FR-049 保存失败语义（可重试保留 / 409 询问 / 404 终态）
+// ---------------------------------------------------------------------------
+
+describe("编辑器 · 保存失败按 FR-049 分流（T019d）", () => {
+  test("网络失败 ⇒ 改动保留 + 「没存上」+ 「重试」；等满两个防抖周期写次数不变", async () => {
+    const { api, 写们 } = 假api({
+      写: () => ({ kind: "error", message: "网络断了", code: "network" }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    await flush()
+    await flush()
+
+    // 主判据一：改动仍在画布上（不回滚）。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    expect(文案("hgraph-save-status")).toContain("没存上")
+    expect(取("[data-slot='hgraph-save-retry']")).not.toBeNull()
+    // 主判据二：绝不自动重发——两个防抖周期后仍只有那一次。
+    await 过防抖()
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    // 版本也没被推进/清空（保留批仍按打开时那一版重试）。
+    expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
+  })
+
+  test("点「重试」⇒ api.写 再被调用一次，且操作含被保留的批（按原版本）", async () => {
+    let 次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        次 += 1
+        return 次 === 1 ? { kind: "error", message: "网络断了", code: "network" } : 成功("v2")
+      },
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(取("[data-slot='hgraph-save-retry']")).not.toBeNull()
+
+    按钮("hgraph-save-retry").click()
+    await 过防抖()
+
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作).toEqual([
+      { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 180, y: 100 }] },
+    ])
+    expect(写们[1]!.版本).toBe("v1")
+  })
+
+  test("重试成功 ⇒ 「已保存」且撤销栈只有一步（保留批 + 重试不重复压步）", async () => {
+    let 次 = 0
+    const { api } = 假api({
+      写: () => {
+        次 += 1
+        return 次 === 1 ? { kind: "error", message: "网络断了", code: "network" } : 成功("v2")
+      },
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(文案("hgraph-save-status")).toContain("没存上")
+
+    按钮("hgraph-save-retry").click()
+    await 过防抖()
+    await flush()
+    await flush()
+
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(取("[data-slot='hgraph-save-retry']")).toBeNull()
+    const 撤销键 = 按钮("hgraph-undo")
+    expect(撤销键.disabled).toBe(false)
+    // 撤一次就到底 ⇒ 栈深恰 1（没有「保留批」与「重试成功」各压一步）。
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await flush()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(撤销键.disabled).toBe(true)
+  })
+
+  test("409 ⇒ 文案含「被改过」+ 询问条；点「重新载入」换上盘上最新、提示条出现、旧栈清空", async () => {
+    const 盘上 = 一份图()
+    盘上.节点 = [...盘上.节点, 造节点("n9", 600, 400)]
+    let 次 = 0
+    const { api, 取读数 } = 假api({
+      写: () => {
+        次 += 1
+        return 次 === 1
+          ? { kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: "v9" }
+          : 成功("v2")
+      },
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await 等到条件(() => 取("[data-slot='hgraph-reload-ask']") !== null)
+
+    expect(文案("hgraph-save-status")).toContain("被改过")
+    expect(取("[data-slot='hgraph-reload-ask']")).not.toBeNull()
+    // 409 的回滚语义不变：本地收敛到服务端已接受态。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+
+    按钮("hgraph-reload-ask-reload").click()
+    await flush()
+    await flush()
+
+    // 409 后那次 `读` 已把盘上最新填进「待重载」⇒ 点重新载入真的有东西可换。
+    expect(取读数()).toBeGreaterThan(0)
+    expect(节点组("n9")).not.toBeNull()
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(取("[data-slot='hgraph-reload-notice']")).not.toBeNull()
+    // 旧撤销记录被清空：栈里只剩本次重载折成的那一步（撤一次到底）。
+    const 撤销键 = 按钮("hgraph-undo")
+    expect(撤销键.disabled).toBe(false)
+    按键(画布()!, { key: "z", ctrlKey: true })
+    await 过防抖()
+    expect(节点组("n9")).toBeNull()
+    expect(撤销键.disabled).toBe(true)
+  })
+
+  test("保存回 NOT_FOUND ⇒ 「文件已不存在」+ hgraph-gone；此后加节点不发写、无「重试」", async () => {
+    const { api, 写们 } = 假api({
+      写: () => ({ kind: "error", message: "图文件不存在", code: "NOT_FOUND" }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await flush()
+    await flush()
+
+    expect(文案("hgraph-save-status")).toContain("文件已不存在")
+    expect(取("[data-slot='hgraph-gone']")).not.toBeNull()
+    expect(文案("hgraph-gone")).toContain("只能查看")
+    // 回滚 + 终态：本地收敛到已存值。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(取("[data-slot='hgraph-save-retry']")).toBeNull()
+
+    // 此后一切写都被双闸挡住：点工具栏加节点连画布都不该变（应用闸），更不发写（发送闸）。
+    ;(取("[data-slot='hgraph-toolbar-add-node']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(节点数()).toBe(3)
+    expect(写们.length).toBe(1)
+  })
+
+  test("轮询读到 NOT_FOUND ⇒ 同一终态；再等一个周期不再读（轮询已停）", async () => {
+    const 服 = 假服务端(一份图())
+    挂轮询(服.api, { 轮询毫秒: 25 })
+    await flush()
+
+    服.设读错误({ message: "图文件不存在", code: "NOT_FOUND" })
+    await 等到条件(() => 取("[data-slot='hgraph-gone']") !== null)
+
+    expect(取("[data-slot='hgraph-gone']")).not.toBeNull()
+    expect(文案("hgraph-save-status")).toContain("文件已不存在")
+    const 读数 = 服.读们.length
+    await 等(120)
+    expect(服.读们.length).toBe(读数)
   })
 })
 
@@ -732,7 +928,7 @@ describe("画布 · 文字块", () => {
     ])
   })
 
-  test("文字改字段保存失败 ⇒ 内容回改前值 + 「没存上」", async () => {
+  test("文字改字段非可重试失败（BAD_OP）⇒ 内容回改前值 + 回.message", async () => {
     let 解!: (回: 写应答) => void
     const 闸 = new Promise<写应答>((收) => (解 = 收))
     const { api } = 假api({ 写: () => 闸 })
@@ -749,12 +945,12 @@ describe("画布 · 文字块", () => {
     expect(文字行("t1")!.textContent).toBe("新备注")
 
     await 过防抖()
-    解({ kind: "error", message: "写不进去", code: "INTERNAL" })
+    解({ kind: "error", message: "文字字段不合法", code: "BAD_OP" })
     await flush()
     await flush()
 
     expect(文字行("t1")!.textContent).toBe("备注")
-    expect(文案("hgraph-save-status")).toContain("没存上")
+    expect(文案("hgraph-save-status")).toContain("文字字段不合法")
   })
 
   test("加文字按钮 ⇒ 一个「加文字」操作；选中文字按 Delete ⇒ 一个「删对象」操作", async () => {
@@ -1416,8 +1612,8 @@ describe("T010 · 修复轮 1", () => {
     expect(幽.计数.改字段).toBe(1)
   })
 
-  test("M6 加节点失败 ⇒ 选中清空、工具栏删除不可用", async () => {
-    const { api } = 假api({ 写: () => ({ kind: "error", message: "写不进去", code: "INTERNAL" }) })
+  test("M6 加节点非可重试失败（BAD_OP）⇒ 选中清空、工具栏删除不可用", async () => {
+    const { api } = 假api({ 写: () => ({ kind: "error", message: "写不进去", code: "BAD_OP" }) })
     挂上(api)
     await flush()
 
@@ -1582,7 +1778,13 @@ function 假服务端(初始图: 图文件, 选项: { 写挂起?: boolean; 写�
   const 解析 = 解析图(文本(初始图))
   if (!解析.ok) throw new Error(`T013 夹具不是合法图：${解析.说明}`)
   const 图 = 解析.文档
-  const 远端 = { 内容: 文本(图), 版本: "w1", 读失败: 选项.读失败 === true }
+  const 远端 = {
+    内容: 文本(图),
+    版本: "w1",
+    读失败: 选项.读失败 === true,
+    /** T019d：让 `读` 回指定错误（钉「文件被外部删除」终态）。 */
+    读错: undefined as undefined | { message: string; code: string },
+  }
   let 序 = 0
   let 已读挂 = false
   let 已闸 = 0
@@ -1614,6 +1816,7 @@ function 假服务端(初始图: 图文件, 选项: { 写挂起?: boolean; 写�
   const api: HgraphApi = {
     读: async (输入) => {
       读们.push(输入)
+      if (远端.读错 !== undefined) return { kind: "error", ...远端.读错 }
       if (远端.读失败) return { kind: "error", message: "网络断了", code: "network" }
       if (选项.读挂起 === true && !已读挂) {
         已读挂 = true
@@ -1658,6 +1861,9 @@ function 假服务端(初始图: 图文件, 选项: { 写挂起?: boolean; 写�
     },
     设读失败(失败: boolean) {
       远端.读失败 = 失败
+    },
+    设读错误(错误: { message: string; code: string } | undefined) {
+      远端.读错 = 错误
     },
     /** 放行挂起的那次读（用当前远端快照）。 */
     解读() {
@@ -2248,7 +2454,7 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     expect(按钮("hgraph-undo").disabled).toBe(true)
   })
 
-  test("#9 失败批：只丢本批草稿，之前步仍可撤；飞行中新增的临时 id 不被清", async () => {
+  test("#9 非可重试失败批：只丢本批草稿，之前步仍可撤；飞行中新增的临时 id 不被清", async () => {
     const { api, 写们, 解 } = 闸门api()
     挂上(api)
     await flush()
@@ -2273,8 +2479,9 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     const 飞行中 = document.querySelector("[data-node-id^='临时']")
     expect(飞行中).not.toBeNull()
 
-    // 第二笔失败：回滚到已接受值，但飞行中新增的节点/选中必须留着。
-    解(1, { kind: "error", message: "写不进去", code: "INTERNAL" })
+    // 第二笔**非可重试**失败（BAD_OP）：回滚到已接受值，但飞行中新增的节点/选中必须留着。
+    // （可重试失败会保留改动，那条路径由下面的「保留批 / 重试」用例钉住。）
+    解(1, { kind: "error", message: "写不进去", code: "BAD_OP" })
     await flush()
     await flush()
 
@@ -2282,7 +2489,8 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     expect(document.querySelector("[data-node-id^='临时']")).not.toBeNull()
     expect(节点数()).toBe(4)
     expect(document.querySelector("[data-node-id^='临时']")!.getAttribute("data-selected")).toBe("true")
-    expect(文案("hgraph-save-status")).toContain("没存上")
+    // R113 §4：非可重试失败的状态文案用服务端 message。
+    expect(文案("hgraph-save-status")).toContain("写不进去")
 
     // 之前那一步仍可撤：撤一次就到底（说明栈里恰好还是 1 步，失败批没有混进去）。
     expect(按钮("hgraph-undo").disabled).toBe(false)
@@ -2294,7 +2502,7 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
     expect(document.querySelector("[data-node-id^='临时']")).not.toBeNull()
   })
 
-  test("#11 撤销写失败 ⇒ 步骤放回撤销栈（可直接再按 Ctrl+Z 重试），不进重做栈", async () => {
+  test("#11 撤销写失败（可重试）⇒ 撤销仍生效、步不塞回栈；点「重试」成功仍算撤销（不进新步）", async () => {
     let 次 = 0
     const { api, 写们 } = 假api({
       写: () => {
@@ -2314,21 +2522,26 @@ describe("T016a · 撤销/重做与 AI 一步还原", () => {
 
     按键(画布()!, { key: "z", ctrlKey: true })
     await 过防抖()
-    // 失败：文档回滚到已存（150,130），但这一步必须回到**撤销栈**——用户能直接再撤一次。
+    // R113：可重试失败保留这批写——撤销**已生效**（100,100），步留在待发里而不是塞回栈。
     expect(写们.length).toBe(2)
-    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(150 130)")
-    expect(撤销键.disabled).toBe(false)
-    expect(按钮("hgraph-redo").disabled).toBe(true)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(撤销键.disabled).toBe(true)
+    expect(按钮("hgraph-redo").disabled).toBe(false)
     expect(文案("hgraph-save-status")).toContain("没存上")
 
-    // 再按一次 Ctrl+Z：直接重试（不是先按重做把步挪回来）。
-    按键(画布()!, { key: "z", ctrlKey: true })
+    // 重试成功：这次写仍属「撤销触发的写」⇒ 不压新步、不清重做（重做仍可用）。
+    按钮("hgraph-save-retry").click()
     await 过防抖()
+    await flush()
+    await flush()
     expect(写们.length).toBe(3)
     expect(写们[2]!.操作).toEqual([
       { 操作: "移动", 目标: [{ 类别: "节点", id: "n1", x: 100, y: 100 }] },
     ])
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(撤销键.disabled).toBe(true)
+    expect(按钮("hgraph-redo").disabled).toBe(false)
   })
 
   test("#12 成功应答后选中收口：已不存在的 id 清掉、仍在的保留（R81 成功路径）", async () => {
