@@ -105,6 +105,7 @@ function 记动作表() {
     选择: (ids, 追加) => 记("选择", [ids, 追加]),
     加节点: (位置) => 记("加节点", [位置]),
     移动: (目标) => 记("移动", [目标]),
+    加边: (从, 到) => 记("加边", [从, 到]),
   }
   return { 动作, 计数 }
 }
@@ -120,6 +121,7 @@ function 挂(
     readonly 只读?: true
     readonly 模式?: "指针" | "连线"
     readonly 坐标换算?: 坐标换算
+    readonly 屏幕命中?: (x: number, y: number) => Element | null
   } = {},
 ) {
   const host = document.createElement("div")
@@ -137,6 +139,7 @@ function 挂(
           档表={额外.档表}
           只读={额外.只读}
           坐标换算={额外.坐标换算}
+          屏幕命中={额外.屏幕命中}
         />
       ),
       host,
@@ -745,5 +748,85 @@ describe("T006 · 滚轮判据（横向占优）与空格平移光标", () => {
 
     指针("pointerup", 60, 60)
     expect(容器().style.cursor).toBe("grab")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T007 / FR-013：连线松手与按下同一套 DOM 命中（含名字标签），落空给提示
+// ---------------------------------------------------------------------------
+
+describe("T007 · 连线松手命中", () => {
+  const 两节点图 = () =>
+    造图([造节点("n1", 100, 100, { 名称: "甲" }), 造节点("n2", 200, 100, { 名称: "乙" })], [])
+
+  /** 只派发指针序列，不替调用方决定命中元素（命中由 `屏幕命中` 注入）。 */
+  const 指针 = (元素: Element, 类型: "pointerdown" | "pointermove" | "pointerup", x: number, y: number) =>
+    元素.dispatchEvent(
+      new PointerEvent(类型, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        button: 0,
+        buttons: 类型 === "pointerup" ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }),
+    )
+
+  const 提示文案 = () => 取("[data-slot='hgraph-connect-hint']")?.textContent?.trim()
+
+  test("松手落在目标节点的名字标签上 ⇒ 建边（与按下同为 closest('[data-node-id]') 命中）", () => {
+    const { 动作, 计数 } = 记动作表()
+    let 命中元素: Element | null = null
+    挂(两节点图(), undefined, { 动作, 模式: "连线", 屏幕命中: () => 命中元素 })
+
+    const 标签 = 节点组("n2")!.querySelector("[data-slot='hgraph-node-label']")
+    // 先立「标签在文档里」前提（#013-12）：节点没有标签时这条用例不该绿。
+    expect(标签 === null).toBe(false)
+    命中元素 = 标签
+
+    // 落点 (240,140) 距 n2 圆心 56.6px，在数学半径（15）之外——只有 DOM 命中能连上。
+    拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 240, y: 140 })
+
+    expect(计数["加边"]).toEqual([["n1", "n2"]])
+    expect(提示文案()).toBeUndefined()
+  })
+
+  test("落在空白 ⇒ 不建边且提示「松手不在节点上，未建立连线」", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两节点图(), undefined, { 动作, 模式: "连线", 屏幕命中: () => null })
+
+    拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 700, y: 600 })
+
+    expect(计数["加边"]).toBeUndefined()
+    expect(提示文案()).toBe("松手不在节点上，未建立连线")
+  })
+
+  test("落在预览线上 ⇒ 仍视为空白（预览线 pointer-events: none，不参与命中）", () => {
+    const { 动作, 计数 } = 记动作表()
+    let 命中元素: Element | null = null
+    挂(两节点图(), undefined, {
+      动作,
+      模式: "连线",
+      // 命中的正是拖动中的预览线：它不是节点，仍按空白处理。
+      屏幕命中: () => (命中元素 = 取("[data-slot='hgraph-connect']")),
+    })
+
+    const 起点 = 节点组("n1")!
+    指针(起点, "pointerdown", 100, 100)
+    指针(起点, "pointermove", 700, 600)
+
+    const 线 = 取("[data-slot='hgraph-connect']")
+    expect(线 === null).toBe(false)
+    // 落点属性：`<line data-slot="hgraph-connect">` 的 `pointer-events` 属性为 "none"。
+    expect(线!.getAttribute("pointer-events")).toBe("none")
+
+    指针(起点, "pointerup", 700, 600)
+
+    // 命中函数确实拿到过那条线（否则这条用例没测到「落在预览线上」）。
+    expect(命中元素 === null).toBe(false)
+    expect(命中元素!.getAttribute("data-slot")).toBe("hgraph-connect")
+    expect(计数["加边"]).toBeUndefined()
+    expect(提示文案()).toBe("松手不在节点上，未建立连线")
   })
 })

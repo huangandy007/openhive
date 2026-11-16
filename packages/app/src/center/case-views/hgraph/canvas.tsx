@@ -202,6 +202,11 @@ export interface 画布Props {
   readonly 选中: readonly string[]
   readonly 模式: 模式
   readonly 坐标换算?: 坐标换算
+  /**
+   * 屏幕坐标 → 命中元素（T007 / FR-013 测试缝）。默认 `document.elementFromPoint`；
+   * happy-dom 无布局、它恒返回 `null`（20.12.0 实测），组件测试只能注入。
+   */
+  readonly 屏幕命中?: (x: number, y: number) => Element | null
   readonly 动作: 画布动作
   /** 正在内联改名的节点 id；由编辑器的 `重命名` 动作设置。 */
   readonly 重命名id?: string
@@ -272,7 +277,10 @@ function 默认换算(容器: HTMLElement | undefined, 视口: 视口变换): �
   }
 }
 
-/** pointerdown 落点元素上读属性（`closest` 覆盖节点组内的圆/文字）。 */
+/**
+ * 指针落点元素上读属性（`closest` 覆盖节点组内的圆 / 首字 / 名字标签）。
+ * 按下取事件目标、松手取 `elementFromPoint` 的结果——**同一处判据**（T007 / FR-013）。
+ */
 function 读属性(目标: EventTarget | null, 名: string): string | undefined {
   if (!(目标 instanceof Element)) return undefined
   return 目标.closest(`[${名}]`)?.getAttribute(名) ?? undefined
@@ -338,6 +346,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const [拖影, set拖影] = createSignal<ReadonlyMap<string, { readonly x: number; readonly y: number }>>(new Map())
   const [框, set框] = createSignal<矩形 | undefined>()
   const [连线落点, set连线落点] = createSignal<{ 从: string; x: number; y: number } | undefined>()
+  /** 连线松手落空提示（T007 / FR-013）：下次按下或成功连边时清掉，不常驻。 */
+  const [松手提示, set松手提示] = createSignal<string | undefined>()
   const [编辑id, set编辑id] = createSignal<string | undefined>()
   const [编辑值, set编辑值] = createSignal("")
   const [菜单, set菜单] = createSignal<菜单目标 | undefined>()
@@ -493,6 +503,13 @@ export function 画布(props: 画布Props): JSX.Element {
   const 到内容 = (点: { readonly clientX: number; readonly clientY: number }, 用视口: 视口变换 = 视口()) =>
     props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
 
+  /**
+   * 松手点 → 命中元素（T007 / FR-013）。默认问 `elementFromPoint`；happy-dom 没有布局，
+   * 它恒返回 `null`（20.12.0 实测），此时由调用方回退数学命中（`连线目标`）。
+   */
+  const 屏幕命中元素 = (x: number, y: number): Element | null =>
+    props.屏幕命中 !== undefined ? props.屏幕命中(x, y) : (容器?.ownerDocument?.elementFromPoint?.(x, y) ?? null)
+
   const 节点表 = createMemo(() => new Map(props.文档.节点.map((点) => [点.id, 点])))
   /**
    * 悬空边角标（R-F4 / contracts/hgraph-format §1）：端点在 `节点` 里缺失的边画不出线，
@@ -566,6 +583,7 @@ export function 画布(props: 画布Props): JSX.Element {
     // 菜单内部的点击交给菜单项自己；点外面则收起菜单。
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
     set菜单(undefined)
+    set松手提示(undefined)
     // 中键（button === 1）是平移入口（设计 §5.15）；其它非左键不处理。
     if (事件.button !== 0 && 事件.button !== 1) return
     if (落在内嵌界面(目标)) return
@@ -852,10 +870,21 @@ export function 画布(props: 画布Props): JSX.Element {
     }
 
     const 内容 = 到内容(事件)
+    // T007 / FR-013：松手与按下用**同一套** DOM 命中（`读属性` 的 `closest`，覆盖名字标签）。
+    // 释放事件的 target 是被指针捕获的容器，不能当命中元素，按坐标问 DOM；DOM 给不出元素
+    // （happy-dom 无布局 / 环境没有 `elementFromPoint`）才回退数学命中（`连线目标`）。
+    const 命中 = 屏幕命中元素(事件.clientX, 事件.clientY)
+    const 命中id = 命中 === null ? undefined : 读属性(命中, "data-node-id")
+    const 到 =
+      命中 === null ? (连线目标({ 从: 现.从, x: 内容.x, y: 内容.y }, props.文档.节点)?.到 ?? undefined) : 命中id
     set连线落点(undefined)
-    const 目标 = 连线目标({ 从: 现.从, x: 内容.x, y: 内容.y }, props.文档.节点)
-    // 拖到空白 ⇒ `null` ⇒ **不建边**（FR-019）。
-    if (目标 !== null) props.动作.加边(目标.从, 目标.到)
+    if (到 !== undefined && 到 !== 现.从) {
+      set松手提示(undefined)
+      props.动作.加边(现.从, 到)
+      return
+    }
+    // 未命中（空白 / 预览线）⇒ 不建边并提示；命中起点自身只按「不建自环」静默（FR-019）。
+    if (到 === undefined) set松手提示("松手不在节点上，未建立连线")
   }
 
   const 按键 = (事件: KeyboardEvent) => {
@@ -1083,6 +1112,17 @@ export function 画布(props: 画布Props): JSX.Element {
           class="absolute right-2 top-2 z-10 text-12-regular text-v2-text-text-muted"
         >
           {悬空数()} 条边指向不存在的节点
+        </div>
+      </Show>
+
+      {/* 松手落空提示（T007 / FR-013）：本地瞬态，不写盘、不进撤销栈。 */}
+      <Show when={松手提示()}>
+        <div
+          data-slot="hgraph-connect-hint"
+          role="status"
+          class="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-03 px-2 py-1 text-12-regular text-v2-text-text-base"
+        >
+          {松手提示()}
         </div>
       </Show>
 
@@ -1334,9 +1374,11 @@ export function 画布(props: 画布Props): JSX.Element {
                 <Show when={起()}>
                   {(点) => {
                     const 位 = () => 节点位(点())
+                    // T007 / FR-013：预览线不参与命中，松手点落到它上面时看到的是下层。
                     return (
                       <line
                         data-slot="hgraph-connect"
+                        pointer-events="none"
                         x1={位().x}
                         y1={位().y}
                         x2={落().x}
