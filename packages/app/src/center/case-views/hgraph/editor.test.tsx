@@ -27,6 +27,7 @@ import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 图例应折叠, 命中删除键, 命中重命名键, 构图, 布局目标 } from "./editor"
+import { 是输入目标 } from "./keys"
 import { 角色边 } from "./edge"
 import { 适配视口 } from "./geometry"
 import { 排列模式们, 阶梯位置, type 排列模式 } from "../graph-layout"
@@ -5942,5 +5943,27 @@ describe("FR-042 · 浮层统一（筛选 / 从库加入）", () => {
     expect(选择器面板() === null).toBe(true)
     await 过防抖()
     expect(写.写们.length).toBe(0)
+  })
+})
+
+/**
+ * final-fix2 N2：输入框 / 可编辑目标守卫原先在 `命中删除键`、`命中重命名键`、
+ * 编辑器根容器 keydown 三处逐字重复；抽成 `是输入目标` 一份，三处共用（`#002-06`）。
+ */
+describe("final-fix2 · 是输入目标", () => {
+  const 造 = (值: object | null) => 值 as unknown as EventTarget | null
+
+  test("INPUT / TEXTAREA / SELECT / contentEditable ⇒ true", () => {
+    expect(是输入目标(造({ tagName: "input" }))).toBe(true)
+    expect(是输入目标(造({ tagName: "TEXTAREA" }))).toBe(true)
+    expect(是输入目标(造({ tagName: "SELECT" }))).toBe(true)
+    expect(是输入目标(造({ tagName: "DIV", isContentEditable: true }))).toBe(true)
+  })
+
+  test("普通元素 / null / 无 tagName ⇒ false（不吞画布快捷键）", () => {
+    expect(是输入目标(造({ tagName: "DIV" }))).toBe(false)
+    expect(是输入目标(造({ tagName: "BUTTON", isContentEditable: false }))).toBe(false)
+    expect(是输入目标(造({}))).toBe(false)
+    expect(是输入目标(null)).toBe(false)
   })
 })

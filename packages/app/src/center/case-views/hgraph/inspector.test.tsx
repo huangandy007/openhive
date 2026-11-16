@@ -575,6 +575,16 @@ describe("检查器 · 边段（R-F12）", () => {
     expect(取("[data-slot='hgraph-inspector-hint']")).toBeNull()
   })
 
+  /** final-fix2 C2：边操作脚「跳到两端」——口径 = 两端节点一并选中（同一 `选择` 出口）。 */
+  test("边操作脚「跳到两端」⇒ 选择两端节点（不追加）", () => {
+    const 幽 = 挂检查器({ 选中: ["e1"], 文档: 带边图() })
+    const 键 = 取("[data-slot='hgraph-inspector-edge-jump']") as HTMLButtonElement | null
+    expect(键 === null).toBe(false)
+    键!.click()
+    expect(幽.计数.选择).toBe(1)
+    expect(幽.参数.选择![0]).toEqual([["n1", "n2"], false])
+  })
+
   test("改标签后失焦 ⇒ 恰好一次改字段(\"边\", id, {标签})", () => {
     const 幽 = 挂检查器({ 选中: ["e1"], 文档: 带边图() })
     const 标签 = 取("[data-slot='hgraph-field-边标签']") as HTMLInputElement
@@ -1105,7 +1115,11 @@ describe("检查器 · T011 事件两态与参与方", () => {
     expect((document.body.textContent ?? "").includes("来自库快照，请在库中修改")).toBe(true)
     expect(取("[data-slot='hgraph-field-时间首']") === null).toBe(true)
     expect(取("[data-slot='hgraph-field-参与方名字']") === null).toBe(true)
-    expect(取("[data-slot='hgraph-inspector-participants-jump']") === null).toBe(true)
+    // final-fix2 C2：绑定事件的操作脚也有「看参与方」；点击后参与方段高亮。
+    const 看参与方 = 取("[data-slot='hgraph-inspector-participants-jump']") as HTMLButtonElement | null
+    expect(看参与方 === null).toBe(false)
+    看参与方!.click()
+    expect(取("[data-slot='hgraph-event-participants']")!.getAttribute("data-highlight")).toBe("true")
   })
 
   test("手写事件时间首/末失焦即存：整对象补丁，另一侧保留", () => {

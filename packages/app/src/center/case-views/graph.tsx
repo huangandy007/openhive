@@ -75,13 +75,19 @@ export function 形状(类型: string): 形 {
   return "circle"
 }
 
+/**
+ * 未映射类型的填充兜底（与画布底色同阶）。导出是给 hgraph 外环用的：外环直接用它做
+ * 「有没有类型色」的判据——回退到描边色，别把同阶的底色当成可见的颜色。
+ */
+export const 默认节点填充 = "var(--v2-background-bg-layer-02)"
+
 export function 填充(点: 图节点): string {
   if (点.中心) return "var(--v2-background-bg-accent-soft)"
   if (点.type === "号码") return "var(--v2-state-bg-info)"
   if (点.type === "账户") return "var(--v2-state-bg-success)"
   if (点.type === "地点") return "var(--v2-state-bg-warning)"
   if (点.type === "组织") return "var(--v2-background-bg-layer-03)"
-  return "var(--v2-background-bg-layer-02)"
+  return 默认节点填充
 }
 
 /** 需要再看一眼的两态。`已确认` 是可信态——把它也算进来，整张图会全是虚线圈。 */

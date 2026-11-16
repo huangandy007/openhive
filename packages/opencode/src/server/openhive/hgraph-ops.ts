@@ -12,7 +12,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
 import { 应用操作, type 操作, type 应用结果 } from "./hgraph-edit"
-import { 事件兜底名称, 必填字段, 空骨架, 解析图, 序列化图, 校验来源, type 图文件 } from "./hgraph-file"
+import { 事件兜底名称, 必填字段, 空骨架, 解析图, 序列化图, 是事件节点, 校验来源, type 图文件 } from "./hgraph-file"
 import { 串行 } from "./hgraph-lock"
 import { OpenhivePg } from "./pg"
 import { 成员角色, 项目属主 } from "./project-actor"
@@ -457,6 +457,40 @@ function 校验全图(前: 图文件, 后: 图文件): 核心失败 | undefined 
   return undefined
 }
 
+/**
+ * 本批写入涉及的节点 id（final-fix2 N3）：名称兜底只对这些节点生效，不能顺手改名盘上
+ * 既有空名事件（用户没动它，就不该在别人的一次写入里被改）。
+ *
+ * 来源是**操作**而不是「改过的对象」：`改字段` / `删对象` / `移动` 的节点目标、
+ * `合并节点` 的保留与并入都算本批涉及；`加节点` 的新节点靠「前文档里没有」补齐
+ * （临时 id 经 `应用操作` 映射后已在后文档中）。删掉的节点不在后文档里，加了也无害。
+ */
+function 本批节点id(操作们: readonly 操作[], 前: 图文件, 后: 图文件): Set<string> {
+  const 集 = new Set<string>()
+  for (const 操作 of 操作们) {
+    switch (操作.操作) {
+      case "改字段":
+      case "删对象":
+        for (const 目标 of 操作.目标) if (目标.类别 === "节点") 集.add(目标.id)
+        break
+      case "移动":
+        for (const 目标 of 操作.目标) if (目标.类别 === "节点") 集.add(目标.id)
+        break
+      case "合并节点":
+        集.add(操作.保留)
+        for (const id of 操作.并入) 集.add(id)
+        break
+      case "加节点":
+      case "加边":
+      case "加文字":
+        break
+    }
+  }
+  const 前节点 = new Set(前.节点.map((点) => 点.id))
+  for (const 点 of 后.节点) if (!前节点.has(点.id)) 集.add(点.id)
+  return 集
+}
+
 // ---------------------------------------------------------------------------
 // 核心出口
 // ---------------------------------------------------------------------------
@@ -553,8 +587,11 @@ export async function 应用并写回(依赖: 核心依赖, 入参: 写入入参
     // FR-037 / contracts hgraph-format §2.3：事件名称为空 ⇒ 落盘前兜底
     // `<类型> · <金额|时长> · <时间>`。排在全量校验**之后**：空时间由 `校验来源` 先拒，
     // 兜底不能拿时间把「缺时间」这一关糊过去。加节点与改字段都走这一条写路径。
+    // final-fix2 N3：只处理本批写入涉及的节点，盘上既有空名事件没动就保持原样。
+    const 本批节点 = 本批节点id(入参.操作, 解析.文档, 应用.文档)
     for (const 点 of 应用.文档.节点) {
-      if (点.来源?.kind !== "事件") continue
+      if (!本批节点.has(点.id)) continue
+      if (!是事件节点(点)) continue
       if (typeof 点.名称 === "string" && 点.名称.trim() !== "") continue
       点.名称 = 事件兜底名称(点)
     }

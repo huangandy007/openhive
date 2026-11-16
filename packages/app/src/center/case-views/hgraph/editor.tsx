@@ -77,7 +77,8 @@ import {
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
-import { 手画边, 可连线, 是角色边, 角色边, 角色边依据 } from "./edge"
+import { 手画边, 可连线, 是角色边, 是角色边方向, 角色边, 角色边依据 } from "./edge"
+import { 是输入目标 } from "./keys"
 
 export interface 编辑器Props {
   readonly path: string
@@ -463,12 +464,7 @@ export function 命中删除键(
   状态: { readonly 演示中: boolean; readonly 有选中: boolean },
 ): boolean {
   if (状态.演示中) return false
-  const 目标 = 事件.target
-  if (目标 !== null && "tagName" in 目标) {
-    const 名 = String(目标.tagName).toUpperCase()
-    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return false
-  }
+  if (是输入目标(事件.target)) return false
   return 事件.key === "Delete" && 状态.有选中
 }
 
@@ -489,12 +485,7 @@ export function 命中重命名键(
   },
 ): string | undefined {
   if (状态.演示中 || 事件.key !== "F2") return undefined
-  const 目标 = 事件.target
-  if (目标 !== null && "tagName" in 目标) {
-    const 名 = String(目标.tagName).toUpperCase()
-    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return undefined
-  }
+  if (是输入目标(事件.target)) return undefined
   const 节点们 = 状态.选中.filter((id) => 状态.节点们.some((行) => 行.id === id))
   return 节点们.length === 1 ? 节点们[0] : undefined
 }
@@ -1771,7 +1762,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 起点 = 文档().节点.find((点) => 点.id === 从)
     const 终点 = 文档().节点.find((点) => 点.id === 到)
     // FR-027：事件 → 非事件参与方收「角色」并落角色边；事件→事件、实体→实体仍是手画边。
-    const 是角色 = 起点 !== undefined && 终点 !== undefined && 是事件节点(起点) && !是事件节点(终点)
+    const 是角色 = 是角色边方向(起点, 终点)
     set连线依据("")
     set连线标签("")
     set连线角色("")
@@ -2090,12 +2081,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           动作.重命名(重命名谁)
           return
         }
-        const 目标 = 事件.target
-        if (目标 !== null && "tagName" in 目标) {
-          const 名 = String(目标.tagName).toUpperCase()
-          const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-          if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
-        }
+        if (是输入目标(事件.target)) return
         if ((事件.key === "i" || 事件.key === "I") && !事件.ctrlKey && !事件.metaKey && !事件.altKey) {
           if (选中().length === 0) return
           事件.preventDefault()

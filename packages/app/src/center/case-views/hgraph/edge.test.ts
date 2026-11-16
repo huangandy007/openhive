@@ -5,7 +5,7 @@
  * 任何入口拒绝无依据推断；设计 §5.7.2.1：手工对象无出处）。构造器只产数据，不发写、不碰 UI。
  */
 import { describe, expect, test } from "bun:test"
-import { 可连线, 边线型, 手画边, 是角色边, 角色边, 角色边依据 } from "./edge"
+import { 可连线, 边线型, 手画边, 是角色边, 是角色边方向, 角色边, 角色边依据 } from "./edge"
 import type { 边, 节点 } from "./file"
 
 describe("手画边", () => {
@@ -231,5 +231,43 @@ describe("final-fix1b · 是角色边", () => {
     expect(是角色边(条, 起, undefined)).toBe(false)
     expect(是角色边(条, undefined, 普通点("n2"))).toBe(false)
     expect(是角色边(条, 起, 普通点("n3"))).toBe(false)
+  })
+})
+
+/**
+ * final-fix2 N2：方向判据单独导出。连线浮层（`editor.tsx`）与 `是角色边` 共用这一份，
+ * 不再各写一遍 `是事件节点(起点) && !是事件节点(终点)`。
+ */
+describe("final-fix2 · 是角色边方向", () => {
+  const 事件 = (id: string): 节点 => ({
+    id,
+    名称: id,
+    类型: "转账",
+    来源: { kind: "手写" },
+    属性: [{ 键: "时间精度", 值: "分" }],
+    时间: { 首: "", 末: "" },
+    x: 0,
+    y: 0,
+  })
+  const 普通 = (id: string): 节点 => ({
+    id,
+    名称: id,
+    类型: "人",
+    来源: { kind: "手写" },
+    时间: { 首: "", 末: "" },
+    x: 0,
+    y: 0,
+  })
+
+  test("事件 → 非事件 ⇒ true；事件 → 事件 / 非事件 → 任意 ⇒ false", () => {
+    expect(是角色边方向(事件("e1"), 普通("n1"))).toBe(true)
+    expect(是角色边方向(事件("e1"), 事件("e2"))).toBe(false)
+    expect(是角色边方向(普通("n1"), 事件("e1"))).toBe(false)
+    expect(是角色边方向(普通("n1"), 普通("n2"))).toBe(false)
+  })
+
+  test("端点缺失 ⇒ false（方向判据本身不越过「两端都在」前提）", () => {
+    expect(是角色边方向(undefined, 普通("n1"))).toBe(false)
+    expect(是角色边方向(事件("e1"), undefined)).toBe(false)
   })
 })

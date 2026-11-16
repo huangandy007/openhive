@@ -26,6 +26,7 @@
  */
 import type { JSX } from "solid-js"
 import type { 图文件 } from "./file"
+import { 是输入目标 } from "./keys"
 
 export interface 演示可见 {
   readonly 可见节点: ReadonlySet<string>
@@ -138,12 +139,7 @@ export interface 演示按键控制 {
  * input 是 SVG 命名空间节点，不能用 `instanceof HTMLElement`）。
  */
 export function 处理演示按键(事件: KeyboardEvent, 控制: 演示按键控制): void {
-  const 目标 = 事件.target
-  if (目标 !== null && "tagName" in 目标) {
-    const 名 = String(目标.tagName).toUpperCase()
-    const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-    if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
-  }
+  if (是输入目标(事件.target)) return
   if (事件.key === " " || 事件.key === "Spacebar") {
     事件.preventDefault()
     控制.设置步号(控制.步号 + 1)

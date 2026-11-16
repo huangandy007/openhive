@@ -1249,7 +1249,7 @@ export function 检查器(props: 检查器Props): JSX.Element {
               final-fix1b C2：手写事件的未对上行改为角色 + 名字输入（失焦写保留属性）；
               已对上角色边仍只读展示。手写事件没有参与方行时也保留段（操作脚要能跳过来）。
             */}
-            <Show when={参与方行们(点(), props.文档).length > 0 || 手写事件(点())}>
+            <Show when={参与方行们(点(), props.文档).length > 0 || 是事件节点(点())}>
               <section
                 ref={(元素) => {
                   参与方段 = 元素
@@ -1767,8 +1767,8 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   data-slot="hgraph-inspector-actions"
                   class="flex shrink-0 items-center justify-between gap-1 border-t border-v2-border-border-muted p-2"
                 >
-                  {/* final-fix1b C2：手写事件操作脚左「看参与方」（滚到参与方段并高亮）。 */}
-                  <Show when={单个() !== undefined && 手写事件(单个()!)}>
+                  {/* final-fix2 C2：事件（手写与绑定）操作脚左「看参与方」（滚到参与方段并高亮）。 */}
+                  <Show when={单个() !== undefined && 是事件节点(单个()!)}>
                     <button
                       type="button"
                       data-slot="hgraph-inspector-participants-jump"
@@ -1778,6 +1778,22 @@ export function 检查器(props: 检查器Props): JSX.Element {
                       onClick={看参与方}
                     >
                       看参与方
+                    </button>
+                  </Show>
+                  {/* final-fix2 C2：边操作脚「跳到两端」——口径 = 两端节点一并选中（`选择` 出口）。 */}
+                  <Show when={单个边() !== undefined}>
+                    <button
+                      type="button"
+                      data-slot="hgraph-inspector-edge-jump"
+                      aria-label="跳到两端"
+                      title="跳到两端"
+                      class={按钮}
+                      onClick={() => {
+                        const 条 = 单个边()
+                        if (条 !== undefined) props.动作表.选择([条.从, 条.到], false)
+                      }}
+                    >
+                      跳到两端
                     </button>
                   </Show>
                   <Show when={单个() !== undefined}>

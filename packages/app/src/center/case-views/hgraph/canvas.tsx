@@ -31,6 +31,7 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 边线型 } from "./edge"
+import { 是输入目标 } from "./keys"
 import {
   适配视口,
   截断标签,
@@ -43,6 +44,7 @@ import {
   线宽像素,
   连接度数,
   外环档表,
+  是手动外环档,
   type 矩形,
   type 视口变换,
   type 对齐边,
@@ -50,7 +52,7 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 填充, 多边形, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import { 形状, 填充, 多边形, 默认节点填充, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -749,8 +751,8 @@ export function 画布(props: 画布Props): JSX.Element {
    * **类型色**（与检查器色点同一张 `graph.tsx` 映射；这里只做字段适配，不另抄色值）。
    * 手动设色仍走 `外环色表`；表里查不到的自定义色名保持原兜底（不猜用户意图）。
    */
-  const 类型色 = (点: 节点) =>
-    填充({
+  const 类型色 = (点: 节点) => {
+    const 色 = 填充({
       id: 点.id,
       type: 点.类型,
       value: 点.名称,
@@ -760,13 +762,20 @@ export function 画布(props: 画布Props): JSX.Element {
       关联数: 0,
       度数: 0,
     })
+    // final-fix2 N1：未映射类型落回 `填充` 的默认底色（与画布同阶）⇒ 外环改用描边色，
+    // 否则高连接节点的粗环几乎看不见。判据只读 `填充` 的同一兜底值，不另抄类型表。
+    return 色 === 默认节点填充 ? "var(--v2-border-border-strong)" : 色
+  }
   const 手动外环 = (点: 节点) => (点.外环?.颜色 ?? "") !== ""
   const 外环色 = (点: 节点) =>
     手动外环(点) ? (外环色表[点.外环!.颜色!] ?? "var(--v2-border-border-strong)") : 类型色(点)
   /** 连接数角标的数据源：与档表/标签同一份口径（`geometry.ts` 的 `连接度数`）。 */
   const 连接数表 = createMemo(() => 连接度数(props.文档.边))
-  /** 自动档 ≥3 才出角标；手动设色的节点不显示（FR-033 两条通道都只服务「自动」）。 */
-  const 显示角标 = (点: 节点) => !手动外环(点) && 环档(点) >= 3
+  /**
+   * 自动档 ≥3 才出角标；手动设色**或手动设档**的节点都不显示（FR-033 两条通道都只服务
+   * 「自动」）。判据复用 `是手动外环档`，与 `外环档()` 的冻结口径同源。
+   */
+  const 显示角标 = (点: 节点) => !手动外环(点) && !是手动外环档(点.外环?.档) && 环档(点) >= 3
 
   /**
    * 标签分级（R71）：`标签取舍` 由画布调用——缩放只有这里知道；`选中` / `悬停` / `开` /
@@ -1126,12 +1135,8 @@ export function 画布(props: 画布Props): JSX.Element {
     // 输入框判定按 tagName 读，**不能**用 `instanceof HTMLElement`：画布内文字编辑框
     // 在 `<foreignObject>` 里，happy-dom 下它是 SVG 命名空间节点（HTMLElement 为 false），
     // 旧守卫会漏掉它 ⇒ 选中非空时在输入框里按 Delete 会删节点（M1 实测）。
-    const 目标 = 事件.target
-    if (目标 !== null && "tagName" in 目标) {
-      const 名 = String(目标.tagName).toUpperCase()
-      const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-      if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
-    }
+    // 守卫本体与编辑器三处 keydown 共用（`keys.ts`，`#002-06`）。
+    if (是输入目标(事件.target)) return
     // 除 Esc 之外的任何键都解除「退出后首个 Esc 抑制」。
     if (事件.key !== "Escape") 忽略退出键 = false
     // 空格 = 平移修饰键（FR-020）：只记状态、不产生动作；拦掉默认行为（页面滚动）。

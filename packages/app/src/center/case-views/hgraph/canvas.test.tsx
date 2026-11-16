@@ -1273,6 +1273,18 @@ describe("FR-033 · 外环双通道（类型色 + 连接数角标）", () => {
     expect(环!.getAttribute("stroke")).toBe("var(--v2-state-bg-success)")
   })
 
+  /**
+   * final-fix2 N1：未映射类型不能落回 `填充` 的默认 `layer-02`——那与画布底色/未选中
+   * 填充同阶，高连接节点的粗环几乎看不见；回退到原先可见的 `border-strong`。
+   */
+  test("未映射类型（人）自动外环 ⇒ 回退 border-strong，不是 layer-02", () => {
+    挂(高连接图({ 类型: "人" }))
+    const 环 = 外环("a")
+    expect(环 !== null).toBe(true)
+    expect(环!.getAttribute("stroke")).toBe("var(--v2-border-border-strong)")
+    expect(环!.getAttribute("stroke")).not.toBe("var(--v2-background-bg-layer-02)")
+  })
+
   test("自动档 ≥3 ⇒ 角标文本 = 该节点连接数", () => {
     挂(高连接图())
     const 标 = 角标("a")
@@ -1287,6 +1299,15 @@ describe("FR-033 · 外环双通道（类型色 + 连接数角标）", () => {
     const 环 = 外环("a")
     expect(环 !== null).toBe(true)
     expect(环!.getAttribute("stroke")).toBe("var(--v2-state-border-danger)")
+    expect(角标("a") === null).toBe(true)
+  })
+
+  /** final-fix2 N4：角标只服务「自动档」；手动设档（哪怕没设颜色）不显示。 */
+  test("手动设档（外环.档=3、无颜色）⇒ 档仍是 3，但角标不显示", () => {
+    挂(高连接图({ 外环: { 档: 3 } }))
+    const 环 = 外环("a")
+    expect(环 !== null).toBe(true)
+    expect(环!.getAttribute("data-ring-tier")).toBe("3")
     expect(角标("a") === null).toBe(true)
   })
 })
