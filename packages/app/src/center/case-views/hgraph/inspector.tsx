@@ -18,6 +18,14 @@
  * **不是 0**——0 是合法步号，语义完全不同）。非法输入（小数 / 非数字 / 负数）不发补丁、
  * 保留文档旧值并就地提示「要填非负整数」。
  *
+ * ## 事件两态与参与方段（T011 / data-model §5、FR-036）
+ *
+ * - `来源.kind === "事件"`（绑定库事件）⇒ 九格只读（名称/类型/细类/出现序渲染成文本，
+ *   不再是 `<input>`），**仅备注/外环可改**；`手写` ⇒ 九格可编。判据唯一落点 `绑定态()`。
+ * - **无解绑入口**：态只在「加入/绑定」动作里变化；面板不提供反向动作。
+ * - 参与方段：已对上档案 = 事件节点出发的角色边（`角色：名字`）；未对上档案 = 保留属性
+ *   `参与方·<角色>`（原文）后跟灰字「未对上档案」，且不建节点（只展示，不调动作表）。
+ *
  * ## 边段 / 文字段（修复轮 2026-11-16）
  *
  * 选中单条边或单条文字时，同一个面板换成对应段（§5.7.5）：边可改标签/性质/方向/备注/
@@ -135,6 +143,50 @@ function 来源文本(来源: 节点["来源"] | undefined): string {
 
 const 属性文本 = (点: 节点) =>
   (点.属性 ?? []).length === 0 ? "—" : (点.属性 ?? []).map((行) => `${行.键}：${行.值}`).join("、")
+
+/**
+ * 事件两态（T011 / data-model §5）：`来源.kind === "事件"` = 绑定库事件 ⇒ 九格只读，
+ * 仅备注/外环可改；其余（含 `手写` 事件）⇒ 九格可编。
+ *
+ * 两态只在**这一处**判断：各个字段都读 `绑定态()`，别在每行各写一遍 `kind === "事件"`
+ * （`#002-06`）。绑定态不提供反向入口（无解绑）——态只在「加入/绑定」动作里变化。
+ */
+const 绑定态 = (点: 节点): boolean => 点.来源?.kind === "事件"
+
+/** 未对上档案的参与方落点：保留属性键 `参与方·<角色>`（contracts/hgraph-format §保留属性键）。 */
+const 参与方键前缀 = "参与方·"
+
+interface 参与方行 {
+  readonly 角色: string
+  readonly 名字: string
+  readonly 已对上: boolean
+}
+
+/**
+ * 参与方行（T011）：已对上档案 = 事件节点出发的角色边（标签即角色，名字取对端节点）；
+ * 未对上档案 = 保留属性 `参与方·<角色>` 的原文（该行不产生节点，只在这里展示）。
+ *
+ * **不自建角色词表**：角色名一律取自数据——边标签 / 属性键后缀，生产链路由内核
+ * `case-card-template.ts:34` 的 `角色们` 产出（`case_event_participant.role` 与 T012 的角色边）。
+ * 前端只做展示，不复制第二份词表。
+ */
+function 参与方行们(点: 节点, 文档: 图文件): 参与方行[] {
+  const 行们: 参与方行[] = []
+  // 已对上：按 case-mcp-tools.ts:984 的口径，参与者表行在前（按 ordinal），未对上原文在后。
+  for (const 条 of 文档.边) {
+    if (条.从 !== 点.id) continue
+    const 名字 = 文档.节点.find((候) => 候.id === 条.到)?.名称 ?? ""
+    if (名字 === "") continue
+    行们.push({ 角色: 条.标签, 名字, 已对上: true })
+  }
+  for (const 属性项 of 点.属性 ?? []) {
+    if (!属性项.键.startsWith(参与方键前缀)) continue
+    const 角色 = 属性项.键.slice(参与方键前缀.length)
+    if (角色 === "") continue
+    行们.push({ 角色, 名字: 属性项.值, 已对上: false })
+  }
+  return 行们
+}
 
 const 出处文本 = (点: 节点) => ((点.出处 ?? []).length === 0 ? "—" : (点.出处 ?? []).join("、"))
 
@@ -549,37 +601,64 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 <label class={标签} for="hgraph-field-名称">
                   名称
                 </label>
-                <input
-                  id="hgraph-field-名称"
-                  data-slot="hgraph-field-名称"
-                  class={输入}
-                  value={点().名称 ?? ""}
-                  onBlur={(事件) => 提交(点(), "名称", 事件.currentTarget.value)}
-                />
+                <Show
+                  when={!绑定态(点())}
+                  fallback={
+                    <span data-slot="hgraph-field-名称" data-readonly="true" class={值样式}>
+                      {点().名称 ?? ""}
+                    </span>
+                  }
+                >
+                  <input
+                    id="hgraph-field-名称"
+                    data-slot="hgraph-field-名称"
+                    class={输入}
+                    value={点().名称 ?? ""}
+                    onBlur={(事件) => 提交(点(), "名称", 事件.currentTarget.value)}
+                  />
+                </Show>
               </div>
               <div class={行}>
                 <label class={标签} for="hgraph-field-类型">
                   类型
                 </label>
-                <input
-                  id="hgraph-field-类型"
-                  data-slot="hgraph-field-类型"
-                  class={输入}
-                  value={点().类型 ?? ""}
-                  onBlur={(事件) => 提交(点(), "类型", 事件.currentTarget.value)}
-                />
+                <Show
+                  when={!绑定态(点())}
+                  fallback={
+                    <span data-slot="hgraph-field-类型" data-readonly="true" class={值样式}>
+                      {点().类型 ?? ""}
+                    </span>
+                  }
+                >
+                  <input
+                    id="hgraph-field-类型"
+                    data-slot="hgraph-field-类型"
+                    class={输入}
+                    value={点().类型 ?? ""}
+                    onBlur={(事件) => 提交(点(), "类型", 事件.currentTarget.value)}
+                  />
+                </Show>
               </div>
               <div class={行}>
                 <label class={标签} for="hgraph-field-细类">
                   细类
                 </label>
-                <input
-                  id="hgraph-field-细类"
-                  data-slot="hgraph-field-细类"
-                  class={输入}
-                  value={点().细类 ?? ""}
-                  onBlur={(事件) => 提交(点(), "细类", 事件.currentTarget.value)}
-                />
+                <Show
+                  when={!绑定态(点())}
+                  fallback={
+                    <span data-slot="hgraph-field-细类" data-readonly="true" class={值样式}>
+                      {点().细类 ?? ""}
+                    </span>
+                  }
+                >
+                  <input
+                    id="hgraph-field-细类"
+                    data-slot="hgraph-field-细类"
+                    class={输入}
+                    value={点().细类 ?? ""}
+                    onBlur={(事件) => 提交(点(), "细类", 事件.currentTarget.value)}
+                  />
+                </Show>
               </div>
               <div class={行}>
                 <span class={标签}>外环</span>
@@ -634,24 +713,33 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 </label>
                 {/* 用 text + inputmode：非法值（abc / 1.5）要能留在框里让人改；
                     type=number 会在赋值时就被清成空串，把「非法」误当成「清空」。 */}
-                <input
-                  id="hgraph-field-出现序"
-                  data-slot="hgraph-field-出现序"
-                  class={`${输入} w-14 flex-none`}
-                  inputmode="numeric"
-                  value={点().出现序 ?? ""}
-                  onFocus={() => set提示(undefined)}
-                  onBlur={(事件) => 提交出现序(点(), 事件.currentTarget.value)}
-                />
-                <Show when={出现序提示()}>
-                  <span
-                    id="hgraph-field-出现序-提示"
-                    data-slot="hgraph-field-出现序-提示"
-                    role="alert"
-                    class="text-12-regular text-v2-state-fg-danger"
-                  >
-                    {出现序提示()}
-                  </span>
+                <Show
+                  when={!绑定态(点())}
+                  fallback={
+                    <span data-slot="hgraph-field-出现序" data-readonly="true" class={值样式}>
+                      {点().出现序 ?? "—"}
+                    </span>
+                  }
+                >
+                  <input
+                    id="hgraph-field-出现序"
+                    data-slot="hgraph-field-出现序"
+                    class={`${输入} w-14 flex-none`}
+                    inputmode="numeric"
+                    value={点().出现序 ?? ""}
+                    onFocus={() => set提示(undefined)}
+                    onBlur={(事件) => 提交出现序(点(), 事件.currentTarget.value)}
+                  />
+                  <Show when={出现序提示()}>
+                    <span
+                      id="hgraph-field-出现序-提示"
+                      data-slot="hgraph-field-出现序-提示"
+                      role="alert"
+                      class="text-12-regular text-v2-state-fg-danger"
+                    >
+                      {出现序提示()}
+                    </span>
+                  </Show>
                 </Show>
               </div>
               {/* R102：隔离的第三入口。检查器拿到的就是画布动作表，直接走同一出口。 */}
@@ -747,6 +835,33 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 </span>
               </div>
             </section>
+
+            {/* T011：参与方段。已对上档案 = 角色边；未对上 = 保留属性原文（不建节点）。 */}
+            <Show when={参与方行们(点(), props.文档).length > 0}>
+              <section
+                data-slot="hgraph-event-participants"
+                class="flex flex-col border-t border-v2-border-border-muted pt-1"
+              >
+                <p class="text-12-regular text-v2-text-text-muted">参与方</p>
+                <For each={参与方行们(点(), props.文档)}>
+                  {(参与行) => (
+                    <div data-slot="hgraph-event-participant-row" class={行}>
+                      <span class={值样式}>
+                        {参与行.角色}：{参与行.名字}
+                      </span>
+                      <Show when={!参与行.已对上}>
+                        <span
+                          data-slot="hgraph-event-participant-unmatched"
+                          class="shrink-0 text-12-regular text-v2-text-text-muted"
+                        >
+                          未对上档案
+                        </span>
+                      </Show>
+                    </div>
+                  )}
+                </For>
+              </section>
+            </Show>
 
             <section data-slot="hgraph-inspector-snapshot" class="flex flex-col border-t border-v2-border-border-muted pt-1">
               <div class="flex items-center justify-between gap-1">

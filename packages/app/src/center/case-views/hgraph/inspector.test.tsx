@@ -965,3 +965,139 @@ describe("检查器 · 出处可点（FR-033）", () => {
     expect(文本("hgraph-edge-readonly-出处")).toBe("也没有")
   })
 })
+
+// ---------------------------------------------------------------------------
+// T011 · 事件两态 + 参与方段（手写可编 / 绑定只读）
+// ---------------------------------------------------------------------------
+
+/**
+ * 事件夹具（T011）：
+ * - `ev手写`：`来源.kind = 手写`（九格可编）；参与方一条已对上（角色边 `收款方`）、一条未对上
+ *   （保留属性 `参与方·付款方` 的原文）；
+ * - `ev绑定`：`来源.kind = 事件`（九格只读）；带一条未对上参与方，保证参与方段有内容；
+ * - `李四`：角色边的对端实体节点（名字取自节点，不按姓名匹配——spec §Assumptions）。
+ */
+function 事件图(): 图文件 {
+  return {
+    ...造图(),
+    节点: [
+      {
+        id: "ev手写",
+        名称: "转账给李四",
+        类型: "资金交易",
+        来源: { kind: "手写" },
+        属性: [
+          { 键: "金额", 值: "12000元" },
+          { 键: "时间精度", 值: "分" },
+          { 键: "参与方·付款方", 值: "王*五" },
+        ],
+        出处: [],
+        时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-04 14:22:00" },
+        x: 100,
+        y: 100,
+      },
+      {
+        id: "ev绑定",
+        名称: "库转账",
+        类型: "资金交易",
+        来源: { kind: "事件", 实体: "event-1", 值: "库转账", 可信: "已核实" },
+        属性: [
+          { 键: "金额", 值: "5000元" },
+          { 键: "参与方·付款方", 值: "王*五" },
+        ],
+        出处: ["m1#流水#7"],
+        时间: { 首: "2026-03-04 09:00:00", 末: "2026-03-04 09:00:00" },
+        x: 200,
+        y: 100,
+      },
+      {
+        id: "李四",
+        名称: "李四",
+        类型: "人物",
+        来源: { kind: "实体", 实体: "ent2", 值: "李四" },
+        时间: { 首: "", 末: "" },
+        x: 300,
+        y: 200,
+      },
+    ],
+    边: [
+      {
+        id: "r1",
+        从: "ev手写",
+        到: "李四",
+        标签: "收款方",
+        性质: "推断",
+        方向: "有向",
+        来源: { kind: "手写", 依据: "手写事件「转账给李四」的收款方" },
+        可信度: "中",
+        时间: { 首: "", 末: "" },
+      },
+    ],
+  }
+}
+
+describe("检查器 · T011 事件两态与参与方", () => {
+  const 输入们 = () => [...document.body.querySelectorAll<HTMLElement>("input[data-slot^='hgraph-field-']")]
+
+  test("手写事件九格有输入框、绑定事件没有；绑定态只留备注/外环可改", () => {
+    // 手写态：名称/类型/细类/出现序都是输入框（九格可编）。
+    挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    expect(取("[data-slot='hgraph-field-名称']")?.tagName).toBe("INPUT")
+    expect(取("[data-slot='hgraph-field-类型']")?.tagName).toBe("INPUT")
+    expect(取("[data-slot='hgraph-field-细类']")?.tagName).toBe("INPUT")
+    expect(取("[data-slot='hgraph-field-出现序']")?.tagName).toBe("INPUT")
+    // 手写事件没有可信态控件（data-model §2：手写不写 来源.可信）。
+    expect(取("[data-slot='hgraph-field-可信态']") === null).toBe(true)
+
+    document.body.innerHTML = ""
+    // 绑定态：九格里没有输入框，值仍以只读文本可见。
+    挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
+    expect(输入们().length).toBe(3)
+    expect(输入们().map((项) => 项.getAttribute("data-slot"))).toEqual([
+      "hgraph-field-外环档",
+      "hgraph-field-外环颜色",
+      "hgraph-field-备注",
+    ])
+    expect(文本("hgraph-field-名称")).toBe("库转账")
+    expect(文本("hgraph-field-类型")).toBe("资金交易")
+  })
+
+  test("绑定事件无解绑控件（态只在加入时变化，无反向入口）", () => {
+    挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
+
+    // 前提：参与方段渲染出来了（本任务新增），下面「没有解绑」才有对象所指。
+    expect(取("[data-slot='hgraph-event-participants']") === null).toBe(false)
+    expect(取("[data-slot='hgraph-unbind']") === null).toBe(true)
+    // 文案层也没有「解绑」入口；绑定入口只属于手写/推断节点。
+    const 解绑键们 = [...document.body.querySelectorAll("button")].filter((键) =>
+      (键.textContent ?? "").includes("解绑"),
+    )
+    expect(解绑键们.length).toBe(0)
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
+  })
+
+  test("参与方行 = 角色：名字；未对上档案 ⇒ 灰字「未对上档案」且不调动作表", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+
+    expect(取("[data-slot='hgraph-event-participants']") === null).toBe(false)
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    expect(行们.length).toBe(2)
+
+    // 已对上档案（角色边）：只有 `角色：名字`，不带灰字。
+    const 已对上 = 行们.find((行) => (行.textContent ?? "").includes("收款方：李四"))
+    expect(已对上 === undefined).toBe(false)
+    expect((已对上?.textContent ?? "").includes("未对上档案")).toBe(false)
+
+    // 未对上档案（保留属性 `参与方·<角色>` 的原文）：灰字逐字「未对上档案」。
+    const 未对上 = 行们.find((行) => (行.textContent ?? "").includes("付款方：王*五"))
+    expect(未对上 === undefined).toBe(false)
+    const 灰 = 未对上?.querySelector<HTMLElement>("[data-slot='hgraph-event-participant-unmatched']")
+    expect(灰 === null).toBe(false)
+    expect(灰?.textContent?.trim()).toBe("未对上档案")
+    expect(灰?.className).toContain("text-v2-text-text-muted")
+
+    // 不建节点、不改字段：参与方段只读文档。
+    expect(幽.计数.加节点 ?? 0).toBe(0)
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+  })
+})
