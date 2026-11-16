@@ -33,14 +33,19 @@
  * 弹窗自己不重算——所以回调只回 `name`。这与改之前那根行内输入条交给 `onCreate` 的东西逐字相同
  * （`{ kind, parent, name }`），换的只是「名字在哪儿问」。
  *
- * ## 类型区：从「胶囊」换成「大类 + 后缀勾选」（用户 2026-11-16 裁定）
+ * ## 类型区：9 个大类，每类一行（用户 2026-11-16 两轮裁定）
  *
- * 012 只有一枚「关系图」胶囊；9 个大类共 64 个后缀铺成一排既列不下、也分不清类别。现改为
- * **9 个大类**（文档 / 表格 / 图文 / 关系图 / 思维导图 / PDF / 图片 / 网页 / 代码），每个后缀
- * 前一个勾选框，同一时刻至多勾一个；大类标题只是分组标题、不可点。代码大类（48 项）默认折叠。
+ * 012 只有一枚「关系图」胶囊；9 个大类共 64 个后缀铺成一排既列不下、也分不清类别。
  *
- * **「默认不选 = 普通文件」的语义不变**：不勾任何后缀 ⇒ 名字原样交出去（0 字节文件），
- * 与胶囊时代一致；勾了才补后缀（已带同后缀不重复加，见 `补类型后缀`）。
+ * - **第一轮**：换成 9 个大类（文档 / 表格 / 图文 / 关系图 / 思维导图 / PDF / 图片 / 网页 / 代码），
+ *   同一时刻至多选一个；大类名只是分组标题、不可点；代码大类（48 项）默认折叠。
+ * - **第二轮**（「排列很不好看，没有视觉层级，拉的太长」）：每个大类改成**一行两格**——
+ *   左格加粗类名，右格后缀流式换行；**去掉**原来的勾选框与「V」，选中只靠**蜜蜂金边框**
+ *   （`border-v2-border-border-focus` 取 `--v2-brand-gold`）＋ 类名一起染金；后缀方框缩到 12px；
+ *   清单限高自己滚（`max-h-[45vh]`）。
+ *
+ * **「默认不选 = 普通文件」的语义不变**：不选任何后缀 ⇒ 名字原样交出去（0 字节文件），
+ * 与胶囊时代一致；选了才补后缀（已带同后缀不重复加，见 `补类型后缀`）。
  */
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -158,11 +163,18 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
               }}
             />
           </Field>
-          {/* 类型区（013 · T3）：9 个大类 + 后缀勾选，互斥且可取消；默认不勾 = 普通文件。
+          {/* 类型区（013 · T3 / 2026-11-16 二轮）：9 个大类，每类**一行两格**——左格类名、
+              右格后缀流式；互斥且可取消；默认不选 = 普通文件。
               只在「新建文件」里出现——目录不能变成 `.docx/.hgraph`（`kind === "directory"` 不显示）。
-              大类标题只是分组标题（不可点）；代码大类默认折叠，列表区自身可滚。 */}
+              大类名只是分组标题（不可点）；代码大类默认折叠，清单限高自己滚。 */}
           <Show when={!是文件夹()}>
-            <div data-slot="file-create-catalog" class="flex flex-col gap-3">
+            {/* `max-h-[45vh] overflow-y-auto`：一屏装不下 64 个后缀时由清单自己滚，footer 留在
+                滚动区外（上一层 `DialogV2 fit` 已不写死高度，所以这里的 max-h 真能生效——
+                R1 当时说「清单 max-h 没用」是在容器写死 368px 的前提下）。 */}
+            <div
+              data-slot="file-create-catalog"
+              class="flex max-h-[45vh] flex-col gap-1.5 overflow-y-auto pr-1"
+            >
               <For each={新建大类}>
                 {(大类) => {
                   const 选中 = () => 大类选中(大类)
@@ -172,16 +184,17 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                       data-slot="file-create-category"
                       data-category={大类.名称}
                       data-selected={选中() ? "true" : "false"}
-                      class="flex flex-col gap-2"
+                      class="grid grid-cols-[4.5rem_1fr] items-center gap-x-2"
                     >
-                      <div class="flex items-center justify-between gap-2">
+                      {/* 左格：类名（加粗、选中染金）+ 折叠开关。类名只是纯文本，点它什么也不发生。 */}
+                      <div data-slot="file-create-category-label" class="flex items-center gap-1">
                         <span
                           id={`file-create-category-${大类.名称}`}
                           data-slot="file-create-category-title"
                           class={
                             选中()
-                              ? "text-[13px] font-medium text-v2-text-text-base"
-                              : "text-[13px] text-v2-text-text-muted"
+                              ? "text-[13px] font-semibold text-v2-text-text-accent"
+                              : "text-[13px] font-semibold text-v2-text-text-base"
                           }
                         >
                           {大类.名称}
@@ -192,7 +205,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                             data-slot="file-create-category-toggle"
                             aria-expanded={展开()}
                             aria-controls={`file-create-suffixes-${大类.名称}`}
-                            class="text-[12px] text-v2-text-text-muted hover:text-v2-text-text-base"
+                            class="text-[11px] text-v2-text-text-muted hover:text-v2-text-text-base"
                             onClick={() =>
                               set展开大类((当前) =>
                                 当前.includes(大类.名称)
@@ -205,13 +218,13 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                           </button>
                         </Show>
                       </div>
-                      {/* 容器**始终在 DOM 里**（即使收起）：`aria-controls` 得指得到一个真实节点；
-                          收起时里面为空，读屏不会念任何后缀。 */}
+                      {/* 右格：后缀流式。容器**始终在 DOM 里**（即使收起）：`aria-controls` 得指得到
+                          一个真实节点；收起时里面为空，读屏不会念任何后缀。 */}
                       <div
                         id={`file-create-suffixes-${大类.名称}`}
                         role="group"
                         aria-labelledby={`file-create-category-${大类.名称}`}
-                        class="flex flex-wrap gap-2"
+                        class="flex flex-wrap items-center gap-1.5"
                       >
                         <Show when={展开()}>
                           <For each={大类.后缀们}>
@@ -222,21 +235,18 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
                                   type="button"
                                   data-slot="file-create-suffix"
                                   data-suffix={后缀}
-                                  data-picked={勾中()}
+                                  data-picked={勾中() ? "true" : "false"}
                                   role="checkbox"
                                   aria-checked={勾中()}
                                   aria-label={后缀}
                                   class={
                                     勾中()
-                                      ? "flex items-center gap-1.5 rounded-md border border-v2-border-border-strong bg-v2-background-bg-layer-03 px-2 py-1 text-[13px] text-v2-text-text-base"
-                                      : "flex items-center gap-1.5 rounded-md border border-v2-border-border-muted px-2 py-1 text-[13px] text-v2-text-text-muted"
+                                      ? "rounded-md border border-v2-border-border-focus bg-v2-background-bg-layer-03 px-1.5 py-0.5 text-[12px] text-v2-text-text-base"
+                                      : "rounded-md border border-v2-border-border-muted px-1.5 py-0.5 text-[12px] text-v2-text-text-muted"
                                   }
                                   onClick={() => set选中后缀(勾中() ? undefined : 后缀)}
                                 >
-                                  <span data-slot="file-create-suffix-check" aria-hidden="true" class="w-3 text-center">
-                                    {勾中() ? "V" : ""}
-                                  </span>
-                                  <span>{后缀}</span>
+                                  {后缀}
                                 </button>
                               )
                             }}

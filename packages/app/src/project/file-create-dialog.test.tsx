@@ -115,7 +115,7 @@ const 后缀们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-s
 
 const 后缀项 = (后缀: string) => {
   const el = 后缀们().find((候选) => 候选.dataset.suffix === 后缀)
-  if (!el) throw new Error(`没有「${后缀}」勾选项——这条用例的前提不成立`)
+  if (!el) throw new Error(`没有「${后缀}」后缀项——这条用例的前提不成立`)
   return el
 }
 
@@ -291,11 +291,12 @@ describe("新建弹窗（FileCreateDialog）", () => {
   })
 
   /**
-   * ── 大类 + 后缀勾选（013 · T3，用户 2026-11-16 裁定）────────────────
+   * ── 大类 + 后缀选择（013 · T3，用户 2026-11-16 裁定）────────────────
    *
-   * 类型区从「一排胶囊」换成「9 个大类，每个后缀前一个勾选框」：大类标题只是分组标题
-   * （不可点），同一时刻至多勾一个后缀，再点已勾的一项即取消。
-   * 默认不勾 = 普通文件——这条语义与胶囊时代相同，不能因为换了控件就走样。
+   * 类型区从「一排胶囊」换成「9 个大类，每类一行、后缀流式」：大类名只是分组标题
+   * （不可点），同一时刻至多选一个后缀，再点已选的一项即取消。
+   * 默认不选 = 普通文件——这条语义与胶囊时代相同，不能因为换了控件就走样。
+   * 2026-11-16 二轮又去掉了勾选框与「V」、改成蜜蜂金边框（见下方专门用例）。
    */
 
   test("九个大类按序出现", async () => {
@@ -324,15 +325,26 @@ describe("新建弹窗（FileCreateDialog）", () => {
     expect(title.closest("button")).toBeNull()
   })
 
-  /** 勾选框在**标签之前**（用户 2026-11-16 逐条确认的交互形状）。 */
-  test("勾选框在后缀文本之前", async () => {
+  /**
+   * 勾选框与「V」**去掉了**（用户 2026-11-16 第二裁定：「现在看来这个 V 不应该要」）。
+   *
+   * 原来那条「勾选框在标签之前」的用例随判据一起删——判据不再是「先后顺序」，而是
+   * 「不存在」。选中与否由**金边框**表达（见下面那条金边框用例），不再靠一个占位的勾。
+   */
+  test("后缀按钮里没有勾选框、也没有「V」——文本就是后缀本身", async () => {
     await 打开({ kind: "file", parent: "" })
-    const 项 = 后缀项(".docx")
-    const 勾选框 = 项.querySelector<HTMLElement>("[data-slot='file-create-suffix-check']")
-    const 标签 = 勾选框?.nextElementSibling
-    if (!勾选框 || !标签) throw new Error("勾选框或后缀标签缺失——前提不成立")
 
-    expect(勾选框.compareDocumentPosition(标签) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 非空前提：没有后缀时 `every` 会真空通过（`#005-18`）。
+    expect(后缀们().length).toBeGreaterThan(0)
+    for (const 项 of 后缀们()) {
+      // ⚠️ 用布尔断言而不是 `.toBeNull()`：本机实测 `expect(元素).toBeNull()` 在命中非空元素时
+      // 出现过**通过**（2026-11-16，bun 1.4.3 + happy-dom + solid-jsx preload；同一形态下
+      // `expect(元素 === null).toBe(true)` 才如实报红）。隔离探针复现不了，成因未定 ⇒
+      // 这里改用布尔形式，并把「元素确实在文档里」立成前提（`#005-18` 假绿第一问）。
+      expect(document.body.contains(项)).toBe(true)
+      expect(项.querySelector("[data-slot='file-create-suffix-check']") === null).toBe(true)
+      expect(项.textContent?.trim()).toBe(项.dataset.suffix ?? "")
+    }
   })
 
   /** 默认不勾 = 普通文件；也不该有大类被高亮。 */
@@ -376,6 +388,90 @@ describe("新建弹窗（FileCreateDialog）", () => {
     expect(后缀项(".docx").className).not.toBe(后缀项(".xlsx").className)
   })
 
+  /**
+   * 选中态 = **蜜蜂金边框**（用户 2026-11-16 第二裁定：「边框用蜜蜂金颜色」）。
+   *
+   * 断的是**具体 token**，不是「两个 class 串不同」——后者在把金色换成任意别的颜色时照样绿
+   * （`#005-18` 假绿第一问：断言的是不是要证的那件事）。
+   * `border-v2-border-border-focus` 取 `--v2-brand-gold`（#D97706，DESIGN §1.1），与
+   * `governance/audit-log.tsx` / `template-lib.tsx` 的选中条目同一先例，不新造色。
+   */
+  test("选中的后缀用蜜蜂金边框，未选中的不是", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    勾(".docx")
+
+    expect(后缀项(".docx").className).toContain("border-v2-border-border-focus")
+    expect(后缀项(".xlsx").className).not.toContain("border-v2-border-border-focus")
+    expect(后缀项(".xlsx").className).toContain("border-v2-border-border-muted")
+  })
+
+  /** 方框缩小（用户 2026-11-16：「后续可以适当缩小方框」，本轮就缩）。 */
+  test("后缀方框缩到 12px、内边距收窄", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    // 非空前提：没有后缀时循环空转（`#005-18`）。
+    expect(后缀们().length).toBeGreaterThan(0)
+    for (const 项 of 后缀们()) {
+      expect(项.className).toContain("text-[12px]")
+      expect(项.className).toContain("px-1.5")
+      expect(项.className).toContain("py-0.5")
+    }
+  })
+
+  /**
+   * 大类名**加粗、用正文色**（用户 2026-11-16：「让大类类名更突出……大类名称可以考虑加粗」），
+   * 选中该大类的后缀时染蜜蜂金——否则用户在长清单里看不出勾的东西属于哪个大类。
+   */
+  test("大类名默认加粗用正文色；选中某后缀后该类名染金，其它类名不变", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    const 标题 = (名称: string) => {
+      const el = 大类(名称).querySelector<HTMLElement>("[data-slot='file-create-category-title']")
+      if (!el) throw new Error(`没有「${名称}」标题——前提不成立`)
+      return el
+    }
+
+    expect(标题("文档").className).toContain("font-semibold")
+    expect(标题("文档").className).toContain("text-v2-text-text-base")
+
+    勾(".docx")
+
+    expect(标题("文档").className).toContain("text-v2-text-text-accent")
+    expect(标题("表格").className).toContain("text-v2-text-text-base")
+    expect(标题("表格").className).not.toContain("text-v2-text-text-accent")
+  })
+
+  /**
+   * 排布结构（用户 2026-11-16：「后缀直接在大类排在一行中」）：每个 section 是两格网格——
+   * 左格类名、右格后缀容器。happy-dom 量不了几何，「真的在同一行」进缺口表（真栈视觉验收）；
+   * 这里钉**结构声明**：两格、类名在左格、后缀容器就是右格本身。
+   */
+  test("类名与后缀是同一行的两格（左类名、右后缀）", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    const 区 = 大类("文档")
+    const 标题 = 区.querySelector<HTMLElement>("[data-slot='file-create-category-title']")
+    const 组 = 区.querySelector<HTMLElement>("[role='group']")
+    if (!标题 || !组) throw new Error("标题或后缀容器缺失——前提不成立")
+
+    expect(区.className).toContain("grid-cols-[4.5rem_1fr]")
+    expect(区.children.length).toBe(2)
+    expect(区.children[0]?.contains(标题)).toBe(true)
+    expect(区.children[1]).toBe(组)
+  })
+
+  /** 清单限高自己滚（用户 2026-11-16：「是不是可以在有限的一个界面中展现」）。 */
+  test("清单区限高并自己滚（确定按钮不在里面）", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    const catalog = document.body.querySelector<HTMLElement>("[data-slot='file-create-catalog']")
+    if (!catalog) throw new Error("没有清单区——前提不成立")
+
+    expect(catalog.className).toContain("max-h-")
+    expect(catalog.className).toContain("overflow-y-auto")
+  })
+
   test("勾 .docx ⇒ 提交名补 .docx、该项打勾、所属大类高亮", async () => {
     const 收到 = await 打开({ kind: "file", parent: "" })
 
@@ -385,7 +481,6 @@ describe("新建弹窗（FileCreateDialog）", () => {
     const 项 = 后缀项(".docx")
     expect(项.getAttribute("aria-checked")).toBe("true")
     expect(项.dataset.picked).toBe("true")
-    expect(项.querySelector("[data-slot='file-create-suffix-check']")?.textContent).toBe("V")
     expect(大类("文档").dataset.selected).toBe("true")
     for (const 其它 of 大类们()) {
       if (其它.dataset.category !== "文档") expect(其它.dataset.selected).toBe("false")
@@ -533,3 +628,4 @@ describe("新建弹窗（FileCreateDialog）", () => {
     expect(收到).toEqual(["新.md"])
   })
 })
+

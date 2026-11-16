@@ -75,3 +75,52 @@
 ## 5. 参考教训
 
 `#002-06`（单一出处） `#003-03`（变异三类） `#005-18`（假绿四问） `#012-01`（回写照抄旧预期） `#003-04`（实测当场复现）
+
+## 6. 第二轮（2026-11-16，合并后用户裁定：去 V、金边框、行内排布）
+
+### 6.1 改了什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 勾选框 / 「V」 | 每个后缀前一个 `<span data-slot="file-create-suffix-check">`，选中显示 V | **移除**；按钮文本就是后缀 |
+| 选中态 | `border-strong` + `bg-layer-03` + 正文色 | `border-v2-border-border-focus`（=`--v2-brand-gold` #D97706）+ `bg-layer-03` + 正文色 |
+| 排布 | `section` 纵向：标题一行、后缀下一行 | `grid grid-cols-[4.5rem_1fr]`：左格类名（+折叠开关）、右格后缀流式 |
+| 类名 | `13px`、muted（选中才变 base） | `13px font-semibold`，默认 base；选中染 `text-accent` |
+| 方框尺寸 | `13px / px-2 py-1` | `12px / px-1.5 py-0.5` |
+| 清单高度 | 无自身限高（只靠 body 滚） | `max-h-[45vh] overflow-y-auto`，footer 仍在滚动区外 |
+| 折叠开关位置 | 标题行右侧 | 左格类名旁（`11px`） |
+
+### 6.2 门禁实得（本机，均 `timeout 300`）
+
+| 项 | 命令 | 实得 |
+|---|---|---|
+| 弹窗用例 | `cd packages/app && bun test --conditions=browser --preload ./happydom.ts --preload ./solid-jsx.ts src/project/file-create-dialog.test.tsx` | **34 pass / 0 fail** |
+| 清单 + 常量 | 同上，`src/project/file-create-catalog.test.ts src/center/file-type-extensions.test.ts` | **23 pass / 0 fail** |
+| app typecheck | `cd packages/app && bun run typecheck` | `tsgo -b` **EXIT=0** |
+| oxlint（改动的 2 个文件） | `bunx oxlint <两个文件>` | **0 warning / 0 error** |
+
+### 6.3 变异验证（协调者亲手，均「拆 → 定向红 → 原样恢复」）
+
+| # | 拆哪一处 | 实得 |
+|---|---|---|
+| M1 | 选中边框 `border-focus` 换回 `border-strong` | **恰 1 条红**：「选中的后缀用蜜蜂金边框」；33 pass |
+| M2 | 类名的选中分支改成与默认同一串 | **恰 1 条红**：「大类名…选中后染金」；33 pass |
+| M3 | 尺寸回退 `px-2 py-1 text-[13px]`（两个分支一起） | **恰 1 条红**：「后缀方框缩到 12px」；33 pass |
+| M4 | 清单去掉 `max-h-[45vh] overflow-y-auto` | **恰 1 条红**：「清单区限高并自己滚」；33 pass |
+| M5 | `section` 回退成 `flex flex-col` | **恰 1 条红**：「类名与后缀是同一行的两格」；33 pass |
+| M6 | 把勾选框 `<span data-slot="file-create-suffix-check">` 加回去 | **恰 1 条红**：「后缀按钮里没有勾选框…」；33 pass |
+
+### 6.4 本轮发现的环境坑（新）
+
+**`expect(元素).toBeNull()` 在本机出现过假绿**（2026-11-16，bun 1.4.3 + happy-dom + solid-jsx preload）：
+同一断言位置，改成 `expect(元素 === null).toBe(true)` 才如实报红；隔离探针（.tsx、连接节点、
+两 preload 全带）复现不出来，**成因未定**。处置：该用例改用布尔形式，并把「元素确实在文档里」
+立成前提。**结论：本仓库对 DOM 节点做「不存在」断言时，用布尔比较，不用 `toBeNull()`。**
+
+### 6.5 缺口
+
+| 缺口 | 原因 | 谁来补 |
+|---|---|---|
+| 「一行两格」真实几何（是否同行、4.5rem 够不够宽） | happy-dom 不算 CSS | 真栈视觉验收 |
+| 蜜蜂金边框在 dark 配色下的可辨识度 | 只复用既有 token，未做对比度实测 | 真栈视觉验收 |
+| 清单 `max-h-[45vh]` 在真实视口下的滚动行为 | 同上 | 真栈视觉验收 |

@@ -23,6 +23,21 @@ tool-quirk(工具怪癖) / ai-stuck(AI 卡点) / arch(架构教训)。
 > **合并条**（2026-10-09 压缩）：正文并入主条后，原号**只留一行指引**（`→ 并入 #主条`）。
 > **号一律不删、不重排、不合并**——全仓有大量 `#NNN-MM` 引用，`grep '^## #NNN-MM'` 必须仍取得到。
 
+## #013-12 · 2026-11-16 · tool-quirk · 013-新建文件类型选择
+
+**现象 / 决策**：`packages/app` 的弹窗用例里，`expect(项.querySelector("[data-slot='file-create-suffix-check']")).toBeNull()`
+在**元素明明存在**时通过——同一文件、同一位置改成 `expect(项.querySelector(...) === null).toBe(true)`
+立刻红，且同一条用例里 `document.body.contains(项)` 为 true；循环里改成 `if (x !== null) push`
+也查到 **16/16 命中**。隔离探针（`.tsx`、节点挂进 `document.body`、两个 preload 全带）**复现不出来**；
+同一条用例反复跑还会在 **6s / 285s** 两个耗时档之间跳。**成因未定**，但假绿可重复。
+
+**应对**：本仓库**对 DOM 节点做「不存在」断言时用布尔比较**（`expect(x === null).toBe(true)`），
+不用 `.toBeNull()`；并且先立「节点确实在文档里」的前提（`document.body.contains`），
+否则空/陈旧 DOM 会让「不存在」断言真空通过（`#005-18`）。隔离探针复现不了时别把「跑一遍绿了」
+当结论——把断言换成布尔形态再跑一次，**两种写法结论不一致就按假绿处理**。
+
+**应用范围**：happy-dom 组件测试里「节点应当不存在」的断言；`-t` 过滤单跑与整文件跑结论不一致时。
+
 ## #013-11 · 2026-11-15 · pitfall · 013-事实卡片-P2-资金翻译与账户归并
 
 **现象 / 决策**：真栈 `GET /openhive/case/entities` 墙钟 **14.6–56s**，前端 `TIMEOUT_MS = 10_000`
