@@ -289,6 +289,18 @@ function 换id(文档: 图文件, 映射: Readonly<Record<string, string>>): 图
 }
 
 /**
+ * 换 id 后同一类别里出现重复 id（T004 / FR-004）：服务端的 `映射` 把两个本地对象落到了
+ * 同一个真实 id。这份文档**不能落地**——之后所有「按 id 找对象」的地方都会二选一。
+ *
+ * 判据看**结果文档**而不是「映射值彼此撞车」：`映射` 落到一个已存在的真实 id 同样会撞
+ * （伪造/异常应答的典型形状），只比映射值会漏掉这一类。
+ */
+function 有重复id(文档: 图文件): boolean {
+  const 撞 = (行们: readonly { readonly id: string }[]) => new Set(行们.map((行) => 行.id)).size !== 行们.length
+  return 撞(文档.节点) || 撞(文档.边) || 撞(文档.文字)
+}
+
+/**
  * 应答 `映射` 也要作用到**仍在待发**的操作上：请求飞行中新加的对象还带着临时 id
  * （例如加文字后立刻拖动），下一批如果原样发出去，服务端不认识那个临时 id。
  */
@@ -470,6 +482,13 @@ const 可重试失败 = (回: { readonly code?: string }) =>
 
 let 批次序号 = 0
 
+/**
+ * 幂等键序号（T004）：形状 `web:<图路径>:<递增序号>`（契约 `hgraph-write.md`）。
+ * **必须与 `批次序号` 分开**：`批次` 每次发送都自增，而重试正是新的一次发送；
+ * 拿它当幂等键就等于每次重试都换新键，服务端无从判重放（brief 明令禁止）。
+ */
+let 幂等序号 = 0
+
 export function 编辑器(props: 编辑器Props): JSX.Element {
   const [文档, set文档] = createSignal(props.初始文档)
   const [版本, set版本] = createSignal(props.初始版本)
@@ -523,6 +542,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [文件已不存在, set文件已不存在] = createSignal(false)
   /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
   const [重载提示, set重载提示] = createSignal(false)
+  /** 换 id 撞车提示（T004 / FR-004）：文档已按盘上整图重载，告诉用户本地与盘上不一致。 */
+  const [不一致提示, set不一致提示] = createSignal(false)
   /** AI 改动无法整体还原时的提示（R94）；只压不写，也不压半还原的步。 */
   const [撤销提示, set撤销提示] = createSignal<string | undefined>()
   /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
@@ -752,6 +773,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 文档代 = 0
   /** 轮询读到、但还没应用的外部变更（询问「重新载入」时用）。 */
   let 待重载: 外部变更 | undefined
+  /**
+   * 上次**可重试失败**那次写的（载荷指纹, 幂等键）。只在「下一次发送的载荷逐字相同」
+   * 时复用键——这样重试能让服务端判重放；载荷一变就换新键，免得旧结果被重放、新改动被吞。
+   * 成功 / 不可重试失败 / 结果作废时清空：复用只对「紧接着的那次重试」成立。
+   */
+  let 上次幂等: { readonly 载荷: string; readonly 键: string } | undefined
   let 轮询计时: ReturnType<typeof setInterval> | undefined
   let 提示计时: ReturnType<typeof setTimeout> | undefined
   /** 上一 tick 的 `读` 还没回来：不叠第二次（远端慢时避免并发风暴）。 */
@@ -835,6 +862,43 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
   }
 
+  /**
+   * 应答 `映射` 撞 id 的收口（T004 / FR-004）：这份应答不落地、读盘整图重载、提示用户。
+   *
+   * 同步先摘掉飞行中新增的待发——整图重载会丢弃它们（与 `执行重载` 同一口径），也避免
+   * `发送` 末尾再排一次发。读失败就停在提示上：文档没被撞车映射污染，下一轮询若版本仍
+   * 不同会照常询问重载（不假装已与盘上一致）。
+   */
+  const 收口撞车id = (代: number) => {
+    clearTimeout(计时)
+    待发 = []
+    草稿逆操作 = []
+    草稿副本 = []
+    草稿仅撤销重做 = false
+    草稿弹出 = []
+    草稿含合并撤销 = false
+    // 服务端确实接受了这次写；只是本地无法安全落地映射。别把状态留在「发送中」。
+    set状态("已存")
+    set可重试(false)
+    void (async () => {
+      let 变更: 外部变更 | undefined
+      try {
+        const 读 = await props.api.读({ projectId: props.projectId, path: props.path })
+        // 期间已被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
+        if (已卸载 || 代 !== 文档代 || 文件已不存在()) return
+        if (读.kind === "ok") {
+          const 解析 = 解析图(读.value.内容)
+          变更 = 解析.ok ? { 版本: 读.value.版本, 文档: 解析.文档 } : { 版本: 读.value.版本 }
+        }
+      } catch {
+        // 读失败：走下面的提示，不假装文档已与盘上一致。
+      }
+      if (已卸载 || 代 !== 文档代 || 文件已不存在()) return
+      if (变更 !== undefined) 执行重载(变更)
+      弹不一致提示()
+    })()
+  }
+
   const 发送 = async () => {
     if (正在发 || 待发.length === 0 || 文件已不存在()) return
     正在发 = true
@@ -852,6 +916,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     草稿弹出 = []
     草稿含合并撤销 = false
     const 批次 = `批-${++批次序号}`
+    // 幂等键（T004）：载荷指纹 = 请求体里会变的两个字段（版本 + 操作序列）；`批次` 每次
+    // 自增、不能参与指纹。与上次**失败**载荷逐字相同 ⇒ 复用旧键（服务端判重放，不推进版本）。
+    const 载荷 = JSON.stringify([版本() ?? null, 批])
+    const 幂等键 = 上次幂等?.载荷 === 载荷 ? 上次幂等.键 : `web:${props.path}:${++幂等序号}`
     // 发送时快照 = 已存基线 + 本批；它才是「服务端接受这一批之后」的文档。
     // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
     const 快照 = 文档()
@@ -867,6 +935,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       版本: 版本(),
       操作: 批,
       批次,
+      幂等键,
     })
     正在发 = false
 
@@ -874,6 +943,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     // 一律不落地（成功失败都一样）。只续上重载后新产生的待发，状态以当前文档为准。
     if (代 !== 文档代) {
       // 这批应答跟着旧文档一起作废：之前的「可重试」保留批也已被重载丢弃。
+      上次幂等 = undefined
       set可重试(false)
       if (状态() === "发送中") set状态(待发.length > 0 ? "待发" : "已存")
       if (待发.length > 0) 排发()
@@ -881,8 +951,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
 
     if (回.kind === "ok") {
+      上次幂等 = undefined
       const 映射 = 回.value.结果.映射
       const 基 = 换id(快照, 映射)
+      // T004 / FR-004：映射撞 id ⇒ 这份应答**一个字节都不落地**（否则文档里出现重复 id，
+      // 之后所有按 id 找对象的地方都会二选一）。改走整图重载并提示。
+      if (有重复id(基)) {
+        收口撞车id(代)
+        return
+      }
       // 飞行中新增的待发操作：临时 id 换成正式 id，再折到新基线之上（不丢用户改动）。
       待发 = 待发.map((操作) => 换操作id(操作, 映射))
       // 飞行中新增操作的逆操作草稿引用本批临时 id 时也要一起换，否则下一批撤销打到旧 id。
@@ -932,6 +1009,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 空草稿不是一次新操作：与 `应用` 里 `待发.length === 0 ? …` 同一判定。
       草稿仅撤销重做 = 仅撤销重做 && (保留前待发为空 || 草稿仅撤销重做)
       草稿含合并撤销 = 批含合并撤销 || 草稿含合并撤销
+      // 只有可重试失败才留键：用户点「重试」时载荷若逐字相同，服务端应判重放。
+      上次幂等 = { 载荷, 键: 幂等键 }
       set错误("没存上")
       // 「最新版本」只属于 409：非 409 的失败不能把它留着（与改动前的分支口径一致）。
       set最新版本(undefined)
@@ -943,6 +1022,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       return
     } else {
       // 非可重试失败：回滚到服务端已接受态；飞行中新增、从未发出的待发重折回来。
+      上次幂等 = undefined
       回滚失败批({ 前, 快照id们, 批弹出 })
       set可重试(false)
       if (回.code === "VERSION_CONFLICT") {
@@ -980,10 +1060,24 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   /** 重载成功提示（R55）：文案逐字；5 秒后自动消失，不常驻。 */
   const 弹重载提示 = () => {
+    set不一致提示(false)
     set重载提示(true)
     clearTimeout(提示计时)
     提示计时 = setTimeout(() => {
       if (!已卸载) set重载提示(false)
+    }, 5000)
+  }
+
+  /**
+   * 换 id 撞车提示（T004 / FR-004）：与「图已重新载入」互斥——同一时刻只让用户看到一句，
+   * 且这一句要说清「本地与盘上不一致，请重新载入」（整图重载已自动做过一次）。
+   */
+  const 弹不一致提示 = () => {
+    set重载提示(false)
+    set不一致提示(true)
+    clearTimeout(提示计时)
+    提示计时 = setTimeout(() => {
+      if (!已卸载) set不一致提示(false)
     }, 5000)
   }
 
@@ -1874,6 +1968,17 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
         >
           图已重新载入，之前的撤销记录已清空
+        </p>
+      </Show>
+
+      {/* T004 / FR-004：换 id 撞车 ⇒ 已按盘上整图重载，说明为什么本地被换掉。 */}
+      <Show when={不一致提示()}>
+        <p
+          data-slot="hgraph-inconsistent-notice"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          图和你本地不一致，请重新载入
         </p>
       </Show>
 

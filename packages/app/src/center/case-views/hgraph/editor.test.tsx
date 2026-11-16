@@ -4810,3 +4810,100 @@ describe("编辑器 · 出处可点接线（T6）", () => {
     expect(取("[data-slot='hgraph-citation']")).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// T004 · 幂等键与「换 id 后不产生重复 id」
+//
+// 契约 `014/contracts/hgraph-write.md`：幂等键形如 `web:<图路径>:<递增序号>`，只在
+// 「上次失败载荷逐字相同」时复用；`批次` 每次发送都自增，**不能**当幂等键。
+// 成功分支若 `映射` 把两个对象落到同一个 id ⇒ 不落地这份应答，整图重载并提示。
+// ---------------------------------------------------------------------------
+
+describe("T004 · 幂等键与换 id 收口", () => {
+  test("同一批发送失败后重试 ⇒ 两次请求的 幂等键 相同", async () => {
+    let 次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        次 += 1
+        return 次 === 1 ? { kind: "error", message: "网络断了", code: "network" } : 成功("v2")
+      },
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    // 前置（防假绿）：第一次真的带了键，且形状是契约里的 `web:<路径>:<序号>`。
+    const 首次键 = 写们[0]!.幂等键
+    expect(typeof 首次键).toBe("string")
+    expect(首次键).toMatch(/^web:分析\/测试图\.hgraph:\d+$/)
+
+    按钮("hgraph-save-retry").click()
+    await 过防抖()
+    expect(写们.length).toBe(2)
+
+    // 主判据：重试的载荷逐字相同（同版本、同操作序列）⇒ 键必须相同，服务端才能重放。
+    expect(写们[1]!.版本).toBe(写们[0]!.版本)
+    expect(写们[1]!.操作).toEqual(写们[0]!.操作)
+    expect(写们[1]!.幂等键).toBe(首次键)
+    // 反证：批次每次发送都自增——若拿它当幂等键，这两次必然不同（brief 明令禁止）。
+    expect(写们[1]!.批次).not.toBe(写们[0]!.批次)
+  })
+
+  test("改动载荷后重试 ⇒ 键不同", async () => {
+    const { api, 写们 } = 假api({
+      // 两次都失败：第二次不是「原样重试」，而是失败批 + 飞行中新操作一起发。
+      写: () => ({ kind: "error", message: "网络断了", code: "network" }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(typeof 写们[0]!.幂等键).toBe("string")
+
+    // 改动载荷：失败批仍保留在待发头部，这里再接一条新操作（n1 180 → 260）。
+    拖(节点组("n1")!, 180, 100, 260, 100)
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    // 前置：载荷真的变了（两条移动，而不是原样重发）。
+    expect(写们[1]!.操作.length).toBe(2)
+    expect(写们[1]!.操作).not.toEqual(写们[0]!.操作)
+
+    // 主判据：载荷变了就必须换新键，否则服务端会重放旧结果、新改动被静默丢弃。
+    expect(写们[1]!.幂等键).not.toBe(写们[0]!.幂等键)
+  })
+
+  test("伪造应答映射撞 id ⇒ 整图重载 + 提示「图和你本地不一致，请重新载入」", async () => {
+    // 盘上那份把 n1 放在 120：重载落地后与「撞车映射」的结果一眼可分。
+    const 盘上 = 一份图()
+    盘上.节点 = [造节点("n1", 120, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100, { 锁定: true })]
+    const { api, 写们, 取读数 } = 假api({
+      // 伪造：把已有的 n1 映射成 n2 ⇒ 快照里出现两个 id 为 n2 的节点。
+      写: () => 成功("v2", { n1: "n2" }),
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+    // 前提：编辑器自己不在载入时读盘（读只由「不一致重载」触发）。
+    expect(取读数()).toBe(0)
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    await 等到条件(() => 取读数() > 0)
+    await flush()
+    await flush()
+
+    // 判据一：出现重载调用（编辑器读盘把整图换掉）。
+    expect(取读数()).toBeGreaterThan(0)
+    // 判据二：提示逐字。
+    expect(文案("hgraph-inconsistent-notice")).toBe("图和你本地不一致，请重新载入")
+    // 判据三：不产生重复 id——落地的是盘上那份（n1 回到 120），不是撞车的映射结果。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(120 100)")
+    expect(document.body.querySelectorAll("[data-node-id='n2']").length).toBe(1)
+  })
+})
