@@ -47,6 +47,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, 
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
+import { 时间文本 } from "../format"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
@@ -1761,6 +1762,35 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         },
       ])
       // 新节点立刻选中：加完就能 F2 改名 / 继续拖。
+      set选中([id])
+    },
+    /**
+     * T012 / FR-025：手写事件两入口共用这一条。落点规则与 `加节点` 同源（R29）——
+     * 工具栏省略位置 = 画布中心阶梯偏移，右键空白传右键点；**一个** `加节点` 批次，
+     * 一次撤销撤整批。时间给当前时刻（T009 的必填闸要求事件有时间，新建时不许空着）；
+     * 名称给兜底占位，类型沿用加节点的「未分类」。不切模式、不另加文字块。
+     */
+    加事件: (位置) => {
+      const 位 = 位置 ?? 阶梯位置(文档().节点.length)
+      const id = 临时id("n")
+      const 时间 = 时间文本(Date.now() / 1000)
+      应用([
+        {
+          操作: "加节点",
+          节点: [
+            {
+              id,
+              名称: "新事件",
+              类型: "未分类",
+              来源: { kind: "手写" },
+              时间: { 首: 时间, 末: 时间 },
+              x: Math.round(位.x),
+              y: Math.round(位.y),
+            },
+          ],
+        },
+      ])
+      // 与新节点一致：加完立刻选中，面板可直接填九格。
       set选中([id])
     },
     // T014：选择器只是编辑器内的覆盖面板，加入时走 `应用` 一条 `加节点`（一次撤销）。

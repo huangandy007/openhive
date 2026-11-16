@@ -5183,3 +5183,106 @@ describe("T004 · 幂等键与换 id 收口", () => {
     expect(文案("hgraph-inconsistent-notice")).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// T012 · 加事件两入口（工具栏 / 右键空白）
+// ---------------------------------------------------------------------------
+
+describe("T012 · 加事件两入口", () => {
+  /**
+   * 从一次写里取出被加的那颗节点：整次写只能是**一个** `加节点` 批次、**一颗**节点
+   * （不切模式不会产生操作；不加文字块也不会多出 `加文字`）。
+   */
+  function 取新节点(写: 写入参): Record<string, unknown> {
+    expect(写.操作.map((操作) => 操作.操作)).toEqual(["加节点"])
+    const 操作 = 写.操作[0]
+    if (操作.操作 !== "加节点") throw new Error("不是加节点")
+    expect(操作.节点.length).toBe(1)
+    return 操作.节点[0]
+  }
+
+  const 时间格式 = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/
+
+  test("工具栏加事件：落点 = 视口中心（阶梯位置）、写盘恰好 1 个 `加节点` 批次", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    const 键 = document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-toolbar-add-event']")
+    expect(键 !== null).toBe(true)
+    键!.click()
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 点 = 取新节点(写们[0])
+    // 视口（viewBox 760×680）中心 + R29 阶梯偏移；夹具 3 颗节点 ⇒ 第 3 个落点。
+    const 中心 = 阶梯位置(3)
+    expect(点.x).toBe(中心.x)
+    expect(点.y).toBe(中心.y)
+    expect(点.来源).toEqual({ kind: "手写" })
+    expect(点.名称).toBe("新事件")
+    expect(点.类型).toBe("未分类")
+    const 时间 = 点.时间
+    if (typeof 时间 !== "object" || 时间 === null || !("首" in 时间) || !("末" in 时间)) {
+      throw new Error("事件节点缺时间对象")
+    }
+    // T009 的必填闸要求事件有时间；新建时给的是可解析的当前时刻（不是空串占位）。
+    expect(typeof 时间.首).toBe("string")
+    expect(时间格式.test(String(时间.首))).toBe(true)
+    expect(时间.末).toBe(时间.首)
+    expect(typeof 点.id).toBe("string")
+  })
+
+  test("右键空白加事件：落点 = 右键点，与工具栏同一个动作", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    右键(画布()!, 321, 234)
+    await flush()
+    const 项 = document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-menu-add-event']")
+    expect(项 !== null).toBe(true)
+    项!.click()
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 点 = 取新节点(写们[0])
+    expect(点.x).toBe(321)
+    expect(点.y).toBe(234)
+    expect(点.来源).toEqual({ kind: "手写" })
+  })
+
+  test("两条入口产出同形节点（除 id / 落点 / 当前时刻外逐键相等）", async () => {
+    const 剪 = (写: 写入参) => {
+      const { id: _id, x: _x, y: _y, 时间: _时间, ...其余 } = 取新节点(写)
+      return 其余
+    }
+
+    const 甲api = 假api()
+    挂上(甲api.api)
+    await flush()
+    document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-toolbar-add-event']")!.click()
+    await flush()
+    await 过防抖()
+    expect(甲api.写们.length).toBe(1)
+    const 甲 = 剪(甲api.写们[0])
+
+    // 新实例：同一条用例里连挂两次会共用 DOM 造出假绿（`#005-03`）。
+    卸下当前实例()
+
+    const 乙api = 假api()
+    挂上(乙api.api)
+    await flush()
+    右键(画布()!, 100, 100)
+    await flush()
+    document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-menu-add-event']")!.click()
+    await flush()
+    await 过防抖()
+    expect(乙api.写们.length).toBe(1)
+    const 乙 = 剪(乙api.写们[0])
+
+    expect(乙).toEqual(甲)
+  })
+})

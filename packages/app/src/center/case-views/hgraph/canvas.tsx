@@ -194,6 +194,11 @@ export interface 画布动作 {
   readonly 切换模式: (模式: 模式) => void
   /** 省略位置 ⇒ 编辑器按画布中心 + 既有节点数做阶梯偏移（R29）。 */
   readonly 加节点: (位置?: { readonly x: number; readonly y: number }) => void
+  /**
+   * 加手写事件（T012 / FR-025）：工具栏与右键空白是**同一个动作**，只差落点
+   * （工具栏省略位置 ⇒ 画布中心；右键传右键点的内容坐标）。
+   */
+  readonly 加事件?: (位置?: { readonly x: number; readonly y: number }) => void
   readonly 删除所选: () => void
   /** `undefined` = 收起改名输入框（Esc / 提交后），不产生操作。 */
   readonly 重命名: (id: string | undefined) => void
@@ -1767,6 +1772,20 @@ export function 画布(props: 画布Props): JSX.Element {
                 }}
               >
                 加节点
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-slot="hgraph-menu-add-event"
+                class={菜单项}
+                onClick={() => {
+                  const 位 = 现()
+                  if (位.类型 !== "空白") return
+                  关闭菜单()
+                  props.动作.加事件?.({ x: 位.内容x, y: 位.内容y })
+                }}
+              >
+                加事件
               </button>
               <button
                 type="button"
