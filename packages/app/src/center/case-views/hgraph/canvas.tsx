@@ -58,6 +58,54 @@ const 节点半径 = 15
 const 拖动阈值 = 3
 
 /**
+ * 事件卡（FR-056）：尺寸**固定 96×34、rx=6**，不做随名伸缩——几何与命中测试都按这个
+ * 固定盒子算，伸缩会让两者一起漂。`data-node-shape="event-card"` 是契约槽位。
+ */
+const 事件卡宽 = 96
+const 事件卡高 = 34
+const 事件卡圆角 = 6
+
+/** 对象类别优先于「类型 → 形状」映射：事件节点一律画事件卡（FR-056）。 */
+const 是事件节点 = (点: 节点) => 点.来源?.kind === "事件"
+
+/** 读保留属性键（`金额` / `时间精度`）；空串按缺失处理，不把空值拼进文案。 */
+const 属性值 = (点: 节点, 键: string): string | undefined => {
+  const 值 = (点.属性 ?? []).find((行) => 行.键 === 键)?.值
+  return typeof 值 === "string" && 值 !== "" ? 值 : undefined
+}
+
+/**
+ * 事件卡第一行：`类型首字 · 金额`；无金额 ⇒ 只显示类型首字（FR-056）。
+ * 首字按码点取（同节点首字：`Array.from`，`slice` 会劈开补充平面字符）。
+ */
+function 事件卡首行(点: 节点): string {
+  const 首字 = Array.from(点.类型 ?? "")[0] ?? ""
+  const 金额 = 属性值(点, "金额")
+  return 金额 === undefined ? 首字 : `${首字} · ${金额}`
+}
+
+/**
+ * 事件卡第二行：`时间.首` 按 `时间精度` 渲染——日 → `MM-DD`；时 → `MM-DD HH时`；
+ * 分 / 未标 → `MM-DD HH:mm`（FR-056）。
+ *
+ * 只切字符串、不走 `Date`：后者会把时间按本地时区挪一遍（同 `format.ts` 的口径），
+ * 卡片上显示的必须就是文件里那个时刻。原文连日期都认不出 ⇒ 原样吐回，不编时刻；
+ * 精度要时分而原文只到日 ⇒ 只出日期（补 `00:00` 等于替数据编一个时刻）。
+ */
+function 事件卡次行(点: 节点): string {
+  const 原文 = (点.时间?.首 ?? "").trim()
+  const 匹配 = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(原文)
+  if (匹配 === null) return 原文
+  const [, , 月, 日, 时, 分] = 匹配
+  const 日期 = `${月}-${日}`
+  const 精度 = 属性值(点, "时间精度")
+  if (精度 === "日") return 日期
+  if (时 === undefined || 分 === undefined) return 日期
+  if (精度 === "时") return `${日期} ${时}时`
+  return `${日期} ${时}:${分}`
+}
+
+/**
  * `多边形` 只读 `x/y`，但入参类型是完整 `位点`（`图节点` + 坐标）；节点组已平移到中心，
  * 这里只需一个原点壳。`graph.tsx` 只加 export、不改签名（`#002-06`：形状映射唯一出处）。
  */
@@ -1305,6 +1353,8 @@ export function 画布(props: 画布Props): JSX.Element {
               const 选中 = () => props.选中.includes(点.id)
               // 形状映射只此一份（`graph.tsx` 的 `形状`，R74/#002-06）。
               const 形 = () => 形状(点.类型 ?? "")
+              // 对象类别 > 类型→形状：事件不进那个映射（FR-056）。
+              const 是事件 = () => 是事件节点(点)
               const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : "var(--v2-background-bg-layer-02)")
               const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : "var(--v2-border-border-strong)")
               const 描边宽 = () => (选中() ? 3 : 1.5)
@@ -1334,6 +1384,43 @@ export function 画布(props: 画布Props): JSX.Element {
                   </Show>
                   {/* 类型用形状 + 首字双通道，颜色不是唯一通道（FR-048）。 */}
                   <Switch fallback={<circle r={节点半径} fill={填充色()} stroke={描边色()} stroke-width={描边宽()} stroke-dasharray={虚线()} data-slot="hgraph-node-shape" />}>
+                    {/* 事件卡（FR-056）：两行文字属卡片自身，所以首字槽由下面的 Show 让开。 */}
+                    <Match when={是事件()}>
+                      <g>
+                        <rect
+                          data-slot="hgraph-node-shape"
+                          data-node-shape="event-card"
+                          x={-事件卡宽 / 2}
+                          y={-事件卡高 / 2}
+                          width={事件卡宽}
+                          height={事件卡高}
+                          rx={事件卡圆角}
+                          fill={填充色()}
+                          stroke={描边色()}
+                          stroke-width={描边宽()}
+                          stroke-dasharray={虚线()}
+                        />
+                        <text
+                          data-slot="hgraph-event-card-line1"
+                          text-anchor="middle"
+                          y={-2}
+                          font-size="12"
+                          font-weight="600"
+                          fill="var(--v2-text-text-base)"
+                        >
+                          {事件卡首行(点)}
+                        </text>
+                        <text
+                          data-slot="hgraph-event-card-line2"
+                          text-anchor="middle"
+                          y={11}
+                          font-size="10"
+                          fill="var(--v2-text-text-muted)"
+                        >
+                          {事件卡次行(点)}
+                        </text>
+                      </g>
+                    </Match>
                     <Match when={形() === "rect"}>
                       <rect
                         data-slot="hgraph-node-shape"
@@ -1369,10 +1456,13 @@ export function 画布(props: 画布Props): JSX.Element {
                       />
                     </Match>
                   </Switch>
-                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。 */}
-                  <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
-                    {Array.from(点.类型 ?? "")[0] ?? ""}
-                  </text>
+                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。
+                      事件卡的第一行已含类型首字，圆心的首字槽让开（同一 DOM 结构，不复制分支）。 */}
+                  <Show when={!是事件()}>
+                    <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
+                      {Array.from(点.类型 ?? "")[0] ?? ""}
+                    </text>
+                  </Show>
                   {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
                   <Show when={保留标签().has(点.id)}>
                     <text

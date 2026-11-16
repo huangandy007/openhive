@@ -869,3 +869,89 @@ describe("T008 · 检查器让位：容器缩放比与面板实宽", () => {
     expect(变换()).toBe("translate(-380 0) scale(1)")
   })
 })
+
+// ---------------------------------------------------------------------------
+// T010（FR-056）：事件卡
+// ---------------------------------------------------------------------------
+
+describe("T010 · 事件卡", () => {
+  const 事件节点 = (id: string, 补丁: Partial<节点> = {}): 节点 =>
+    造节点(id, 100, 100, {
+      类型: "转账",
+      来源: { kind: "事件", 实体: `ev_${id}` },
+      时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-04 14:22:00" },
+      属性: [{ 键: "金额", 值: "12000元" }],
+      ...补丁,
+    })
+  const 卡 = (id: string) => 节点组(id)?.querySelector("rect[data-node-shape='event-card']") ?? null
+  /** 事件卡两行文本（按槽位取，不靠 DOM 次序）。 */
+  const 两行 = (id: string) =>
+    ["hgraph-event-card-line1", "hgraph-event-card-line2"].map(
+      (槽) => 节点组(id)!.querySelector(`[data-slot='${槽}']`)?.textContent ?? null,
+    )
+
+  test("#1 渲染 96×34、rx=6 的 event-card（同时挂 hgraph-node-shape 槽）", () => {
+    挂(造图([事件节点("ev")], []))
+    const 卡元素 = 卡("ev")
+    // #013-12：DOM 存在性用布尔比较（`toBeNull()` 在元素存在时也可能绿）。
+    expect(卡元素 === null).toBe(false)
+    expect(卡元素!.getAttribute("data-slot")).toBe("hgraph-node-shape")
+    expect(卡元素!.getAttribute("width")).toBe("96")
+    expect(卡元素!.getAttribute("height")).toBe("34")
+    expect(卡元素!.getAttribute("rx")).toBe("6")
+  })
+
+  test("#2 两行文本逐字：日 / 时 / 分（未标同分）", () => {
+    const 精度 = (值?: string) =>
+      事件节点(`ev${值 ?? "未标"}`, {
+        属性: [
+          { 键: "金额", 值: "12000元" },
+          ...(值 === undefined ? [] : [{ 键: "时间精度", 值 }]),
+        ],
+      })
+    挂(造图([精度("日"), 精度("时"), 精度("分"), 精度()], []))
+    expect(两行("ev日")).toEqual(["转 · 12000元", "03-04"])
+    expect(两行("ev时")).toEqual(["转 · 12000元", "03-04 14时"])
+    expect(两行("ev分")).toEqual(["转 · 12000元", "03-04 14:22"])
+    // 未标 ⇒ 按「分」渲染（同一分支，不是第四种格式）。
+    expect(两行("ev未标")).toEqual(["转 · 12000元", "03-04 14:22"])
+  })
+
+  test("#3 缺金额 ⇒ 第一行只有类型首字", () => {
+    挂(造图([事件节点("ev", { 属性: [{ 键: "时间精度", 值: "分" }] })], []))
+    expect(两行("ev")).toEqual(["转", "03-04 14:22"])
+  })
+
+  test("忽略 样式.形状：样式写 diamond 仍是 event-card 矩形，不画多边形", () => {
+    挂(造图([事件节点("ev", { 样式: { 形状: "diamond" } })], []))
+    // 忽略的证据：形状槽只有一个（那一个 rect），不是 polygon / circle，也没有第二块形状。
+    const 形状们 = [...节点组("ev")!.querySelectorAll("[data-slot='hgraph-node-shape']")]
+    expect(形状们.length).toBe(1)
+    expect(形状们[0].tagName.toLowerCase()).toBe("rect")
+    expect(形状们[0].getAttribute("data-node-shape")).toBe("event-card")
+    expect(节点组("ev")!.querySelectorAll("polygon").length).toBe(0)
+  })
+
+  test("走原节点渲染路径：同一个 hgraph-node 组、同一条标签槽、同一套点选命中", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(
+      造图([
+        事件节点("ev", { 名称: "转给李四", x: 200, y: 150 }),
+        造节点("n2", 500, 150, { 名称: "李四" }),
+      ], []),
+      undefined,
+      { 动作, 坐标换算: () => ({ x: 200, y: 150 }) },
+    )
+    // 同一个节点组容器（不是另起一层/另写一套图层）。
+    expect(全部("[data-slot='hgraph-node']").length).toBe(2)
+    expect(节点组("ev")!.getAttribute("data-node-id")).toBe("ev")
+    // 标签槽与普通节点同一条（`保留标签` + `截断标签`），事件卡不另写标签逻辑。
+    expect(节点组("ev")!.querySelector("[data-slot='hgraph-node-label']")?.textContent).toBe("转给李四")
+    expect(节点组("n2")!.querySelector("[data-slot='hgraph-node-label']")?.textContent).toBe("李四")
+    // 命中：按在卡面 rect 上 ⇒ pointerdown 经 `closest` 读到外层 data-node-id，松手选中它。
+    按一下(卡("ev")!, { x: 200, y: 150 })
+    const 选择 = 计数["选择"] ?? []
+    expect(选择.length).toBe(1)
+    expect(选择[0]).toEqual([["ev"], false])
+  })
+})
