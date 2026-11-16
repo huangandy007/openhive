@@ -469,8 +469,9 @@ const 校验话术: Readonly<Record<校验失败码, string>> = {
     "字段写法不对：来源必须是 {kind: 实体/关系/推断/手写/事件} 的对象，可信度只能是 高/中/低，出处要是数组，证据要是 {关系, 出处} 的数组",
 }
 
-function 拒(code: 校验失败码): 校验结果 {
-  return { ok: false, code, 话术: 校验话术[code] }
+/** 第二参只给「同一个码要分几种拒因」用（T009 的事件闸），缺省走码的通用话术。 */
+function 拒(code: 校验失败码, 话术?: string): 校验结果 {
+  return { ok: false, code, 话术: 话术 ?? 校验话术[code] }
 }
 
 function 非空串(值: unknown): 值 is string {
@@ -568,8 +569,9 @@ function 证据出处们合法(值: unknown): boolean {
  * 写入前的来源硬闸（contracts/hgraph-format §2 / data-model §6 V-04、V-05、V-06、V-09）：
  * **全仓唯一实现**，HTTP 手工、AI 工具、检查器改性质三条入口都只调它，不各写一份。
  *
- * 检查顺序，**首个不通过即返回**：`BAD_SHAPE`（`出处`/`证据` 的形状，随后是 R-F3 的取值）
- * → `FACTS_NEED_SOURCE` → `INFERENCE_NEEDS_BASIS` → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
+ * 检查顺序，**首个不通过即返回**：`BAD_SHAPE`（`出处`/`证据` 的形状，随后是 R-F3 的取值，
+ * 最后是「事件」的两道绑定闸）→ `FACTS_NEED_SOURCE` → `INFERENCE_NEEDS_BASIS`
+ * → `INFERENCE_NEEDS_CONFIDENCE` → `BAD_CITATION`。
  * 形状排最前：它是后两条语义闸的前提（`证据: [null]` 否则能绕过事实闸）。
  * 推断的判据有两处入口、同一组码：`来源.kind = 推断` 与边 `性质 = 推断`（R56：`改字段`
  * 只改性质时不能绕过）。节点、边、文字都能传（`文字` 没有来源字段，天然通过）。
@@ -586,13 +588,23 @@ export function 校验来源(对象: unknown): 校验结果 {
   // R-F3：形状之后、语义闸之前判取值（枚举）——形状是取值的前提，语义闸再压在合法取值上。
   if (!取值合法(视图)) return 拒("BAD_SHAPE")
 
+  const 来源视图 = 是普通对象(视图.来源) ? 视图.来源 : {}
+  // 014 事件来源两道闸（contracts/hgraph-format §2 / FR-017、FR-023）：绑定事件既要有库事件
+  // id（`来源.实体` 复用「所绑库对象 id」槽位 = `case_event.id`，不许存半绑定态），也要有非空
+  // `出处`（无法回指库里原始记录的事件不能上图）。两道都 fail-closed，且**只认 kind = "事件"**
+  // ——手写事件（kind = "手写"）不要求出处；都不要求 `依据`（那是推断的闸）。
+  // 排在事实/推断闸之前：它们是「这块来源自身是否成形」的前提，先于任何依赖来源的语义判定。
+  if (来源视图.kind === "事件") {
+    if (!非空串(来源视图.实体)) return 拒("BAD_SHAPE", "事件必须绑定库事件 id")
+    if (!(Array.isArray(出处) && 出处.length > 0)) return 拒("BAD_SHAPE", "这条事件没有出处，不能上图")
+  }
+
   // 只对边生效：节点没有 `性质` 字段；`事实` 的硬闸只压在标了事实的边上（V-04）。
   if (视图.性质 === "事实" && !(Array.isArray(出处) && 出处.length > 0) && !(Array.isArray(证据) && 证据.length > 0)) {
     return 拒("FACTS_NEED_SOURCE")
   }
 
   // 推断的判据对节点与边一致（data-model §5.1 / V-05、V-06）。`可信度` 的枚举值归上面的取值闸。
-  const 来源视图 = 是普通对象(视图.来源) ? 视图.来源 : {}
   if (来源视图.kind === "推断") {
     if (!非空串(来源视图.依据)) return 拒("INFERENCE_NEEDS_BASIS")
     if (!非空串(视图.可信度)) return 拒("INFERENCE_NEEDS_CONFIDENCE")
