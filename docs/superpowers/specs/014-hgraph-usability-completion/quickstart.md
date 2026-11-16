@@ -110,6 +110,20 @@ bun run lint
 
 补充（quickstart §1 同一条命令里的第 4 个文件，单跑）：`case-hgraph-tools.test.ts` **43 pass / 0 fail**（4.47s）；同目录其余 3 个 `case-hgraph-contract` / `citation-parity` / `whitelist-parity` **24 pass / 0 fail**（6.56s）。后端 7 个 hgraph 测试文件全绿。
 
+### 1b. 终局评审三轮修复后的最终数字（2026-11-17）
+
+上表是 T018 时的快照。整支终局评审判 BLOCK（7 Critical，均为未声明的 spec MUST 缺口），随后按 1a / 1b / 2 三轮修复并定向复核 **PASS（6/6 ADDRESSED）**，最终实测：
+
+| # | 命令 | 最终实际结果 |
+|---|---|---|
+| 1 | `packages/app`：hgraph 目录全量 | **592 pass / 0 fail**，2627 expect，18 文件，120.39s（T018 时 558） |
+| 2 | `packages/opencode`：后端 3 文件 | **118 pass / 0 fail**，541 expect（T018 时 109） |
+| 3 | 根 `bun run typecheck` | **32 successful / 32 total** |
+| 4 | 改动文件 oxlint | **0 error**（467 warnings 为既有风格类） |
+| 5 | `git diff --stat bun.lock` | **空** |
+
+修复轮落点（详见 `.superpowers/sdd/tasks/progress.md`）：角色边生产路径、手写事件九格、事件时间/名称两道闸（服务端唯一 `是事件节点`，手写事件同受约束）、画布 1px 描边与圆角、F2 上移、筛选覆盖层与两浮层 Esc/点外、外环自动类型色与自动档连接数角标（未映射类型回退 `border-strong` 保证可见）、连接/绑定事件操作脚补齐。
+
 ### 2. 缺口表（本机验不了，不假装覆盖）
 
 | # | 项 | 为什么本机验不了 | 怎么验 |
