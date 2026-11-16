@@ -997,6 +997,7 @@ function 事件图(): 图文件 {
           { 键: "金额", 值: "12000元" },
           { 键: "时间精度", 值: "分" },
           { 键: "参与方·付款方", 值: "王*五" },
+          { 键: "用途", 值: "借款" },
         ],
         出处: [],
         时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-04 14:22:00" },
@@ -1035,7 +1036,7 @@ function 事件图(): 图文件 {
         标签: "收款方",
         性质: "推断",
         方向: "有向",
-        来源: { kind: "手写", 依据: "手写事件「转账给李四」的收款方" },
+        来源: { kind: "推断", 依据: "手写事件「转账给李四」的收款方" },
         可信度: "中",
         时间: { 首: "", 末: "" },
       },
@@ -1046,18 +1047,50 @@ function 事件图(): 图文件 {
 describe("检查器 · T011 事件两态与参与方", () => {
   const 输入们 = () => [...document.body.querySelectorAll<HTMLElement>("input[data-slot^='hgraph-field-']")]
 
-  test("手写事件九格有输入框、绑定事件没有；绑定态只留备注/外环可改", () => {
-    // 手写态：名称/类型/细类/出现序都是输入框（九格可编）。
+  test("手写事件九格逐项有可编辑控件（时间/金额/其他/参与方也不缺）", () => {
     挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
-    expect(取("[data-slot='hgraph-field-名称']")?.tagName).toBe("INPUT")
-    expect(取("[data-slot='hgraph-field-类型']")?.tagName).toBe("INPUT")
-    expect(取("[data-slot='hgraph-field-细类']")?.tagName).toBe("INPUT")
-    expect(取("[data-slot='hgraph-field-出现序']")?.tagName).toBe("INPUT")
+    // 名称/类型/细类/备注/出现序（既有）+ 时间首/末 + 金额（final-fix1b）。
+    for (const slot of ["名称", "类型", "细类", "备注", "出现序", "时间首", "时间末", "金额"]) {
+      expect(取(`[data-slot='hgraph-field-${slot}']`)?.tagName).toBe("INPUT")
+    }
+    // 时间精度必须是保留下来的 select，选项只有 日/时/分（它是手写事件判据的键）。
+    const 精度 = 取("[data-slot='hgraph-field-时间精度']") as HTMLSelectElement
+    expect(精度?.tagName).toBe("SELECT")
+    expect(精度.value).toBe("分")
+    expect([...精度.querySelectorAll("option")].map((项) => (项 as HTMLOptionElement).value)).toEqual([
+      "日",
+      "时",
+      "分",
+    ])
+    // 金额写保留属性；其他属性只列非保留键（金额/时间精度/参与方·* 不重复出现）。
+    expect((取("[data-slot='hgraph-field-金额']") as HTMLInputElement).value).toBe("12000元")
+    const 其他键 = [...document.body.querySelectorAll<HTMLInputElement>("[data-slot='hgraph-field-属性键']")].map(
+      (项) => 项.value,
+    )
+    expect(其他键).toEqual(["用途"])
+    expect((取("[data-slot='hgraph-field-属性值']") as HTMLInputElement).value).toBe("借款")
+    expect(取("[data-slot='hgraph-field-属性新增']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-属性删除']") !== null).toBe(true)
+
+    // 参与方：未对上行有「角色 + 名字」两个输入；已对上角色边只读展示。
+    expect((取("[data-slot='hgraph-field-参与方角色']") as HTMLInputElement).value).toBe("付款方")
+    expect((取("[data-slot='hgraph-field-参与方名字']") as HTMLInputElement).value).toBe("王*五")
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    const 已对上 = 行们.find((行) => (行.textContent ?? "").includes("收款方：李四"))
+    expect(已对上 !== undefined).toBe(true)
+    expect(已对上!.querySelectorAll("input").length).toBe(0)
+
     // 手写事件没有可信态控件（data-model §2：手写不写 来源.可信）。
     expect(取("[data-slot='hgraph-field-可信态']") === null).toBe(true)
+    // 只读区标题「来自库快照，请在库中修改」对手写事件为假 ⇒ 不渲染。
+    expect((document.body.textContent ?? "").includes("来自库快照")).toBe(false)
+    // 出处空 ⇒ 明示「手写无出处」，不是 `—`。
+    expect(文本("hgraph-readonly-出处")).toBe("手写无出处")
+    // 操作脚左「看参与方」。
+    expect(取("[data-slot='hgraph-inspector-participants-jump']") !== null).toBe(true)
+  })
 
-    document.body.innerHTML = ""
-    // 绑定态：九格里没有输入框，值仍以只读文本可见。
+  test("绑定事件只有备注/外环可改；只读区保留原文案", () => {
     挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
     // T014 / FR-032 必要更替：外环颜色由自由文本输入框改为预设下拉（不再是 input）。
     expect(输入们().length).toBe(2)
@@ -1068,6 +1101,122 @@ describe("检查器 · T011 事件两态与参与方", () => {
     expect(取("[data-slot='hgraph-field-外环颜色']")?.tagName).toBe("SELECT")
     expect(文本("hgraph-field-名称")).toBe("库转账")
     expect(文本("hgraph-field-类型")).toBe("资金交易")
+    // 绑定事件的九格仍是库快照：只读区保留原文案，且没有手写事件的专用控件。
+    expect((document.body.textContent ?? "").includes("来自库快照，请在库中修改")).toBe(true)
+    expect(取("[data-slot='hgraph-field-时间首']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-参与方名字']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-participants-jump']") === null).toBe(true)
+  })
+
+  test("手写事件时间首/末失焦即存：整对象补丁，另一侧保留", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 首 = 取("[data-slot='hgraph-field-时间首']") as HTMLInputElement
+    首.value = "2026-03-05 08:00"
+    失焦(首)
+    expect(幽.参数.改字段![0]).toEqual([
+      "节点",
+      "ev手写",
+      { 时间: { 首: "2026-03-05 08:00", 末: "2026-03-04 14:22:00" } },
+    ])
+
+    const 末 = 取("[data-slot='hgraph-field-时间末']") as HTMLInputElement
+    末.value = "2026-03-05 09:30"
+    失焦(末)
+    expect(幽.参数.改字段![1]).toEqual([
+      "节点",
+      "ev手写",
+      { 时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-05 09:30" } },
+    ])
+  })
+
+  test("时间精度下拉与金额文本框都写保留属性，且不丢时间精度键", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 精度 = 取("[data-slot='hgraph-field-时间精度']") as HTMLSelectElement
+    选择(精度, "时")
+
+    expect(幽.计数.改字段).toBe(1)
+    const 精度补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(精度补丁.属性.find((项) => 项.键 === "时间精度")).toEqual({ 键: "时间精度", 值: "时" })
+    expect(精度补丁.属性.find((项) => 项.键 === "金额")).toEqual({ 键: "金额", 值: "12000元" })
+
+    const 金额 = 取("[data-slot='hgraph-field-金额']") as HTMLInputElement
+    金额.value = "20000元"
+    失焦(金额)
+    expect(幽.计数.改字段).toBe(2)
+    const 金额补丁 = 幽.参数.改字段![1]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(金额补丁.属性.find((项) => 项.键 === "金额")).toEqual({ 键: "金额", 值: "20000元" })
+    expect(金额补丁.属性.some((项) => 项.键 === "时间精度")).toBe(true)
+  })
+
+  test("其他属性可改、可删、可增；保留键不进入「其他」列表", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 值 = 取("[data-slot='hgraph-field-属性值']") as HTMLInputElement
+    值.value = "还款"
+    失焦(值)
+    const 改后 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(改后.属性.find((项) => 项.键 === "用途")).toEqual({ 键: "用途", 值: "还款" })
+    expect(改后.属性.some((项) => 项.键 === "时间精度")).toBe(true)
+
+    ;(取("[data-slot='hgraph-field-属性删除']") as HTMLButtonElement).click()
+    const 删后 = 幽.参数.改字段![1]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(删后.属性.some((项) => 项.键 === "用途")).toBe(false)
+
+    ;(取("[data-slot='hgraph-field-属性新增']") as HTMLButtonElement).click()
+    const 增后 = 幽.参数.改字段![2]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(增后.属性.length).toBe(5)
+  })
+
+  test("参与方名字失焦 ⇒ 写/更新保留属性 `参与方·<角色>`", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 名字 = 取("[data-slot='hgraph-field-参与方名字']") as HTMLInputElement
+    名字.value = "王五"
+    失焦(名字)
+
+    expect(幽.计数.改字段).toBe(1)
+    const 补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(补丁.属性.find((项) => 项.键 === "参与方·付款方")).toEqual({ 键: "参与方·付款方", 值: "王五" })
+  })
+
+  test("新建参与方行（角色 + 名字）⇒ 追加对应保留属性", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 角色 = 取("[data-slot='hgraph-field-参与方新角色']") as HTMLInputElement
+    角色.value = "经手人"
+    角色.dispatchEvent(new Event("input", { bubbles: true }))
+    const 名字 = 取("[data-slot='hgraph-field-参与方新名字']") as HTMLInputElement
+    名字.value = "赵六"
+    名字.dispatchEvent(new Event("input", { bubbles: true }))
+    失焦(名字)
+
+    expect(幽.计数.改字段).toBe(1)
+    const 补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(补丁.属性.find((项) => 项.键 === "参与方·经手人")).toEqual({ 键: "参与方·经手人", 值: "赵六" })
+  })
+
+  test("操作脚「看参与方」⇒ 参与方段高亮（等价可见动作）", () => {
+    挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    ;(取("[data-slot='hgraph-inspector-participants-jump']") as HTMLButtonElement).click()
+    expect(取("[data-slot='hgraph-event-participants']")!.getAttribute("data-highlight")).toBe("true")
+  })
+
+  test("参与方行只认角色边：事件→实体手写边（标签空）不产生参与方行", () => {
+    const 图 = 事件图()
+    图.边.push({
+      id: "h1",
+      从: "ev手写",
+      到: "李四",
+      标签: "",
+      性质: "推断",
+      方向: "有向",
+      来源: { kind: "手写", 依据: "随手画" },
+      可信度: "中",
+      时间: { 首: "", 末: "" },
+    })
+    挂检查器({ 选中: ["ev手写"], 文档: 图 })
+
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    expect(行们.length).toBe(2)
+    // 手写边标签为空：若被误当成参与方行，该行文本恰是「：李四」（无角色名）。
+    expect(行们.some((行) => (行.textContent ?? "").trim() === "：李四")).toBe(false)
   })
 
   test("绑定事件无解绑控件（态只在加入时变化，无反向入口）", () => {
@@ -1084,27 +1233,34 @@ describe("检查器 · T011 事件两态与参与方", () => {
     expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
   })
 
-  test("参与方行 = 角色：名字；未对上档案 ⇒ 灰字「未对上档案」且不调动作表", () => {
+  test("已对上档案只读 `角色：名字`；未对上档案是可编的角色 + 名字（灰字保留）", () => {
     const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
 
     expect(取("[data-slot='hgraph-event-participants']") === null).toBe(false)
     const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
     expect(行们.length).toBe(2)
 
-    // 已对上档案（角色边）：只有 `角色：名字`，不带灰字。
+    // 已对上档案（角色边）：只有 `角色：名字`，不带输入框、不带灰字。
     const 已对上 = 行们.find((行) => (行.textContent ?? "").includes("收款方：李四"))
     expect(已对上 === undefined).toBe(false)
+    expect(已对上!.querySelectorAll("input").length).toBe(0)
     expect((已对上?.textContent ?? "").includes("未对上档案")).toBe(false)
 
-    // 未对上档案（保留属性 `参与方·<角色>` 的原文）：灰字逐字「未对上档案」。
-    const 未对上 = 行们.find((行) => (行.textContent ?? "").includes("付款方：王*五"))
+    // 未对上档案（保留属性 `参与方·<角色>`）：角色 + 名字两个可编输入，灰字逐字保留。
+    const 未对上 = 行们.find((行) => {
+      const 角色 = 行.querySelector<HTMLInputElement>("[data-slot='hgraph-field-参与方角色']")
+      return 角色?.value === "付款方"
+    })
     expect(未对上 === undefined).toBe(false)
-    const 灰 = 未对上?.querySelector<HTMLElement>("[data-slot='hgraph-event-participant-unmatched']")
+    const 名字 = 未对上!.querySelector<HTMLInputElement>("[data-slot='hgraph-field-参与方名字']")
+    expect(名字 === null).toBe(false)
+    expect(名字!.value).toBe("王*五")
+    const 灰 = 未对上!.querySelector<HTMLElement>("[data-slot='hgraph-event-participant-unmatched']")
     expect(灰 === null).toBe(false)
     expect(灰?.textContent?.trim()).toBe("未对上档案")
     expect(灰?.className).toContain("text-v2-text-text-muted")
 
-    // 不建节点、不改字段：参与方段只读文档。
+    // 不建节点、不改字段：仅渲染不会写。
     expect(幽.计数.加节点 ?? 0).toBe(0)
     expect(幽.计数.改字段 ?? 0).toBe(0)
   })

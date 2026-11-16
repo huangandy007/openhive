@@ -58,9 +58,10 @@
  *   `外环色表` 的 7 个预设 + 「自动」（自动 = 删键）。
  */
 import { For, Show, createEffect, createSignal, type JSX } from "solid-js"
-import type { 图文件, 节点, 边, 文字 } from "./file"
+import { 是事件节点, type 图文件, type 节点, type 边, type 文字, type 属性 } from "./file"
+import { 是角色边 } from "./edge"
 import { 外环色表, 文字色表, type 画布动作 } from "./canvas"
-import type { 等距轴, 对齐边 } from "./geometry"
+import { 等距们, 对齐们 } from "./geometry"
 import { 解析出处 } from "./citation"
 import { 填充, 面板宽, 面板边距 } from "../graph"
 
@@ -111,9 +112,6 @@ export interface 检查器Props {
   /** 收起状态变化（点窄条 / 收起按钮 / `I` 展开）。缺省 = 只读展示，不可收起。 */
   readonly 收起变化?: (收起: boolean) => void
 }
-
-const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
-const 等距们: readonly 等距轴[] = ["水平", "垂直"]
 
 const 行 = "flex items-start gap-2 py-0.5"
 const 标签 = "w-14 shrink-0 text-12-regular text-v2-text-text-muted"
@@ -180,12 +178,15 @@ interface 参与方行 {
   readonly 角色: string
   readonly 名字: string
   readonly 已对上: boolean
+  /** 未对上行对应的保留属性键（编辑时要按原键定位；对上行没有）。 */
+  readonly 原键?: string
 }
 
 /**
- * 参与方行（T011）：已对上档案 = 事件节点出发的角色边（标签即角色，名字取对端节点）；
- * 未对上档案 = 保留属性 `参与方·<角色>` 的原文（该行不产生节点，只在这里展示）。
+ * 参与方行（T011）：已对上档案 = 事件节点出发的**角色边**（`是角色边`，标签即角色，
+ * 名字取对端节点）；未对上档案 = 保留属性 `参与方·<角色>` 的原文（该行不产生节点）。
  *
+ * 不再把所有出边都当参与方：普通手写边 / 事件→事件边不在这里出现（final-fix1b I3）。
  * **不自建角色词表**：角色名一律取自数据——边标签 / 属性键后缀，生产链路由内核
  * `case-card-template.ts:34` 的 `角色们` 产出（`case_event_participant.role` 与 T012 的角色边）。
  * 前端只做展示，不复制第二份词表。
@@ -195,7 +196,9 @@ function 参与方行们(点: 节点, 文档: 图文件): 参与方行[] {
   // 已对上：按 case-mcp-tools.ts:984 的口径，参与者表行在前（按 ordinal），未对上原文在后。
   for (const 条 of 文档.边) {
     if (条.从 !== 点.id) continue
-    const 名字 = 文档.节点.find((候) => 候.id === 条.到)?.名称 ?? ""
+    const 终点 = 文档.节点.find((候) => 候.id === 条.到)
+    if (!是角色边(条, 点, 终点)) continue
+    const 名字 = 终点?.名称 ?? ""
     if (名字 === "") continue
     行们.push({ 角色: 条.标签, 名字, 已对上: true })
   }
@@ -203,9 +206,32 @@ function 参与方行们(点: 节点, 文档: 图文件): 参与方行[] {
     if (!属性项.键.startsWith(参与方键前缀)) continue
     const 角色 = 属性项.键.slice(参与方键前缀.length)
     if (角色 === "") continue
-    行们.push({ 角色, 名字: 属性项.值, 已对上: false })
+    行们.push({ 角色, 名字: 属性项.值, 已对上: false, 原键: 属性项.键 })
   }
   return 行们
+}
+
+/**
+ * 手写事件 = 事件节点（`是事件节点` 唯一判据）且来源手写。绑定库事件（`来源.kind = 事件`）
+ * 仍走只读；普通手写节点不是事件，不渲染事件九格。
+ */
+const 手写事件 = (点: 节点): boolean => 是事件节点(点) && 点.来源?.kind === "手写"
+
+/** 事件九格里的保留属性键；它们不进入「其他」列表（FR-036）。 */
+const 是保留属性键 = (键: string): boolean =>
+  键 === "金额" || 键 === "时间精度" || 键.startsWith(参与方键前缀)
+
+/** 「其他」属性 = 除保留键外的全部属性，顺序沿用原文。 */
+const 其他属性们 = (点: 节点): 属性[] => (点.属性 ?? []).filter((项) => !是保留属性键(项.键))
+
+/** 按唯一键去重：同一键只保留一项（serde 端属性按 `键` 配对，重复键会抢同一行）。 */
+function 同键去重(属性们: readonly 属性[]): 属性[] {
+  const 已见 = new Set<string>()
+  return 属性们.filter((项) => {
+    if (已见.has(项.键)) return false
+    已见.add(项.键)
+    return true
+  })
 }
 
 const 出处文本 = (点: 节点) => ((点.出处 ?? []).length === 0 ? "—" : (点.出处 ?? []).join("、"))
@@ -307,7 +333,10 @@ export function 检查器(props: 检查器Props): JSX.Element {
   }
   const 出处展示 = (点: 节点) => {
     const 文 = 出处文本(点)
-    return 文 === "—" && 已绑库() ? "未取到出处" : 文
+    if (文 !== "—") return 文
+    if (已绑库()) return "未取到出处"
+    // FR-036：手写事件没有出处不是「缺失」，明示「手写无出处」而不是 `—`。
+    return 手写事件(点) ? "手写无出处" : 文
   }
 
   const 提交 = (点: 节点, 键: "名称" | "类型" | "细类" | "备注", 新值: string) => {
@@ -335,6 +364,139 @@ export function 检查器(props: 检查器Props): JSX.Element {
     if (颜色 === 点.外环?.颜色) return
     props.动作表.改字段("节点", 点.id, 外环补丁(点.外环?.档, 颜色))
   }
+
+  // -------------------------------------------------------------------------
+  // final-fix1b C2 · 手写事件九格（时间 / 金额 / 其他 / 参与方）
+  // -------------------------------------------------------------------------
+
+  /** 属性整数组只走一个补丁出口；值没变不发写（与 `字段补丁` 同口径）。 */
+  const 提交属性们 = (点: 节点, 属性们: readonly 属性[]) => {
+    const 去重 = 同键去重(属性们)
+    if (JSON.stringify(去重) === JSON.stringify(点.属性 ?? [])) return
+    props.动作表.改字段("节点", 点.id, { 属性: 去重.length === 0 ? null : 去重 })
+  }
+
+  /** `值 === undefined` ⇒ 删键；否则有则改、无则追加（保留原有 `出处` 等未知字段）。 */
+  const 改写属性 = (点: 节点, 键: string, 值: string | undefined): 属性[] => {
+    const 原 = 点.属性 ?? []
+    if (值 === undefined) return 原.filter((项) => 项.键 !== 键)
+    if (原.some((项) => 项.键 === 键)) return 原.map((项) => (项.键 === 键 ? { ...项, 值 } : 项))
+    return [...原, { 键, 值 }]
+  }
+
+  const 属性值 = (点: 节点, 键: string) => (点.属性 ?? []).find((项) => 项.键 === 键)?.值 ?? ""
+
+  const 提交时间 = (点: 节点, 键: "首" | "末", 值: string) => {
+    if (值 === (点.时间?.[键] ?? "")) return
+    // 时间是整对象（后端浅层替换）：另一侧一起带上。
+    props.动作表.改字段("节点", 点.id, { 时间: { ...点.时间, [键]: 值 } })
+  }
+
+  /** 时间精度是事件判据键：改值但**不删键**；缺键时补上（值域只有 日/时/分）。 */
+  const 提交时间精度 = (点: 节点, 值: string) => {
+    if (值 !== "日" && 值 !== "时" && 值 !== "分") return
+    if (属性值(点, "时间精度") === 值) return
+    提交属性们(点, 改写属性(点, "时间精度", 值))
+  }
+
+  /** 金额是保留属性（如 `12000元`）：清空 = 删该属性。 */
+  const 提交金额 = (点: 节点, 原值: string) => {
+    const 值 = 原值.trim()
+    if (值 === 属性值(点, "金额")) return
+    提交属性们(点, 改写属性(点, "金额", 值 === "" ? undefined : 值))
+  }
+
+  const 提交其他键 = (点: 节点, 原键: string, 原值: string) => {
+    const 新键 = 原值.trim()
+    if (新键 === "" || 新键 === 原键) return
+    // fail-closed：保留键 / 已有同名键都不写，避免把两条属性抢到同一行。
+    if (是保留属性键(新键) || (点.属性 ?? []).some((项) => 项.键 === 新键)) return
+    提交属性们(
+      点,
+      (点.属性 ?? []).map((项) => (项.键 === 原键 ? { ...项, 键: 新键 } : 项)),
+    )
+  }
+
+  const 提交其他值 = (点: 节点, 键: string, 原值: string) => {
+    if (原值 === 属性值(点, 键)) return
+    提交属性们(
+      点,
+      (点.属性 ?? []).map((项) => (项.键 === 键 ? { ...项, 值: 原值 } : 项)),
+    )
+  }
+
+  const 删除其他 = (点: 节点, 键: string) =>
+    提交属性们(
+      点,
+      (点.属性 ?? []).filter((项) => 项.键 !== 键),
+    )
+
+  /** 增一行：用不和保留键/已有键冲突的占位名，用户再改键与值。 */
+  const 新增其他 = (点: 节点) => {
+    const 已有 = new Set((点.属性 ?? []).map((项) => 项.键))
+    let 键 = "新属性"
+    let 序 = 2
+    while (已有.has(键) || 是保留属性键(键)) 键 = `新属性${序++}`
+    提交属性们(点, [...(点.属性 ?? []), { 键, 值: "" }])
+  }
+
+  const 提交参与方名字 = (点: 节点, 行: 参与方行, 原值: string) => {
+    if (行.原键 === undefined) return
+    const 名字 = 原值.trim()
+    if (名字 === "") {
+      提交属性们(
+        点,
+        (点.属性 ?? []).filter((项) => 项.键 !== 行.原键),
+      )
+      return
+    }
+    if (名字 === (点.属性 ?? []).find((项) => 项.键 === 行.原键)?.值) return
+    提交属性们(
+      点,
+      (点.属性 ?? []).map((项) => (项.键 === 行.原键 ? { ...项, 值: 名字 } : 项)),
+    )
+  }
+
+  const 提交参与方角色 = (点: 节点, 行: 参与方行, 原值: string) => {
+    if (行.原键 === undefined) return
+    const 角色 = 原值.trim()
+    if (角色 === "") return
+    const 新键 = `${参与方键前缀}${角色}`
+    if (新键 === 行.原键) return
+    if ((点.属性 ?? []).some((项) => 项.键 === 新键)) return
+    提交属性们(
+      点,
+      (点.属性 ?? []).map((项) => (项.键 === 行.原键 ? { ...项, 键: 新键 } : 项)),
+    )
+  }
+
+  /** 新参与方行：角色与名字都非空才追加保留属性；空名字不产生空行。 */
+  const 提交新参与方 = (点: 节点, 角色原值: string, 名字原值: string) => {
+    const 角色 = 角色原值.trim()
+    const 名字 = 名字原值.trim()
+    if (角色 === "" || 名字 === "") return
+    const 键 = `${参与方键前缀}${角色}`
+    if ((点.属性 ?? []).some((项) => 项.键 === 键)) return
+    提交属性们(点, [...(点.属性 ?? []), { 键, 值: 名字 }])
+  }
+
+  const [参与方高亮, set参与方高亮] = createSignal(false)
+  const [新参与方角色, set新参与方角色] = createSignal("")
+  const [新参与方名字, set新参与方名字] = createSignal("")
+  let 参与方段: HTMLElement | undefined
+  /** 操作脚「看参与方」：滚到参与方段并高亮（happy-dom 无布局时只落高亮）。 */
+  const 看参与方 = () => {
+    set参与方高亮(true)
+    if (参与方段 !== undefined && typeof 参与方段.scrollIntoView === "function") {
+      参与方段.scrollIntoView({ block: "center" })
+    }
+  }
+  createEffect(() => {
+    单个()?.id
+    set参与方高亮(false)
+    set新参与方角色("")
+    set新参与方名字("")
+  })
 
   /** 就地提示绑定到节点 id + 提示槽：换选中后不把上一条的提示挂在新节点上。 */
   type 节点提示项 = { readonly id: string; readonly 槽: string; readonly 文本: string }
@@ -851,6 +1013,94 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   </button>
                 </div>
               </Show>
+              {/* final-fix1b C2 / FR-036：手写事件九格——时间 / 精度 / 金额 / 其他属性。 */}
+              <Show when={手写事件(点())}>
+                <div class={行}>
+                  <span class={标签}>时间</span>
+                  <input
+                    data-slot="hgraph-field-时间首"
+                    aria-label="时间首"
+                    class={输入}
+                    value={点().时间?.首 ?? ""}
+                    onBlur={(事件) => 提交时间(点(), "首", 事件.currentTarget.value)}
+                  />
+                  <input
+                    data-slot="hgraph-field-时间末"
+                    aria-label="时间末"
+                    class={输入}
+                    value={点().时间?.末 ?? ""}
+                    onBlur={(事件) => 提交时间(点(), "末", 事件.currentTarget.value)}
+                  />
+                </div>
+                <div class={行}>
+                  <span class={标签}>精度</span>
+                  <select
+                    data-slot="hgraph-field-时间精度"
+                    aria-label="时间精度"
+                    class={输入}
+                    value={属性值(点(), "时间精度") || "分"}
+                    onChange={(事件) => 提交时间精度(点(), 事件.currentTarget.value)}
+                  >
+                    <option value="日">日</option>
+                    <option value="时">时</option>
+                    <option value="分">分</option>
+                  </select>
+                </div>
+                <div class={行}>
+                  <span class={标签}>金额</span>
+                  <input
+                    data-slot="hgraph-field-金额"
+                    aria-label="金额"
+                    class={输入}
+                    placeholder="如 12000元"
+                    value={属性值(点(), "金额")}
+                    onBlur={(事件) => 提交金额(点(), 事件.currentTarget.value)}
+                  />
+                </div>
+                <div class={行}>
+                  <span class={标签}>其他</span>
+                  <div class="flex min-w-0 flex-1 flex-col gap-1">
+                    <For each={其他属性们(点())}>
+                      {(属性项) => (
+                        <div data-slot="hgraph-field-属性行" class="flex min-w-0 items-center gap-1">
+                          <input
+                            data-slot="hgraph-field-属性键"
+                            aria-label="属性键"
+                            class={输入}
+                            value={属性项.键}
+                            onBlur={(事件) => 提交其他键(点(), 属性项.键, 事件.currentTarget.value)}
+                          />
+                          <input
+                            data-slot="hgraph-field-属性值"
+                            aria-label="属性值"
+                            class={输入}
+                            value={属性项.值}
+                            onBlur={(事件) => 提交其他值(点(), 属性项.键, 事件.currentTarget.value)}
+                          />
+                          <button
+                            type="button"
+                            data-slot="hgraph-field-属性删除"
+                            aria-label="删除属性"
+                            class={按钮}
+                            onClick={() => 删除其他(点(), 属性项.键)}
+                          >
+                            删
+                          </button>
+                        </div>
+                      )}
+                    </For>
+                    <button
+                      type="button"
+                      data-slot="hgraph-field-属性新增"
+                      aria-label="新增属性"
+                      class={按钮}
+                      onClick={() => 新增其他(点())}
+                    >
+                      加属性
+                    </button>
+                  </div>
+                </div>
+              </Show>
               <div class={行}>
                 <label class={标签} for="hgraph-field-备注">
                   备注
@@ -924,14 +1174,17 @@ export function 检查器(props: 检查器Props): JSX.Element {
               data-slot="hgraph-inspector-readonly"
               class="flex flex-col rounded border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-2"
             >
-              <p
-                data-slot="hgraph-inspector-readonly-lock"
-                title="来自库快照，请在库中修改"
-                class="flex items-center gap-1 py-0.5 text-12-regular text-v2-text-text-muted"
-              >
-                <span aria-hidden="true">🔒</span>
-                <span>来自库快照，请在库中修改</span>
-              </p>
+              {/* final-fix1b C2：手写事件不是库快照，不渲染「来自库快照」标题。 */}
+              <Show when={!手写事件(点())}>
+                <p
+                  data-slot="hgraph-inspector-readonly-lock"
+                  title="来自库快照，请在库中修改"
+                  class="flex items-center gap-1 py-0.5 text-12-regular text-v2-text-text-muted"
+                >
+                  <span aria-hidden="true">🔒</span>
+                  <span>来自库快照，请在库中修改</span>
+                </p>
+              </Show>
               <div class={行}>
                 <span class={标签}>来源</span>
                 <span data-slot="hgraph-readonly-来源" class={值样式}>
@@ -991,19 +1244,48 @@ export function 检查器(props: 检查器Props): JSX.Element {
               </div>
             </section>
 
-            {/* T011：参与方段。已对上档案 = 角色边；未对上 = 保留属性原文（不建节点）。 */}
-            <Show when={参与方行们(点(), props.文档).length > 0}>
+            {/*
+              T011：参与方段。已对上档案 = 角色边；未对上 = 保留属性原文（不建节点）。
+              final-fix1b C2：手写事件的未对上行改为角色 + 名字输入（失焦写保留属性）；
+              已对上角色边仍只读展示。手写事件没有参与方行时也保留段（操作脚要能跳过来）。
+            */}
+            <Show when={参与方行们(点(), props.文档).length > 0 || 手写事件(点())}>
               <section
+                ref={(元素) => {
+                  参与方段 = 元素
+                }}
                 data-slot="hgraph-event-participants"
+                data-highlight={参与方高亮() ? "true" : undefined}
                 class="flex flex-col border-t border-v2-border-border-muted pt-1"
+                classList={{ "bg-v2-background-bg-layer-01": 参与方高亮() }}
               >
                 <p class="text-12-regular text-v2-text-text-muted">参与方</p>
                 <For each={参与方行们(点(), props.文档)}>
                   {(参与行) => (
                     <div data-slot="hgraph-event-participant-row" class={行}>
-                      <span class={值样式}>
-                        {参与行.角色}：{参与行.名字}
-                      </span>
+                      <Show
+                        when={手写事件(点()) && !参与行.已对上}
+                        fallback={
+                          <span class={值样式}>
+                            {参与行.角色}：{参与行.名字}
+                          </span>
+                        }
+                      >
+                        <input
+                          data-slot="hgraph-field-参与方角色"
+                          aria-label="参与方角色"
+                          class={输入}
+                          value={参与行.角色}
+                          onBlur={(事件) => 提交参与方角色(点(), 参与行, 事件.currentTarget.value)}
+                        />
+                        <input
+                          data-slot="hgraph-field-参与方名字"
+                          aria-label="参与方名字"
+                          class={输入}
+                          value={参与行.名字}
+                          onBlur={(事件) => 提交参与方名字(点(), 参与行, 事件.currentTarget.value)}
+                        />
+                      </Show>
                       <Show when={!参与行.已对上}>
                         <span
                           data-slot="hgraph-event-participant-unmatched"
@@ -1015,6 +1297,27 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </div>
                   )}
                 </For>
+                <Show when={手写事件(点())}>
+                  <div data-slot="hgraph-event-participant-new" class={行}>
+                    <input
+                      data-slot="hgraph-field-参与方新角色"
+                      aria-label="新参与方角色"
+                      placeholder="角色"
+                      class={输入}
+                      value={新参与方角色()}
+                      onInput={(事件) => set新参与方角色(事件.currentTarget.value)}
+                    />
+                    <input
+                      data-slot="hgraph-field-参与方新名字"
+                      aria-label="新参与方名字"
+                      placeholder="名字"
+                      class={输入}
+                      value={新参与方名字()}
+                      onInput={(事件) => set新参与方名字(事件.currentTarget.value)}
+                      onBlur={(事件) => 提交新参与方(点(), 新参与方角色(), 事件.currentTarget.value)}
+                    />
+                  </div>
+                </Show>
               </section>
             </Show>
 
@@ -1464,6 +1767,19 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   data-slot="hgraph-inspector-actions"
                   class="flex shrink-0 items-center justify-between gap-1 border-t border-v2-border-border-muted p-2"
                 >
+                  {/* final-fix1b C2：手写事件操作脚左「看参与方」（滚到参与方段并高亮）。 */}
+                  <Show when={单个() !== undefined && 手写事件(单个()!)}>
+                    <button
+                      type="button"
+                      data-slot="hgraph-inspector-participants-jump"
+                      aria-label="看参与方"
+                      title="看参与方"
+                      class={按钮}
+                      onClick={看参与方}
+                    >
+                      看参与方
+                    </button>
+                  </Show>
                   <Show when={单个() !== undefined}>
                     <button
                       type="button"

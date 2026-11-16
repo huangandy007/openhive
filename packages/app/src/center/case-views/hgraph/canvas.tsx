@@ -28,7 +28,7 @@
  * `#006-06`）。因此「屏幕坐标 → 画布坐标」是入参 `坐标换算`；默认实现读容器矩形 +
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 边线型 } from "./edge"
 import {
@@ -377,6 +377,12 @@ export interface 画布Props {
    * 省略时提示只报条数、不渲染恢复按钮（导出 / 片段渲染）。
    */
   readonly 恢复强度?: () => void
+  /**
+   * 视口中心读取（FR-025 / final-fix1b I1）：画布把闭包交给外壳，外壳点「加事件」时
+   * 才能把**当前视口中心**换算成内容坐标。视口仍只归画布持有；这里只注册只读函数，
+   * 不改既有视口状态机。省略 = 外壳退回固定画布中心。
+   */
+  readonly 注册视口中心?: (读: () => { readonly x: number; readonly y: number }) => void
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -456,6 +462,19 @@ type 菜单目标 =
 export function 画布(props: 画布Props): JSX.Element {
   let 容器: HTMLDivElement | undefined
   const [视口, set视口] = createSignal<视口变换>({ 缩放: 1, x: 0, y: 0 })
+  /**
+   * 视口中心 = viewBox 中心逆变换回内容坐标（`缩放/x/y` 是画布的 `translate` + `scale`）。
+   * 注册只读闭包给外壳（I1）：不把视口状态提上去，外壳每次点「加事件」都读当前值。
+   */
+  onMount(() => {
+    props.注册视口中心?.(() => {
+      const 视 = 视口()
+      return {
+        x: (画布宽 / 2 - 视.x) / 视.缩放,
+        y: (画布高 / 2 - 视.y) / 视.缩放,
+      }
+    })
+  })
   const [拖影, set拖影] = createSignal<ReadonlyMap<string, { readonly x: number; readonly y: number }>>(new Map())
   const [框, set框] = createSignal<矩形 | undefined>()
   const [连线落点, set连线落点] = createSignal<{ 从: string; x: number; y: number } | undefined>()

@@ -27,6 +27,7 @@ import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 图例应折叠, 命中删除键, 命中重命名键, 构图, 布局目标 } from "./editor"
+import { 角色边 } from "./edge"
 import { 适配视口 } from "./geometry"
 import { 排列模式们, 阶梯位置, type 排列模式 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
@@ -867,6 +868,131 @@ describe("画布 · 模式与选择", () => {
     await 过防抖()
 
     expect(写们.length).toBe(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // FR-027（final-fix1b C1）：事件 → 参与方走生产角色边，不再落手画边
+  // -------------------------------------------------------------------------
+
+  /** 一事件 + 一参与方实体：只有事件节点带 `时间精度`（`是事件节点` 的唯一手写判据）。 */
+  function 事件图(来源: 节点["来源"] = { kind: "手写" }): 图文件 {
+    return {
+      ...一份图(),
+      节点: [
+        造节点("ev1", 100, 100, {
+          名称: "李四向王五转账",
+          属性: [{ 键: "时间精度", 值: "分" }],
+          来源,
+        }),
+        造节点("p1", 200, 100, { 名称: "王五", 来源: { kind: "实体", 实体: "ent-w" } }),
+      ],
+      边: [],
+      文字: [],
+    }
+  }
+
+  /** 拖事件卡到实体，返回浮层与确认按钮；角色输入框由调用方填。 */
+  async function 开角色连线() {
+    ;(取("[data-slot='hgraph-mode-connect']") as HTMLButtonElement).click()
+    await flush()
+    拖(节点组("ev1")!, 100, 100, 200, 100)
+    await 过防抖()
+  }
+
+  function 取新边(写: 写入参) {
+    expect(写.操作.length).toBe(1)
+    const 操作 = 写.操作[0]!
+    expect(操作.操作).toBe("加边")
+    if (操作.操作 !== "加边") throw new Error("不是加边")
+    expect(操作.边.length).toBe(1)
+    return 操作.边[0]!
+  }
+
+  test("事件卡拖到实体 ⇒ 浮层收「角色」必填，确认落角色边（固定依据 / 实线）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 事件图())
+    await flush()
+    await 开角色连线()
+
+    // 落下仍不写盘（R-F1）；依据/标签换成角色，用户不能自填依据。
+    expect(写们.length).toBe(0)
+    expect(取("[data-slot='hgraph-connect-basis']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-connect-label']") === null).toBe(true)
+    const 角色 = 取("[data-slot='hgraph-connect-role']") as HTMLInputElement
+    expect(角色 !== null).toBe(true)
+    expect(角色.getAttribute("aria-label")).toBe("角色")
+    expect(角色.getAttribute("placeholder")).toBe("收款方")
+
+    const 确认 = 取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement
+    expect(确认.disabled).toBe(true)
+    角色.value = "收款方"
+    角色.dispatchEvent(new Event("input", { bubbles: true }))
+    const 可信度 = 取("[data-slot='hgraph-connect-confidence']") as HTMLSelectElement
+    可信度.value = "高"
+    可信度.dispatchEvent(new Event("change", { bubbles: true }))
+    await flush()
+    expect(确认.disabled).toBe(false)
+
+    确认.click()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 边 = 取新边(写们[0]!)
+    expect(边.从).toBe("ev1")
+    expect(边.到).toBe("p1")
+    expect(边.标签).toBe("收款方")
+    expect(边.性质).toBe("推断")
+    expect(边.来源).toEqual({ kind: "推断", 依据: "手写事件「李四向王五转账」的收款方" })
+    expect(边.可信度).toBe("高")
+
+    // 渲染为实线（角色边判据与 `边线型` 同源）：没有 stroke-dasharray。
+    const 线 = document.body.querySelector("[data-slot='hgraph-edge-line']")
+    expect(线 !== null).toBe(true)
+    expect(线!.getAttribute("stroke-dasharray") === null).toBe(true)
+    expect(文案("hgraph-edge-label")).toBe("收款方")
+  })
+
+  test("库事件拖到实体 ⇒ 依据 = `库事件 <id> 的<角色>`", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api, 事件图({ kind: "事件", 实体: "ev-42" }))
+    await flush()
+    await 开角色连线()
+
+    const 角色 = 取("[data-slot='hgraph-connect-role']") as HTMLInputElement
+    角色.value = "收款方"
+    角色.dispatchEvent(new Event("input", { bubbles: true }))
+    await flush()
+    ;(取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement).click()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 边 = 取新边(写们[0]!)
+    expect(边.来源).toEqual({ kind: "推断", 依据: "库事件 ev-42 的收款方" })
+    expect(边.标签).toBe("收款方")
+  })
+
+  test("实体 → 实体等非事件起点仍走手画边（收依据 + 标签）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    ;(取("[data-slot='hgraph-mode-connect']") as HTMLButtonElement).click()
+    await flush()
+    拖(节点组("n1")!, 100, 100, 200, 100)
+    await flush()
+
+    expect(取("[data-slot='hgraph-connect-role']") === null).toBe(true)
+    const 依据 = 取("[data-slot='hgraph-connect-basis']") as HTMLInputElement
+    expect(依据 !== null).toBe(true)
+    依据.value = "两人同住"
+    依据.dispatchEvent(new Event("input", { bubbles: true }))
+    await flush()
+    ;(取("[data-slot='hgraph-connect-ok']") as HTMLButtonElement).click()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 边 = 取新边(写们[0]!)
+    expect(边.来源).toEqual({ kind: "手写", 依据: "两人同住" })
   })
 
   test("拖空白（无 Shift）框选：命中圆圈内的普通节点，锁定节点不被命中", async () => {
@@ -5345,7 +5471,7 @@ describe("T012 · 加事件两入口", () => {
 
   const 时间格式 = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/
 
-  test("工具栏加事件：落点 = 视口中心（阶梯位置）、写盘恰好 1 个 `加节点` 批次", async () => {
+  test("工具栏加事件：落点 = 当前视口中心（内容坐标）、写盘恰好 1 个 `加节点` 批次", async () => {
     const { api, 写们 } = 假api()
     挂上(api)
     await flush()
@@ -5358,10 +5484,9 @@ describe("T012 · 加事件两入口", () => {
 
     expect(写们.length).toBe(1)
     const 点 = 取新节点(写们[0])
-    // 视口（viewBox 760×680）中心 + R29 阶梯偏移；夹具 3 颗节点 ⇒ 第 3 个落点。
-    const 中心 = 阶梯位置(3)
-    expect(点.x).toBe(中心.x)
-    expect(点.y).toBe(中心.y)
+    // 未平移：视口（viewBox 760×680）中心就是内容坐标 (380, 340)。不是 `阶梯位置`。
+    expect(点.x).toBe(380)
+    expect(点.y).toBe(340)
     expect(点.来源).toEqual({ kind: "手写" })
     expect(点.名称).toBe("新事件")
     expect(点.类型).toBe("未分类")
@@ -5376,6 +5501,30 @@ describe("T012 · 加事件两入口", () => {
     // 手写事件靠 `时间精度` 被识别为事件卡（T012 裁定一）；值域只有 日/时/分。
     expect(点.属性).toEqual([{ 键: "时间精度", 值: "分" }])
     expect(typeof 点.id).toBe("string")
+  })
+
+  test("工具栏加事件：视口平移后落点 = 平移后的视口中心（不是固定画布中心）", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+
+    // 空格 + 拖 (10,10)→(60,60)：视口平移 (+50,+50)（注入的坐标换算是恒等映射）。
+    按键(画布()!, { key: " " })
+    拖(画布()!, 10, 10, 60, 60)
+    await flush()
+    expect(画布()!.querySelector("[data-slot='hgraph-viewport']")!.getAttribute("transform")).toBe(
+      "translate(50 50) scale(1)",
+    )
+
+    document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-toolbar-add-event']")!.click()
+    await flush()
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    const 点 = 取新节点(写们[0])
+    // (760/2 - 50, 680/2 - 50) = (330, 290)：视口左上角进内容 50px。
+    expect(点.x).toBe(330)
+    expect(点.y).toBe(290)
   })
 
   test("右键空白加事件：落点 = 右键点，与工具栏同一个动作", async () => {
@@ -5428,6 +5577,72 @@ describe("T012 · 加事件两入口", () => {
     const 乙 = 剪(乙api.写们[0])
 
     expect(乙).toEqual(甲)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// final-fix1b I2 · 手写事件改名后角色边依据同步
+// ---------------------------------------------------------------------------
+
+describe("final-fix1b I2 · 改名同步角色边依据", () => {
+  test("检查器改名称 ⇒ 同一批次重写出发角色边依据；一次撤销两处一起撤回", async () => {
+    const 事件 = 造节点("ev1", 100, 100, {
+      名称: "旧名称",
+      来源: { kind: "手写" },
+      属性: [{ 键: "时间精度", 值: "分" }],
+    })
+    const 参与 = 造节点("p1", 200, 100, { 名称: "王五", 来源: { kind: "实体", 实体: "ent-w" } })
+    const 图: 图文件 = { ...一份图(), 节点: [事件, 参与], 边: [角色边(事件, "p1", "收款方", "中", "e1")], 文字: [] }
+
+    const { api, 写们 } = 假api()
+    挂上(api, 图)
+    await flush()
+
+    const 取线 = () => document.body.querySelector("[data-slot='hgraph-edge-line']")
+    expect(取线() !== null).toBe(true)
+    expect(取线()!.getAttribute("stroke-dasharray") === null).toBe(true)
+
+    点选("ev1", 100, 100)
+    await flush()
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    expect(输入.value).toBe("旧名称")
+    输入.value = "新名称"
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      {
+        操作: "改字段",
+        目标: [
+          { 类别: "节点", id: "ev1", 补丁: { 名称: "新名称" } },
+          {
+            类别: "边",
+            id: "e1",
+            补丁: { 来源: { kind: "推断", 依据: "手写事件「新名称」的收款方" } },
+          },
+        ],
+      },
+    ])
+    // 依据更新后仍被判为角色边（实线），不会静默降级成虚线。
+    expect(取线()!.getAttribute("stroke-dasharray") === null).toBe(true)
+
+    // 一次撤销把改名与依据重写一起撤回：同一条逆操作、两个目标。
+    ;(取("[data-slot='hgraph-undo']") as HTMLButtonElement).click()
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.操作.length).toBe(1)
+    const 逆 = 写们[1]!.操作[0]!
+    expect(逆.操作).toBe("改字段")
+    if (逆.操作 !== "改字段") throw new Error("不是改字段")
+    expect(逆.目标).toEqual([
+      { 类别: "节点", id: "ev1", 补丁: { 名称: "旧名称" } },
+      {
+        类别: "边",
+        id: "e1",
+        补丁: { 来源: { kind: "推断", 依据: "手写事件「旧名称」的收款方" } },
+      },
+    ])
   })
 })
 

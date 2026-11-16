@@ -23,7 +23,7 @@ import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { 排列模式们, type 排列模式 } from "../graph-layout"
 import type { 图文件 } from "./file"
 import type { 画布动作, 模式 } from "./canvas"
-import type { 等距轴, 对齐边 } from "./geometry"
+import { 等距们, 对齐们 } from "./geometry"
 
 export interface 工具栏Props {
   readonly 选中: readonly string[]
@@ -45,9 +45,6 @@ export interface 工具栏Props {
    */
   readonly 隔离中?: boolean
 }
-
-const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
-const 等距们: readonly 等距轴[] = ["水平", "垂直"]
 
 /** 悬停多久出说明（FR-045）：300ms，短于系统 title 的一秒级延迟。 */
 export const 悬停毫秒 = 300

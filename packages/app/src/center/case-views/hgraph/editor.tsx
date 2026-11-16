@@ -51,7 +51,7 @@ import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-de
 import { 时间文本 } from "../format"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 面板宽 } from "../graph"
-import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 解析图, 序列化图, 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
@@ -77,7 +77,7 @@ import {
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
-import { 手画边, 可连线 } from "./edge"
+import { 手画边, 可连线, 是角色边, 角色边, 角色边依据 } from "./edge"
 
 export interface 编辑器Props {
   readonly path: string
@@ -568,6 +568,8 @@ function 新实例标识(): string {
 }
 
 export function 编辑器(props: 编辑器Props): JSX.Element {
+  /** FR-025 / I1：画布挂载后注册的只读视口中心；未注册时退回固定画布中心。 */
+  let 读视口中心: (() => { readonly x: number; readonly y: number }) | undefined
   const [文档, set文档] = createSignal(props.初始文档)
   const [版本, set版本] = createSignal(props.初始版本)
   const [已存文档, set已存文档] = createSignal(props.初始文档)
@@ -599,12 +601,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * 「补依据」复用同一个浮层（检查器把缺依据的事实边改成推断时走这里，不直接 `改字段`）。
    */
   const [待连线, set待连线] = createSignal<
-    | { readonly 从: string; readonly 到: string; readonly 模式: "新建" }
+    | { readonly 从: string; readonly 到: string; readonly 模式: "新建"; readonly 角色: boolean }
     | { readonly 边id: string; readonly 模式: "补依据" }
     | undefined
   >()
   const [连线依据, set连线依据] = createSignal("")
   const [连线标签, set连线标签] = createSignal("")
+  /** 事件 → 非事件的连线：角色必填（取代依据），确认时按 `角色边` 落库。 */
+  const [连线角色, set连线角色] = createSignal("")
   /** 默认「中」（brief 固定默认）；只有 UI 选择，不替构造器定默认。 */
   const [连线可信度, set连线可信度] = createSignal<"高" | "中" | "低">("中")
   /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
@@ -1744,20 +1748,35 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     void 退出全屏(舞台)
   })
 
+  /** 本次连线是否走角色边（事件 → 非事件）；其余情况仍是手画边。 */
+  const 角色连线 = () => {
+    const 值 = 待连线()
+    return 值?.模式 === "新建" && 值.角色
+  }
+
+  /** 确认按钮的可用判据：角色连线要求角色非空，其余要求依据非空（同一 `可连线` 口径）。 */
+  const 连线可确认 = () => (角色连线() ? 可连线(连线角色()) : 可连线(连线依据()))
+
   /** 收起连线浮层并清空草稿（确认/取消/Esc 共用同一个复位）。 */
   const 关连线 = () => {
     set待连线(undefined)
     set连线依据("")
     set连线标签("")
+    set连线角色("")
     set连线可信度("中")
   }
 
   /** 画布连线拖拽落下：只开浮层，**不写盘**（R-F1）。 */
   const 开新建连线 = (从: string, 到: string) => {
+    const 起点 = 文档().节点.find((点) => 点.id === 从)
+    const 终点 = 文档().节点.find((点) => 点.id === 到)
+    // FR-027：事件 → 非事件参与方收「角色」并落角色边；事件→事件、实体→实体仍是手画边。
+    const 是角色 = 起点 !== undefined && 终点 !== undefined && 是事件节点(起点) && !是事件节点(终点)
     set连线依据("")
     set连线标签("")
+    set连线角色("")
     set连线可信度("中")
-    set待连线({ 从, 到, 模式: "新建" })
+    set待连线({ 从, 到, 模式: "新建", 角色: 是角色 })
   }
 
   /** 检查器「事实 → 推断」缺依据：复用同一个浮层收必填项，不直接发 `改字段`。 */
@@ -1765,20 +1784,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 条 = 文档().边.find((行) => 行.id === 边id)
     set连线依据(条?.来源?.依据 ?? "")
     set连线标签("")
+    set连线角色("")
     set连线可信度(条?.可信度 ?? "中")
     set待连线({ 边id, 模式: "补依据" })
   }
 
   /**
-   * 连线浮层确认：新建 ⇒ 一条 `加边`（`手画边` 的固定规则只在 `edge.ts` 一份，`#002-06`）；
-   * 补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
+   * 连线浮层确认：新建角色边 ⇒ `角色边`（依据固定话术，不收用户依据）；
+   * 新建普通边 ⇒ `手画边`；补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
    */
   const 确认连线 = () => {
     const 值 = 待连线()
     if (值 === undefined) return
+    const 可信度 = 连线可信度()
+    if (值.模式 === "新建" && 值.角色) {
+      const 角色 = 连线角色().trim()
+      if (!可连线(角色)) return
+      const 起点 = 文档().节点.find((点) => 点.id === 值.从)
+      if (起点 === undefined) {
+        关连线()
+        return
+      }
+      应用([{ 操作: "加边", 边: [{ ...角色边(起点, 值.到, 角色, 可信度) }] }])
+      关连线()
+      return
+    }
     const 依据 = 连线依据()
     if (!可连线(依据)) return
-    const 可信度 = 连线可信度()
     if (值.模式 === "新建") {
       // `操作.边` 的元素类型是 `Record<string, unknown>`；`边` 是接口（无隐式索引签名），
       // 展开成对象字面量再交出去，不改协议类型（#002-06：规则仍在 edge.ts 一份）。
@@ -1849,13 +1881,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       set选中([id])
     },
     /**
-     * T012 / FR-025：手写事件两入口共用这一条。落点规则与 `加节点` 同源（R29）——
-     * 工具栏省略位置 = 画布中心阶梯偏移，右键空白传右键点；**一个** `加节点` 批次，
+     * T012 / FR-025：手写事件两入口共用这一条。落点与 `加节点` 同源（R29）——
+     * 工具栏省略位置 = 当前视口中心，右键空白传右键点；**一个** `加节点` 批次，
      * 一次撤销撤整批。时间给当前时刻（T009 的必填闸要求事件有时间，新建时不许空着）；
      * 名称给兜底占位，类型沿用加节点的「未分类」。不切模式、不另加文字块。
      */
     加事件: (位置) => {
-      const 位 = 位置 ?? 阶梯位置(文档().节点.length)
+      // FR-025 / I1：工具栏省略位置 ⇒ 当前视口中心（画布注册的只读闭包）；
+      // 画布还没挂载（理论上不会）时退回固定画布中心，**不再**用 `阶梯位置` 的内容坐标。
+      const 位 = 位置 ?? 读视口中心?.() ?? { x: 画布宽 / 2, y: 画布高 / 2 }
       const id = 临时id("n")
       const 时间 = 时间文本(Date.now() / 1000)
       应用([
@@ -1880,7 +1914,32 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     },
     // T014：选择器只是编辑器内的覆盖面板，加入时走 `应用` 一条 `加节点`（一次撤销）。
     从库加入: () => 打开选择器(),
-    改字段: (类别, id, 补丁) => 应用([{ 操作: "改字段", 目标: [{ 类别, id, 补丁 }] }]),
+    改字段: (类别, id, 补丁) => {
+      type 目标 = { readonly 类别: "节点" | "边" | "文字"; readonly id: string; readonly 补丁: Record<string, unknown> }
+      const 目标们: 目标[] = [{ 类别, id, 补丁 }]
+      // FR-027 / final-fix1b I2：手写事件改名 ⇒ 同一批次重写出发角色边的固定依据，
+      // 否则依据与新名称不符，`边线型` 会把实线静默降级成虚线。判据用 `是角色边`。
+      if (类别 === "节点" && typeof 补丁.名称 === "string") {
+        const 点 = 文档().节点.find((行) => 行.id === id)
+        if (
+          点 !== undefined &&
+          是事件节点(点) &&
+          点.来源?.kind === "手写" &&
+          补丁.名称 !== (点.名称 ?? "")
+        ) {
+          const 改名后 = { ...点, 名称: 补丁.名称 }
+          for (const 条 of 文档().边) {
+            if (条.从 !== id) continue
+            const 终点 = 文档().节点.find((行) => 行.id === 条.到)
+            if (!是角色边(条, 点, 终点)) continue
+            const 依据 = 角色边依据(改名后, 条.标签)
+            if (依据 === (条.来源?.依据 ?? "")) continue
+            目标们.push({ 类别: "边", id: 条.id, 补丁: { 来源: { ...条.来源, 依据 } } })
+          }
+        }
+      }
+      应用([{ 操作: "改字段", 目标: 目标们 }])
+    },
     删对象: (目标) => 应用([{ 操作: "删对象", 目标: [...目标] }]),
     删除所选: () => {
       // 选中 id 到类别的翻译只在这里做一次（工具栏/快捷键/菜单都只调 `删除所选`）。
@@ -2478,7 +2537,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           <span data-slot="hgraph-connect-title" class="text-12-regular text-v2-text-text-muted">
             {连线标题()}
           </span>
-          <Show when={待连线()?.模式 === "新建"}>
+          <Show when={待连线()?.模式 === "新建" && !角色连线()}>
             <input
               data-slot="hgraph-connect-label"
               aria-label="连线标签"
@@ -2488,19 +2547,37 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               onInput={(事件) => set连线标签(事件.currentTarget.value)}
             />
           </Show>
-          <input
-            data-slot="hgraph-connect-basis"
-            aria-label="连线依据"
-            placeholder="依据（必填）"
-            class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-            value={连线依据()}
-            onInput={(事件) => set连线依据(事件.currentTarget.value)}
-            onKeyDown={(事件) => {
-              if (事件.key !== "Escape") return
-              事件.preventDefault()
-              关连线()
-            }}
-          />
+          {/* FR-027：事件 → 参与方收「角色」必填；依据由 `角色边` 按固定话术生成。 */}
+          <Show when={角色连线()}>
+            <input
+              data-slot="hgraph-connect-role"
+              aria-label="角色"
+              placeholder="收款方"
+              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={连线角色()}
+              onInput={(事件) => set连线角色(事件.currentTarget.value)}
+              onKeyDown={(事件) => {
+                if (事件.key !== "Escape") return
+                事件.preventDefault()
+                关连线()
+              }}
+            />
+          </Show>
+          <Show when={!角色连线()}>
+            <input
+              data-slot="hgraph-connect-basis"
+              aria-label="连线依据"
+              placeholder="依据（必填）"
+              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={连线依据()}
+              onInput={(事件) => set连线依据(事件.currentTarget.value)}
+              onKeyDown={(事件) => {
+                if (事件.key !== "Escape") return
+                事件.preventDefault()
+                关连线()
+              }}
+            />
+          </Show>
           <select
             data-slot="hgraph-connect-confidence"
             aria-label="可信度"
@@ -2519,7 +2596,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             type="button"
             data-slot="hgraph-connect-ok"
             class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
-            disabled={!可连线(连线依据())}
+            disabled={!连线可确认()}
             onClick={确认连线}
           >
             确认
@@ -2591,6 +2668,9 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           不渲染图例={!演示中()}
           强度阈值={演示中() ? undefined : 强度阈值()}
           恢复强度={() => set强度阈值(undefined)}
+          注册视口中心={(读) => {
+            读视口中心 = 读
+          }}
         />
         {/*
           T017b（R72）＋ T017（FR-028）＋ FR-042（terminal review final-fix1a）：筛选面板
