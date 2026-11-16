@@ -7,7 +7,8 @@
  *
  * ## 读写都走 `hgraph-api`，不走 `props.load` / `props.save`
  *
- * 契约 ui.md §1：`load` 只作「以文本方式打开」的兜底（本版没用上），**不用于写入**；
+ * 契约 ui.md §1：`load` 只作「以文本方式打开」的兜底，**不用于写入**；本视图自己用
+ * `<pre>` 显示原文（解析失败时的只读出口），不借 `props.load`。
  * 通用存盘口会拒绝 `.hgraph`（`HGRAPH_READONLY`）。写一律走 `hgraph-api` 的 `ops`。
  *
  * ## 0 字节判据是 `内容 === ""`
@@ -20,7 +21,7 @@
  * `currentProject()` 是模块级单例，可能比这张标签页活得久。挂载时读一次并向下传，之后切
  * 项目也不会把这次读写挪到别的项目上（`#010-06`）；没有项目就一条请求都不发。
  */
-import { createResource, Show, type JSX } from "solid-js"
+import { createResource, createSignal, Show, type JSX } from "solid-js"
 import type { ViewComponent } from "@/center/view-registry"
 import { currentProject } from "@/project/current-project"
 import { useAuthSession } from "@/auth/session-context"
@@ -34,7 +35,8 @@ import { 编辑器 } from "@/center/case-views/hgraph/editor"
 
 type 视图状态 =
   | { readonly kind: "失败"; readonly message: string }
-  | { readonly kind: "打不开"; readonly 说明: string; readonly code: 解析失败码 }
+  /** `内容` = 读到的**原始字节**（T019d）：解析失败时「以文本方式打开」要一字不改地显示它。 */
+  | { readonly kind: "打不开"; readonly 说明: string; readonly code: 解析失败码; readonly 内容: string }
   | { readonly kind: "已载入"; readonly 文档: 图文件; readonly 版本: string }
 
 async function 载入(api: HgraphApi, projectId: string | undefined, path: string): Promise<视图状态> {
@@ -53,7 +55,7 @@ async function 载入(api: HgraphApi, projectId: string | undefined, path: strin
   }
 
   const 解析 = 解析图(内容)
-  if (!解析.ok) return { kind: "打不开", 说明: 解析.说明, code: 解析.code }
+  if (!解析.ok) return { kind: "打不开", 说明: 解析.说明, code: 解析.code, 内容 }
   return { kind: "已载入", 文档: 解析.文档, 版本 }
 }
 
@@ -97,6 +99,8 @@ export function 创建HgraphView(
       () => props.path,
       (path) => 载入(api, 项目id, path),
     )
+    /** T019d：解析失败时的只读原文出口（纯本地展开态，不写回、不挂编辑器）。 */
+    const [原文展开, set原文展开] = createSignal(false)
 
     return (
       <div data-slot="hgraph-view" class="flex h-full flex-col gap-2 overflow-auto p-4">
@@ -128,6 +132,19 @@ export function 创建HgraphView(
                     <p data-slot="hgraph-readonly" class="text-13-regular text-v2-text-text-muted">
                       这份图来自更高版本，只能查看，请升级后再打开。
                     </p>
+                  </Show>
+                  {/* T019d / M14：解析失败仍要能看内容——纯只读原文，不挂编辑器、不写回。 */}
+                  <button
+                    type="button"
+                    data-slot="hgraph-open-as-text"
+                    class="self-start rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+                    onClick={() => set原文展开((旧) => !旧)}
+                  >
+                    {原文展开() ? "收起文本" : "以文本方式打开"}
+                  </button>
+                  <Show when={原文展开()}>
+                    {/* 表达式紧贴标签：`pre` 的 textContent 必须与原文逐字相等（不掺缩进空白）。 */}
+                    <pre data-slot="hgraph-raw" class="whitespace-pre-wrap break-all text-12-regular text-v2-text-text-base">{s.内容}</pre>
                   </Show>
                 </>
               )

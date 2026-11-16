@@ -38,6 +38,7 @@ import { 复制文本 } from "@/utils/copy-text"
 import { showToast } from "@/utils/toast"
 import { 能落到 } from "./file-tree-dnd"
 import { extensionOf } from "@/center/view-registry"
+import { 关系图后缀 } from "./file-create-types"
 
 /** 工具栏六入口的标识——顺序即 `2026-09-11-项目管理-design.md` §6.1 的表格顺序。 */
 export type FileTreeAction = "search" | "collapse-all" | "expand-all" | "create" | "rename" | "delete"
@@ -295,7 +296,7 @@ export interface FileTreeProps {
   /**
    * 导出关系图（T015 / R68）：`path` 是**被右键的那个 `.hgraph` 文件**。
    *
-   * 只在扩展名是 `.hgraph`（与视图注册共用 `extensionOf`）且本回调接上时，菜单第一组多一项
+   * 只在扩展名是 `.hgraph`（判据由 `extensionOf` + `关系图后缀` 组成）且本回调接上时，菜单第一组多一项
    * 「导出 PNG」（`data-action="export-png"`）；其余行的菜单结构一字不动。生产实现见
    * `workspace-entry.tsx`（读 → 解析 → `导出PNG`）。省略 = 不出这一项。
    */
@@ -607,7 +608,7 @@ export function FileTree(props: FileTreeProps) {
   /** T015（R68）：`.hgraph` 文件行 + 调用方接了导出，才出「导出 PNG」那一项。 */
   const 菜单是关系图 = () => {
     const path = 菜单对象()
-    return path !== undefined && 菜单是文件() && extensionOf(path) === ".hgraph" && props.导出图 !== undefined
+    return path !== undefined && 菜单是文件() && extensionOf(path) === 关系图后缀 && props.导出图 !== undefined
   }
   const 菜单依据 = () =>
     依据(菜单对象() ?? "", 菜单对象() !== undefined, 菜单目标()?.kind === "selection")

@@ -198,6 +198,27 @@ describe("关系图视图（打开通道）", () => {
     expect(文案("hgraph-readonly")).toBeUndefined()
     expect(文案("hgraph-counts")).toBeUndefined()
   })
+
+  test("T019d 非法 JSON ⇒ 「以文本方式打开」；点开显示原文（纯只读，不挂编辑器）", async () => {
+    // 带内部换行与缩进：原文必须**一字不改**（不能用会 trim 的文案助手比）。
+    const 原文 = '{\n  "格式": 1,\n  "节点": [\n'
+    const { api, 调用 } = 假api({ 读: { kind: "ok", value: { 内容: 原文, 版本: "v1" } } })
+
+    await 挂上(api)
+    expect(文案("hgraph-raw")).toBeUndefined()
+
+    const 钮 = document.body.querySelector<HTMLButtonElement>("[data-slot='hgraph-open-as-text']")
+    expect(钮).not.toBeNull()
+    expect(钮!.textContent?.trim()).toContain("以文本方式打开")
+
+    钮!.click()
+    await flush()
+
+    // 原文一字不改；不挂编辑器（不产生写、不给保存入口）。
+    expect(document.body.querySelector("[data-slot='hgraph-raw']")!.textContent).toBe(原文)
+    expect(document.body.querySelector("[data-slot='hgraph-canvas']")).toBeNull()
+    expect(调用).toEqual(["读"])
+  })
 })
 
 // ---------------------------------------------------------------------------
