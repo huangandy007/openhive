@@ -8,8 +8,8 @@
  * ## 两条交互口径（FR-019 / FR-020 / FR-022）
  *
  * - **指针模式**：拖节点 = 移动，永不建边；拖空白 = 框选（`Shift` = 追加选中）。
- * - **平移画布**：空格 + 拖 / 中键拖 / 双指（触控板横向或像素级纵向滚动，设计 §5.15）；
- *   空白拖**不再**平移（FR-020）。
+ * - **平移画布**：空格 + 拖 / 中键拖 / 双指（触控板**横向分量占优**的滚动，设计 §5.15）；
+ *   空白拖**不再**平移（FR-020）。空格按住 = 容器光标 `grab`，拖动中 `grabbing`。
  * - **连线模式**：从节点拖到另一节点 = 加边；拖到空白**不建边**（`连线目标` 返回 `null`）；
  *   空白拖同样是框选（平移仍走空格 / 中键 / 双指）。
  * - 锁定节点（`锁定: true`）：不可拖动、不被框选命中（后者由 `框选命中` 保证）、也不进
@@ -77,11 +77,12 @@ const 落在内嵌界面 = (目标: EventTarget | null) =>
 
 /**
  * 滚轮是否来自触控板双指平移（设计 §5.15）：平移 = 空格 + 拖 / 中键拖 / **双指**。
- * 判据：没有 Ctrl（Ctrl + 滚轮是捏合缩放），且有横向分量或纵向是像素级小数
- * （鼠标滚轮是整数档）。真机触控板无法在本机自动化验证，单测只钉判定式。
+ * 判据：没有 Ctrl（Ctrl + 滚轮是捏合缩放），且**横向分量占优**
+ * （`|deltaX| > |deltaY|`）——触控板纵向滑动（含精密触控板的 3.75 这类小数档）归缩放，
+ * 不能因为「纵向不是整数」就被误判成平移。真机触控板无法在本机自动化验证，单测只钉判定式。
  */
 export function 是双指平移(事件: { readonly deltaX: number; readonly deltaY: number; readonly ctrlKey?: boolean }): boolean {
-  return 事件.ctrlKey !== true && (事件.deltaX !== 0 || 事件.deltaY % 1 !== 0)
+  return 事件.ctrlKey !== true && Math.abs(事件.deltaX) > Math.abs(事件.deltaY)
 }
 
 /**
@@ -343,10 +344,15 @@ export function 画布(props: 画布Props): JSX.Element {
 
   let 指针: 指针态 | undefined
   /**
-   * 空格按住 = 平移态（FR-020 / 设计 §5.15）。不用信号：只在指针按下的瞬间读一次；
-   * 键抬起（`onKeyUp`）与容器失焦（`onBlur`）都清零，避免空格丢在别处后永久平移。
+   * 空格按住 = 平移态（FR-020 / 设计 §5.15）。用信号：按下瞬间要读它决定平移还是框选，
+   * 同时它也是容器光标的输入（`grab`）。键抬起（`onKeyUp`）与容器失焦（`onBlur`）
+   * 都清零，避免空格丢在别处后永久平移。
    */
-  let 空格 = false
+  const [空格按下, set空格按下] = createSignal(false)
+  /** 空格式平移正在进行（pointerdown → pointerup）：光标 `grabbing`，松手回 `grab`。 */
+  const [平移中, set平移中] = createSignal(false)
+  /** 容器光标：平移中 `grabbing` > 空格按住 `grab` > 默认。 */
+  const 光标 = () => (平移中() ? "grabbing" : 空格按下() ? "grab" : "default")
   /** 改名输入的收尾锁：Enter 提交后移除输入框会再触发一次 blur，不能提交两遍。 */
   let 改名收尾 = false
   createEffect(() => {
@@ -698,7 +704,8 @@ export function 画布(props: 画布Props): JSX.Element {
     }
 
     // 空白按下：空格按住 ⇒ 平移；否则框选（Shift = 追加，FR-020）。
-    if (空格) {
+    if (空格按下()) {
+      set平移中(true)
       指针 = {
         类型: "画布",
         起点屏x: 事件.clientX,
@@ -786,6 +793,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const 松开 = (事件: PointerEvent) => {
     const 现 = 指针
     指针 = undefined
+    // 平移结束（含 pointercancel / 捕获失效）：光标从 `grabbing` 回到 `grab`（空格仍按住的语义）。
+    set平移中(false)
     if (容器 !== undefined && 容器.hasPointerCapture?.(事件.pointerId)) 容器.releasePointerCapture(事件.pointerId)
     if (现 === undefined) return
     // 运动帧收尾（R71）：拖动 / 平移 / 框选停下后延迟恢复标签；单纯点选不动视口就不触发。
@@ -866,7 +875,7 @@ export function 画布(props: 画布Props): JSX.Element {
     // 空格 = 平移修饰键（FR-020）：只记状态、不产生动作；拦掉默认行为（页面滚动）。
     if (事件.key === " ") {
       事件.preventDefault()
-      空格 = true
+      set空格按下(true)
       return
     }
     const 主键 = 事件.ctrlKey || 事件.metaKey
@@ -913,6 +922,7 @@ export function 画布(props: 画布Props): JSX.Element {
       set编辑id(undefined)
       if (props.重命名id !== undefined) props.动作.重命名(undefined)
       指针 = undefined
+      set平移中(false)
       props.动作.选择([], false)
     }
   }
@@ -1016,15 +1026,16 @@ export function 画布(props: 画布Props): JSX.Element {
       role="application"
       aria-label="关系图画布"
       class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-v2-background-bg-base outline-none"
+      style={{ cursor: 光标() }}
       onPointerDown={按下}
       onPointerMove={移动中}
       onPointerUp={松开}
       onPointerCancel={松开}
       onKeyDown={按键}
       onKeyUp={(事件) => {
-        if (事件.key === " ") 空格 = false
+        if (事件.key === " ") set空格按下(false)
       }}
-      onBlur={() => (空格 = false)}
+      onBlur={() => set空格按下(false)}
       onWheel={滚轮}
       onDblClick={双击}
       onContextMenu={右键}

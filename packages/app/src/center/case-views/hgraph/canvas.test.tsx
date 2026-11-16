@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
-import { 画布, 是双指平移, type 画布动作 } from "./canvas"
+import { 画布, 是双指平移, type 画布动作, type 坐标换算 } from "./canvas"
 
 const 挂过的: Array<() => void> = []
 
@@ -119,6 +119,7 @@ function 挂(
     readonly 动作?: 画布动作
     readonly 只读?: true
     readonly 模式?: "指针" | "连线"
+    readonly 坐标换算?: 坐标换算
   } = {},
 ) {
   const host = document.createElement("div")
@@ -135,6 +136,7 @@ function 挂(
           适配请求={额外.适配请求}
           档表={额外.档表}
           只读={额外.只读}
+          坐标换算={额外.坐标换算}
         />
       ),
       host,
@@ -666,11 +668,82 @@ describe("T019a · 滚轮手势判定：双指平移 vs 滚轮缩放（R-F5）",
     expect(是双指平移({ deltaX: 3, deltaY: 0 })).toBe(true)
   })
 
-  test("触控板像素级纵向（非整数档）⇒ true", () => {
-    expect(是双指平移({ deltaX: 0, deltaY: 12.5 })).toBe(true)
+  test("纵向占优（含精密触控板小数档）⇒ false（归缩放）", () => {
+    // T006 收紧判据：不再是「纵向是小数 ⇒ 平移」，而是「横向分量占优 ⇒ 平移」。
+    expect(是双指平移({ deltaX: 0, deltaY: 12.5 })).toBe(false)
+    expect(是双指平移({ deltaX: 2, deltaY: -12.5 })).toBe(false)
   })
 
   test("Ctrl + 滚轮是捏合缩放 ⇒ false", () => {
     expect(是双指平移({ deltaX: 0, deltaY: 12.5, ctrlKey: true })).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T006：滚轮判据改为「横向分量占优才平移」＋ 空格式平移的抓取光标
+// ---------------------------------------------------------------------------
+
+describe("T006 · 滚轮判据（横向占优）与空格平移光标", () => {
+  const 变换 = () => 取("[data-slot='hgraph-viewport']")!.getAttribute("transform")
+  const 容器 = () => 取("[data-slot='hgraph-canvas']") as HTMLElement
+  const 滚 = (deltaX: number, deltaY: number, 修饰: WheelEventInit = {}) =>
+    容器().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaX, deltaY, ...修饰 }))
+  const 空手起落 = (key: "keydown" | "keyup") =>
+    容器().dispatchEvent(new KeyboardEvent(key, { key: " ", bubbles: true, cancelable: true }))
+  const 指针 = (类型: "pointerdown" | "pointermove" | "pointerup", x: number, y: number) =>
+    容器().dispatchEvent(
+      new PointerEvent(类型, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        button: 0,
+        buttons: 类型 === "pointerup" ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }),
+    )
+
+  test("精密触控板的小数 deltaY（3.75、无横向分量）⇒ 缩放比例变化", () => {
+    // 恒等换算：happy-dom 没有布局（矩形恒 0），滚轮锚点由注入的换算给内容原点。
+    挂(造图([造节点("a", 100, 100)], []), undefined, { 坐标换算: () => ({ x: 0, y: 0 }) })
+    expect(变换()).toBe("translate(0 0) scale(1)")
+
+    滚(0, 3.75)
+
+    expect(变换()).toBe(`translate(0 0) scale(${1 / 1.15})`)
+  })
+
+  test("纯横向 deltaX 120 / deltaY 0 ⇒ 只平移，缩放不变", () => {
+    挂(造图([造节点("a", 100, 100)], []), undefined, { 坐标换算: () => ({ x: 0, y: 0 }) })
+
+    滚(120, 0)
+
+    expect(变换()).toBe("translate(-120 0) scale(1)")
+  })
+
+  test("空格按住 ⇒ 容器光标 grab；松开空格 ⇒ default", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    expect(容器().style.cursor).toBe("default")
+
+    空手起落("keydown")
+    expect(容器().style.cursor).toBe("grab")
+
+    空手起落("keyup")
+    expect(容器().style.cursor).toBe("default")
+  })
+
+  test("空格 + 拖动中 ⇒ 光标 grabbing；松手回 grab（空格仍按住）", () => {
+    挂(造图([造节点("a", 100, 100)], []))
+    空手起落("keydown")
+    expect(容器().style.cursor).toBe("grab")
+
+    指针("pointerdown", 10, 10)
+    expect(容器().style.cursor).toBe("grabbing")
+
+    指针("pointermove", 60, 60)
+    expect(容器().style.cursor).toBe("grabbing")
+
+    指针("pointerup", 60, 60)
+    expect(容器().style.cursor).toBe("grab")
   })
 })
