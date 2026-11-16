@@ -39,8 +39,12 @@ export interface 图例Props {
   readonly 外置?: boolean
 }
 
-const 宽 = 196
-const 高 = 108
+/** 版式几何（M2）：编辑器画布条只引用这四个常量，不再各写一份数字。 */
+export const 图例宽 = 196
+export const 图例高 = 108
+export const 图例收起宽 = 52
+export const 图例收起高 = 22
+
 const 底色 = "var(--v2-background-bg-layer-01)"
 const 框色 = "var(--v2-border-border-muted)"
 const 字色 = "var(--v2-text-text-base)"
@@ -69,7 +73,7 @@ export function 图例(props: 图例Props): JSX.Element {
         when={收起()}
         fallback={
           <>
-            <rect x="0" y="0" width={宽} height={高} rx="4" fill={底色} stroke={框色} />
+            <rect x="0" y="0" width={图例宽} height={图例高} rx="4" fill={底色} stroke={框色} />
             <text x="10" y="17" font-size="12" fill={字色}>
               图例
             </text>
@@ -143,7 +147,7 @@ export function 图例(props: 图例Props): JSX.Element {
           class="cursor-pointer"
           onClick={() => 设收起(false)}
         >
-          <rect x="0" y="0" width="52" height="22" rx="4" fill={底色} stroke={框色} />
+          <rect x="0" y="0" width={图例收起宽} height={图例收起高} rx="4" fill={底色} stroke={框色} />
           <text x="10" y="15" font-size="12" fill={字色}>
             图例
           </text>

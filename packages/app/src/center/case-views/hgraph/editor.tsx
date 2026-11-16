@@ -44,6 +44,7 @@
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { Icon } from "@opencode-ai/ui/v2/icon"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
@@ -52,7 +53,7 @@ import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 }
 import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
-import { 图例 } from "./legend"
+import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
@@ -123,6 +124,16 @@ type 路径面板内容 =
   | { readonly 空: false; readonly 跳数: number; readonly 路径: readonly string[] }
 
 const 防抖毫秒 = 500
+
+/**
+ * 画布条宽 → 图例是否折叠（FR-057）。
+ * `undefined` / `0` = 还没量到（happy-dom 恒 0），返回 `undefined` 表示「不改折叠态」；
+ * 899 ⇒ 折叠、900 ⇒ 展开，边界只在这里判一次（`#002-06`）。
+ */
+export function 图例应折叠(宽: number | undefined): boolean | undefined {
+  if (宽 === undefined || 宽 <= 0) return undefined
+  return 宽 < 900
+}
 
 /**
  * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
@@ -1307,9 +1318,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     onCleanup(() => 观察.disconnect())
   })
   createEffect(() => {
-    const 宽 = 画布条宽()
-    if (宽 === undefined || 宽 <= 0) return
-    set图例收起(宽 < 900)
+    const 应折叠 = 图例应折叠(画布条宽())
+    if (应折叠 !== undefined) set图例收起(应折叠)
   })
 
   const 重新载入 = () => {
@@ -1901,6 +1911,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     查找路径: 执行查找路径,
     适配全部: () => set适配请求((旧) => (旧 ?? 0) + 1),
     显示全部标签切换: () => set全部标签((旧) => !旧),
+    // FR-045：工具栏「强度过滤」只负责把筛选面板打开；阈值仍由画布条控件持有。
+    强度过滤: () => set筛选面板开(true),
   }
 
   const 状态文案 = () => {
@@ -1969,7 +1981,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>
-        <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
+        {/* FR-043：顶栏显式 34px。重试与导出回执是「已保存」状态的附属件，不另起一行。 */}
+        <div data-slot="hgraph-editor-bar" class="flex h-[34px] shrink-0 items-center gap-2 px-2">
         {/* T013 / FR-043：搜索 / 筛选 / 计数已迁到画布条；顶栏只留撤销 / 重做 / 已保存。 */}
         <button
           type="button"
@@ -2184,9 +2197,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           aria-label="筛选"
           aria-pressed={筛选面板开() ? "true" : "false"}
           title="按类型 / 性质 / 强度筛选"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+          class="inline-flex items-center gap-1 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
           onClick={() => set筛选面板开((旧) => !旧)}
         >
+          <Icon name="magnifying-glass" size="small" />
           筛选
         </button>
         <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
@@ -2196,9 +2210,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           <svg
             data-slot="hgraph-canvas-bar-legend"
             aria-label="图例"
-            viewBox={图例收起() ? "0 0 52 22" : "0 0 196 108"}
-            width={图例收起() ? 52 : 196}
-            height={图例收起() ? 22 : 108}
+            viewBox={
+              图例收起()
+                ? `0 0 ${图例收起宽} ${图例收起高}`
+                : `0 0 ${图例宽} ${图例高}`
+            }
+            width={图例收起() ? 图例收起宽 : 图例宽}
+            height={图例收起() ? 图例收起高 : 图例高}
             class={图例收起() ? "block" : "absolute right-2 top-full z-20 block"}
           >
             <图例 收起={图例收起()} 收起变化={(值) => set图例收起(值)} 外置 />

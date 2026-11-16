@@ -1,20 +1,25 @@
 /**
- * `.hgraph` 工具栏（012 · T010；T015 四组图标）。
+ * `.hgraph` 工具栏（012 · T010；T015 五组图标）。
  *
  * **只调动作表**（contracts/ui.md §3）：本文件不拼 `操作[]`、不调 `api.写`；按钮的可用
  * 状态从这里传入的 `选中` / `文档` 算出来，点下去一律落到 `动作表` 的同一条目。
  * 快捷键在 `editor.tsx` 的根容器 `keydown` 上（T005 上移），落到同一张表（FR-040）。
  *
- * T015 / FR-045：四组图标（选择 / 画 / 排 / 找+整），单行不折行。
+ * T015 / FR-045：五组图标（选择 / 画 / 排 / 找 / 整），单行不折行。
+ * - 选择：指针 / 手 / 连线；画：加节点 / 加文字 / 从库加入 / 加事件（FR-046 紧跟从库加入）
+ *   / 删除 / 锁定；排：对齐 / 等距 / 排列下拉 + 自动布局；找：隔离 / 查找路径 / 强度过滤；
+ *   整：合并 / 导出 / 演示 / 适配全部（「路径标注」无动作，按裁定不挂死按钮）。
  * - 模式按钮（指针 / 手 / 连线）随 `模式` 呈现按下态（品牌金边框 + 浅金底），
  *   `aria-pressed` 反映当前模式；动作按钮的 `aria-pressed` 恒 `"false"`。
  * - 删除是危险操作，用危险色 token（不与「加节点」同权重）。
- * - 悬停 300ms 出带快捷键的说明；`title` 保留为无障碍兜底（既有用例已钉 merge / present）。
+ * - 悬停 300ms 出带快捷键的说明，走 `TooltipV2` 的 portal（父容器不裁剪）；`title`
+ *   保留为无障碍兜底（既有用例已钉 merge / present）。
  * - 对齐 / 等距各有 6 / 2 个变体，13 枚图形键里只有一枚通用 glyph；变体沿用文字标签，
  *   图形键用在该簇的组图标上（换成同一枚图标会无法区分方向）。
  */
 import { For, Show, createSignal, onCleanup, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { 排列模式们, type 排列模式 } from "../graph-layout"
 import type { 图文件 } from "./file"
 import type { 画布动作, 模式 } from "./canvas"
@@ -45,13 +50,13 @@ const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直�
 const 等距们: readonly 等距轴[] = ["水平", "垂直"]
 
 /** 悬停多久出说明（FR-045）：300ms，短于系统 title 的一秒级延迟。 */
-const 悬停毫秒 = 300
+export const 悬停毫秒 = 300
 
 const 钮基 =
   "inline-flex h-6 items-center justify-center gap-0.5 rounded border px-1.5 text-12-regular disabled:opacity-40"
 const 钮动 =
   `${钮基} border-v2-border-border-muted text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base`
-const 钮按 = `${钮基} border-v2-border-border-focus bg-v2-background-bg-accent/10 text-v2-text-text-base`
+const 钮按 = `${钮基} border-v2-border-border-focus bg-[var(--v2-background-bg-accent-soft)] text-v2-text-text-base`
 const 钮危 =
   `${钮基} border-v2-border-border-muted text-v2-state-fg-danger hover:bg-v2-state-bg-danger`
 
@@ -95,34 +100,40 @@ function 工具钮(props: 工具钮Props): JSX.Element {
   const 类 = () => (props.危险 === true ? 钮危 : props.种类 === "mode" && props.按下 === true ? 钮按 : 钮动)
 
   return (
-    <span class="relative inline-flex" onPointerEnter={进} onPointerLeave={离}>
-      <button
-        type="button"
-        data-slot={props.slot}
-        data-kind={props.种类 === "mode" ? "mode" : props.种类 === "toggle" ? "toggle" : "action"}
-        aria-label={props.名称}
-        aria-pressed={props.种类 === "action" ? "false" : props.按下 === true ? "true" : "false"}
-        title={props.名称}
-        class={类()}
-        disabled={props.禁用}
-        onClick={props.点}
+    // C3：300ms 由本组件计时，弹层复用 v2 `TooltipV2` 的 Kobalte portal——内容挂在
+    // body 下，不会被工具栏祖先（过去是 `overflow-x:auto`）裁剪。
+    <span
+      data-slot="hgraph-toolbar-hover"
+      class="relative inline-flex"
+      onPointerEnter={进}
+      onPointerLeave={离}
+    >
+      <TooltipV2
+        value={<span data-slot="hgraph-toolbar-tip">{props.说明}</span>}
+        class="inline-flex"
+        forceOpen={出()}
+        openDelay={0}
+        placement="bottom"
       >
-        <Show when={props.标签 !== undefined} fallback={<Icon name={props.图标 ?? "plus"} size="small" />}>
-          {props.标签}
-        </Show>
-        <Show when={props.隐藏文字 !== undefined}>
-          <span class="sr-only">{props.隐藏文字}</span>
-        </Show>
-      </button>
-      <Show when={出()}>
-        <span
-          data-slot="hgraph-toolbar-tip"
-          role="tooltip"
-          class="pointer-events-none absolute left-0 top-full z-30 mt-1 whitespace-nowrap rounded border border-v2-border-border-muted bg-v2-background-bg-layer-02 px-1.5 py-0.5 text-12-regular text-v2-text-text-base shadow"
+        <button
+          type="button"
+          data-slot={props.slot}
+          data-kind={props.种类 === "mode" ? "mode" : props.种类 === "toggle" ? "toggle" : "action"}
+          aria-label={props.名称}
+          aria-pressed={props.种类 === "action" ? "false" : props.按下 === true ? "true" : "false"}
+          title={props.名称}
+          class={类()}
+          disabled={props.禁用}
+          onClick={props.点}
         >
-          {props.说明}
-        </span>
-      </Show>
+          <Show when={props.标签 !== undefined} fallback={<Icon name={props.图标 ?? "plus"} size="small" />}>
+            {props.标签}
+          </Show>
+          <Show when={props.隐藏文字 !== undefined}>
+            <span class="sr-only">{props.隐藏文字}</span>
+          </Show>
+        </button>
+      </TooltipV2>
     </span>
   )
 }
@@ -170,9 +181,9 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
       data-slot="hgraph-toolbar"
       role="toolbar"
       aria-label="关系图工具栏"
-      class="flex flex-nowrap items-center gap-1 overflow-x-auto px-2 py-1"
+      class="flex flex-nowrap items-center gap-1 bg-v2-background-bg-base px-2 py-1"
     >
-      {/* 选择：两种模式（指针 / 手）。T013 撤掉画布内模式条后，「手」只在这里可发现。 */}
+      {/* 选择：三种模式（指针 / 手 / 连线）。T013 撤掉画布内模式条后，「手」只在这里可发现。 */}
       <分组 名="选择">
         <工具钮
           slot="hgraph-mode-pointer"
@@ -192,12 +203,6 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           按下={现模式() === "手"}
           点={() => props.动作表.切换模式("手")}
         />
-      </分组>
-
-      <分隔 />
-
-      {/* 画：连线模式与「往图上加东西」的动作。插入动作不进模式组（设计 §I2-1 / V14-A）。 */}
-      <分组 名="画">
         <工具钮
           slot="hgraph-mode-connect"
           名称="连线模式"
@@ -207,14 +212,12 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           按下={现模式() === "连线"}
           点={() => props.动作表.切换模式("连线")}
         />
-        <工具钮
-          slot="hgraph-add-text"
-          名称="加文字"
-          说明="加文字：在画布中心插入文字块"
-          图标="text-plus"
-          种类="action"
-          点={() => props.动作表.加文字在中心?.()}
-        />
+      </分组>
+
+      <分隔 />
+
+      {/* 画：往图上加东西 + 对选中对象的删除 / 锁定。FR-046：加事件紧跟从库加入。 */}
+      <分组 名="画">
         <工具钮
           slot="hgraph-toolbar-add-node"
           名称="加节点"
@@ -222,6 +225,14 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           图标="plus"
           种类="action"
           点={() => props.动作表.加节点()}
+        />
+        <工具钮
+          slot="hgraph-add-text"
+          名称="加文字"
+          说明="加文字：在画布中心插入文字块"
+          图标="text-plus"
+          种类="action"
+          点={() => props.动作表.加文字在中心?.()}
         />
         {/* T014：选择器是编辑器里的覆盖面板，加入才落一个批次的 `加节点`。 */}
         <工具钮
@@ -232,7 +243,7 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           种类="action"
           点={() => props.动作表.从库加入?.()}
         />
-        {/* T012 / FR-046：与右键「加事件」同一条动作。 */}
+        {/* T012 / FR-046：紧接「从库加入」，与右键「加事件」同一条动作。 */}
         <工具钮
           slot="hgraph-toolbar-add-event"
           名称="加事件"
@@ -241,11 +252,31 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           种类="action"
           点={() => props.动作表.加事件?.()}
         />
+        <工具钮
+          slot="hgraph-toolbar-delete"
+          名称="删除所选"
+          说明="删除所选（快捷键：Delete）"
+          图标="trash"
+          种类="action"
+          危险
+          禁用={!有选中()}
+          点={() => props.动作表.删除所选()}
+        />
+        <工具钮
+          slot="hgraph-toolbar-lock"
+          名称={全锁() ? "解锁所选" : "锁定所选"}
+          说明={全锁() ? "解锁所选（阻止拖动与对齐）" : "锁定所选（阻止拖动与对齐）"}
+          图标="lock"
+          隐藏文字={全锁() ? "解锁" : "锁定"}
+          种类="action"
+          禁用={!有选中()}
+          点={() => props.动作表.锁定切换(props.选中)}
+        />
       </分组>
 
       <分隔 />
 
-      {/* 排：对齐 / 等距的变体簇（文字短标签 + 组图标）、自动布局、锁定。 */}
+      {/* 排：对齐 / 等距的变体簇（文字短标签 + 组图标）、排列下拉 + 自动布局。 */}
       <分组 名="排">
         <span data-slot="hgraph-toolbar-group-icon" aria-hidden="true" class="text-v2-text-text-muted">
           <Icon name="align" size="small" />
@@ -302,26 +333,12 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           禁用={props.文档.节点.length === 0}
           点={() => props.动作表.自动布局(排列())}
         />
-        <工具钮
-          slot="hgraph-toolbar-lock"
-          名称={全锁() ? "解锁所选" : "锁定所选"}
-          说明={全锁() ? "解锁所选（阻止拖动与对齐）" : "锁定所选（阻止拖动与对齐）"}
-          图标="lock"
-          隐藏文字={全锁() ? "解锁" : "锁定"}
-          种类="action"
-          禁用={!有选中()}
-          点={() => props.动作表.锁定切换(props.选中)}
-        />
       </分组>
 
       <分隔 />
 
-      {/*
-        找 + 整：隔离 / 查找路径 / 合并 / 演示 / 删除，外加既有导出与适配。
-        「路径标注」在动作表里还没有条目（T016 之后再接线）；图形键 `path-label` 已备好，
-        这里不放一个点不动的空按钮。
-      */}
-      <分组 名="找+整">
+      {/* 找：隔离 / 查找路径 / 强度过滤。 */}
+      <分组 名="找">
         <工具钮
           slot="hgraph-toolbar-neighbors"
           名称="只看邻居"
@@ -346,15 +363,6 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
         </Show>
 
         <工具钮
-          slot="hgraph-toolbar-fit"
-          名称="适配全部"
-          说明="适配全部：缩放到刚好看全图"
-          图标="expand"
-          种类="action"
-          禁用={props.文档.节点.length === 0}
-          点={() => props.动作表.适配全部?.()}
-        />
-        <工具钮
           slot="hgraph-toolbar-path"
           名称="查找路径"
           说明="查找路径（先选中两个节点）"
@@ -363,18 +371,24 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           禁用={!可查找路径()}
           点={() => props.动作表.查找路径?.()}
         />
-        {/* R71：>800 节点默认关标签，这里可强制打开；按钮只在 >800 时出现。 */}
-        <Show when={可显示全部标签()}>
-          <工具钮
-            slot="hgraph-toolbar-all-labels"
-            名称="显示全部标签"
-            说明="显示全部标签：大图强制展开标签"
-            图标="unified"
-            种类="toggle"
-            按下={props.标签开 === true}
-            点={() => props.动作表.显示全部标签切换?.()}
-          />
-        </Show>
+        {/* FR-028 / FR-045：打开筛选面板；「只看 ≥ N 档」控件与阈值仍只有画布条一份。 */}
+        <工具钮
+          slot="hgraph-toolbar-strength-filter"
+          名称="强度过滤"
+          说明="强度过滤：打开「只看 ≥ N 档」（画布条筛选面板）"
+          图标="outline-sliders"
+          种类="action"
+          点={() => props.动作表.强度过滤?.()}
+        />
+      </分组>
+
+      <分隔 />
+
+      {/*
+        整：合并 / 导出 / 演示 / 适配全部。FR-045 还列了「路径标注」，但动作表没有条目、
+        任何 FR 也未定义其行为；按裁定不挂一个点不动的死按钮（`path-label` 图形键留待接管）。
+      */}
+      <分组 名="整">
         {/* T016b：合并常驻，选中节点 ≥ 2 才可用（点击弹确认条，不直接写）。 */}
         <工具钮
           slot="hgraph-toolbar-merge"
@@ -384,14 +398,6 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           种类="action"
           禁用={!可合并()}
           点={() => props.动作表.合并?.()}
-        />
-        <工具钮
-          slot="hgraph-toolbar-present"
-          名称="演示"
-          说明="演示：全屏逐步播放（Esc 退出）"
-          图标="present"
-          种类="action"
-          点={() => props.动作表.演示切换()}
         />
         {/* T015：打开导出选项面板（本地 UI 态，不写文件、不进撤销栈）。 */}
         <工具钮
@@ -403,15 +409,34 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           点={() => props.动作表.导出面板切换?.()}
         />
         <工具钮
-          slot="hgraph-toolbar-delete"
-          名称="删除所选"
-          说明="删除所选（快捷键：Delete）"
-          图标="trash"
+          slot="hgraph-toolbar-present"
+          名称="演示"
+          说明="演示：全屏逐步播放（Esc 退出）"
+          图标="present"
           种类="action"
-          危险
-          禁用={!有选中()}
-          点={() => props.动作表.删除所选()}
+          点={() => props.动作表.演示切换()}
         />
+        <工具钮
+          slot="hgraph-toolbar-fit"
+          名称="适配全部"
+          说明="适配全部：缩放到刚好看全图"
+          图标="expand"
+          种类="action"
+          禁用={props.文档.节点.length === 0}
+          点={() => props.动作表.适配全部?.()}
+        />
+        {/* R71：>800 节点默认关标签；按需出现，放在 FR-045 四个常驻按钮之后。 */}
+        <Show when={可显示全部标签()}>
+          <工具钮
+            slot="hgraph-toolbar-all-labels"
+            名称="显示全部标签"
+            说明="显示全部标签：大图强制展开标签"
+            图标="unified"
+            种类="toggle"
+            按下={props.标签开 === true}
+            点={() => props.动作表.显示全部标签切换?.()}
+          />
+        </Show>
       </分组>
     </div>
   )

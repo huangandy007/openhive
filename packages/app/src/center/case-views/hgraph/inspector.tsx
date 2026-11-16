@@ -62,7 +62,7 @@ import type { 图文件, 节点, 边, 文字 } from "./file"
 import { 外环色表, 文字色表, type 画布动作 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
 import { 解析出处 } from "./citation"
-import { 面板宽, 面板边距 } from "../graph"
+import { 填充, 面板宽, 面板边距 } from "../graph"
 
 /** 收起态窄条宽度（CSS px，FR-050）。编辑器算「检查器占用宽」也读这一份。 */
 export const 收起宽 = 40
@@ -550,10 +550,26 @@ export function 检查器(props: 检查器Props): JSX.Element {
   }
 
   /**
+   * 类型色（FR-050 / plan R14）：**只读 `graph.tsx` 的类型→色映射**（`填充` 只加了
+   * `export`，函数体未动）。hgraph 的节点字段名与关系图不同（`类型` vs `type`），
+   * 这里只做一次字段适配，色值本身不在检查器里另抄一份（`#002-06`）。
+   */
+  const 类型色 = (点: 节点) =>
+    填充({
+      id: 点.id,
+      type: 点.类型,
+      value: 点.名称,
+      trust_state: 点.来源?.可信 ?? "",
+      中心: false,
+      跳数: 0,
+      关联数: 0,
+      度数: 0,
+    })
+
+  /**
    * 头段内容（FR-034）：标题 / 副标题 / 徽标 / 色块。批量态只报数量（没有单一对象）。
    *
-   * 「类型色点」目前没有 hgraph 自己的类型→色表（R14 计划复用邻域图的映射，尚未落地）：
-   * 有外环颜色就借外环色，否则中性描边色——不新造第二张色表（`#002-06`）。
+   * 「类型色点」按节点的 `类型` 取关系图同一张映射；边 / 文字 / 批量仍用中性色。
    */
   const 头 = () => {
     const 中性 = "var(--v2-border-border-strong)"
@@ -566,7 +582,7 @@ export function 检查器(props: 检查器Props): JSX.Element {
         标题: 点.名称 ?? "",
         副: [点.类型 ?? "", 点.细类 ?? ""].filter((值) => 值 !== "").join(" · "),
         徽标,
-        色: 外环色表[点.外环?.颜色 ?? ""] ?? 中性,
+        色: 类型色(点),
       }
     }
     const 条 = 单个边()

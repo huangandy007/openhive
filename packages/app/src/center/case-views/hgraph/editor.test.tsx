@@ -26,7 +26,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
-import { 编辑器, 命中删除键, 构图, 布局目标 } from "./editor"
+import { 编辑器, 图例应折叠, 命中删除键, 构图, 布局目标 } from "./editor"
 import { 适配视口 } from "./geometry"
 import { 排列模式们, 阶梯位置, type 排列模式 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
@@ -5431,12 +5431,55 @@ describe("T013 · 三行布局与图例搬家", () => {
     挂上(api)
     await flush()
 
+    // ⚠️ `hgraph-canvas-mode-bar` 这个槽位**从未存在过**（旧模式条槽位叫
+    // `hgraph-canvas-chrome`）⇒ 这一条在实现前后都真，不守任何回归。保留仅为记录
+    // 「当初按 tasks.md 的错误槽位名写过」；真正守回归的是下面三条旧按钮断言。
     // 布尔比较，不用 `toBeNull()`（`#013-12`：元素存在时它也通过过）。
     expect(document.body.querySelector("[data-slot='hgraph-canvas-mode-bar']") === null).toBe(true)
     expect(画布() !== null).toBe(true)
     expect(画布()!.querySelector("[data-slot='hgraph-mode-pointer']") === null).toBe(true)
     expect(画布()!.querySelector("[data-slot='hgraph-mode-connect']") === null).toBe(true)
     expect(画布()!.querySelector("[data-slot='hgraph-add-text']") === null).toBe(true)
+  })
+
+  test("顶栏显式 34px（重试 / 导出回执仍是「已保存」的附属件）", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 栏 = 取("[data-slot='hgraph-editor-bar']") as HTMLElement | null
+    expect(栏 !== null).toBe(true)
+    expect(栏!.className.includes("h-[34px]")).toBe(true)
+  })
+
+  test("画布条筛选按钮带放大镜图标，aria-label 仍在", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 钮 = 取("[data-slot='hgraph-filter-toggle']") as HTMLButtonElement | null
+    expect(钮 !== null).toBe(true)
+    expect(钮!.getAttribute("aria-label")).toBe("筛选")
+    expect(钮!.querySelector("[data-slot='icon-svg']") !== null).toBe(true)
+  })
+
+  test("FR-047：原 153×26 模式条区域中心点击命中下方节点（模式 / 文字数不变）", async () => {
+    const { api } = 假api()
+    // 旧 chrome: `left-2 top-2`（8,8）+ 153×26 ⇒ 中心约 (84.5, 21)。
+    const 文档: 图文件 = { ...一份图(), 节点: [造节点("n1", 84, 21)], 文字: [] }
+    挂上(api, 文档)
+    await flush()
+
+    expect(画布()!.getAttribute("data-mode")).toBe("指针")
+    expect(节点组("n1") !== null).toBe(true)
+
+    按下(节点组("n1")!, 84, 21)
+    松开(84, 21)
+    await flush()
+
+    expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
+    expect(画布()!.getAttribute("data-mode")).toBe("指针")
+    expect(文案("hgraph-counts")).toBe("节点 1 · 边 0 · 文字 0")
   })
 
   test("图例在画布外：画布内无图例，且没有以 hgraph-canvas 为祖先的图例", async () => {
@@ -5451,6 +5494,19 @@ describe("T013 · 三行布局与图例搬家", () => {
     for (const 图例 of 图例们) {
       expect(图例.closest("[data-slot='hgraph-canvas']") === null).toBe(true)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T013 · 画布条宽阈值（纯函数，不依赖 happy-dom 的布局）
+// ---------------------------------------------------------------------------
+
+describe("T013 · 画布条宽阈值", () => {
+  test("899 折叠、900 展开、未量到（undefined / 0）不擅自改折叠态", () => {
+    expect(图例应折叠(899)).toBe(true)
+    expect(图例应折叠(900)).toBe(false)
+    expect(图例应折叠(undefined)).toBe(undefined)
+    expect(图例应折叠(0)).toBe(undefined)
   })
 })
 

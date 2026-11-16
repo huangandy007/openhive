@@ -1171,6 +1171,49 @@ describe("检查器 · T014 四段骨架与收起", () => {
     expect(幽.收起()).toBe(false)
   })
 
+  test("类型色点取 graph.tsx 的类型色（号码 ⇒ info），不借用外环色", () => {
+    // 号码在图例映射里是 `var(--v2-state-bg-info)`；外环没有颜色 ⇒ 旧实现会落成中性灰。
+    // 这里同时钉展开头段与收起窄条两处，两处都读同一个 `头().色`。
+    const 展开 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }) })
+    const 色块 = 取("[data-slot='hgraph-inspector-head-color']") as HTMLElement
+    expect(色块 !== null).toBe(true)
+    expect(色块.style.background).toBe("var(--v2-state-bg-info)")
+
+    展开.set选中([])
+    const 收起 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }), 收起: true })
+    const 窄条 = 取("[data-slot='hgraph-inspector-collapsed']") as HTMLButtonElement
+    const 点 = 窄条.querySelector<HTMLElement>("[data-slot='hgraph-inspector-collapsed-dot']")
+    expect(点 !== null).toBe(true)
+    expect(点!.style.background).toBe("var(--v2-state-bg-info)")
+    expect(收起.收起()).toBe(true)
+  })
+
+  test("选中边 ⇒ 头 / 边可改 / 边只读 / 操作脚四段齐；文字没有只读段", async () => {
+    const 文档: 图文件 = {
+      ...带边图(),
+      文字: [{ id: "t1", 内容: "备注", x: 50, y: 50, 字号: "中" }],
+    }
+    const { set选中 } = 挂检查器({ 选中: ["e1"], 文档 })
+
+    // 边用另一套槽位名：可改区 `-edge`、只读区 `-edge-readonly`。
+    for (const 段 of [
+      "hgraph-inspector-head",
+      "hgraph-inspector-edge",
+      "hgraph-inspector-edge-readonly",
+      "hgraph-inspector-actions",
+    ]) {
+      expect(取(`[data-slot='${段}']`) === null).toBe(false)
+    }
+    // 节点那套只读槽位不该混进边面板。
+    expect(取("[data-slot='hgraph-inspector-readonly']") === null).toBe(true)
+
+    // 文字面板没有只读段（没有库快照来源），只有可改段。
+    set选中(["t1"])
+    await Promise.resolve()
+    expect(取("[data-slot='hgraph-inspector-readonly']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-edge-readonly']") === null).toBe(true)
+  })
+
   test("未选中 ⇒ 检查器不渲染（不是空壳、不占位）", () => {
     挂检查器({ 选中: [] })
 

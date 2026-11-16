@@ -75,7 +75,7 @@ export function 形状(类型: string): 形 {
   return "circle"
 }
 
-function 填充(点: 图节点): string {
+export function 填充(点: 图节点): string {
   if (点.中心) return "var(--v2-background-bg-accent-soft)"
   if (点.type === "号码") return "var(--v2-state-bg-info)"
   if (点.type === "账户") return "var(--v2-state-bg-success)"
@@ -98,7 +98,7 @@ function 描边(点: 图节点): string {
  * 节点描边色（点选时换品牌金深）。**图标也读这一份**：点选后边框换了色、图标还是灰的，
  * 看上去像两个节点各画了一半。
  */
-function 描边色(点: 图节点, 焦点: boolean): string {
+export function 描边色(点: 图节点, 焦点: boolean): string {
   return 焦点 ? "var(--v2-brand-gold-deep)" : 描边(点)
 }
 
