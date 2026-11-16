@@ -16,6 +16,7 @@ import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
 import type { 画布动作, 模式 } from "./canvas"
+import { 排列模式们, type 排列模式 } from "../graph-layout"
 import { 工具栏 } from "./toolbar"
 
 const 挂过的: Array<() => void> = []
@@ -83,12 +84,15 @@ function 幽灵动作表(): 画布动作 {
 function 挂工具栏(可选: { readonly 模式?: 模式; readonly 选中?: readonly string[] } = {}) {
   const [模式, set模式] = createSignal<模式>(可选.模式 ?? "指针")
   const 切换记录: 模式[] = []
+  /** T016：`自动布局` 收到的模式原样记录（`undefined` = 调用方没传参）。 */
+  const 布局记录: Array<排列模式 | undefined> = []
   const 动作: 画布动作 = {
     ...幽灵动作表(),
     切换模式: (下一) => {
       切换记录.push(下一)
       set模式(下一)
     },
+    自动布局: (排列) => 布局记录.push(排列),
   }
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -100,7 +104,7 @@ function 挂工具栏(可选: { readonly 模式?: 模式; readonly 选中?: read
       host,
     ),
   )
-  return { 切换记录 }
+  return { 切换记录, 布局记录 }
 }
 
 const 取 = (选择器: string) => document.querySelector(选择器)
@@ -235,5 +239,26 @@ describe("T015 · 悬停 300ms 出说明（含快捷键）", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe("T016 · 排列模式下拉原样透传", () => {
+  test("默认环形；选『分层』后点自动布局 ⇒ 动作表收到的模式是 分层", async () => {
+    const { 布局记录 } = 挂工具栏()
+    const 下拉 = 取("[data-slot='hgraph-toolbar-layout-mode']") as HTMLSelectElement | null
+    // `#013-12`：节点存在性用布尔比较，不用 toBeNull。
+    expect(下拉 !== null).toBe(true)
+    // 选项文案 = `排列模式们` 原值（不另起一套标签）。
+    expect([...下拉!.options].map((项) => 项.value)).toEqual([...排列模式们])
+    expect(下拉!.value).toBe("环形")
+
+    // 默认值就按环形透传（不是 `undefined`，让编辑器走它自己的缺省）。
+    钮("hgraph-toolbar-layout")!.click()
+    expect(布局记录).toEqual(["环形"])
+
+    下拉!.value = "分层"
+    下拉!.dispatchEvent(new Event("change", { bubbles: true }))
+    钮("hgraph-toolbar-layout")!.click()
+    expect(布局记录).toEqual(["环形", "分层"])
   })
 })

@@ -28,7 +28,7 @@ import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
 import { 编辑器, 命中删除键, 构图, 布局目标 } from "./editor"
 import { 适配视口 } from "./geometry"
-import { 阶梯位置 } from "../graph-layout"
+import { 排列模式们, 阶梯位置, type 排列模式 } from "../graph-layout"
 import { 重置导出记录, type 导出依赖 } from "./export"
 
 const 挂过的: Array<() => void> = []
@@ -1826,6 +1826,61 @@ describe("T010 · 单一出口", () => {
       expect(Number.isInteger(目标.x)).toBe(true)
       expect(Number.isInteger(目标.y)).toBe(true)
     }
+  })
+
+  test("T016 排列模式：四模式各跑一次 ⇒ 坐标等于 布局目标 的返回值、锁定节点不动", async () => {
+    const { api, 写们 } = 假api()
+    const 初始 = 一份图()
+    初始.节点 = [造节点("n1", 100, 100), 造节点("n2", 200, 100), 造节点("n3", 300, 100, { 锁定: true })]
+    挂上(api, 初始)
+    await flush()
+
+    const 下拉 = 取("[data-slot='hgraph-toolbar-layout-mode']") as HTMLSelectElement | null
+    expect(下拉 !== null).toBe(true)
+
+    // 影子文档：每轮用写出去的 `移动` 目标更新坐标，下一轮的期望值由此计算
+    // （`布局目标` 会剔掉「已在目标位」的节点，期望值必须跟着文档一起走）。
+    const 影子 = { ...初始, 节点: 初始.节点.map((点) => ({ ...点 })) }
+    const 键们 = (模式: 排列模式) => 布局目标(影子, 模式).map((位) => `${位.id}:${位.x},${位.y}`)
+
+    for (const 模式 of 排列模式们) {
+      下拉!.value = 模式
+      下拉!.dispatchEvent(new Event("change", { bubbles: true }))
+      ;(取("[data-slot='hgraph-toolbar-layout']") as HTMLButtonElement).click()
+      await flush()
+
+      // 每次选择并触发自动布局都弹既有确认条——确认前不写。
+      expect(取("[data-slot='hgraph-layout-confirm']") !== null).toBe(true)
+      const 期望 = 键们(模式)
+      // 锁定节点 n3 永远不在目标里（坐标不变）。
+      expect(期望.some((键) => 键.startsWith("n3:"))).toBe(false)
+
+      const 写前 = 写们.length
+      ;(取("[data-slot='hgraph-layout-confirm-ok']") as HTMLButtonElement).click()
+      await 等到条件(() => 写们.length === 写前 + 1)
+      expect(写们.length).toBe(写前 + 1)
+
+      const 操作 = 写们[写们.length - 1]!.操作
+      expect(操作.length).toBe(1)
+      expect(操作[0]!.操作).toBe("移动")
+      if (操作[0]!.操作 !== "移动") throw new Error("不是移动")
+      const 实得 = 操作[0]!.目标.filter((位) => 位.类别 === "节点").map((位) => `${位.id}:${位.x},${位.y}`)
+      // 坐标 = `布局目标(文档, 模式)` 的返回值：模式必须原样透传到 `自动位置`。
+      expect(实得).toEqual(期望)
+      for (const 位 of 操作[0]!.目标) {
+        const 点 = 影子.节点.find((行) => 行.id === 位.id)
+        if (点 === undefined) continue
+        点.x = 位.x
+        点.y = 位.y
+      }
+    }
+
+    // 全程没有任何一次写移动过锁定节点。
+    const 动过的 = 写们.flatMap((写) => {
+      const 首 = 写.操作[0]
+      return 首 !== undefined && 首.操作 === "移动" ? 首.目标 : []
+    })
+    expect(动过的.some((位) => 位.id === "n3")).toBe(false)
   })
 })
 

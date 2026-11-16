@@ -15,6 +15,7 @@
  */
 import { For, Show, createSignal, onCleanup, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
+import { 排列模式们, type 排列模式 } from "../graph-layout"
 import type { 图文件 } from "./file"
 import type { 画布动作, 模式 } from "./canvas"
 import type { 等距轴, 对齐边 } from "./geometry"
@@ -140,6 +141,13 @@ function 分隔(): JSX.Element {
 
 export function 工具栏(props: 工具栏Props): JSX.Element {
   const 现模式 = () => props.模式 ?? "指针"
+  /**
+   * 下拉当前值（T016）：默认环形，与 `自动位置` 的缺省一致（R36）。
+   * `<select>` 回来的是 `string`；只按 `排列模式们` 的原值解析，认不出就回环形——
+   * 不把非法模式硬塞给编辑器（`#002-06`：模式清单只有 graph-layout 一份）。
+   */
+  const [排列选择, set排列选择] = createSignal("环形")
+  const 排列 = (): 排列模式 => 排列模式们.find((模式) => 模式 === 排列选择()) ?? "环形"
   const 有选中 = () => props.选中.length > 0
   const 可批量 = () => props.选中.length >= 2
   /** 合并只认节点：选中里可能混着文字/边（画布不把边放进选中，但文字会）。 */
@@ -273,7 +281,18 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           )}
         </For>
 
-        {/* T016 会把这里换成「排列模式」下拉；T015 先保留既有自动布局入口。 */}
+        {/* T016：排列模式下拉 + 既有自动布局按钮。模式原样交给编辑器，算法只在
+            `graph-layout.ts` 一份（不在这里算坐标、不复制 `自动位置`）。 */}
+        <select
+          data-slot="hgraph-toolbar-layout-mode"
+          aria-label="排列模式"
+          title="排列模式"
+          class={`${钮动} pr-4`}
+          value={排列选择()}
+          onChange={(事件) => set排列选择(事件.currentTarget.value)}
+        >
+          <For each={排列模式们}>{(模式) => <option value={模式}>{模式}</option>}</For>
+        </select>
         <工具钮
           slot="hgraph-toolbar-layout"
           名称="自动布局"
@@ -281,7 +300,7 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
           图标="grid-plus"
           种类="action"
           禁用={props.文档.节点.length === 0}
-          点={() => props.动作表.自动布局()}
+          点={() => props.动作表.自动布局(排列())}
         />
         <工具钮
           slot="hgraph-toolbar-lock"
