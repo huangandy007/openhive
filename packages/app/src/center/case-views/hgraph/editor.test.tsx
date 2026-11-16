@@ -184,6 +184,15 @@ function 挂上(
   return host
 }
 
+/**
+ * 中途卸下当前实例（模拟「刷新页面 / 新标签页」）：同一条用例里换一个全新的页面实例。
+ * 清空 body 是必须的——同一条用例里连挂两次会共用 DOM 造出假绿（`#005-03`）。
+ */
+function 卸下当前实例() {
+  挂过的.pop()?.()
+  document.body.innerHTML = ""
+}
+
 // ---------------------------------------------------------------------------
 // DOM 取值与指针
 // ---------------------------------------------------------------------------
@@ -4891,8 +4900,10 @@ describe("编辑器 · 出处可点接线（T6）", () => {
 // ---------------------------------------------------------------------------
 // T004 · 幂等键与「换 id 后不产生重复 id」
 //
-// 契约 `014/contracts/hgraph-write.md`：幂等键形如 `web:<图路径>:<递增序号>`，只在
-// 「上次失败载荷逐字相同」时复用；`批次` 每次发送都自增，**不能**当幂等键。
+// 契约 `014/contracts/hgraph-write.md`：幂等键形如 `web:<图路径>:<实例段>:<递增序号>`，
+// 只在「上次失败载荷逐字相同」时复用；`批次` 每次发送都自增，**不能**当幂等键。
+// 实例段让刷新 / 新标签页的序号空间互不相交（否则新页面从 1 重新计数，会撞上上一页面
+// 同序号的键，被服务端当成重放、静默吞掉这次改动）。
 // 成功分支若 `映射` 把两个对象落到同一个 id ⇒ 不落地这份应答，整图重载并提示。
 // ---------------------------------------------------------------------------
 
@@ -4911,10 +4922,10 @@ describe("T004 · 幂等键与换 id 收口", () => {
     拖(节点组("n1")!, 100, 100, 180, 100)
     await 过防抖()
     expect(写们.length).toBe(1)
-    // 前置（防假绿）：第一次真的带了键，且形状是契约里的 `web:<路径>:<序号>`。
+    // 前置（防假绿）：第一次真的带了键，且形状是契约里的 `web:<路径>:<实例段>:<序号>`。
     const 首次键 = 写们[0]!.幂等键
     expect(typeof 首次键).toBe("string")
-    expect(首次键).toMatch(/^web:分析\/测试图\.hgraph:\d+$/)
+    expect(首次键).toMatch(/^web:分析\/测试图\.hgraph:[^:]+:\d+$/)
 
     按钮("hgraph-save-retry").click()
     await 过防抖()
@@ -4982,5 +4993,100 @@ describe("T004 · 幂等键与换 id 收口", () => {
     // 判据三：不产生重复 id——落地的是盘上那份（n1 回到 120），不是撞车的映射结果。
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(120 100)")
     expect(document.body.querySelectorAll("[data-node-id='n2']").length).toBe(1)
+  })
+
+  // C1：幂等序号若全局共用（刷新即归零），新页面第一次写的键会和上一页面第一次写的键
+  // 逐字相同；服务端只按「人+项目+路径+键」查表、不校验载荷 ⇒ 重放旧结果、这次改动被
+  // 静默吞掉。每实例的键必须带一段自己的标识。
+  test("同一路径下新实例的序号空间互不相交 ⇒ 键不同", async () => {
+    const 形状 = /^web:分析\/测试图\.hgraph:[^:]+:\d+$/
+
+    const 甲 = 假api()
+    挂上(甲.api)
+    await flush()
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(甲.写们.length).toBe(1)
+    const 键甲 = 甲.写们[0]!.幂等键
+    if (typeof 键甲 !== "string") throw new Error(`甲：幂等键应为字符串，实得 ${String(键甲)}`)
+    expect(键甲).toMatch(形状)
+
+    // 模拟刷新 / 新标签页：全新页面实例，幂等序号从 1 重新计数。
+    卸下当前实例()
+    const 乙 = 假api()
+    挂上(乙.api)
+    await flush()
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(乙.写们.length).toBe(1)
+    const 键乙 = 乙.写们[0]!.幂等键
+    if (typeof 键乙 !== "string") throw new Error(`乙：幂等键应为字符串，实得 ${String(键乙)}`)
+    expect(键乙).toMatch(形状)
+
+    // 前置（红点）：新实例确实从序号 1 起算——模块级序号会接着上一实例涨到 2。
+    expect(键乙.split(":")[3]).toBe("1")
+    // 主判据：序号空间互不相交，否则服务端会把上一实例的旧结果当成这次请求的重放。
+    expect(键乙).not.toBe(键甲)
+  })
+
+  // I1：撞 id 后的「整图重载」若读盘失败，本地仍是带临时 id 的乐观文档、版本未推进；
+  // 此时报「已保存」会让用户以为落盘了，之后按临时 id 编辑还会被服务端拒。
+  test("撞 id 后读盘失败 ⇒ 不装作已存，状态回到待发并给提示", async () => {
+    const { api, 写们, 取读数 } = 假api({
+      写: () => 成功("v2", { n1: "n2" }),
+      读: () => ({ kind: "error", message: "网络断了", code: "network" }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    await 等到条件(() => 取读数() > 0)
+    await flush()
+    await flush()
+
+    // 前置：真的走了「撞 id 收口」的那次读。
+    expect(取读数()).toBeGreaterThan(0)
+    // 主判据：读失败不许当成功——状态不是「已存」，文案不是「已保存」。
+    expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).not.toBe("已存")
+    expect(文案("hgraph-save-status")).not.toBe("已保存")
+    expect(文案("hgraph-save-status")).toContain("不一致")
+    // 仍有可操作提示：告诉用户重新载入。
+    expect(文案("hgraph-inconsistent-notice")).toBe("图和你本地不一致，请重新载入")
+  })
+
+  // M1：收口那次 `读` 在途时用户进了演示 ⇒ 应答回来不许当场换掉演示文档（与轮询 m-1 同一条守卫）。
+  test("撞 id 后读在途时进入演示 ⇒ 应答回来不换文档", async () => {
+    const 盘上 = 一份图()
+    盘上.节点 = [...盘上.节点, 造节点("n9", 600, 400)]
+    let 解读!: (回: 读回) => void
+    const 读闸 = new Promise<读回>((解) => (解读 = 解))
+    const { api, 写们, 取读数 } = 假api({
+      写: () => 成功("v2", { n1: "n2" }),
+      读: () => 读闸,
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    await 等到条件(() => 取读数() > 0)
+
+    // 读还挂着，用户进了演示。
+    按钮("hgraph-toolbar-present").click()
+    await flush()
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+
+    解读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上), 版本: "v9" } })
+    await flush()
+    await flush()
+
+    // 演示不被打断：盘上那份没有套上，也没有弹换图提示。
+    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(节点组("n9")).toBeNull()
+    expect(文案("hgraph-inconsistent-notice")).toBeUndefined()
   })
 })
