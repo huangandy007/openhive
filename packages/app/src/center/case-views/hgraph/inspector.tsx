@@ -448,7 +448,7 @@ export function 检查器(props: 检查器Props): JSX.Element {
     <aside
       data-slot="hgraph-inspector"
       aria-label="检查器"
-      class="absolute z-10 flex max-h-[calc(100%-48px)] w-[280px] flex-col gap-2 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-2 shadow"
+      class="absolute z-10 flex max-h-[calc(100%-48px)] flex-col gap-2 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-2 shadow"
       style={{ width: `${面板宽}px`, right: `${面板边距}px`, top: `${面板边距}px` }}
     >
       <Show when={!批量() && 单个() === undefined && 单个边() === undefined && 单个文字() === undefined}>

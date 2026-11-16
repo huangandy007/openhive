@@ -22,9 +22,9 @@ export interface GraphProps {
    */
 }
 
-/** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[280px]` 一致（测试钉着）。 */
-export const 面板宽 = 280
-export const 面板边距 = 24
+/** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[320px]` 一致（测试钉着）。 */
+export const 面板宽 = 320
+export const 面板边距 = 0
 
 // 布局纯函数住在 `graph-layout.ts`（关系图编辑器共用同一套）。这里保留同名 re-export，
 // 既有调用方与 `graph.test.tsx` 一行不改（`#002-06` 同一前提单一出处）。
@@ -594,7 +594,7 @@ export function Graph(props: GraphProps): JSX.Element {
   }
 
   /**
-   * 检视面板浮在画布右边缘（`w-[280px]`），底下那一列节点点不到也拖不到——真栈实操时
+   * 检视面板浮在画布右边缘（`w-[320px]`），底下那一列节点点不到也拖不到——真栈实操时
    * 在面板正下方起手拖动，按到的是面板按钮（误触「以此为中心」开了新关系图）。
    * 点选就把它让出来：平移画布，不改布局坐标。
    */
@@ -1299,7 +1299,7 @@ export function Graph(props: GraphProps): JSX.Element {
             <div
               data-slot="graph-zoom-bar"
               class="absolute bottom-2 flex gap-1 transition-[right]"
-              style={{ right: 选中() === null ? "8px" : "292px" }}
+              style={{ right: 选中() === null ? "8px" : `${面板宽 + 8}px` }}
             >
               <For each={[["out", "−"], ["in", "＋"], ["fit", "适应"]] as const}>
                 {([种, 标签]) => (
@@ -1323,7 +1323,7 @@ export function Graph(props: GraphProps): JSX.Element {
             <aside
               data-slot="graph-panel"
               data-panel-kind="node"
-              class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+              class="absolute inset-y-0 right-0 z-10 flex w-[320px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
             >
               <div class="flex items-start gap-2">
                 <div class="min-w-0 flex-1">
@@ -1408,7 +1408,7 @@ export function Graph(props: GraphProps): JSX.Element {
               <aside
                 data-slot="graph-panel"
                 data-panel-kind="edge"
-                class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+                class="absolute inset-y-0 right-0 z-10 flex w-[320px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
               >
                 <div class="flex items-start gap-2">
                   <div class="min-w-0 flex-1">
