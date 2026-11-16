@@ -5046,35 +5046,52 @@ describe("T004 · 幂等键与换 id 收口", () => {
   // C1：幂等序号若全局共用（刷新即归零），新页面第一次写的键会和上一页面第一次写的键
   // 逐字相同；服务端只按「人+项目+路径+键」查表、不校验载荷 ⇒ 重放旧结果、这次改动被
   // 静默吞掉。每实例的键必须带一段自己的标识。
-  test("同一路径下新实例的序号空间互不相交 ⇒ 键不同", async () => {
+  //
+  // N1：**把时钟与随机源都固定死**（否则「实例段只用时间」的退化实现也能靠两次挂载的
+  // 毫秒差蒙混过关）。固定之后两键仍不同、且实例段的随机尾巴都等于被钉死的值 ⇒ 差异
+  // 不可能来自时钟，随机段确实参与构造；「实例段 = 纯实例计数」会红在随机尾巴断言上。
+  test("同一路径下新实例的序号空间互不相交 ⇒ 键不同（固定时钟与随机后仍不同）", async () => {
     const 形状 = /^web:分析\/测试图\.hgraph:[^:]+:\d+$/
+    const 原now = Date.now
+    const 原随机 = Math.random
+    Date.now = () => 1_700_000_000_000
+    Math.random = () => 0.5
+    try {
+      const 甲 = 假api()
+      挂上(甲.api)
+      await flush()
+      拖(节点组("n1")!, 100, 100, 180, 100)
+      await 过防抖()
+      expect(甲.写们.length).toBe(1)
+      const 键甲 = 甲.写们[0]!.幂等键
+      if (typeof 键甲 !== "string") throw new Error(`甲：幂等键应为字符串，实得 ${String(键甲)}`)
+      expect(键甲).toMatch(形状)
 
-    const 甲 = 假api()
-    挂上(甲.api)
-    await flush()
-    拖(节点组("n1")!, 100, 100, 180, 100)
-    await 过防抖()
-    expect(甲.写们.length).toBe(1)
-    const 键甲 = 甲.写们[0]!.幂等键
-    if (typeof 键甲 !== "string") throw new Error(`甲：幂等键应为字符串，实得 ${String(键甲)}`)
-    expect(键甲).toMatch(形状)
+      // 模拟刷新 / 新标签页：全新页面实例，幂等序号从 1 重新计数。
+      卸下当前实例()
+      const 乙 = 假api()
+      挂上(乙.api)
+      await flush()
+      拖(节点组("n1")!, 100, 100, 180, 100)
+      await 过防抖()
+      expect(乙.写们.length).toBe(1)
+      const 键乙 = 乙.写们[0]!.幂等键
+      if (typeof 键乙 !== "string") throw new Error(`乙：幂等键应为字符串，实得 ${String(键乙)}`)
+      expect(键乙).toMatch(形状)
 
-    // 模拟刷新 / 新标签页：全新页面实例，幂等序号从 1 重新计数。
-    卸下当前实例()
-    const 乙 = 假api()
-    挂上(乙.api)
-    await flush()
-    拖(节点组("n1")!, 100, 100, 180, 100)
-    await 过防抖()
-    expect(乙.写们.length).toBe(1)
-    const 键乙 = 乙.写们[0]!.幂等键
-    if (typeof 键乙 !== "string") throw new Error(`乙：幂等键应为字符串，实得 ${String(键乙)}`)
-    expect(键乙).toMatch(形状)
-
-    // 前置（红点）：新实例确实从序号 1 起算——模块级序号会接着上一实例涨到 2。
-    expect(键乙.split(":")[3]).toBe("1")
-    // 主判据：序号空间互不相交，否则服务端会把上一实例的旧结果当成这次请求的重放。
-    expect(键乙).not.toBe(键甲)
+      // 前置（红点）：新实例确实从序号 1 起算——模块级序号会接着上一实例涨到 2。
+      expect(键乙.split(":")[3]).toBe("1")
+      // 主判据：序号空间互不相交，否则服务端会把上一实例的旧结果当成这次请求的重放。
+      expect(键乙).not.toBe(键甲)
+      // N1：时钟被固定 ⇒ 两键不同只能来自随机段 / 实例计数；再钉死随机值「0.5 → i」，
+      // 两个实例段的末段都必须是被固定的那个随机尾巴（纯计数实现会在这里红）。
+      const 随机尾 = (键: string) => 键.split(":")[2].split("-").at(-1)
+      expect(随机尾(键甲)).toBe("i")
+      expect(随机尾(键乙)).toBe("i")
+    } finally {
+      Date.now = 原now
+      Math.random = 原随机
+    }
   })
 
   // I1：撞 id 后的「整图重载」若读盘失败，本地仍是带临时 id 的乐观文档、版本未推进；
@@ -5102,6 +5119,33 @@ describe("T004 · 幂等键与换 id 收口", () => {
     expect(文案("hgraph-save-status")).not.toBe("已保存")
     expect(文案("hgraph-save-status")).toContain("不一致")
     // 仍有可操作提示：告诉用户重新载入。
+    expect(文案("hgraph-inconsistent-notice")).toBe("图和你本地不一致，请重新载入")
+  })
+
+  // N3 / M2：读**成功**但内容解析失败——旧写法会把它当成「有变更」交给 `执行重载`，
+  // 后者因没有文档直接返回，状态就永远停在「发送中」。解析失败同样必须按失败收口。
+  test("撞 id 后读成功但解析失败 ⇒ 状态回到待发，不假装一致", async () => {
+    const { api, 写们, 取读数 } = 假api({
+      写: () => 成功("v2", { n1: "n2" }),
+      读: () => ({ kind: "ok", value: { 内容: "{不是 JSON", 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写们.length).toBe(1)
+
+    await 等到条件(() => 取读数() > 0)
+    await flush()
+    await flush()
+
+    // 前置：真的走了「撞 id 收口」的那次读，且它是**成功**回来的（不是网络失败那条分支）。
+    expect(取读数()).toBeGreaterThan(0)
+    // 主判据：解析失败不许当成功——旧写法会让状态停在「发送中」，而不是回到待发。
+    expect(取("[data-slot='hgraph-save-status']")!.getAttribute("data-state")).toBe("待发")
+    expect(文案("hgraph-save-status")).toContain("不一致")
+    expect(文案("hgraph-save-status")).not.toBe("已保存")
     expect(文案("hgraph-inconsistent-notice")).toBe("图和你本地不一致，请重新载入")
   })
 
@@ -5133,8 +5177,9 @@ describe("T004 · 幂等键与换 id 收口", () => {
     await flush()
 
     // 演示不被打断：盘上那份没有套上，也没有弹换图提示。
+    // DOM「不存在」用布尔比较（`#013-12`：`toBeNull()` 在元素存在时也绿过）。
     expect(取("[data-slot='hgraph-present']")).not.toBeNull()
-    expect(节点组("n9")).toBeNull()
+    expect(节点组("n9") === null).toBe(true)
     expect(文案("hgraph-inconsistent-notice")).toBeUndefined()
   })
 })
