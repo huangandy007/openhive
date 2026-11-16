@@ -212,6 +212,24 @@ describe("检查器 · 三段两源", () => {
     expect(文本("hgraph-readonly-时间")).toBe("2026-01-01 ~ 2026-02-01")
   })
 
+  /**
+   * T002（014 关系图可用性）：`来源.kind = 事件` 是合法类别，徽标必须显示「事件」，
+   * 不能被旧的 `default` 分支静默显示成「手写」。
+   *
+   * 元素存在性按 LEARNINGS `#013-12` 用布尔比较（`toBeNull()` 在本机 happy-dom 里会假绿）。
+   */
+  test("来源.kind = 事件 ⇒ 徽标文案含『事件』且不含『手写』", () => {
+    挂检查器({ 选中: ["n1"], 文档: 造图({ 来源: { kind: "事件" } }) })
+
+    const 徽标 = 取("[data-slot='hgraph-readonly-来源']")
+    // 先立「元素在文档里」这个前提，再断文案——否则空串也能让「不含手写」通过。
+    expect(徽标 === null).toBe(false)
+    expect(document.body.contains(徽标)).toBe(true)
+    const 文案 = 徽标?.textContent?.trim() ?? ""
+    expect(文案).toContain("事件")
+    expect(文案.includes("手写")).toBe(false)
+  })
+
   test("没注入快照 ⇒ 明写「还没有接入库里的数据」，不伪造空属性", () => {
     挂检查器({ 选中: ["n1"] })
 

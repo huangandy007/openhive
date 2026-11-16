@@ -29,7 +29,7 @@ export interface 时间 {
 }
 
 export interface 来源 {
-  kind: "实体" | "关系" | "推断" | "手写"
+  kind: "实体" | "关系" | "推断" | "手写" | "事件"
   实体?: string
   值?: string
   库类型?: string

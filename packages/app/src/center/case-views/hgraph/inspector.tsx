@@ -100,16 +100,35 @@ const 时间文本 = (时间: { readonly 首?: string; readonly 末?: string } |
     ? "—"
     : `${时间.首 ?? ""} ~ ${时间.末 ?? ""}`
 
+/**
+ * 来源类别 → 徽标主文案。**穷举 switch + `never` 兜底**：联合类型新增 kind 却忘了加分支
+ * 时，类型检查会报错；旧写法用三元落进 `"手写"` 默认分支，`事件` 因此被静默显示成「手写」
+ * （T002 修的就是这处静默分支）。
+ *
+ * 运行时可能有未知值（`解析图` 读侧放宽，文件里能带任意字符串）：原样显示，不冒充已知类别。
+ */
+function 来源主文本(来源: 节点["来源"]): string {
+  switch (来源.kind) {
+    case "实体":
+      return `实体：${来源.值 ?? 来源.实体 ?? ""}`
+    case "关系":
+      return `关系：${来源.值 ?? ""}`
+    case "推断":
+      return "推断"
+    case "手写":
+      return "手写"
+    case "事件":
+      return "事件"
+    default: {
+      const 未覆盖: never = 来源.kind
+      return 未覆盖
+    }
+  }
+}
+
 function 来源文本(来源: 节点["来源"] | undefined): string {
   if (来源 === undefined) return "—"
-  const 主 =
-    来源.kind === "实体"
-      ? `实体：${来源.值 ?? 来源.实体 ?? ""}`
-      : 来源.kind === "关系"
-        ? `关系：${来源.值 ?? ""}`
-        : 来源.kind === "推断"
-          ? "推断"
-          : "手写"
+  const 主 = 来源主文本(来源)
   const 附 = [来源.库类型, 来源.可信].filter((值): 值 is string => typeof 值 === "string" && 值 !== "")
   return 附.length === 0 ? 主 : `${主}（${附.join(" · ")}）`
 }
