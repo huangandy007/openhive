@@ -608,6 +608,24 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [居中请求, set居中请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
   // 初值 `undefined`（不是 0）：挂载时不能自动适配——没有用户请求就不动视口（R70）。
   const [适配请求, set适配请求] = createSignal<number | undefined>()
+  /** T008：检查器让位请求——选中变化时递增一次；同一选中期间拖动不再递增。 */
+  const [让位请求, set让位请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
+  /**
+   * T008 / FR-015：选中变化 ⇒ 请画布让位一次（检查器浮在右侧，会盖住底下那一列）。
+   * 只有「单个选中 id」真的变了才递增序号——拖动改的是文档坐标、不改选中，所以后续
+   * 拖动不再跟随；文档变化触发的 id 映射（同 id 重新装数组）也不会重复请求。
+   * 是否真的被遮住由画布按自己的视口判断。
+   */
+  let 上次让位id: string | undefined
+  createEffect(() => {
+    const 当前 = 选中()
+    if (演示中()) return
+    const id = 当前.length === 1 ? 当前[0] : undefined
+    if (id === 上次让位id) return
+    上次让位id = id
+    if (id === undefined) return
+    set让位请求((旧) => ({ id, 序号: (旧?.序号 ?? 0) + 1 }))
+  })
   /** 查找路径面板（R72）：`空` = 不连通；命中时带跳数与路径。 */
   const [路径面板, set路径面板] = createSignal<路径面板内容 | undefined>()
   /**
@@ -2394,6 +2412,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           聚焦请求={聚焦请求()}
           居中请求={演示中() ? undefined : 居中请求()}
           适配请求={适配请求()}
+          让位请求={演示中() ? undefined : 让位请求()}
           标签开={标签开()}
           档表={档表()}
           图例初始收起={演示中()}

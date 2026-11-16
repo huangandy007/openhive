@@ -47,7 +47,7 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 多边形, type 位点 } from "../graph"
+import { 形状, 多边形, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -242,6 +242,12 @@ export interface 画布Props {
   readonly 居中请求?: { readonly id: string; readonly 序号: number }
   readonly 适配请求?: number
   readonly 适配目标?: readonly string[]
+  /**
+   * 检查器让位（T008 / FR-015）：编辑器在**选中变化**时递增 `序号`，画布只在序号变化时
+   * 平移一次——拖动改的是文档坐标，不改请求，所以视口不会持续跟随。
+   * 对象本来就落在未覆盖区 ⇒ 不动画面。
+   */
+  readonly 让位请求?: { readonly id: string; readonly 序号: number }
   /**
    * 标签分级的 `开`（T017b / R71）：`false` ⇒ 只留选中与悬停（>800 节点默认关标签的落点）；
    * `undefined` ⇒ 按缩放档位取舍。`true` = 工具栏强制打开。
@@ -444,6 +450,37 @@ export function 画布(props: 画布Props): JSX.Element {
     const 目标 = props.适配目标
     const 点们 = 目标 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => 目标.includes(点.id))
     set视口(适配视口(点们, { 宽: 画布宽, 高: 画布高 }))
+  })
+
+  /** 选中对象的画布锚点（T008）：节点 / 文字用自己的坐标，边取两端中点。 */
+  const 选中锚点 = (id: string) => {
+    const 点 = props.文档.节点.find((行) => 行.id === id)
+    if (点 !== undefined) return { x: 数(点.x), y: 数(点.y) }
+    const 文 = props.文档.文字.find((行) => 行.id === id)
+    if (文 !== undefined) return { x: 数(文.x), y: 数(文.y) }
+    const 边行 = props.文档.边.find((行) => 行.id === id)
+    if (边行 === undefined) return undefined
+    const 甲 = props.文档.节点.find((行) => 行.id === 边行.从)
+    const 乙 = props.文档.节点.find((行) => 行.id === 边行.到)
+    if (甲 === undefined || 乙 === undefined) return undefined
+    return { x: (数(甲.x) + 数(乙.x)) / 2, y: (数(甲.y) + 数(乙.y)) / 2 }
+  }
+
+  /**
+   * 检查器让位（T008 / FR-015）：**只在请求序号变化时**平移一次——拖动改的是节点坐标，
+   * 不改请求，视口因此不会持续跟随。目标 = 未覆盖区中心；对象本来没被盖住就不动画面。
+   */
+  let 上次让位: number | undefined
+  createEffect(() => {
+    const 请求 = props.让位请求
+    if (请求 === undefined || 请求.序号 === 上次让位) return
+    上次让位 = 请求.序号
+    const 锚 = 选中锚点(请求.id)
+    if (锚 === undefined) return
+    const 视 = 视口()
+    const 新x = 面板让位平移x(锚, { 缩放: 视.缩放, x: 视.x }, 画布宽, (画布宽 - 面板宽 - 面板边距) / 2)
+    if (新x === undefined) return
+    set视口({ ...视, x: 新x })
   })
 
   const 提交改名 = (id: string, 值: string) => {
