@@ -201,7 +201,8 @@ export function 图名(路径: string): string {
   return basename(路径).replace(/\.hgraph$/i, "")
 }
 
-function 错误码(值: unknown): string {
+/** 取 Node 错误的 `code`（非对象 / 非字符串一律空串）。工具层的 `列图` 也复用这一份（修复轮 1 M-4）。 */
+export function 错误码(值: unknown): string {
   if (typeof 值 !== "object" || 值 === null) return ""
   const code: unknown = (值 as { code?: unknown }).code
   return typeof code === "string" ? code : ""

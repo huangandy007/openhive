@@ -244,7 +244,7 @@ describe("graph_list", () => {
     expect(错.message).toBe("项目目录不在了")
   })
 
-  test("项目目录读不了（位置被文件占住，ENOTDIR）⇒ 抛错而不是 { 图: [] }（分发改折 tool_failed）", async () => {
+  test("项目目录读不了（位置被文件占住，ENOTDIR）⇒ 抛错而不是 { 图: [] }", async () => {
     // 无权限 / 不是目录都不是「没有图」：这里不谎报空列表，也不谎报 not_found；
     // 普通 Error ⇒ 分发处折 `tool_failed`（原文只进留痕，模型侧不泄露路径）。
     let 捕获: unknown
@@ -759,30 +759,34 @@ describe("幂等键跨工具", () => {
 
 describe("幂等键跨图", () => {
   // 原用例标题写着「（不同图路径也不行）」但两条调用用的是同一路径（R86 复审 Minor）。
-  // 这里补一条**真跨图**用例：核心索引里的锁键把两张图分开，同一客户端键不得互相重放。
-  test("同一幂等键在另一张图上不重放、真的写", async () => {
-    摆图("idem/甲图.hgraph", 空图("甲图"))
-    摆图("idem/乙图.hgraph", {
-      ...空图("乙图"),
-      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+  // 修复轮 1（I-1）：上一版用了**不同工具**（graph_add / graph_update），工具层前缀已把幂等键
+  // 分开，根本没测到核心索引的路径维度（审查者把锁键的父真路径去掉后仍绿）。
+  // 这里改为**同一工具、同一客户端幂等键**，且两张图同名不同目录——目录相同则核心锁键本就
+  // 相同、目录不同则父真路径是唯一区分项，删掉它必红。
+  test("同一工具同一幂等键在另一目录的同名图上不重放、两张都真写", async () => {
+    摆图("idem/跨图/甲/流向.hgraph", 空图("甲"))
+    摆图("idem/跨图/乙/流向.hgraph", 空图("乙"))
+    const 键 = "同工具跨图-k1"
+    const 首 = await graph_add(ctx(), {
+      路径: "idem/跨图/甲/流向.hgraph",
+      节点: [手写节点("张三")],
+      幂等键: 键,
     })
-    const 键 = "跨图-k1"
-    const 加 = await graph_add(ctx(), {
-      路径: "idem/甲图.hgraph",
+    expect(首.重放).toBe(false)
+    expect(首.新增).toEqual({ 节点: 1, 边: 0 })
+
+    const 次 = await graph_add(ctx(), {
+      路径: "idem/跨图/乙/流向.hgraph",
       节点: [手写节点("李四")],
       幂等键: 键,
     })
-    expect(加.重放).toBe(false)
+    expect(次.重放).toBe(false)
+    expect(次.新增).toEqual({ 节点: 1, 边: 0 })
 
-    const 改 = await graph_update(ctx(), {
-      路径: "idem/乙图.hgraph",
-      目标: [{ 类别: "节点", id: "n1", 字段: { 名称: "张三丰" } }],
-      幂等键: 键,
-    })
-    expect(改.重放).toBe(false)
-    expect(改.更新).toBe(1)
-    expect(读回图("idem/乙图.hgraph").节点[0]).toMatchObject({ 名称: "张三丰" })
-    expect(读回图("idem/甲图.hgraph").节点).toHaveLength(1)
+    const 甲 = 读回图("idem/跨图/甲/流向.hgraph")
+    const 乙 = 读回图("idem/跨图/乙/流向.hgraph")
+    expect(甲.节点.map((点) => 点.名称)).toEqual(["张三"])
+    expect(乙.节点.map((点) => 点.名称)).toEqual(["李四"])
   })
 })
 
@@ -843,6 +847,29 @@ describe("写失败优先级", () => {
         目标: [
           { 类别: "边", id: "e1", 字段: { 性质: "怪" } },
           { 类别: "节点", id: "n9", 字段: { 名称: "幽灵" } },
+        ],
+      }),
+    )
+    expect(错.code).toBe("bad_input")
+    expect(错.message).toBe("边的「性质」只能是 事实 或 推断")
+    expect(字节哈希(绝对)).toBe(前)
+  })
+
+  test("缺失 id 为空串时不误折 not_found（`includes` 必须非空且带引号）", async () => {
+    // 工具层预读把「节点 \"\"」记为缺失；旧判据 `话术.includes(缺失)` 在缺失 === "" 时恒真，
+    // 会把同批第一条的枚举错误折成 not_found。唯一出处的话术是 `图上没有<类别>「<id>」`。
+    const 绝对 = 摆图("update/空id.hgraph", {
+      ...空图("空id"),
+      节点: [手写节点("张三", { id: "n1", x: 0, y: 0 })],
+      边: [事实边("n1", "n1", { id: "e1" })],
+    })
+    const 前 = 字节哈希(绝对)
+    const 错 = await 取工具错误(() =>
+      graph_update(ctx(), {
+        路径: "update/空id.hgraph",
+        目标: [
+          { 类别: "边", id: "e1", 字段: { 性质: "怪" } },
+          { 类别: "节点", id: "", 字段: { 名称: "幽灵" } },
         ],
       }),
     )

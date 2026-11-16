@@ -4,7 +4,7 @@ import { join, relative, sep } from "node:path"
 import { 工具错误, type 工具错误码, type 工具上下文 } from "./case-mcp-tools"
 import type { 类别, 边草稿, 操作, 改字段目标, 节点草稿, 删对象目标 } from "./hgraph-edit"
 import { 解析图 } from "./hgraph-file"
-import { 应用并写回, 图名, 读文件, 现在ISO, 项目目录不在, type 核心依赖, type 核心失败, type 失败码 } from "./hgraph-ops"
+import { 应用并写回, 图名, 读文件, 现在ISO, 错误码, 项目目录不在, type 核心依赖, type 核心失败, type 失败码 } from "./hgraph-ops"
 import { 项目属主 } from "./project-actor"
 
 /**
@@ -32,7 +32,9 @@ import { 项目属主 } from "./project-actor"
  * ## 错误码
  *
  * 核心失败码 → 工具错误码只经 `映射失败码` 这一个纯函数（R51）；`话术` 原样透传，不改写、
- * 不折成兜底。`留痕` 由 MCP 分发处统一记录（工具名 / 耗时 / 映射后的码），这里不重复记。
+ * 不折成兜底。唯一例外是「缺失目标」折算 `not_found`：`写失败回报` 是这层改写的唯一出口，
+ * 且只在核心话术以 `「<id>」` 点名该缺失 id 时生效（其余失败仍由 `映射失败码` 兜）。
+ * `留痕` 由 MCP 分发处统一记录（工具名 / 耗时 / 映射后的码），这里不重复记。
  */
 
 // ---------------------------------------------------------------------------
@@ -139,12 +141,6 @@ interface 图条目 {
  * 伪装成「还没有关系图」。根目录 ENOENT ⇒ `not_found`「项目目录不在了」；其余失败
  * （子目录无权限 / 被删 / 位置不是目录）抛普通 Error，由分发处折 `tool_failed`。
  */
-function 错误码(值: unknown): string {
-  if (typeof 值 !== "object" || 值 === null) return ""
-  const code: unknown = (值 as { code?: unknown }).code
-  return typeof code === "string" ? code : ""
-}
-
 async function 列图(目录: string): Promise<图条目[]> {
   const 结果: 图条目[] = []
   const 走 = async (当前: string): Promise<void> => {
@@ -234,10 +230,10 @@ function 抛核心失败(失败: { readonly code: 失败码; readonly 话术: st
  * 枚举不合法），那才是「为什么没存上」的答案，不能被一句「图上没有 n9」盖掉（R86 #8）。
  */
 export function 写失败回报(写: 核心失败, 缺失: string | undefined): 工具错误 {
-  // 只有核心回的正是「缺目标」那一条（`BAD_OP` 且话术点名该 id）才折 `not_found`。
-  // `hgraph-edit` 的缺失话术是 `图上没有<类别>「<id>」`（唯一出处）；白名单 / 枚举 / 未知类别
-  // 这类 `BAD_OP` 不带目标 id，写盘 / 解析失败更是别的码——都按真因回报。
-  if (缺失 !== undefined && 写.code === "BAD_OP" && 写.话术.includes(缺失)) {
+  // 只有核心回的正是「缺目标」那一条（`BAD_OP` 且话术以 **`「<id>」`** 点名）才折 `not_found`。
+  // `hgraph-edit` 的缺失话术是 `图上没有<类别>「<id>」`（唯一出处），故判据必须带引号；`缺失`
+  // 还要非空——空串会让 `includes("")` 恒真，把同批別的 `BAD_OP` 全折成 `not_found`（修复轮 1 M-2）。
+  if (缺失 !== undefined && 缺失 !== "" && 写.code === "BAD_OP" && 写.话术.includes(`「${缺失}」`)) {
     return new 工具错误("not_found", `图上没有 ${缺失}`)
   }
   return new 工具错误(映射失败码(写.code), 写.话术)
