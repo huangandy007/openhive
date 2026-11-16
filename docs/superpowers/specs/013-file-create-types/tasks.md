@@ -19,23 +19,24 @@
 
 ## T2 前端：扩展名常量单一出处
 
-- [ ] 新建 `packages/app/src/center/file-type-extensions.ts`（零依赖）：把 `views/index.ts` 里各处
+- [x] 新建 `packages/app/src/center/file-type-extensions.ts`（零依赖）：把 `views/index.ts` 里各处
       `extensions: [...]` 的数组提成导出常量（文档/表格/PDF/图片/图文/思维导图/关系图/网页/代码）
-- [ ] `views/index.ts` 改为引用这些常量；`表格扩展名` 保持对外导出（`open-file.ts` 不动）
-- [ ] 守卫 `views/index.test.tsx` 仍绿（loader 仍是动态 import）
-- [ ] parity：清单里的后缀与注册表逐一对得上（用例放 T3）
+- [x] `views/index.ts` 改为引用这些常量；`表格扩展名` 的对外导出**移至常量模块**，
+      `open-file.ts` 改从 `./file-type-extensions` 取（原写「保持对外导出」已按实现回写）
+- [x] 守卫 `views/index.test.tsx` 仍绿（loader 仍是动态 import）
+- [x] parity：清单里的后缀与注册表逐一对得上（用例放 T3）
 
 ## T3 前端：清单模块 + 弹窗重写
 
-- [ ] `packages/app/src/project/file-create-catalog.ts`：`新建大类`（9 类，顺序见 spec §5）、
+- [x] `packages/app/src/project/file-create-catalog.ts`：`新建大类`（9 类，顺序见 spec §5）、
       `补类型后缀(name, 后缀)`（从 `file-create-types.ts` 迁来，签名改为收后缀字符串）；
       `file-create-types.ts` 只留 `关系图后缀`（`file-tree.tsx` / `openhive-file-ops.ts` 的 import 不变）
-- [ ] `file-create-catalog.test.ts`：9 类顺序；后缀并集 ⊆ 注册表；无重复归属
-- [ ] 弹窗重写类型区：`data-slot="file-create-catalog" | "file-create-category" | "file-create-category-title" | "file-create-suffix" | "file-create-suffix-check" | "file-create-category-toggle"`
+- [x] `file-create-catalog.test.ts`：9 类顺序；后缀并集 ⊆ 注册表；无重复归属
+- [x] 弹窗重写类型区：`data-slot="file-create-catalog" | "file-create-category" | "file-create-category-title" | "file-create-suffix" | "file-create-suffix-check" | "file-create-category-toggle"`
       - 标题是纯文本（非 button）；勾选框在标签**前**；互斥；再点取消；选中「V」+ 高亮；大类联动高亮
       - 代码默认折叠（`aria-expanded=false`，无 `.ts` 行），点「展开」出现；列表区 `max-h` 滚动
       - 文件夹弹窗不渲染清单
-- [ ] `file-create-dialog.test.tsx`：胶囊用例改写成勾选用例，其余用例原样保留
+- [x] `file-create-dialog.test.tsx`：胶囊用例改写成勾选用例，其余用例原样保留
 
 ## T4 收尾
 

@@ -32,6 +32,15 @@
  * `kind` 与 `parent` 是**开弹窗那一刻**由树的入口（＋ 下拉 / 右键菜单）定下的，作为 prop 进来、
  * 弹窗自己不重算——所以回调只回 `name`。这与改之前那根行内输入条交给 `onCreate` 的东西逐字相同
  * （`{ kind, parent, name }`），换的只是「名字在哪儿问」。
+ *
+ * ## 类型区：从「胶囊」换成「大类 + 后缀勾选」（用户 2026-11-16 裁定）
+ *
+ * 012 只有一枚「关系图」胶囊；13 种可建类型铺成一排胶囊既列不下、也分不清类别。现改为
+ * **9 个大类**（文档 / 表格 / 图文 / 关系图 / 思维导图 / PDF / 图片 / 网页 / 代码），每个后缀
+ * 前一个勾选框，同一时刻至多勾一个；大类标题只是分组标题、不可点。代码大类默认折叠、列表区可滚。
+ *
+ * **「默认不选 = 普通文件」的语义不变**：不勾任何后缀 ⇒ 名字原样交出去（0 字节文件），
+ * 与胶囊时代一致；勾了才补后缀（已带同后缀不重复加，见 `补类型后缀`）。
  */
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -42,7 +51,7 @@ import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { For, Show, createSignal, type JSX } from "solid-js"
 import { 改名草稿 } from "@/components/inline-rename-input"
 import { FileOpError } from "./file-op-error"
-import { 可新建类型, 补类型后缀, type 可新建类型 as 类型定义 } from "./file-create-types"
+import { 新建大类, 补类型后缀 } from "./file-create-catalog"
 
 export interface FileCreateDialogProps {
   /** 建文件还是建文件夹——只决定标题与占位文案（服务端 `Schema.Literals(["file","directory"])`）。 */
@@ -66,17 +75,24 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
   const [失败话, set失败话] = createSignal<string | undefined>()
   /** 交出去之后、回话之前。这段缝隙里「确定」是锁着的（见 `确定`）。 */
   const [忙, set忙] = createSignal(false)
-  /** 选中的类型胶囊；`undefined` = 不选 = 普通文件（012 · T007）。 */
-  const [选中类型, set选中类型] = createSignal<类型定义 | undefined>()
+  /** 选中的后缀；`undefined` = 不选 = 普通文件（013 · T3，语义同 012 的胶囊）。 */
+  const [选中后缀, set选中后缀] = createSignal<string | undefined>()
+  /** 已展开的折叠大类（目前只有「代码」默认折叠）。 */
+  const [展开大类, set展开大类] = createSignal<readonly string[]>([])
 
   const 是文件夹 = () => props.kind === "directory"
   /** `undefined` ＝ 这份草稿还不值得交出去（空 / 只有空白）⇒ 「确定」禁用、提交直接返回。 */
   const 名字 = () => 改名草稿(草稿(), undefined)
-  /** 真正交出去的名字：选了类型才补后缀（已带同后缀不重复加，见 `补类型后缀`）。 */
+  /** 真正交出去的名字：选了后缀才补（已带同后缀不重复加，见 `补类型后缀`）。 */
   const 提交名 = () => {
     const name = 名字()
-    const 类型 = 选中类型()
-    return name === undefined || 类型 === undefined ? name : 补类型后缀(name, 类型)
+    const 后缀 = 选中后缀()
+    return name === undefined || 后缀 === undefined ? name : 补类型后缀(name, 后缀)
+  }
+  /** 大类高亮的唯一判据：该大类的后缀里包含当前选中项（别处不再算一遍，`#002-06`）。 */
+  const 大类选中 = (大类: (typeof 新建大类)[number]) => {
+    const 后缀 = 选中后缀()
+    return 后缀 !== undefined && 大类.后缀们.includes(后缀)
   }
 
   async function 确定() {
@@ -105,7 +121,7 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
   }
 
   return (
-    <DialogV2 class="w-[min(24rem,calc(100vw-3rem))]">
+    <DialogV2 class="w-[min(28rem,calc(100vw-3rem))]">
       <form
         data-slot="file-create-dialog"
         class="contents"
@@ -136,28 +152,83 @@ export function FileCreateDialog(props: FileCreateDialogProps): JSX.Element {
               }}
             />
           </Field>
-          {/* 类型胶囊（012 · T007）：**可选开关**，默认不选 = 普通文件。
-              只在「新建文件」里出现——目录不能变成 `.hgraph`（`kind === "directory"` 不显示）。
-              选中只影响交出去的名字（补后缀），不改弹窗其它行为。 */}
+          {/* 类型区（013 · T3）：9 个大类 + 后缀勾选，互斥且可取消；默认不勾 = 普通文件。
+              只在「新建文件」里出现——目录不能变成 `.docx/.hgraph`（`kind === "directory"` 不显示）。
+              大类标题只是分组标题（不可点）；代码大类默认折叠，列表区自身可滚。 */}
           <Show when={!是文件夹()}>
-            <div data-slot="file-create-types" class="flex flex-wrap gap-2">
-              <For each={可新建类型}>
-                {(类型) => {
-                  const 选中 = () => 选中类型() === 类型
+            <div data-slot="file-create-catalog" class="flex max-h-[45vh] flex-col gap-3 overflow-y-auto pr-1">
+              <For each={新建大类}>
+                {(大类) => {
+                  const 选中 = () => 大类选中(大类)
+                  const 展开 = () => 大类.默认折叠 !== true || 展开大类().includes(大类.名称)
                   return (
-                    <button
-                      type="button"
-                      data-slot="file-create-type"
-                      aria-pressed={选中()}
-                      class={
-                        选中()
-                          ? "rounded-full border border-v2-border-border-strong px-3 py-1 text-[13px] text-v2-text-text-base"
-                          : "rounded-full border border-v2-border-border-muted px-3 py-1 text-[13px] text-v2-text-text-muted"
-                      }
-                      onClick={() => set选中类型(选中() ? undefined : 类型)}
+                    <section
+                      data-slot="file-create-category"
+                      data-category={大类.名称}
+                      data-selected={选中() ? "true" : undefined}
+                      class="flex flex-col gap-2"
                     >
-                      {类型.标签}
-                    </button>
+                      <div class="flex items-center justify-between gap-2">
+                        <span
+                          data-slot="file-create-category-title"
+                          class={
+                            选中()
+                              ? "text-[13px] font-medium text-v2-text-text-base"
+                              : "text-[13px] text-v2-text-text-muted"
+                          }
+                        >
+                          {大类.名称}
+                        </span>
+                        <Show when={大类.默认折叠}>
+                          <button
+                            type="button"
+                            data-slot="file-create-category-toggle"
+                            aria-expanded={展开()}
+                            class="text-[12px] text-v2-text-text-muted hover:text-v2-text-text-base"
+                            onClick={() =>
+                              set展开大类((当前) =>
+                                当前.includes(大类.名称)
+                                  ? 当前.filter((名称) => 名称 !== 大类.名称)
+                                  : [...当前, 大类.名称],
+                              )
+                            }
+                          >
+                            {展开() ? "收起" : "展开"}
+                          </button>
+                        </Show>
+                      </div>
+                      <Show when={展开()}>
+                        <div class="flex flex-wrap gap-2">
+                          <For each={大类.后缀们}>
+                            {(后缀) => {
+                              const 勾中 = () => 选中后缀() === 后缀
+                              return (
+                                <button
+                                  type="button"
+                                  data-slot="file-create-suffix"
+                                  data-suffix={后缀}
+                                  data-picked={勾中()}
+                                  role="checkbox"
+                                  aria-checked={勾中()}
+                                  aria-label={后缀}
+                                  class={
+                                    勾中()
+                                      ? "flex items-center gap-1.5 rounded-md border border-v2-border-border-strong bg-v2-background-bg-layer-03 px-2 py-1 text-[13px] text-v2-text-text-base"
+                                      : "flex items-center gap-1.5 rounded-md border border-v2-border-border-muted px-2 py-1 text-[13px] text-v2-text-text-muted"
+                                  }
+                                  onClick={() => set选中后缀(勾中() ? undefined : 后缀)}
+                                >
+                                  <span data-slot="file-create-suffix-check" aria-hidden="true" class="w-3 text-center">
+                                    {勾中() ? "V" : ""}
+                                  </span>
+                                  <span>{后缀}</span>
+                                </button>
+                              )
+                            }}
+                          </For>
+                        </div>
+                      </Show>
+                    </section>
                   )
                 }}
               </For>

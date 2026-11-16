@@ -102,14 +102,24 @@ const 提交 = () => {
 
 const 文案 = (slot: string) => document.body.querySelector(`[data-slot='${slot}']`)?.textContent?.trim()
 
-/** 类型胶囊（`file-create-types.ts` 的数据驱动数组画出来的那一行）。 */
-const 胶囊们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-slot='file-create-type']")]
+/** 新建文件清单（`file-create-catalog.ts` 的 9 个大类画出来的那一片）。 */
+const 大类们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-slot='file-create-category']")]
 
-const 点类型 = (标签: string) => {
-  const el = 胶囊们().find((候选) => 候选.textContent?.trim() === 标签)
-  if (!el) throw new Error(`没有「${标签}」胶囊——这条用例的前提不成立`)
-  el.click()
+const 大类 = (名称: string) => {
+  const el = 大类们().find((候选) => 候选.dataset.category === 名称)
+  if (!el) throw new Error(`没有「${名称}」大类——这条用例的前提不成立`)
+  return el
 }
+
+const 后缀们 = () => [...document.body.querySelectorAll<HTMLElement>("[data-slot='file-create-suffix']")]
+
+const 后缀项 = (后缀: string) => {
+  const el = 后缀们().find((候选) => 候选.dataset.suffix === 后缀)
+  if (!el) throw new Error(`没有「${后缀}」勾选项——这条用例的前提不成立`)
+  return el
+}
+
+const 勾 = (后缀: string) => 后缀项(后缀).click()
 
 /** 新建弹窗还在不在。**布尔**，不是节点——见 `file-op-error.test.tsx` 顶部那条警告。 */
 const 弹窗在 = () => document.body.querySelector("[data-slot='file-create-dialog']") !== null
@@ -281,72 +291,158 @@ describe("新建弹窗（FileCreateDialog）", () => {
   })
 
   /**
-   * ── 类型胶囊（012 · T007）────────────────────────────────────────
+   * ── 大类 + 后缀勾选（013 · T3，用户 2026-11-16 裁定）────────────────
    *
-   * 胶囊是**可选开关**：默认不选 = 普通文件（否则「新建文件」从此每个都变 `.hgraph`）。
-   * 选中才给名字补后缀；已带同后缀（大小写不敏感）不重复加。
+   * 类型区从「一排胶囊」换成「9 个大类，每个后缀前一个勾选框」：大类标题只是分组标题
+   * （不可点），同一时刻至多勾一个后缀，再点已勾的一项即取消。
+   * 默认不勾 = 普通文件——这条语义与胶囊时代相同，不能因为换了控件就走样。
    */
 
-  test("新建文件才显示类型胶囊；新建文件夹不显示", async () => {
+  test("九个大类按序出现", async () => {
     await 打开({ kind: "file", parent: "" })
-    expect(胶囊们().map((el) => el.textContent?.trim())).toEqual(["关系图"])
+
+    expect(大类们().map((el) => el.dataset.category)).toEqual([
+      "文档",
+      "表格",
+      "图文",
+      "关系图",
+      "思维导图",
+      "PDF",
+      "图片",
+      "网页",
+      "代码",
+    ])
   })
 
-  test("新建文件夹的弹窗里没有类型胶囊（目录不能变成 .hgraph）", async () => {
-    await 打开({ kind: "directory", parent: "" })
+  /** 用户原话：大类标题是**纯分组标题**（不可点、不承担选择）。做成 button 就是另一种交互。 */
+  test("大类标题是纯文本，不是按钮", async () => {
+    await 打开({ kind: "file", parent: "" })
+    const title = 大类("文档").querySelector<HTMLElement>("[data-slot='file-create-category-title']")
+    if (!title) throw new Error("没有大类标题——这条用例的前提不成立")
 
-    expect(胶囊们()).toHaveLength(0)
+    expect(title.tagName).not.toBe("BUTTON")
+    expect(title.closest("button")).toBeNull()
   })
 
-  test("选中「关系图」⇒ 交出去的名字补 .hgraph", async () => {
-    const 收到 = await 打开({ kind: "file", parent: "" })
+  /** 勾选框在**标签之前**（用户 2026-11-16 逐条确认的交互形状）。 */
+  test("勾选框在后缀文本之前", async () => {
+    await 打开({ kind: "file", parent: "" })
+    const 项 = 后缀项(".docx")
+    const 勾选框 = 项.querySelector<HTMLElement>("[data-slot='file-create-suffix-check']")
+    const 标签 = 勾选框?.nextElementSibling as HTMLElement | null
+    if (!勾选框 || !标签) throw new Error("勾选框或后缀标签缺失——前提不成立")
 
-    填("张三资金流向")
-    点类型("关系图")
-    提交()
-
-    expect(收到).toEqual(["张三资金流向.hgraph"])
+    expect(勾选框.compareDocumentPosition(标签) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  test("名字已带 .hgraph ⇒ 不重复加", async () => {
-    const 收到 = await 打开({ kind: "file", parent: "" })
+  /** 默认不勾 = 普通文件；也不该有大类被高亮。 */
+  test("默认一个都没勾", async () => {
+    await 打开({ kind: "file", parent: "" })
 
-    填("张三资金流向.hgraph")
-    点类型("关系图")
-    提交()
-
-    expect(收到).toEqual(["张三资金流向.hgraph"])
+    // 先立非空前提：旧界面（胶囊）下后缀集合为空，`every` / `toEqual([])` 会真空通过（`#005-18`）。
+    expect(大类们().length).toBe(9)
+    expect(后缀们().length).toBeGreaterThan(0)
+    expect(后缀们().map((el) => el.getAttribute("aria-checked"))).toEqual(后缀们().map(() => "false"))
+    expect(大类们().map((el) => el.dataset.selected)).toEqual(大类们().map(() => undefined))
   })
 
-  test("后缀比较大小写不敏感（.HGRAPH 也不重复加）", async () => {
-    const 收到 = await 打开({ kind: "file", parent: "" })
-
-    填("张三资金流向.HGRAPH")
-    点类型("关系图")
-    提交()
-
-    expect(收到).toEqual(["张三资金流向.HGRAPH"])
-  })
-
-  test("带其它后缀 ⇒ 按名字处理，追加在后（张三.md ⇒ 张三.md.hgraph）", async () => {
-    const 收到 = await 打开({ kind: "file", parent: "" })
-
-    填("张三.md")
-    点类型("关系图")
-    提交()
-
-    expect(收到).toEqual(["张三.md.hgraph"])
-  })
-
-  test("再点一次胶囊 ⇒ 取消选中，名字原样（开关是可逆的）", async () => {
+  test("勾 .docx ⇒ 提交名补 .docx、该项打勾、所属大类高亮", async () => {
     const 收到 = await 打开({ kind: "file", parent: "" })
 
     填("张三")
-    点类型("关系图")
-    点类型("关系图")
-    提交()
+    勾(".docx")
 
+    const 项 = 后缀项(".docx")
+    expect(项.getAttribute("aria-checked")).toBe("true")
+    expect(项.dataset.picked).toBe("true")
+    expect(项.querySelector("[data-slot='file-create-suffix-check']")?.textContent).toBe("V")
+    expect(大类("文档").dataset.selected).toBe("true")
+    for (const 其它 of 大类们()) {
+      if (其它.dataset.category !== "文档") expect(其它.dataset.selected).toBeUndefined()
+    }
+
+    提交()
+    expect(收到).toEqual(["张三.docx"])
+  })
+
+  test("互斥：先勾 .docx 再勾 .xlsx ⇒ 只有后者被勾，名字只补一次", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三")
+    勾(".docx")
+    勾(".xlsx")
+
+    expect(后缀项(".docx").getAttribute("aria-checked")).toBe("false")
+    expect(后缀项(".xlsx").getAttribute("aria-checked")).toBe("true")
+
+    提交()
+    expect(收到).toEqual(["张三.xlsx"])
+  })
+
+  test("再点已勾的后缀 ⇒ 取消勾选，名字原样", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三")
+    勾(".docx")
+    勾(".docx")
+
+    expect(后缀们().every((el) => el.getAttribute("aria-checked") === "false")).toBe(true)
+    expect(大类们().every((el) => el.dataset.selected === undefined)).toBe(true)
+
+    提交()
     expect(收到).toEqual(["张三"])
+  })
+
+  /** 追加语义（spec §2）：已带同后缀（大小写不敏感）不重复加；带其它后缀照常追加。 */
+  test("追加语义：张三.md + .hgraph ⇒ 张三.md.hgraph；.HGRAPH 不重复加", async () => {
+    const 收到 = await 打开({ kind: "file", parent: "" })
+
+    填("张三.md")
+    勾(".hgraph")
+    提交()
+    expect(收到).toEqual(["张三.md.hgraph"])
+
+    // 关掉这一份，再开一份干净的（同一个用例里先后问两次）
+    document.body.querySelector<HTMLButtonElement>("[data-slot='file-create-cancel']")?.click()
+    if (!(await 等它没了())) throw new Error("第一份弹窗没关掉——第二段的查询会落到旧节点上")
+
+    const 收到2 = await 打开({ kind: "file", parent: "" })
+    填("张三.HGRAPH")
+    勾(".hgraph")
+    提交()
+    expect(收到2).toEqual(["张三.HGRAPH"])
+  })
+
+  test("代码大类默认折叠；点「展开」出现、再点消失", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    expect(document.body.querySelector("[data-suffix='.ts']")).toBeNull()
+    const toggle = 大类("代码").querySelector<HTMLButtonElement>("[data-slot='file-create-category-toggle']")
+    if (!toggle) throw new Error("代码大类没有折叠开关——前提不成立")
+    expect(toggle.getAttribute("aria-expanded")).toBe("false")
+
+    toggle.click()
+    await flush()
+    expect(后缀项(".ts")).toBeDefined()
+    expect(toggle.getAttribute("aria-expanded")).toBe("true")
+
+    toggle.click()
+    await flush()
+    expect(document.body.querySelector("[data-suffix='.ts']")).toBeNull()
+  })
+
+  test("新建文件夹的弹窗里没有清单（目录不能变成 .docx/.hgraph）", async () => {
+    await 打开({ kind: "directory", parent: "" })
+
+    expect(document.body.querySelector("[data-slot='file-create-catalog']")).toBeNull()
+  })
+
+  test("勾了后缀但名字为空 ⇒ 「确定」仍禁用", async () => {
+    await 打开({ kind: "file", parent: "" })
+
+    勾(".docx")
+
+    expect(确定()?.disabled).toBe(true)
   })
 
   test("在飞时再按一次「确定」⇒ 只发一次（这个洞是「弹窗不关」新造出来的）", async () => {
