@@ -142,8 +142,17 @@ export function 创建HgraphView(
     /** T019d：解析失败时的只读原文出口（纯本地展开态，不写回、不挂编辑器）。 */
     const [原文展开, set原文展开] = createSignal(false)
 
+    /**
+     * 根节点 `w-full` 不是装饰：中栏（`center-pane`）是**列 flex + `items-start`** 的容器，
+     * 没有它这个根节点作为 flex 项的横向尺寸取 `max-content`（真栈实测 1043px），中栏变宽
+     * （关左栏 / 关右栏）时它**不跟着变**——画布与 `viewBox` 一起停在中栏旧宽，这就是
+     * 「关闭右栏后中栏没铺满」（2026-11-17 用户实报）。中栏其余视图的根节点（`case-view` /
+     * `sheet-workbook` / `binary-view` 的内容容器 / `html-view` / `degraded-view`）都带
+     * `w-full`，本视图此前漏了。结构不变量由 `hgraph-view.test.tsx` 钉住（happy-dom 无
+     * 布局引擎，量不出像素）。
+     */
     return (
-      <div data-slot="hgraph-view" class="flex h-full flex-col gap-2 overflow-auto p-4">
+      <div data-slot="hgraph-view" class="flex h-full w-full flex-col gap-2 overflow-auto p-4">
         <Show
           when={状态()}
           fallback={

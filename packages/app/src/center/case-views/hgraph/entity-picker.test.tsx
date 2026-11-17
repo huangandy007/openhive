@@ -1044,3 +1044,67 @@ describe("选择器 · 关系页纯函数", () => {
     expect(有.出处).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 主操作位置（2026-11-17 用户下达）
+// 原布局把「加入选中的…」放在面板底部，长列表里要滚到末端才看得见；
+// 现在它必须在标题行、紧挨「收起」左侧，且是带图标的主按钮（未悬停也高识别度）。
+// ---------------------------------------------------------------------------
+
+describe("选择器 · 主操作位置", () => {
+  test("实体页：「加入选中的」在标题行、位于「收起」左侧，带图标且为浅灰底金边框主按钮", async () => {
+    挂选择器()
+    await 落定()
+
+    const 面板 = 取("[data-slot='hgraph-entity-picker']")
+    expect(面板 !== null).toBe(true)
+    const 标题行 = 面板!.firstElementChild
+    expect(标题行 !== null).toBe(true)
+
+    const 加入 = 取("[data-slot='hgraph-picker-add']")
+    const 收起 = 取("[data-slot='hgraph-picker-close']")
+    expect(加入 !== null).toBe(true)
+    expect(收起 !== null).toBe(true)
+
+    // 同一行内、且在「收起」之前（收起左侧）。
+    const 子们 = Array.from(标题行!.children)
+    expect(子们.indexOf(加入!)).toBeGreaterThanOrEqual(0)
+    expect(子们.indexOf(加入!)).toBeLessThan(子们.indexOf(收起!))
+
+    // 图标 + 文字：文案保留，图标是设计系统的 svg。
+    expect(加入!.textContent).toContain("加入选中的")
+    expect(加入!.querySelector("[data-slot='icon-svg']") !== null).toBe(true)
+    // 视觉：浅灰底 + 蜜蜂金边框，悬停加深边框（不再是黑色实心）。
+    const 类们 = 加入!.className.split(/\s+/)
+    expect(类们).toContain("bg-v2-background-bg-layer-01")
+    expect(类们).toContain("border-[var(--v2-brand-gold)]")
+    expect(类们).toContain("hover:border-[var(--v2-brand-gold-deep)]")
+  })
+
+  test("关系页：「加入选中的 N 条关系」同样在标题行、位于「收起」左侧", async () => {
+    挂选择器({ profile: 三档表, 已有节点: [图上本实体, 图上A] })
+    await 落定()
+
+    点关系("e1")
+    await 落定()
+
+    const 面板 = 取("[data-slot='hgraph-entity-picker']")
+    expect(面板 !== null).toBe(true)
+    const 标题行 = 面板!.firstElementChild
+    expect(标题行 !== null).toBe(true)
+    const 加入 = 取("[data-slot='hgraph-picker-relation-add']")
+    const 收起 = 取("[data-slot='hgraph-picker-close']")
+    expect(加入 !== null).toBe(true)
+    expect(收起 !== null).toBe(true)
+
+    const 子们 = Array.from(标题行!.children)
+    expect(子们.indexOf(加入!)).toBeGreaterThanOrEqual(0)
+    expect(子们.indexOf(加入!)).toBeLessThan(子们.indexOf(收起!))
+    expect(加入!.textContent).toContain("加入选中的")
+    expect(加入!.querySelector("[data-slot='icon-svg']") !== null).toBe(true)
+    const 类们 = 加入!.className.split(/\s+/)
+    expect(类们).toContain("bg-v2-background-bg-layer-01")
+    expect(类们).toContain("border-[var(--v2-brand-gold)]")
+    expect(类们).toContain("hover:border-[var(--v2-brand-gold-deep)]")
+  })
+})

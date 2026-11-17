@@ -153,6 +153,29 @@ describe("关系图视图（打开通道）", () => {
     expect(document.body.querySelector("[data-slot='hgraph-save-status']")).not.toBeNull()
   })
 
+  /**
+   * 中栏是 `items-start` 的列 flex 容器（`center-pane`）⇒ 视图根节点若不带 `w-full`，
+   * 横向尺寸取**内容宽度**，中栏变宽（关左/右栏）时不跟着长。
+   *
+   * 真栈实测（2026-11-17，1920 视口）：关右栏前 中栏卡片 1217 / 本视图 1043，
+   * 关右栏后 **卡片 1572 / 本视图仍 1043**，画布与 `viewBox` 一起停在旧尺寸——用户报的
+   * 「关闭右栏后中栏没铺满」正是这一条。其余中栏视图（`case-view` / `sheet-workbook` /
+   * `binary-view` 的内容容器 / `html-view` / `degraded-view`）根节点都写了 `w-full`，
+   * 只有本视图漏了。
+   *
+   * happy-dom 无布局引擎（`#005-32`），量不出像素 ⇒ 这里钉**结构不变量**：根节点声明
+   * 满宽。用 `classList.contains` 而不是 `className.includes`（`#006-22` 子串匹配假绿）。
+   */
+  test("根节点声明满宽（w-full）——中栏变宽时随其伸展，画布不能停在中栏旧宽", async () => {
+    const { api } = 假api({ 读: { kind: "ok", value: { 内容: 一份图, 版本: "v1" } } })
+
+    await 挂上(api)
+
+    const 根 = document.body.querySelector("[data-slot='hgraph-view']")
+    expect(根 !== null).toBe(true)
+    expect(根!.classList.contains("w-full")).toBe(true)
+  })
+
   test("格式 99（NEWER_VERSION）⇒ 只读提示，且不调 init", async () => {
     const { api, 调用 } = 假api({
       读: {

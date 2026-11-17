@@ -19,6 +19,7 @@
  * 全部失败才不调 `onAdd`，保留面板与错误。有失败项时面板不自动关，否则用户看不见谁没加进来。
  */
 import { For, Show, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { Icon } from "@opencode-ai/ui/v2/icon"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { 操作 } from "@/project/hgraph-api"
 import type { CaseDetailApi, 实体档案, 档案关系 } from "../../case-detail-api"
@@ -174,6 +175,26 @@ function 关系行文本(关: 档案关系): string {
 
 const 按钮 =
   "rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
+
+/**
+ * 主操作钮（2026-11-17 用户下达）：浅灰底 + 蜜蜂金边框 + 图标；未悬停也高识别度。
+ *
+ * 悬停用「叠层」而不是直接换 `hover:bg-*`：在不透明底上换相邻灰只差 4 个色阶
+ * （`entity-profile.tsx` 的实测口径，`#fafafa` → `#eeeeee` 肉眼几乎看不出）。这里铺 4% 黑
+ * 在底色之上，并把边框加深一档金（`gold` → `gold-deep`），图标同色跟随。
+ */
+const 主按钮 = [
+  "group inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded border",
+  "border-[var(--v2-brand-gold)] bg-v2-background-bg-layer-01 px-2",
+  "whitespace-nowrap text-12-medium text-v2-text-text-base transition-colors",
+  "hover:border-[var(--v2-brand-gold-deep)]",
+  "hover:[background-image:linear-gradient(0deg,var(--v2-overlay-simple-overlay-hover),var(--v2-overlay-simple-overlay-hover))]",
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--v2-brand-gold)]",
+  "disabled:cursor-not-allowed disabled:opacity-40",
+].join(" ")
+
+/** 主操作钮里的图标：金色，悬停跟边框一起加深。 */
+const 主按钮图标 = "text-[var(--v2-brand-gold)] transition-colors group-hover:text-[var(--v2-brand-gold-deep)]"
 
 export function 选择器(props: 选择器Props): JSX.Element {
   const [搜索词, set搜索词] = createSignal("")
@@ -429,9 +450,37 @@ export function 选择器(props: 选择器Props): JSX.Element {
       class="absolute inset-0 z-30 flex flex-col gap-1 overflow-y-auto bg-v2-background-bg-layer-02 p-2"
     >
       <div class="flex items-center gap-1">
-        <span class="text-13-medium text-v2-text-text-base">{绑定模式() ? "绑定到库实体" : "从库加入"}</span>
+        <span class="min-w-0 truncate text-13-medium text-v2-text-text-base">
+          {绑定模式() ? "绑定到库实体" : "从库加入"}
+        </span>
         <span class="min-w-0 flex-1" />
-        <button type="button" data-slot="hgraph-picker-close" class={按钮} onClick={关闭}>
+        {/* 主操作紧挨「收起」左侧（2026-11-17 用户下达）：底部那一条要滚到面板末端才看得见，
+            用户找不到「加入」入口。视觉见上方 `主按钮`：浅灰底 + 金边框，悬停叠层加深。 */}
+        <Show when={!绑定模式() && 页() === "实体"}>
+          <button
+            type="button"
+            data-slot="hgraph-picker-add"
+            class={主按钮}
+            disabled={可加入().length === 0 || 加入中()}
+            onClick={() => void 加入()}
+          >
+            <Icon name="check" size="small" class={主按钮图标} />
+            加入选中的 {可加入().length} 个
+          </button>
+        </Show>
+        <Show when={!绑定模式() && 页() === "关系"}>
+          <button
+            type="button"
+            data-slot="hgraph-picker-relation-add"
+            class={主按钮}
+            disabled={选中关系们().length === 0 || 加边中()}
+            onClick={() => void 加入关系()}
+          >
+            <Icon name="check" size="small" class={主按钮图标} />
+            加入选中的 {选中关系们().length} 条关系
+          </button>
+        </Show>
+        <button type="button" data-slot="hgraph-picker-close" class={`${按钮} shrink-0`} onClick={关闭}>
           收起
         </button>
       </div>
@@ -617,17 +666,6 @@ export function 选择器(props: 选择器Props): JSX.Element {
         <p data-slot="hgraph-picker-relation-note" class="text-12-regular text-v2-text-text-muted">
           关系加入后按「推断」记：库中关系没有行级出处，出处留空
         </p>
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            data-slot="hgraph-picker-relation-add"
-            class={按钮}
-            disabled={选中关系们().length === 0 || 加边中()}
-            onClick={() => void 加入关系()}
-          >
-            加入选中的 {选中关系们().length} 条关系
-          </button>
-        </div>
       </Show>
 
       {/* 绑定模式不渲染「加入」路径；footer 换成一次性的绑定确认。 */}
@@ -635,18 +673,7 @@ export function 选择器(props: 选择器Props): JSX.Element {
         when={绑定模式()}
         fallback={
           <Show when={页() === "实体"}>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                data-slot="hgraph-picker-add"
-                class={按钮}
-                disabled={可加入().length === 0 || 加入中()}
-                onClick={() => void 加入()}
-              >
-                加入选中的 {可加入().length} 个
-              </button>
-              <span class="text-12-regular text-v2-text-text-muted">加入后出处为空（未取到出处）</span>
-            </div>
+            <p class="text-12-regular text-v2-text-text-muted">加入后出处为空（未取到出处）</p>
           </Show>
         }
       >
