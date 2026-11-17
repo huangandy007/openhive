@@ -52,6 +52,29 @@ function 规范边(条: 边, 位置: ReadonlyMap<string, number>): Record<string
   return 结果
 }
 
+/**
+ * 位置对齐映射：`本地` 与 `盘` 的节点/边/文字按数组下标一一对应 ⇒ 本地 id → 盘上 id。
+ *
+ * 采纳盘上文档时用它把**未发的后续编辑**里引用的本地 id 换成服务端正式 id：既覆盖本次
+ * 新对象的临时 id，也覆盖服务端重分配过的既有 id。调用点由 `同内容` 保证两边内容按位置
+ * 对齐且等长；这里仍只取公共前缀，长度不符时不越界（防御）。
+ */
+export function 对齐映射(本地: 图文件, 盘: 图文件): Record<string, string> {
+  const 结果: Record<string, string> = {}
+  const 收 = (左: readonly { readonly id: string }[], 右: readonly { readonly id: string }[]) => {
+    const 长 = Math.min(左.length, 右.length)
+    for (let 序 = 0; 序 < 长; 序++) {
+      const 本 = 左[序]!.id
+      const 盘id = 右[序]!.id
+      if (本 !== 盘id) 结果[本] = 盘id
+    }
+  }
+  收(本地.节点, 盘.节点)
+  收(本地.边, 盘.边)
+  收(本地.文字, 盘.文字)
+  return 结果
+}
+
 export function 同内容(甲: 图文件, 乙: 图文件): boolean {
   // `更新于` 由服务端每次写入刷新，不属于「内容」。
   if (甲.格式 !== 乙.格式 || 甲.标题 !== 乙.标题 || 甲.创建于 !== 乙.创建于) return false

@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
-import { 同内容 } from "./same-content"
+import { 对齐映射, 同内容 } from "./same-content"
 
 const 设置: 设置 = {
   线宽度量: "按类型默认",
@@ -144,5 +144,27 @@ describe("同内容（FR-007 规范化比较）", () => {
       节点: [{ ...基.节点[0]!, 属性: [...基.节点[0]!.属性!].reverse() }],
     }
     expect(同内容(基, 换序)).toBe(false)
+  })
+})
+
+describe("对齐映射（采纳后重放未发编辑）", () => {
+  test("节点/边/文字按位置导出 本地 id → 盘上 id（含临时 id），相同 id 不入映射", () => {
+    const 本地 = 造图()
+    本地.节点.push(造节点("临时c1"))
+    本地.文字.push(造文字("临时t1"))
+    const 盘 = 换id(本地)
+    expect(对齐映射(本地, 盘)).toEqual({
+      n1: "正式n1",
+      n2: "正式n2",
+      临时c1: "正式n3",
+      e1: "正式e1",
+      t1: "正式t1",
+      临时t1: "正式t2",
+    })
+  })
+
+  test("两边 id 相同 ⇒ 空映射（不产生无意义的换 id）", () => {
+    const 图 = 造图()
+    expect(对齐映射(图, structuredClone(图))).toEqual({})
   })
 })
