@@ -934,6 +934,175 @@ describe("编辑器 · FR-007 冲突/超时先读盘", () => {
     await 等(650)
     expect(写们.length).toBe(1)
   })
+
+  /**
+   * review-fix5 NEW-1 的有状态假服务端：`写` 真的落到 `盘`，第 1 次写「应答丢了但迟到提交」
+   * （提交排在确认读盘之后，正是实测触发链）。之后的写按 CAS：版本不符 ⇒ 409。
+   */
+  function 迟到提交服务端(延迟毫秒 = 80) {
+    const 盘 = { 图: 一份图(), 版本: "v1" }
+    let 写次 = 0
+    const { api, 写们, 取读数 } = 假api({
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘.图), 版本: 盘.版本 } }),
+      写: (输入) => {
+        写次 += 1
+        if (写次 === 1) {
+          setTimeout(() => {
+            落批(输入.操作)
+            盘.版本 = "自存1"
+          }, 延迟毫秒)
+          return { kind: "error", message: "网络断了", code: "network" }
+        }
+        if (输入.版本 !== 盘.版本) {
+          return { kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: 盘.版本 }
+        }
+        const 坏 = 落批(输入.操作)
+        if (坏 !== undefined) return { kind: "error", message: 坏, code: "BAD_OP" }
+        盘.版本 = `自存${写次}`
+        return 成功(盘.版本)
+      },
+    })
+    /** 把一批操作落到盘上；目标是删一个不存在的对象 ⇒ 返回错误（后端同口径 BAD_OP）。 */
+    function 落批(操作们: 写入参["操作"]): string | undefined {
+      let 图 = 盘.图
+      for (const 条 of 操作们) {
+        if (条.操作 === "删对象") {
+          for (const 目 of 条.目标) {
+            const 有 =
+              目.类别 === "节点"
+                ? 图.节点.some((行) => 行.id === 目.id)
+                : 目.类别 === "边"
+                  ? 图.边.some((行) => 行.id === 目.id)
+                  : 图.文字.some((行) => 行.id === 目.id)
+            if (!有) return `对象不存在：${目.id}`
+          }
+          图 = {
+            ...图,
+            更新于: "2026-11-16T12:00:00+08:00",
+            节点: 图.节点.filter((行) => !条.目标.some((目) => 目.类别 === "节点" && 目.id === 行.id)),
+            边: 图.边.filter((行) => !条.目标.some((目) => 目.类别 === "边" && 目.id === 行.id)),
+            文字: 图.文字.filter((行) => !条.目标.some((目) => 目.类别 === "文字" && 目.id === 行.id)),
+          }
+        } else if (条.操作 === "移动") {
+          图 = {
+            ...图,
+            更新于: "2026-11-16T12:00:00+08:00",
+            节点: 图.节点.map((点) => {
+              const 目 = 条.目标.find((项) => 项.类别 === "节点" && 项.id === 点.id)
+              return 目 === undefined ? 点 : { ...点, x: 目.x, y: 目.y }
+            }),
+            文字: 图.文字.map((行) => {
+              const 目 = 条.目标.find((项) => 项.类别 === "文字" && 项.id === 行.id)
+              return 目 === undefined ? 行 : { ...行, x: 目.x, y: 目.y }
+            }),
+          }
+        } else {
+          return `本假服务端不处理：${条.操作}`
+        }
+      }
+      盘.图 = 图
+      return undefined
+    }
+    return { api, 盘, 写们, 取读数 }
+  }
+
+  test("超时但服务端迟到提交 + 轮询 ⇒ 只提问不推进版本；重试带旧版本 ⇒ 采纳自愈、删对象不复活", async () => {
+    const { api, 盘, 写们 } = 迟到提交服务端()
+    挂轮询(api, { 轮询毫秒: 25 })
+    await flush()
+
+    // 删 n2：这一批若被重试重复写，服务端会 BAD_OP，回滚会把 n2 在本地复活。
+    点选("n2", 200, 100)
+    await flush()
+    按键(画布()!, { key: "Delete" })
+    await 过防抖()
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n2" }] }])
+
+    // 确认读盘发生在提交之前 ⇒ 可重试失败：批保留、「没存上」、出「重试」。
+    await 等到条件(() => 文案("hgraph-save-status")?.includes("没存上") === true)
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(false)
+    expect(节点组("n2") === null).toBe(true)
+
+    // 服务端迟到提交生效：盘上已是「已存基线 + 本批」、版本推进。
+    await 等到条件(() => 盘.版本 === "自存1")
+    // 轮询读到「盘 == 乐观文档」：不得静默推进版本，只提问（点重试即自愈）。
+    await 等到条件(() => 取("[data-slot='hgraph-reload-ask']") !== null)
+    expect(取("[data-slot='hgraph-reload-ask']") === null).toBe(false)
+    expect(文案("hgraph-save-status")).toContain("没存上")
+
+    按钮("hgraph-save-retry").click()
+    await 等到条件(() => 写们.length === 2)
+    // 主判据：重试必须带发送时的旧版本 v1 ⇒ 服务端 409 ⇒ 走 FR-007 静默采纳；
+    // 带盘上版本就等于同一批换了新幂等键再写一遍（NEW-1）。
+    expect(写们[1]!.版本).toBe("v1")
+    expect(写们[1]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n2" }] }])
+
+    await 等到条件(() => 文案("hgraph-save-status") === "已保存")
+    expect(文案("hgraph-save-status")).not.toContain("被改过")
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-reload-ask']") === null).toBe(true)
+    // 采纳后本地与盘一致：n2 不复活（回滚失败批会把它复活）。
+    expect(节点组("n1") !== null).toBe(true)
+    expect(节点组("n2") === null).toBe(true)
+
+    // 后续编辑仍能成功、只多写一次，且 n2 不会被下一次保存带回来。
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await 等到条件(() => 写们.length === 3)
+    expect(写们[2]!.版本).toBe("自存1")
+    await 等到条件(() => 文案("hgraph-save-status") === "已保存")
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    expect(节点组("n2") === null).toBe(true)
+  })
+
+  test("有未发批时服务端同值补丁仍只推进版本、不弹询问条", async () => {
+    const 盘 = { 图: 一份图(), 版本: "v1" }
+    let 写次 = 0
+    const { api, 写们, 取读数 } = 假api({
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘.图), 版本: 盘.版本 } }),
+      写: (输入) => {
+        写次 += 1
+        if (写次 === 1) return { kind: "error", message: "网络断了", code: "network" }
+        if (输入.版本 !== 盘.版本) {
+          return { kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: 盘.版本 }
+        }
+        盘.图 = {
+          ...盘.图,
+          更新于: "2026-11-16T12:30:00+08:00",
+          节点: 盘.图.节点.map((点) => (点.id === "n1" ? { ...点, x: 180, y: 100 } : 点)),
+        }
+        盘.版本 = "自存2"
+        return 成功(盘.版本)
+      },
+    })
+    挂轮询(api, { 轮询毫秒: 25 })
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await 等到条件(() => 文案("hgraph-save-status")?.includes("没存上") === true)
+    expect(写们.length).toBe(1)
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(false)
+
+    // 服务端同值补丁：内容仍是我们的已存基线，只刷新 `更新于` 并推进版本。
+    const 基读数 = 取读数()
+    盘.图 = { ...盘.图, 更新于: "2026-11-16T12:00:00+08:00" }
+    盘.版本 = "w9"
+    // 至少再跑两轮：同值补丁不该把「有未发批」误判成外部改动而弹询问条。
+    await 等到条件(() => 取读数() >= 基读数 + 2)
+    expect(取("[data-slot='hgraph-reload-ask']") === null).toBe(true)
+    // 未发批仍在等用户点重试（不吞失败）。
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(false)
+    expect(写们.length).toBe(1)
+
+    // 版本确实推进了：重试带的 CAS 基线是 w9（没推进会是 v1）。
+    按钮("hgraph-save-retry").click()
+    await 等到条件(() => 写们.length === 2)
+    expect(写们.at(-1)!.版本).toBe("w9")
+    await 等到条件(() => 文案("hgraph-save-status") === "已保存")
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+  })
 })
 
 // ---------------------------------------------------------------------------
