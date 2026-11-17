@@ -1475,6 +1475,9 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     expect(钮!.getAttribute("title") === null).toBe(true)
     expect(钮!.querySelector("svg") !== null).toBe(true)
     expect((钮!.textContent ?? "").trim()).toBe("")
+    // 图标名字必须在 v2 图标表里：拼错 / 表里没有时 `Icon` 静默回退 plus（按钮看着像「新建」）。
+    // 「有 svg」挡不住这种错，所以钉 href。
+    expect(钮!.querySelector("use")!.getAttribute("href")).toBe("#opencode-v2-icon-collapse")
   })
 
   test("① 收起按钮悬停 300ms ⇒ 恰好一条说明", async () => {

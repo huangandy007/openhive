@@ -899,7 +899,7 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   slot="hgraph-inspector-collapse"
                   名称="收起检查器"
                   说明="收起检查器（按 I 可再展开）"
-                  图标="chevron-right"
+                  图标="collapse"
                   种类="action"
                   点={() => props.收起变化?.(true)}
                 />
