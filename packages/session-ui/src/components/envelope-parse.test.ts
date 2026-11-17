@@ -157,4 +157,9 @@ describe("错误码引导键", () => {
   test("未知码给 undefined，不回退成固定话术", () => {
     expect(错误码引导键("boom")).toBeUndefined()
   })
+
+  test("原型链上的键也算未知码，给 undefined", () => {
+    expect(错误码引导键("toString")).toBeUndefined()
+    expect(错误码引导键("constructor")).toBeUndefined()
+  })
 })

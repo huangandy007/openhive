@@ -66,9 +66,12 @@ const 错误码引导键表: Record<string, string> = {
   unknown_tool: "ui.envelopeTool.errorHint.unknown_tool",
 }
 
-/** 错误码 → 引导文案的 i18n 键；未知码给 `undefined`（不回退成固定话术）。 */
+/**
+ * 错误码 → 引导文案的 i18n 键；未知码给 `undefined`（不回退成固定话术）。
+ * 只认表里的自有键：`toString` / `constructor` 这类原型链成员也属未知码。
+ */
 export function 错误码引导键(码: string): string | undefined {
-  return 错误码引导键表[码]
+  return Object.hasOwn(错误码引导键表, 码) ? 错误码引导键表[码] : undefined
 }
 
 const 是记录 = (值: unknown): 值 is Record<string, unknown> =>
