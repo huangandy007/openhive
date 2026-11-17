@@ -1495,22 +1495,22 @@ describe("实体档案", () => {
     expect(找按钮(host, "查个账户") === undefined).toBe(true)
   })
 
-  test("点「查个人」⇒ 整句以「替换」进输入框，且不自动发送", async () => {
+  test("点「查个人」⇒ 整句以「替换」进输入框，且只写一次", async () => {
     const { host, 收到 } = await 装档案("人", "张三")
     const 钮 = 找按钮(host, "查个人")
     expect(钮 !== undefined).toBe(true)
     钮!.click()
 
+    // 「只写一次」钉的是收件口调用次数：多写一次会覆盖成别的文本。
+    // **不自动发送**在本接缝观测不到——收件口只写输入框（`send-to-session.ts:115-121`），
+    // 发送是另一条出口；真正的证据是 `EntityProfile` 不 import 任何发送动作，
+    // 以及真栈第 2 步实测「输入框有原文、消息未提交」。不要在这条用例里假装能测到它。
     expect(收到.length).toBe(1)
     expect(收到[0]!.方式).toBe("替换")
     expect(收到[0]!.文本).toBe(查个人句("张三"))
-
-    // 预填 ≠ 发送：点击后不许再有任何一次写入（真自动发送会多出一条）。
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    expect(收到.length).toBe(1)
   })
 
-  test("点「查个账户」⇒ 整句以「替换」进输入框，且不自动发送", async () => {
+  test("点「查个账户」⇒ 整句以「替换」进输入框，且只写一次", async () => {
     const { host, 收到 } = await 装档案("账户", "6222****0001")
     const 钮 = 找按钮(host, "查个账户")
     expect(钮 !== undefined).toBe(true)
@@ -1519,8 +1519,5 @@ describe("实体档案", () => {
     expect(收到.length).toBe(1)
     expect(收到[0]!.方式).toBe("替换")
     expect(收到[0]!.文本).toBe(查个账户句("6222****0001"))
-
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    expect(收到.length).toBe(1)
   })
 })
