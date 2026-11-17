@@ -66,14 +66,11 @@ const 宽一档 = (档: 关系图强度): 关系图强度 | undefined => {
   return 序 <= 0 ? undefined : 关系图强度们[序 - 1]
 }
 
-export type 形 = "circle" | "rect" | "hexagon" | "diamond"
-
-export function 形状(类型: string): 形 {
-  if (类型 === "号码" || 类型 === "组织") return "rect"
-  if (类型 === "账户") return "hexagon"
-  if (类型 === "地点") return "diamond"
-  return "circle"
-}
+/**
+ * 节点形状（2026-11-17 用户裁定）：**十类一律圆形**，圆以外的形状不好看。
+ * 类型不再靠形状判：颜色分语义组、图标（`graph-icons.tsx`）说具体对象。
+ * 唯一例外是「事件」——它是对象类别而不是类型，画成宽圆角块（`是事件` 判据见各渲染器）。
+ */
 
 /**
  * 未映射类型的填充兜底（与画布底色同阶）。导出是给 hgraph 外环用的：外环直接用它做
@@ -81,26 +78,69 @@ export function 形状(类型: string): 形 {
  */
 export const 默认节点填充 = "var(--v2-background-bg-layer-02)"
 
+/**
+ * 颜色只分语义组；具体是什么由图标（`graph-icons.tsx`）说。形状十类同圆。
+ *
+ * 墨组（车辆/物品/地点）2026-11-17 由「橙」改来：黄色系浅底 + 黄描边在画布上
+ * 只有 1.0–1.3:1，用户反馈「看不清」。改成浅灰底（layer-04）+ 近黑描边（text-base），
+ * 描边对画布实测 16.6:1（亮）/ 14.9:1（暗），远高于图形 3:1 的可辨识门槛。
+ */
+type 色组 = "蓝" | "绿" | "墨" | "金" | "灰"
+
+const 类型色组 = new Map<string, 色组>([
+  ["人", "蓝"],
+  ["组织", "蓝"],
+  ["号码", "绿"],
+  ["账户", "绿"],
+  ["虚拟身份", "绿"],
+  ["车辆", "墨"],
+  ["物品", "墨"],
+  ["地点", "墨"],
+  ["事件", "金"],
+  ["未分类", "灰"],
+])
+
+const 色组填充: Record<色组, string> = {
+  蓝: "var(--v2-state-bg-info)",
+  绿: "var(--v2-state-bg-success)",
+  墨: "var(--v2-background-bg-layer-04)",
+  金: "var(--v2-background-bg-accent-soft)",
+  灰: 默认节点填充,
+}
+
+const 色组描边: Record<色组, string> = {
+  蓝: "var(--v2-state-border-info)",
+  绿: "var(--v2-state-border-success)",
+  墨: "var(--v2-text-text-base)",
+  金: "var(--v2-brand-gold-deep)",
+  灰: "var(--v2-border-border-strong)",
+}
+
+const 取色组 = (类型: string): 色组 => 类型色组.get(类型) ?? "灰"
+
 export function 填充(点: 图节点): string {
   if (点.中心) return "var(--v2-background-bg-accent-soft)"
-  if (点.type === "号码") return "var(--v2-state-bg-info)"
-  if (点.type === "账户") return "var(--v2-state-bg-success)"
-  if (点.type === "地点") return "var(--v2-state-bg-warning)"
-  if (点.type === "组织") return "var(--v2-background-bg-layer-03)"
-  return 默认节点填充
+  return 色组填充[取色组(点.type)]
 }
 
 /**
- * 类型色描边（FR-052）：与 `填充` **同一组已识别类型**（号码/账户/地点/组织）。
+ * 类型 → 描边色。色组表的**唯一读口**：画布节点与图例色点都走这里。
  *
- * hgraph 画布只消费这一份，不另抄色表（`#002-06`）。组织与未识别类型没有专属描边槽位，
- * 回退 `border-strong`——「不得呈灰斑」按已识别类型解释，不新造调色板（设计 08 §4.3）。
+ * 图例原先另抄了一份 `[类型, 色]` 字面表——两张表会各漂各的（`#002-06`），
+ * 2026-11-17 加色组时就得手工同步两处，故收成一个函数。
+ */
+export function 类型描边色(类型: string): string {
+  return 色组描边[取色组(类型)]
+}
+
+/**
+ * 类型色描边（FR-052）：与 `填充` **同一张色组表**。
+ *
+ * hgraph 画布只消费这一份，不另抄色表（`#002-06`）。未识别类型回退 `border-strong`，
+ * 不新造调色板（设计 08 §4.3）。
  */
 export function 类型描边(点: 图节点): string {
-  if (点.type === "号码") return "var(--v2-state-border-info)"
-  if (点.type === "账户") return "var(--v2-state-border-success)"
-  if (点.type === "地点") return "var(--v2-state-border-warning)"
-  return "var(--v2-border-border-strong)"
+  return 类型描边色(点.type)
 }
 
 /** 需要再看一眼的两态。`已确认` 是可信态——把它也算进来，整张图会全是虚线圈。 */
@@ -138,13 +178,6 @@ function 边宽(次数: number): number {
 
 const 截断 = (值: string, 上限 = 12) => (值.length > 上限 ? `${值.slice(0, 上限)}…` : 值)
 
-export function 多边形(点: 位点, 半径: number, 角数: number, 起始角: number): string {
-  return Array.from({ length: 角数 }, (_, 序) => {
-    const 角 = 起始角 + (Math.PI * 2 * 序) / 角数
-    return `${(点.x + Math.cos(角) * 半径).toFixed(1)},${(点.y + Math.sin(角) * 半径).toFixed(1)}`
-  }).join(" ")
-}
-
 /**
  * `焦点` = 这个节点正被点选。点选必须**在节点本身上看得出来**（真栈实测改前点前点后
  * fill/stroke/线宽三项一模一样，只有右侧面板变了）：换成品牌高亮填充＋深金描边，
@@ -161,54 +194,30 @@ function 图形(props: { readonly 点: 位点; readonly 焦点: boolean }): JSX.
   const 边色 = () => 描边色(props.点, props.焦点)
   const 线宽 = () => (props.焦点 ? 3 : props.点.中心 ? 2.5 : 1.5)
   const 虚线 = () => (待复核.has(props.点.trust_state) ? "4 3" : undefined)
+  /** 形状共用的描边/填充属性（两支同一套，避免改一处漏一处）。 */
+  const 面 = () => ({
+    fill: 填充色(),
+    stroke: 边色(),
+    "stroke-width": 线宽(),
+    "stroke-dasharray": 虚线(),
+  })
   return (
     <Switch>
-      <Match when={形状(props.点.type) === "rect"}>
-        {/* 号码/组织：圆角方块，与「人」的圆形一眼分开。 */}
+      {/* 事件：宽圆角块（库关系图里没有事件实体，留一个不塌的兜底形状）。 */}
+      <Match when={props.点.type === "事件"}>
         <rect
           data-slot="graph-node-shape"
-          x={props.点.x - 半() + 1}
-          y={props.点.y - 半() + 1}
-          width={(半() - 1) * 2}
-          height={(半() - 1) * 2}
-          rx={半() * 0.45}
-          fill={填充色()}
-          stroke={边色()}
-          stroke-width={线宽()}
-          stroke-dasharray={虚线()}
+          x={props.点.x - (半() * 17) / 15}
+          y={props.点.y - (半() * 11) / 15}
+          width={(半() * 34) / 15}
+          height={(半() * 22) / 15}
+          rx={6}
+          {...面()}
         />
       </Match>
-      <Match when={形状(props.点.type) === "hexagon"}>
-        <polygon
-          data-slot="graph-node-shape"
-          points={多边形(props.点, 半(), 6, -Math.PI / 2)}
-          fill={填充色()}
-          stroke={边色()}
-          stroke-width={线宽()}
-          stroke-dasharray={虚线()}
-        />
-      </Match>
-      <Match when={形状(props.点.type) === "diamond"}>
-        <polygon
-          data-slot="graph-node-shape"
-          points={多边形(props.点, 半(), 4, -Math.PI / 2)}
-          fill={填充色()}
-          stroke={边色()}
-          stroke-width={线宽()}
-          stroke-dasharray={虚线()}
-        />
-      </Match>
-      <Match when={形状(props.点.type) === "circle"}>
-        <circle
-          data-slot="graph-node-shape"
-          cx={props.点.x}
-          cy={props.点.y}
-          r={半()}
-          fill={填充色()}
-          stroke={边色()}
-          stroke-width={线宽()}
-          stroke-dasharray={虚线()}
-        />
+      {/* 其余一律圆形：十类同一形状，类型由图标 + 颜色说（2026-11-17 用户裁定）。 */}
+      <Match when={props.点.type !== "事件"}>
+        <circle data-slot="graph-node-shape" cx={props.点.x} cy={props.点.y} r={半()} {...面()} />
       </Match>
     </Switch>
   )
@@ -234,7 +243,7 @@ const 普通钮 = "h-6 cursor-pointer rounded-[4px] px-2 text-[12px] text-v2-tex
  *
  * 四条口径：
  * ① 画布按容器等比缩放，环半径从画布尺寸推出来——节点永远在视野里；
- * ② 图的编码自己说话：形状=类型，粗细=次数，颜色=关系类型，虚线=非自动抽取；
+ * ② 图的编码自己说话：图标=类型，粗细=次数，颜色=关系类型，虚线=非自动抽取；
  * ③ 悬停只做「暂时聚焦」，点击才把详情钉到右侧面板（hover 做状态会被误判成选中）；
  * ④ 缩放平移是纯视图变换（`translate() scale()`），不改布局，双击/「适应」可复位。
  */
@@ -1156,7 +1165,7 @@ export function Graph(props: GraphProps): JSX.Element {
                       data-node-id={行().id}
                       data-hop={行().跳数}
                       data-center={行().中心 ? "true" : "false"}
-                      data-node-shape={形状(行().type)}
+                      data-node-shape={行().type === "事件" ? "event" : "circle"}
                       data-node-x={行().x.toFixed(1)}
                       data-node-y={行().y.toFixed(1)}
                       data-selected={多选().includes(行().id) ? "true" : "false"}
@@ -1225,8 +1234,8 @@ export function Graph(props: GraphProps): JSX.Element {
                         />
                       </Show>
                       <图形 点={行()} 焦点={选中()?.kind === "node" && 选中()!.id === 行().id} />
-                      {/* 图标压在形状正中：形状/颜色说「大类」，图标说「具体是什么」。
-                          认不出类型的节点没有图标（`节点图标` 回 undefined）——形状照旧，不画空框。 */}
+                      {/* 图标压在圆心上：颜色说「语义组」，图标说「具体是什么」。
+                          认不出类型的节点没有图标（`节点图标` 回 undefined）——圆照旧，不画空框。 */}
                       <Show when={节点图标(行())}>
                         {(名) => (
                           <节点图标组
@@ -1304,15 +1313,10 @@ export function Graph(props: GraphProps): JSX.Element {
                 <i class="inline-block h-2 w-2 rounded-full" style={{ background: "var(--v2-brand-gold-deep)" }} />
                 中心
               </span>
-              <For each={[
-                ["人", "var(--v2-border-border-strong)"],
-                ["号码", "var(--v2-state-border-info)"],
-                ["账户", "var(--v2-state-border-success)"],
-                ["虚拟身份", "var(--v2-border-border-strong)"],
-                ["地点", "var(--v2-state-border-warning)"],
-                ["组织", "var(--v2-border-border-strong)"],
-              ] as const}>
-                {([名, 色]) => {
+              {/* 色点与画布同一个 `类型描边色()`：图例不另抄色表（`#002-06`，2026-11-17 加
+                  语义色组时两处得手工同步，故收成一个读口）。 */}
+              <For each={["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织"] as const}>
+                {(名) => {
                   const 图标 = () => 节点图标({ type: 名 })
                   return (
                     <span
@@ -1321,7 +1325,7 @@ export function Graph(props: GraphProps): JSX.Element {
                       data-icon={图标()}
                       class="inline-flex items-center gap-1"
                     >
-                      <i class="inline-block h-2 w-2 rounded-full" style={{ background: 色 }} />
+                      <i class="inline-block h-2 w-2 rounded-full" style={{ background: 类型描边色(名) }} />
                       <Show when={图标()}>
                         {(名) => (
                           <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

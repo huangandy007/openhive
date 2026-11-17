@@ -2033,12 +2033,12 @@ describe("T010 · 单一出口", () => {
     按键(钮, { key: "F2" })
     await flush()
 
-    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLTextAreaElement | null
     expect(输入 !== null).toBe(true)
     expect(输入!.value).toBe("n1")
   })
 
-  test("双击节点标签：出现改名输入框；回车一个 改字段（名称），Esc 零操作", async () => {
+  test("双击节点标签：出现改名文本框；Ctrl+回车提交，回车换行不提交，Esc 零操作", async () => {
     const { 幽 } = 挂拼装()
     await flush()
 
@@ -2046,21 +2046,34 @@ describe("T010 · 单一出口", () => {
     标签.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 127 }))
     await flush()
 
-    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    const 输入 = 取("[data-slot='hgraph-rename-editor']") as HTMLTextAreaElement | null
     expect(输入 !== null).toBe(true)
+    // 名称可能是多行文字 ⇒ 内联改名也必须是多行框，不是单行 input。
+    // happy-dom 不实现 `foreignObject` 的 HTML 集成点，框被建在 SVG 命名空间里 ⇒ `tagName`
+    // 是小写（实测：真浏览器按 HTML 规范建 HTMLTextAreaElement，tagName 大写）。只钉「是
+    // textarea」这件事，不钉大小写；`rows` / `value` 一并钉死，防止换成别的多行控件。
+    expect(输入!.tagName.toLowerCase()).toBe("textarea")
+    expect(输入!.getAttribute("rows")).toBe("2")
     expect(输入!.value).toBe("n1")
 
-    输入!.value = "新名字"
+    // 普通回车 = 换行：不提交、框不收起。
+    输入!.value = "第一行\n第二行"
     按键(输入!, { key: "Enter" })
     await flush()
+    // 计数表只在动作真被调用时才建键 ⇒ 「一次都没调」读到的是 undefined，按 0 解释。
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+    expect(取("[data-slot='hgraph-rename-editor']") !== null).toBe(true)
+
+    按键(输入!, { key: "Enter", ctrlKey: true })
+    await flush()
     expect(幽.计数.改字段).toBe(1)
-    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 名称: "新名字" }])
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 名称: "第一行\n第二行" }])
     expect(取("[data-slot='hgraph-rename-editor']") === null).toBe(true)
 
     // Esc：重新打开后放弃 ⇒ 改字段计数不动，且输入框收起。
     标签.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 127 }))
     await flush()
-    const 再次 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement
+    const 再次 = 取("[data-slot='hgraph-rename-editor']") as HTMLTextAreaElement
     expect(再次 !== null).toBe(true)
     再次.value = "不该存"
     按键(再次, { key: "Escape" })
@@ -2123,7 +2136,9 @@ describe("T010 · 单一出口", () => {
     点选("n1", 100, 100)
     await flush()
 
-    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLTextAreaElement
+    // 名称可能是多行文字 ⇒ 检查器里也是多行框。
+    expect(输入.tagName).toBe("TEXTAREA")
     expect(输入.value).toBe("n1")
     for (const 值 of ["张", "张三", "张三丰"]) {
       输入.value = 值
@@ -2138,6 +2153,26 @@ describe("T010 · 单一出口", () => {
     expect(写们.length).toBe(1)
     expect(写们[0]!.操作).toEqual([
       { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 名称: "张三丰" } }] },
+    ])
+  })
+
+  test("检查器名称保留换行：多行文本失焦后原样提交", async () => {
+    const { api, 写们 } = 假api()
+    挂上(api)
+    await flush()
+    点选("n1", 100, 100)
+    await flush()
+
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLTextAreaElement
+    expect(输入.tagName).toBe("TEXTAREA")
+    输入.value = "第一行\n第二行"
+    输入.dispatchEvent(new Event("input", { bubbles: true }))
+    输入.dispatchEvent(new FocusEvent("blur"))
+    await 过防抖()
+
+    expect(写们.length).toBe(1)
+    expect(写们[0]!.操作).toEqual([
+      { 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 名称: "第一行\n第二行" } }] },
     ])
   })
 
@@ -2501,10 +2536,11 @@ describe("T010 · 修复轮 1", () => {
     await flush()
 
     // 映射之后输入框必须还连着正式 id（临时 id 在文档里已经不存在了）。
-    const 还在 = 取("[data-slot='hgraph-rename-editor']") as HTMLInputElement | null
+    const 还在 = 取("[data-slot='hgraph-rename-editor']") as HTMLTextAreaElement | null
     expect(还在 !== null).toBe(true)
     还在!.value = "正式名"
-    按键(还在!, { key: "Enter" })
+    // 多行框里普通回车是换行 ⇒ 提交走 Ctrl+回车（与双击改名同一口径）。
+    按键(还在!, { key: "Enter", ctrlKey: true })
     await 过防抖()
 
     expect(写们.length).toBe(2)
@@ -5839,7 +5875,8 @@ describe("T012 · 加事件两入口", () => {
     expect(点.y).toBe(340)
     expect(点.来源).toEqual({ kind: "手写" })
     expect(点.名称).toBe("新事件")
-    expect(点.类型).toBe("未分类")
+    // 2026-11-17 用户裁定：事件成为图内节点类型，不再借用「未分类 + 时间精度」。
+    expect(点.类型).toBe("事件")
     const 时间 = 点.时间
     if (typeof 时间 !== "object" || 时间 === null || !("首" in 时间) || !("末" in 时间)) {
       throw new Error("事件节点缺时间对象")

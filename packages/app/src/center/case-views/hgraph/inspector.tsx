@@ -1071,10 +1071,13 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </span>
                   }
                 >
-                  <input
+                  {/* 2026-11-17 用户下达：名称可能含换行与较多文字 ⇒ 多行文本框。
+                      回车换行、失焦提交（与其余文本字段同一条路径）。 */}
+                  <textarea
                     id="hgraph-field-名称"
                     data-slot="hgraph-field-名称"
-                    class={输入}
+                    rows={2}
+                    class={`${输入} resize-y`}
                     value={点().名称 ?? ""}
                     onBlur={(事件) => 提交(点(), "名称", 事件.currentTarget.value)}
                   />

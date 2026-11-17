@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { JSX } from "solid-js"
-import { Graph, 自动位置, 布局, 按经由分簇, 画布, type 位点 } from "./graph"
+import { Graph, 自动位置, 布局, 按经由分簇, 画布, 类型描边色, type 位点 } from "./graph"
 import type { CaseDetailApi, 关系图强度, 图节点, 图边, 关系图结果 } from "../case-detail-api"
 import { 订阅会话输入 } from "@/ai-session/send-to-session"
 
@@ -199,13 +199,126 @@ describe("关系图 · 画", () => {
     expect(host.querySelectorAll("[data-slot='graph-edge-label']").length).toBe(0)
   })
 
-  test("按类型换形状：人=圆、号码=圆角块、账户=六边形、地点=菱形", async () => {
+  test("所有类型都画圆（2026-11-17 用户裁定：圆以外的形状不好看）", async () => {
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
-    expect(点元素(host, "e-李").querySelector("circle")).not.toBeNull()
-    expect(点元素(host, "e-号").querySelector("rect")).not.toBeNull()
-    expect(点元素(host, "e-账").querySelector("polygon")!.getAttribute("points")!.trim().split(/\s+/)).toHaveLength(6)
-    expect(点元素(host, "e-地").querySelector("polygon")!.getAttribute("points")!.trim().split(/\s+/)).toHaveLength(4)
+    // 人 / 号码 / 账户 / 地点四类都点名：形状不再承担类型判据（类型由图标 + 颜色说）。
+    for (const id of ["e-张", "e-李", "e-号", "e-账", "e-地"]) {
+      const 节点 = 点元素(host, id)
+      const 形们 = [...节点.querySelectorAll("[data-slot='graph-node-shape']")]
+      expect(形们.length).toBe(1)
+      expect(形们[0].tagName.toLowerCase()).toBe("circle")
+      expect(节点.getAttribute("data-node-shape")).toBe("circle")
+    }
+  })
+
+  test("十类节点一律圆形：没有多边形、没有双圈", async () => {
+    const 行 = (id: string, type: string): 图节点 => ({
+      id,
+      type,
+      value: id,
+      trust_state: "自动抽取",
+      中心: false,
+      跳数: 1,
+      关联数: 1,
+      度数: 1,
+    })
+    const 节点: 图节点[] = [
+      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 8, 度数: 8 },
+      行("e-号", "号码"),
+      行("e-户", "账户"),
+      行("e-虚", "虚拟身份"),
+      行("e-车", "车辆"),
+      行("e-物", "物品"),
+      行("e-地", "地点"),
+      行("e-组", "组织"),
+      行("e-未", "未分类"),
+    ]
+    const 数据: 关系图结果 = {
+      节点,
+      边: 节点
+        .filter((点) => !点.中心)
+        .map((点, 序) => ({
+          id: `r-${序}`,
+          from: "e-心",
+          to: 点.id,
+          type: "通话",
+          times: 1,
+          amount: null,
+          trust_state: "自动抽取",
+          明细数: 1,
+        })),
+      缺口: [],
+    }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 数据 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 9)
+
+    for (const id of ["e-号", "e-户", "e-虚", "e-车", "e-物", "e-地", "e-组", "e-未"]) {
+      const 节点 = 点元素(host, id)
+      const 形们 = [...节点.querySelectorAll("[data-slot='graph-node-shape']")]
+      expect(形们.length).toBe(1)
+      expect(形们[0].tagName.toLowerCase()).toBe("circle")
+      expect(节点.querySelector("polygon") === null).toBe(true)
+    }
+    // 未分类不再画双圈：形状槽只有一个，节点里也只有这一个圆。
+    expect(点元素(host, "e-未").querySelectorAll("circle").length).toBe(1)
+  })
+
+  test("语义分组配色：蓝组（人/组织）、绿组（号码/账户/虚拟身份）、墨组（车辆/物品/地点）、灰组（未分类）", async () => {
+    const 行 = (id: string, type: string): 图节点 => ({
+      id,
+      type,
+      value: id,
+      trust_state: "自动抽取",
+      中心: false,
+      跳数: 1,
+      关联数: 1,
+      度数: 1,
+    })
+    const 节点: 图节点[] = [
+      { id: "e-心", type: "人", value: "中心", trust_state: "自动抽取", 中心: true, 跳数: 0, 关联数: 9, 度数: 9 },
+      行("e-人", "人"),
+      行("e-组", "组织"),
+      行("e-号", "号码"),
+      行("e-户", "账户"),
+      行("e-虚", "虚拟身份"),
+      行("e-车", "车辆"),
+      行("e-物", "物品"),
+      行("e-地", "地点"),
+      行("e-未", "未分类"),
+    ]
+    const 数据: 关系图结果 = {
+      节点,
+      边: 节点
+        .filter((点) => !点.中心)
+        .map((点, 序) => ({
+          id: `r-${序}`,
+          from: "e-心",
+          to: 点.id,
+          type: "通话",
+          times: 1,
+          amount: null,
+          trust_state: "自动抽取",
+          明细数: 1,
+        })),
+      缺口: [],
+    }
+    const host = mount(() => (
+      <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 数据 }) })} onOpenEntity={() => {}} />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 10)
+
+    // 库关系图的描边管「可信态」（虚线 + 待复核色），类型色只落在填充上；
+    // 类型色描边由 hgraph 画布的 `类型描边` 消费（`canvas.test.tsx` 另钉）。
+    const 填充色 = (id: string) =>
+      点元素(host, id).querySelector("[data-slot='graph-node-shape']")!.getAttribute("fill")
+    for (const id of ["e-人", "e-组"]) expect(填充色(id)).toBe("var(--v2-state-bg-info)")
+    for (const id of ["e-号", "e-户", "e-虚"]) expect(填充色(id)).toBe("var(--v2-state-bg-success)")
+    // 墨组（2026-11-17 用户裁定：原来的黄色看不清）：浅灰底 + 近黑描边，靠描边与画布拉开对比。
+    for (const id of ["e-车", "e-物", "e-地"]) expect(填充色(id)).toBe("var(--v2-background-bg-layer-04)")
+    expect(填充色("e-未")).toBe("var(--v2-background-bg-layer-02)")
   })
 
   test("节点上的图标：细类优先、回退大类、认不出就不画（内网没有「取不到图标」这回事，图标是内联 path）", async () => {
@@ -233,6 +346,10 @@ describe("关系图 · 画", () => {
       行("e-聊", "虚拟身份", "wx-1234", "微信"),
       行("e-地", "地点", "城东茶馆"),
       行("e-组", "组织", "甲银行"),
+      行("e-车", "车辆", "浙A12345"),
+      行("e-物", "物品", "黑色手提包"),
+      行("e-未", "未分类", "待定对象"),
+      行("e-事", "事件", "某次转账"),
       行("e-怪", "船舶", "浙湖渔00001"),
     ]
     // ⚠️ 一条边都没有时画布会落到「还没有关系」那一档（不画节点），所以这里每个邻居都连到中心。
@@ -255,7 +372,7 @@ describe("关系图 · 画", () => {
     const host = mount(() => (
       <Graph projectId="p" id="e-心" api={假api({ graph: async () => ({ kind: "ok", value: 数据 }) })} onOpenEntity={() => {}} />
     ))
-    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 14)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 18)
 
     const 图标 = (id: string) =>
       host.querySelector<SVGGElement>(`[data-slot='graph-node'][data-node-id='${id}'] [data-slot='graph-node-icon']`)
@@ -271,6 +388,13 @@ describe("关系图 · 画", () => {
       "wallet",
       "pin",
       "building",
+    ])
+    // 2026-11-17 补齐的四类：车辆、物品、未分类、事件各有专属图标。
+    expect([图标名("e-车"), 图标名("e-物"), 图标名("e-未"), 图标名("e-事")]).toEqual([
+      "car",
+      "package",
+      "circle-dashed",
+      "calendar",
     ])
     // 大类也不认识 ⇒ 不画图标，但形状照画（宁可少一个图标，不许出现空框）。
     expect(图标名("e-怪")).toBeNull()
@@ -289,9 +413,24 @@ describe("关系图 · 画", () => {
       ["号码", "hash"],
       ["账户", "wallet"],
       ["虚拟身份", "chat"],
+      ["车辆", "car"],
+      ["物品", "package"],
       ["地点", "pin"],
       ["组织", "building"],
     ])
+  })
+
+  test("图例色点与画布读同一张色组表（改表图例跟着变，不许另抄一份）", async () => {
+    const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
+    await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
+    const 条目 = [...host.querySelectorAll("[data-slot='graph-legend'] [data-slot='graph-legend-type']")]
+    expect(条目.length).toBeGreaterThan(0)
+    for (const 条 of 条目) {
+      const 名 = 条.getAttribute("data-type")!
+      const 点 = 条.querySelector("i")
+      expect(点 !== null).toBe(true)
+      expect(点!.style.background).toBe(类型描边色(名))
+    }
   })
 
   test("只有存疑/已排除的节点用虚线描边（已确认是可信态，不能跟着虚）；长值截断显示，悬停看全文", async () => {
@@ -299,10 +438,10 @@ describe("关系图 · 画", () => {
     // 已确认的实体都画成虚线圈——虚线的含义是「这条得再看一眼」，不是「不是机器抽的」。
     const host = mount(() => <Graph projectId="p" id="e-张" api={假api()} onOpenEntity={() => {}} />)
     await 等(() => host.querySelectorAll("[data-slot='graph-node']").length === 5)
-    const 存疑 = 点元素(host, "e-账").querySelector("polygon")!
-    expect(存疑.getAttribute("stroke-dasharray")).toBe("4 3")
-    expect(点元素(host, "e-李").querySelector("circle")!.getAttribute("stroke-dasharray")).toBeNull()
-    expect(点元素(host, "e-号").querySelector("rect")!.getAttribute("stroke-dasharray")).toBeNull()
+    const 形 = (id: string) => 点元素(host, id).querySelector("[data-slot='graph-node-shape']")!
+    expect(形("e-账").getAttribute("stroke-dasharray")).toBe("4 3")
+    expect(形("e-李").getAttribute("stroke-dasharray")).toBeNull()
+    expect(形("e-号").getAttribute("stroke-dasharray")).toBeNull()
     expect(点元素(host, "e-号").querySelector("title")!.textContent).toBe("13800000001")
   })
 
@@ -1220,8 +1359,8 @@ describe("关系图 · 选中焦点", () => {
     expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-brand-gold)")
     expect(形(host, "e-李").getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
     expect(焦点环(host, "e-李")).not.toBeNull()
-    // 号码节点仍是类型色（青），焦点环也不在它身上
-    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
+    // 号码节点仍是类型色（绿组），焦点环也不在它身上
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-success)")
     expect(焦点环(host, "e-号")).toBeNull()
   })
 
@@ -1255,14 +1394,15 @@ describe("关系图 · 选中焦点", () => {
     点元素(host, "e-李").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     点元素(host, "e-号").dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect(焦点环(host, "e-李")).toBeNull()
-    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-background-bg-layer-02)")
+    // 「人」属于蓝组（2026-11-17 起所有已识别类型都有类型色，不再回退中性底）。
+    expect(形(host, "e-李").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
     expect(焦点环(host, "e-号")).not.toBeNull()
     // 号码本来是青色，被点选后必须换成焦点色——只钉「旧节点恢复」的话，
     // 焦点色整体失效时这条会假绿（图形不随选中变，旧节点本来就一直是原色）。
     expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-brand-gold)")
     按Esc()
     expect(焦点环(host, "e-号")).toBeNull()
-    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
+    expect(形(host, "e-号").getAttribute("fill")).toBe("var(--v2-state-bg-success)")
   })
 })
 

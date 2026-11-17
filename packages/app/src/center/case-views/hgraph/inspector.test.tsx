@@ -205,8 +205,10 @@ describe("检查器 · 三段两源", () => {
   test("可改区读文档、库里现在读快照：两值同时显示，互不覆盖", () => {
     挂检查器({ 选中: ["n1"], 快照 })
 
-    const 名称 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement | null
+    const 名称 = 取("[data-slot='hgraph-field-名称']") as HTMLTextAreaElement | null
     expect(名称 !== null).toBe(true)
+    // 2026-11-17 用户下达：名称可能是多行文字 ⇒ 多行框。
+    expect(名称!.tagName).toBe("TEXTAREA")
     expect(名称!.value).toBe("张三")
     // 库里现在是自己的值，不是文档值的副本。
     expect(文本("hgraph-snapshot-值")).toBe("张三丰")
@@ -280,7 +282,8 @@ describe("检查器 · 三段两源", () => {
 describe("检查器 · 失焦即存", () => {
   test("逐字输入 0 次动作；失焦恰好 1 次改字段", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
-    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement
+    const 输入 = 取("[data-slot='hgraph-field-名称']") as HTMLTextAreaElement
+    expect(输入.tagName).toBe("TEXTAREA")
 
     for (const 值 of ["张", "张三", "张三丰"]) {
       输入.value = 值
@@ -1090,7 +1093,8 @@ describe("检查器 · T011 事件两态与参与方", () => {
     //（2026-11-17 用户裁定改回可自由输入的文本框）。备注改多行（需求第 6 项③）。
     // 可编辑 = 不是只读 `span`，这里按控件种类逐项钉住。
     const 控件: Record<string, string> = {
-      名称: "INPUT",
+      // 名称 2026-11-17 改为多行文本框（可能含换行）。
+      名称: "TEXTAREA",
       类型: "SELECT",
       细类: "INPUT",
       备注: "TEXTAREA",
@@ -1380,20 +1384,20 @@ describe("检查器 · T014 四段骨架与收起", () => {
     expect(幽.收起()).toBe(false)
   })
 
-  test("类型色点取 graph.tsx 的类型色（号码 ⇒ info），不借用外环色", () => {
-    // 号码在图例映射里是 `var(--v2-state-bg-info)`；外环没有颜色 ⇒ 旧实现会落成中性灰。
-    // 这里同时钉展开头段与收起窄条两处，两处都读同一个 `头().色`。
+  test("类型色点取 graph.tsx 的类型色（号码 ⇒ success 绿组），不借用外环色", () => {
+    // 号码在 `graph.tsx` 的色组表里属绿组（2026-11-17 起按语义分组配色）；
+    // 外环没有颜色 ⇒ 旧实现会落成中性灰。这里同时钉展开头段与收起窄条两处，两处都读同一个 `头().色`。
     const 展开 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }) })
     const 色块 = 取("[data-slot='hgraph-inspector-head-color']") as HTMLElement
     expect(色块 !== null).toBe(true)
-    expect(色块.style.background).toBe("var(--v2-state-bg-info)")
+    expect(色块.style.background).toBe("var(--v2-state-bg-success)")
 
     展开.set选中([])
     const 收起 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }), 收起: true })
     const 窄条 = 取("[data-slot='hgraph-inspector-collapsed']") as HTMLButtonElement
     const 点 = 窄条.querySelector<HTMLElement>("[data-slot='hgraph-inspector-collapsed-dot']")
     expect(点 !== null).toBe(true)
-    expect(点!.style.background).toBe("var(--v2-state-bg-info)")
+    expect(点!.style.background).toBe("var(--v2-state-bg-success)")
     expect(收起.收起()).toBe(true)
   })
 
@@ -1518,7 +1522,7 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     expect(类型 !== null).toBe(true)
     expect(类型!.tagName).toBe("SELECT")
     const 类型们 = [...类型!.options].map((项) => 项.value)
-    for (const 名 of ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "未分类"]) {
+    for (const 名 of ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "事件", "未分类"]) {
       expect(类型们.includes(名)).toBe(true)
     }
     // 夹具的类型「人物」不在表里：必须作为额外一项保留（不能显示成空）。

@@ -298,66 +298,172 @@ describe("T018 · 画布边几何", () => {
 })
 
 describe("T018 · 节点形状与外环", () => {
-  test("#12 类型形状：人 / 号码 / 账户 / 地点 / 未知 ⇒ circle/rect/hexagon/diamond/circle；首字 = 号", () => {
+  test("#12 十类节点一律圆形（事件仍是事件卡）；未知类型也是圆", () => {
     挂(
       造图(
         [
-          造节点("n1", 100, 100, { 类型: "人" }),
-          造节点("n2", 200, 100, { 类型: "号码", 名称: "号码甲" }),
-          造节点("n3", 300, 100, { 类型: "账户" }),
-          造节点("n4", 400, 100, { 类型: "地点" }),
-          造节点("n5", 500, 100, { 类型: "未知" }),
+          造节点("人", 100, 100, { 类型: "人" }),
+          造节点("号码", 200, 100, { 类型: "号码" }),
+          造节点("账户", 300, 100, { 类型: "账户" }),
+          造节点("虚拟身份", 400, 100, { 类型: "虚拟身份" }),
+          造节点("车辆", 500, 100, { 类型: "车辆" }),
+          造节点("物品", 600, 100, { 类型: "物品" }),
+          造节点("地点", 700, 100, { 类型: "地点" }),
+          造节点("组织", 100, 300, { 类型: "组织" }),
+          造节点("事件", 300, 300, { 类型: "事件" }),
+          造节点("未分类", 500, 300, { 类型: "未分类" }),
+          造节点("未知", 700, 300, { 类型: "未知" }),
         ],
         [],
       ),
     )
     expect(
-      ["n1", "n2", "n3", "n4", "n5"].map((id) => 节点组(id)!.getAttribute("data-node-shape")),
-    ).toEqual(["circle", "rect", "hexagon", "diamond", "circle"])
-    const 首字们 = [...节点组("n2")!.querySelectorAll("text")].map((元素) => 元素.textContent)
-    expect(首字们).toContain("号")
+      ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "事件", "未分类", "未知"].map((id) =>
+        节点组(id)!.getAttribute("data-node-shape"),
+      ),
+    ).toEqual([
+      "circle",
+      "circle",
+      "circle",
+      "circle",
+      "circle",
+      "circle",
+      "circle",
+      "circle",
+      "event-card",
+      "circle",
+      "circle",
+    ])
+    // 属性之外再钉元素：普通节点真的画的是 circle（变异成 polygon 时这里要红）。
+    for (const id of ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "未分类", "未知"]) {
+      const 形 = 节点组(id)!.querySelector("[data-slot='hgraph-node-shape']")
+      expect(形 !== null).toBe(true)
+      expect(形!.tagName.toLowerCase()).toBe("circle")
+    }
   })
 
-  test("#12 类型首字按码点取，不劈开代理对", () => {
+  test("#12 形状确实落到元素几何上：普通节点只有一个 circle 形状槽", () => {
+    挂(
+      造图(
+        [
+          造节点("号码", 100, 100, { 类型: "号码" }),
+          造节点("虚拟身份", 200, 100, { 类型: "虚拟身份" }),
+          造节点("车辆", 300, 100, { 类型: "车辆" }),
+          造节点("物品", 400, 100, { 类型: "物品" }),
+          造节点("组织", 500, 100, { 类型: "组织" }),
+          造节点("未分类", 600, 100, { 类型: "未分类" }),
+        ],
+        [],
+      ),
+    )
+    for (const id of ["号码", "虚拟身份", "车辆", "物品", "组织", "未分类"]) {
+      const 形们 = [...节点组(id)!.querySelectorAll("[data-slot='hgraph-node-shape']")]
+      expect(形们.length).toBe(1)
+      expect(形们[0].tagName.toLowerCase()).toBe("circle")
+      expect(形们[0].getAttribute("r")).toBe("15")
+    }
+  })
+
+  test("#12 类型首字按码点取，不劈开代理对（认不出类型、无图标时仍走首字兜底）", () => {
     挂(造图([造节点("n1", 100, 100, { 类型: "𠮷" })], []))
     const 首字们 = [...节点组("n1")!.querySelectorAll("text")].map((元素) => 元素.textContent)
     expect(首字们).toContain("𠮷")
   })
 
-  test("FR-052 未选中节点：已识别类型是类型色浅底 + 类型色描边；未识别回退中性", () => {
+  test("FR-052 未选中节点：图标说明类型、颜色说明语义分组", () => {
     挂(
       造图(
         [
-          造节点("号码", 100, 100, { 类型: "号码" }),
-          造节点("账户", 200, 100, { 类型: "账户" }),
-          造节点("地点", 300, 100, { 类型: "地点" }),
-          造节点("组织", 400, 100, { 类型: "组织" }),
-          造节点("未分类", 500, 100, { 类型: "未分类" }),
+          造节点("人", 100, 100, { 类型: "人" }),
+          造节点("组织", 200, 100, { 类型: "组织" }),
+          造节点("号码", 300, 100, { 类型: "号码" }),
+          造节点("账户", 400, 100, { 类型: "账户" }),
+          造节点("虚拟身份", 500, 100, { 类型: "虚拟身份" }),
+          造节点("车辆", 600, 100, { 类型: "车辆" }),
+          造节点("物品", 100, 300, { 类型: "物品" }),
+          造节点("地点", 200, 300, { 类型: "地点" }),
+          造节点("事件", 300, 300, { 类型: "事件" }),
+          造节点("未分类", 400, 300, { 类型: "未分类" }),
         ],
         [],
       ),
     )
     const 形 = (id: string) => 节点组(id)!.querySelector("[data-slot='hgraph-node-shape']")!
+    const 色 = (id: string, 键: "fill" | "stroke") => 形(id).getAttribute(键)
 
-    // 号码 / 账户 / 地点：浅底与 1.5px 描边都取类型色（与 `graph.tsx` 同一张映射）。
-    expect(形("号码").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
-    expect(形("号码").getAttribute("stroke")).toBe("var(--v2-state-border-info)")
-    expect(形("账户").getAttribute("fill")).toBe("var(--v2-state-bg-success)")
-    expect(形("账户").getAttribute("stroke")).toBe("var(--v2-state-border-success)")
-    expect(形("地点").getAttribute("fill")).toBe("var(--v2-state-bg-warning)")
-    expect(形("地点").getAttribute("stroke")).toBe("var(--v2-state-border-warning)")
-    expect(形("号码").getAttribute("stroke-width")).toBe("1.5")
-    // 主判据：不再是「一排灰斑」。
-    for (const id of ["号码", "账户", "地点"]) {
-      expect(形(id).getAttribute("fill") === "var(--v2-background-bg-layer-02)").toBe(false)
-      expect(形(id).getAttribute("stroke") === "var(--v2-border-border-strong)").toBe(false)
+    // 蓝组：人 / 组织。
+    for (const id of ["人", "组织"]) {
+      expect(色(id, "fill")).toBe("var(--v2-state-bg-info)")
+      expect(色(id, "stroke")).toBe("var(--v2-state-border-info)")
     }
-    // 组织：已识别但没有状态浅底槽 ⇒ 浅底 layer-03、描边回退中性（设计补色表缺口）。
-    expect(形("组织").getAttribute("fill")).toBe("var(--v2-background-bg-layer-03)")
-    expect(形("组织").getAttribute("stroke")).toBe("var(--v2-border-border-strong)")
-    // 未识别类型保持中性回退，不新造色。
-    expect(形("未分类").getAttribute("fill")).toBe("var(--v2-background-bg-layer-02)")
-    expect(形("未分类").getAttribute("stroke")).toBe("var(--v2-border-border-strong)")
+    // 绿组：号码 / 账户 / 虚拟身份。
+    for (const id of ["号码", "账户", "虚拟身份"]) {
+      expect(色(id, "fill")).toBe("var(--v2-state-bg-success)")
+      expect(色(id, "stroke")).toBe("var(--v2-state-border-success)")
+    }
+    // 墨组：车辆 / 物品 / 地点（2026-11-17 用户裁定：黄色看不清 ⇒ 浅灰底 + 近黑描边）。
+    for (const id of ["车辆", "物品", "地点"]) {
+      expect(色(id, "fill")).toBe("var(--v2-background-bg-layer-04)")
+      expect(色(id, "stroke")).toBe("var(--v2-text-text-base)")
+    }
+    // 金组：事件（浅金底 + 深金边）；旧文件里「未分类 + 时间精度」的手写事件同样按事件着色。
+    expect(色("事件", "fill")).toBe("var(--v2-background-bg-accent-soft)")
+    expect(色("事件", "stroke")).toBe("var(--v2-brand-gold-deep)")
+    // 灰组：未分类保持中性回退，不新造色。
+    expect(色("未分类", "fill")).toBe("var(--v2-background-bg-layer-02)")
+    expect(色("未分类", "stroke")).toBe("var(--v2-border-border-strong)")
+    expect(形("人").getAttribute("stroke-width")).toBe("1.5")
+  })
+
+  test("旧手写事件（未分类 + 时间精度）也按事件金着色", () => {
+    挂(
+      造图([
+        造节点("旧事件", 100, 100, {
+          类型: "未分类",
+          来源: { kind: "手写" },
+          属性: [{ 键: "时间精度", 值: "分" }],
+        }),
+      ], []),
+    )
+    const 形 = 节点组("旧事件")!.querySelector("[data-slot='hgraph-node-shape']")!
+    expect(形.getAttribute("data-node-shape")).toBe("event-card")
+    expect(形.getAttribute("fill")).toBe("var(--v2-background-bg-accent-soft)")
+    expect(形.getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
+  })
+
+  test("类型首字换成图标：十类各有图标，认不出的类型仍回退首字", () => {
+    挂(
+      造图(
+        [
+          造节点("人", 100, 100, { 类型: "人", 名称: "某甲" }),
+          造节点("号码", 200, 100, { 类型: "号码", 名称: "某号", 细类: "手机号" }),
+          造节点("账户", 300, 100, { 类型: "账户", 名称: "某账" }),
+          造节点("虚拟身份", 400, 100, { 类型: "虚拟身份", 名称: "某号" }),
+          造节点("车辆", 500, 100, { 类型: "车辆", 名称: "某车" }),
+          造节点("物品", 600, 100, { 类型: "物品", 名称: "某物" }),
+          造节点("地点", 700, 100, { 类型: "地点", 名称: "某地" }),
+          造节点("组织", 100, 300, { 类型: "组织", 名称: "某组" }),
+          造节点("事件", 300, 300, { 类型: "事件", 名称: "某事" }),
+          造节点("未分类", 500, 300, { 类型: "未分类", 名称: "某未" }),
+          造节点("未知", 700, 300, { 类型: "船舶", 名称: "浙湖渔" }),
+        ],
+        [],
+      ),
+    )
+    const 图标名 = (id: string) =>
+      节点组(id)!.querySelector("[data-slot='graph-node-icon']")?.getAttribute("data-icon") ?? null
+    expect(
+      ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "未分类"].map((id) => 图标名(id)),
+    ).toEqual(["user", "smartphone", "wallet", "chat", "car", "package", "pin", "building", "circle-dashed"])
+    // 事件卡自带两行文字，不再往中间塞图标。
+    expect(图标名("事件")).toBeNull()
+    // 认不出的类型不画空框 / 问号：回退到原来的类型首字。
+    expect(图标名("未知")).toBeNull()
+    const 文本们 = [...节点组("未知")!.querySelectorAll("text")].map((元素) => 元素.textContent)
+    expect(文本们).toContain("船")
+    // 有图标的节点不再叠一个首字（同一位置两样东西会糊成一团）。
+    const 人文本 = [...节点组("人")!.querySelectorAll("text")].map((元素) => 元素.textContent)
+    expect(人文本).not.toContain("人")
   })
 
   test("FR-052 选中态仍是品牌金（精修 FR-053 延后，本次不改）", () => {
@@ -1124,6 +1230,20 @@ describe("T010 · 事件卡", () => {
 // ---------------------------------------------------------------------------
 
 describe("T012 · 手写事件的事件卡", () => {
+  test("类型 = 事件 ⇒ 渲染 event-card（2026-11-17 起不再依赖 `时间精度` 属性）", () => {
+    挂(
+      造图([
+        造节点("新事件", 100, 100, {
+          类型: "事件",
+          来源: { kind: "手写" },
+        }),
+      ], []),
+    )
+    const 形状们 = [...节点组("新事件")!.querySelectorAll("[data-slot='hgraph-node-shape']")]
+    expect(形状们.length).toBe(1)
+    expect(形状们[0].getAttribute("data-node-shape")).toBe("event-card")
+  })
+
   test("手写节点带 `时间精度` ⇒ 渲染 event-card", () => {
     挂(
       造图([
@@ -1386,8 +1506,8 @@ describe("FR-033 · 外环双通道（类型色 + 连接数角标）", () => {
    * final-fix2 N1：未映射类型不能落回 `填充` 的默认 `layer-02`——那与画布底色/未选中
    * 填充同阶，高连接节点的粗环几乎看不见；回退到原先可见的 `border-strong`。
    */
-  test("未映射类型（人）自动外环 ⇒ 回退 border-strong，不是 layer-02", () => {
-    挂(高连接图({ 类型: "人" }))
+  test("未映射类型（船舶）自动外环 ⇒ 回退 border-strong，不是 layer-02", () => {
+    挂(高连接图({ 类型: "船舶" }))
     const 环 = 外环("a")
     expect(环 !== null).toBe(true)
     expect(环!.getAttribute("stroke")).toBe("var(--v2-border-border-strong)")

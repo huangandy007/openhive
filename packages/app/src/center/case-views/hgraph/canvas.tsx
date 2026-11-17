@@ -52,7 +52,8 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 填充, 类型描边, 多边形, 默认节点填充, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import { 填充, 类型描边, 默认节点填充, 面板让位平移x, 面板宽, 面板边距 } from "../graph"
+import { 节点图标, 节点图标组 } from "../graph-icons"
 import type { 图节点 } from "../../case-detail-api"
 import type { 排列模式 } from "../graph-layout"
 
@@ -129,13 +130,6 @@ function 事件卡次行(点: 节点): string {
   if (精度 === "时") return `${日期} ${时}时`
   return `${日期} ${时}:${分}`
 }
-
-/**
- * `多边形` 只读 `x/y`，但入参类型是完整 `位点`（`图节点` + 坐标）；节点组已平移到中心，
- * 这里只需一个原点壳。`graph.tsx` 只加 export、不改签名（`#002-06`：形状映射唯一出处）。
- */
-// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- 多边形 只读 x/y；上游签名要完整 图节点，没有值可收窄
-const 原点壳 = { x: 0, y: 0 } as 位点
 
 /**
  * 画布内嵌界面（菜单 / 图例 / 表单控件）：指针与双击落到它们身上都不算「点空白画布」。
@@ -1526,21 +1520,29 @@ export function 画布(props: 画布Props): JSX.Element {
             {(点: 节点) => {
               const 位 = () => 节点位(点)
               const 选中 = () => props.选中.includes(点.id)
-              // 形状映射只此一份（`graph.tsx` 的 `形状`，R74/#002-06）。
-              const 形 = () => 形状(点.类型 ?? "")
-              // 对象类别 > 类型→形状：事件不进那个映射（FR-056）。
+              // 对象类别 > 类型：事件卡单独渲染（FR-056）；其余十类一律圆（2026-11-17 用户裁定）。
               const 是事件 = () => 是事件节点(点)
+              /**
+               * 着色用的样子。旧文件里的手写事件是「未分类 + 时间精度」——按类型查色会查成灰组，
+               * 但它确实是事件 ⇒ 判据命中时把类型改写成「事件」，颜色表仍只有 `graph.tsx` 一份。
+               */
+              const 着色样子 = () => {
+                const 样 = 图节点样子(点)
+                return 是事件() ? { ...样, type: "事件" } : 样
+              }
               // FR-052：未选中节点用类型色浅底 + 类型色描边（`graph.tsx` 同一张映射）；
               // 选中态保持品牌金（FR-053 精修延后）。
-              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : 填充(图节点样子(点)))
-              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : 类型描边(图节点样子(点)))
+              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : 填充(着色样子()))
+              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : 类型描边(着色样子()))
+              /** 类型 → 图标（`graph-icons.tsx` 一张表）；认不出类型的旧值回退下方首字。 */
+              const 图标 = () => (是事件() ? undefined : 节点图标({ type: 点.类型 ?? "", subtype: 点.细类 }))
               const 描边宽 = () => (选中() ? 3 : 1.5)
               const 虚线 = () => (点.锁定 === true ? "3 2" : undefined)
               return (
                 <g
                   data-slot="hgraph-node"
                   data-node-id={点.id}
-                  data-node-shape={形()}
+                  data-node-shape={是事件() ? "event-card" : "circle"}
                   data-selected={选中() ? "true" : undefined}
                   data-locked={点.锁定 === true ? "true" : undefined}
                   transform={`translate(${位().x} ${位().y})`}
@@ -1559,86 +1561,72 @@ export function 画布(props: 画布Props): JSX.Element {
                       stroke-width={环档(点)}
                     />
                   </Show>
-                  {/* 类型用形状 + 首字双通道，颜色不是唯一通道（FR-048）。 */}
-                  <Switch fallback={<circle r={节点半径} fill={填充色()} stroke={描边色()} stroke-width={描边宽()} stroke-dasharray={虚线()} data-slot="hgraph-node-shape" />}>
+                  {/* 十类一律圆形（2026-11-17 用户裁定）：形状不再承担类型判据，
+                      类型由图标 + 语义色组说（FR-048 的类型通道仍在，只是换了载体）。 */}
+                  <Show
+                    when={是事件()}
+                    fallback={
+                      <circle r={节点半径} fill={填充色()} stroke={描边色()} stroke-width={描边宽()} stroke-dasharray={虚线()} data-slot="hgraph-node-shape" />
+                    }
+                  >
                     {/* 事件卡（FR-056）：两行文字属卡片自身，所以首字槽由下面的 Show 让开。 */}
-                    <Match when={是事件()}>
-                      <g>
-                        <rect
-                          data-slot="hgraph-node-shape"
-                          data-node-shape="event-card"
-                          x={-事件卡宽 / 2}
-                          y={-事件卡高 / 2}
-                          width={事件卡宽}
-                          height={事件卡高}
-                          rx={事件卡圆角}
-                          fill={填充色()}
-                          stroke={描边色()}
-                          stroke-width={描边宽()}
-                          stroke-dasharray={虚线()}
-                        />
-                        <text
-                          data-slot="hgraph-event-card-line1"
-                          text-anchor="middle"
-                          y={-2}
-                          font-size="12"
-                          font-weight="600"
-                          fill="var(--v2-text-text-base)"
-                        >
-                          {事件卡首行(点)}
-                        </text>
-                        <text
-                          data-slot="hgraph-event-card-line2"
-                          text-anchor="middle"
-                          y={11}
-                          font-size="10"
-                          fill="var(--v2-text-text-muted)"
-                        >
-                          {事件卡次行(点)}
-                        </text>
-                      </g>
-                    </Match>
-                    <Match when={形() === "rect"}>
+                    <g>
                       <rect
                         data-slot="hgraph-node-shape"
-                        x={-14}
-                        y={-14}
-                        width={28}
-                        height={28}
-                        rx={6.75}
+                        data-node-shape="event-card"
+                        x={-事件卡宽 / 2}
+                        y={-事件卡高 / 2}
+                        width={事件卡宽}
+                        height={事件卡高}
+                        rx={事件卡圆角}
                         fill={填充色()}
                         stroke={描边色()}
                         stroke-width={描边宽()}
                         stroke-dasharray={虚线()}
                       />
-                    </Match>
-                    <Match when={形() === "hexagon"}>
-                      <polygon
-                        data-slot="hgraph-node-shape"
-                        points={多边形(原点壳, 15, 6, -Math.PI / 2)}
-                        fill={填充色()}
-                        stroke={描边色()}
-                        stroke-width={描边宽()}
-                        stroke-dasharray={虚线()}
-                      />
-                    </Match>
-                    <Match when={形() === "diamond"}>
-                      <polygon
-                        data-slot="hgraph-node-shape"
-                        points={多边形(原点壳, 15, 4, -Math.PI / 2)}
-                        fill={填充色()}
-                        stroke={描边色()}
-                        stroke-width={描边宽()}
-                        stroke-dasharray={虚线()}
-                      />
-                    </Match>
-                  </Switch>
-                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。
-                      事件卡的第一行已含类型首字，圆心的首字槽让开（同一 DOM 结构，不复制分支）。 */}
+                      <text
+                        data-slot="hgraph-event-card-line1"
+                        text-anchor="middle"
+                        y={-2}
+                        font-size="12"
+                        font-weight="600"
+                        fill="var(--v2-text-text-base)"
+                      >
+                        {事件卡首行(点)}
+                      </text>
+                      <text
+                        data-slot="hgraph-event-card-line2"
+                        text-anchor="middle"
+                        y={11}
+                        font-size="10"
+                        fill="var(--v2-text-text-muted)"
+                      >
+                        {事件卡次行(点)}
+                      </text>
+                    </g>
+                  </Show>
+                  {/* 类型标识：有图标就画图标（图标说具体对象，颜色说语义组）；认不出的历史类型
+                      回退类型首字（按码点取，`slice` 会劈开补充平面字符）。事件卡第一行已含类型首字，
+                      整块让开。 */}
                   <Show when={!是事件()}>
-                    <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
-                      {Array.from(点.类型 ?? "")[0] ?? ""}
-                    </text>
+                    <Show
+                      when={图标()}
+                      fallback={
+                        <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
+                          {Array.from(点.类型 ?? "")[0] ?? ""}
+                        </text>
+                      }
+                    >
+                      {(名) => (
+                        <节点图标组
+                          名={名()}
+                          x={0}
+                          y={0}
+                          边长={16}
+                          色={选中() ? "var(--v2-text-text-base)" : 描边色()}
+                        />
+                      )}
+                    </Show>
                   </Show>
                   {/*
                     FR-033 第二条通道：自动外环 ≥3 档的节点在右上角挂连接数角标。
@@ -1798,16 +1786,19 @@ export function 画布(props: 画布Props): JSX.Element {
           <Show when={props.重命名id === undefined ? undefined : props.文档.节点.find((行) => 行.id === props.重命名id)}>
             {(点) => {
               const 位 = () => 节点位(点())
+              // 名称可能是多行文字（2026-11-17 用户下达）⇒ 内联改名也用文本框：
+              // 回车换行、Ctrl/⌘+回车提交、Esc 取消、失焦提交。
               return (
-                <foreignObject x={位().x - 70} y={位().y - 44} width={180} height={30}>
-                  <input
+                <foreignObject x={位().x - 90} y={位().y - 56} width={200} height={56}>
+                  <textarea
                     data-slot="hgraph-rename-editor"
                     aria-label="重命名节点"
-                    class="w-full rounded border border-v2-border-border-strong px-1 text-13-regular"
+                    rows={2}
+                    class="h-full w-full resize-none rounded border border-v2-border-border-strong px-1 text-13-regular"
                     value={点().名称 ?? ""}
                     ref={(元素) => 元素.focus()}
                     onKeyDown={(事件) => {
-                      if (事件.key === "Enter") {
+                      if (事件.key === "Enter" && (事件.ctrlKey || 事件.metaKey)) {
                         事件.preventDefault()
                         提交改名(点().id, 事件.currentTarget.value)
                       } else if (事件.key === "Escape") {

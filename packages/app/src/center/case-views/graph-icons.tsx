@@ -30,6 +30,10 @@ export type 图标名 =
   | "chat"
   | "pin"
   | "building"
+  | "car"
+  | "package"
+  | "calendar"
+  | "circle-dashed"
 
 /** 24×24 视口的图形本体（不含 `<svg>` 外壳，描边属性由调用方给）。 */
 const 图集: Record<图标名, () => JSX.Element> = {
@@ -124,6 +128,46 @@ const 图集: Record<图标名, () => JSX.Element> = {
       <path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16" />
     </>
   ),
+  // 车辆
+  car: () => (
+    <>
+      <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
+      <circle cx="7" cy="17" r="2" />
+      <path d="M9 17h6" />
+      <circle cx="17" cy="17" r="2" />
+    </>
+  ),
+  // 物品：包裹
+  package: () => (
+    <>
+      <path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" />
+      <path d="M12 22V12" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="m7.5 4.27 9 5.15" />
+    </>
+  ),
+  // 事件：日历
+  calendar: () => (
+    <>
+      <path d="M8 2v4" />
+      <path d="M16 2v4" />
+      <rect width="18" height="18" x="3" y="4" rx="2" />
+      <path d="M3 10h18" />
+    </>
+  ),
+  // 未分类：虚线圆（「待归类」，不是「缺图」——不用问号，问号看起来像图标没加载出来）
+  "circle-dashed": () => (
+    <>
+      <path d="M10.1 2.18a10 10 0 0 1 3.8 0" />
+      <path d="M13.9 21.82a10 10 0 0 1-3.8 0" />
+      <path d="M17.6 3.72a10 10 0 0 1 2.7 2.7" />
+      <path d="M2.18 13.9a10 10 0 0 1 0-3.8" />
+      <path d="M20.28 17.6a10 10 0 0 1-2.7 2.7" />
+      <path d="M21.82 10.1a10 10 0 0 1 0 3.8" />
+      <path d="M3.72 6.4a10 10 0 0 1 2.7-2.7" />
+      <path d="M6.4 20.28a10 10 0 0 1-2.7-2.7" />
+    </>
+  ),
 }
 
 /** 24×24 视口里的图形本体（图例的 `<svg>` 与节点的 `<g>` 共用这一份）。 */
@@ -157,6 +201,14 @@ export function 节点图标(点: { readonly type: string; readonly subtype?: st
       return "pin"
     case "组织":
       return "building"
+    case "车辆":
+      return "car"
+    case "物品":
+      return "package"
+    case "事件":
+      return "calendar"
+    case "未分类":
+      return "circle-dashed"
     default:
       return undefined
   }
