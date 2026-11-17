@@ -229,6 +229,11 @@ export const dict = {
   "ui.envelopeTool.object": "对象数据",
   "ui.envelopeTool.error": "工具调用失败",
   "ui.envelopeTool.errorCode": "错误码",
+
+  // 【openhive 定制】收尾行（015 contracts/ui-card-contract.md §3）
+  "ui.closingLine.summary": "本轮回答查询 {{count}} 次 · 覆盖材料 {{materials}} 份",
+  "ui.closingLine.gaps": "缺口 {{gaps}} 项（如：{{first}}）",
+  "ui.closingLine.budget": "已达 12 次上限，未覆盖项见工具卡缺口",
   "ui.envelopeTool.tool.search_materials": "找材料",
   "ui.envelopeTool.tool.query_entities": "查实体",
   "ui.envelopeTool.tool.query_relations": "查关系",
