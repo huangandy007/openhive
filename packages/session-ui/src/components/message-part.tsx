@@ -40,6 +40,7 @@ import { BasicTool, GenericTool } from "./basic-tool"
 // 否则 bun（偏好 `.tsx`）与 vite/tsc（偏好 `.ts`）对同一个无扩展名 import 解析到不同文件。
 import { 信封错误卡, 信封渲染兜底 } from "./envelope-tool"
 import { 是信封工具键 } from "./envelope-parse"
+import { ClosingLine } from "./closing-line"
 import { Accordion } from "@opencode-ai/ui/accordion"
 import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
@@ -1767,6 +1768,7 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
                 {meta()}
               </span>
             </Show>
+            <ClosingLine parts={(data.store.part?.[props.message.id] ?? []).filter((p): p is ToolPart => p.type === "tool")} />
           </div>
         </Show>
       </div>
