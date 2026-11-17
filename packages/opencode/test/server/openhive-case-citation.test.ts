@@ -74,3 +74,36 @@ describe("压缩出处", () => {
     expect(压缩出处("m", "t", [])).toEqual([])
   })
 })
+
+/**
+ * 行级出处作为 `get_citation` 事实id 的形状。
+ *
+ * `出处项`（`case-envelope.ts:59-65`）的 `代表` 是 `材料#工作表#行号`，`可下钻` 指向
+ * `get_citation`；而 `get_citation` 的 row 分支只接受**单行**写法，区间（含 `12-12`）
+ * 是「出处汇总」的写法、会被拒成 `bad_input`（`case-mcp-tools.ts:1447-1452`）。
+ * 「单行 / 区间」的判据只有 `解析出处.是区间` 一处，这里钉住的正是它决定可下钻与否。
+ */
+describe("行级出处作为 get_citation 事实id 的形状", () => {
+  test("单行定位可原样回喂：解析出的是单行，重建后与 id 逐字相同", () => {
+    const 定位 = "m-甲#Sheet1#2"
+    const 出 = 解析出处(定位)
+    expect(出).not.toBeNull()
+    if (出 === null) return
+    // 拒的是「是区间」，不是「起 === 末」：这里必须断言 `是区间 === false`。
+    expect(出.是区间).toBe(false)
+    // 规范 id（无补零、无区间）解析后不改写，可原样作为 `事实id` 回喂。
+    expect(`${出.材料}#${出.工作表}#${出.起}`).toBe(定位)
+  })
+
+  test("压缩出处分流：单行段可下钻，区间段是汇总写法不能当事实id", () => {
+    const 压缩 = 压缩出处("m", "t", [12, 13, 14, 20])
+    expect(压缩).toHaveLength(2)
+    const [区间, 单行] = 压缩
+    if (区间 === undefined || 单行 === undefined) throw new Error("压缩出处应给出区间与单行两段")
+    // 多行写成 `起-末`：`是区间 === true` ⇒ `get_citation` 的 row 分支必拒
+    // （真栈行为在 mcp-tools 用例里钉 `bad_input`）。
+    expect(解析出处(区间)?.是区间).toBe(true)
+    // 单行仍是 `m#t#20`：`是区间 === false` ⇒ 可作为 `事实id` 下钻。
+    expect(解析出处(单行)?.是区间).toBe(false)
+  })
+})

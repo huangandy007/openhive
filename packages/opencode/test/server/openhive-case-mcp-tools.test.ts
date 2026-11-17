@@ -1650,6 +1650,84 @@ test("get_citation 七字段（非 row）：引用为 0 条进缺口，不写成
   expect(结果.下一步).toEqual([])
 })
 
+// —— T005：`出处` 三项结构（`case-envelope.ts:59-65` 的 `事实` / `代表` / `可下钻`）——
+// 服务端 `校验信封`（`case-mcp-server.ts:735-753`）只查「出处是数组」，不查条目内部：
+// 少一个键、多一个键、`代表` 写成空串都会原样交给模型。这里用各工具的真实返回把三项钉住。
+
+test("出处项恰好三键：事实/代表 是非空字符串，可下钻 为 null 或已注册工具名", async () => {
+  const 已注册 = new Set(工具名 as readonly string[])
+  const 样本: 工具结果[] = [
+    await search_materials(ctx(身份甲), { 关键词: "张三" }),
+    await query_entities(ctx(身份甲), {}),
+    await query_relations(ctx(身份丁), { 实体: "甲" }),
+    await query_events(ctx(身份戊), {}),
+    await query_rows(ctx(身份大页), { 材料: 大页材料 }),
+    await aggregate_money(ctx(身份戊), { 账户: 账号 }),
+    await find_crossings(ctx(身份戊), { 甲: "张三", 乙: "李四" }),
+    await get_citation(ctx(身份丁), { 事实类型: "entity", 事实id: "e-甲" }),
+    await get_citation(ctx(身份丁), { 事实类型: "row", 事实id: "m-甲#Sheet1#2" }),
+  ]
+  let 条数 = 0
+  let 可下钻数 = 0
+  let 不可下钻数 = 0
+  for (const 结果 of 样本) {
+    for (const 条 of 结果.出处) {
+      条数 += 1
+      // 键集合逐条等值：三个键之外多一个（比如把内部锚点也塞进来）同样算形状漂移。
+      expect(Object.keys(条).sort()).toEqual(["事实", "代表", "可下钻"].sort())
+      expect(typeof 条.事实).toBe("string")
+      expect(typeof 条.代表).toBe("string")
+      expect(条.事实.length).toBeGreaterThan(0)
+      expect(条.代表.length).toBeGreaterThan(0)
+      if (条.可下钻 === null) {
+        不可下钻数 += 1
+      } else {
+        可下钻数 += 1
+        expect(已注册.has(条.可下钻)).toBe(true)
+      }
+    }
+  }
+  // 防空转 + 两支都真的出现过：全 null 时「可下钻是工具名」没被验证，反之亦然。
+  expect(条数).toBeGreaterThan(0)
+  expect(可下钻数).toBeGreaterThan(0)
+  expect(不可下钻数).toBeGreaterThan(0)
+})
+
+test("可下钻 的两种取值都真验证：工具名能接住 代表，get_citation 自身恒 null", async () => {
+  // ① 可下钻 = "get_citation"：`代表` 必须是 get_citation 的 `事实id`。取两条不同分支的
+  //    真实返回去真调一次——写错 id 时这里会抛 not_found，而不是只查个注册表就绿。
+  //    `query_rows` 取大页项目（材料已解析；丁的 m-甲 是「未入队」，那里只会回 `该材料未解析`）。
+  const 行结果 = await query_rows(ctx(身份大页), { 材料: 大页材料 })
+  const 行定位 = `${大页材料}#Sheet1#1`
+  const 行出处 = 行结果.出处.find((条) => 条.代表 === 行定位)
+  if (行出处 === undefined) throw new Error(`query_rows 的出处里没有 ${行定位}`)
+  expect(行出处.可下钻).toBe("get_citation")
+  const 行引用 = await get_citation(ctx(身份大页), { 事实类型: "row", 事实id: 行出处.代表 })
+  expect(行引用.数据).toMatchObject({ 明细行: { sheet: "Sheet1", row_no: 1 } })
+
+  const 关系结果 = await query_relations(ctx(身份丁), { 实体: "甲" })
+  const 关系出处 = 关系结果.出处.find((条) => 条.代表 === "r-跨")
+  if (关系出处 === undefined) throw new Error("query_relations 的出处里没有 r-跨")
+  expect(关系出处.可下钻).toBe("get_citation")
+  const 关系引用 = await get_citation(ctx(身份丁), {
+    事实类型: "relation",
+    事实id: 关系出处.代表,
+  })
+  expect(关系引用.数据).toMatchObject({ 事实: { id: "r-跨" } })
+
+  // ② 不可下钻 = null：get_citation 自己就是最后一级出口，两支都不再指下一跳；
+  //    且 `代表` 回指被查的那条事实（锚点语义），不是另造一个可下钻 id。
+  for (const [事实类型, 事实id] of [
+    ["entity", "e-甲"],
+    ["row", "m-甲#Sheet1#2"],
+  ] as const) {
+    const 结果 = await get_citation(ctx(身份丁), { 事实类型, 事实id })
+    expect(结果.出处).toHaveLength(1)
+    expect(结果.出处[0]?.可下钻).toBeNull()
+    expect(结果.出处[0]?.代表).toBe(事实id)
+  }
+})
+
 test("aggregate_money 七字段：有数据时摘要给笔数/合计/对手数/明细行数", async () => {
   const 结果 = await aggregate_money(ctx(身份戊), { 账户: 账号 })
   expect(结果.摘要).toContain("出 1 笔 / 1000.00 元")
