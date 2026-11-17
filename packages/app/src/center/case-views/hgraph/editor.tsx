@@ -992,6 +992,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
     // 期间被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
     if (已卸载 || 代 !== 文档代 || 文件已不存在()) return false
+    // 读盘窗口内用户又改了（待发非空），或第二次发送已起飞（正在发）⇒ 放弃采纳：
+    // 整图重载会静默吞掉这些改动（NF-1）。只在 await 前查一次不够——读可能慢过 500ms 防抖，
+    // `#005-18`：await 之后必须按**最新**状态复核。
+    if (待发.length > 0 || 正在发) return false
     if (读.kind !== "ok") return false
     const 解析 = 解析图(读.value.内容)
     if (!解析.ok) return false
@@ -1029,7 +1033,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   }
 
   /** 409 之后把盘上最新取回来填「待重载」，让现有「重新载入」按钮可用（R113 §2）。 */
-  const 取回最新版本 = async (代: number) => {    try {
+  const 取回最新版本 = async (代: number) => {
+    try {
       const 读 = await props.api.读({ projectId: props.projectId, path: props.path })
       // 期间已被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
       if (已卸载 || 代 !== 文档代 || 文件已不存在()) return

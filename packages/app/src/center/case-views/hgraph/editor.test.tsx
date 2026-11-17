@@ -772,6 +772,73 @@ describe("编辑器 · FR-007 冲突/超时先读盘", () => {
     // 回滚语义不变：本地收敛到已存值。
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
   })
+
+  test("超时读盘期间用户又改了一笔 ⇒ 不采纳、保留新编辑、不显示「已保存」（NF-1）", async () => {
+    let 放行读!: (回: 读回) => void
+    const 读闸 = new Promise<读回>((收) => (放行读 = 收))
+    let 写次 = 0
+    const { api } = 假api({
+      写: () => {
+        写次 += 1
+        return { kind: "error", message: "网络断了", code: "network" }
+      },
+      读: () => 读闸,
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(写次).toBe(1)
+
+    // 读盘还没回来：用户又拖了一笔（240）——这是读盘窗口内的新改动。
+    拖(节点组("n1")!, 180, 100, 240, 100)
+    await flush()
+    放行读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } })
+    await 等到条件(() => 文案("hgraph-save-status")?.includes("没存上") === true)
+
+    // 主判据：不得静默换成盘上文档（盘上 id 没进来）、新编辑还在、状态不撒谎。
+    expect(文案("hgraph-save-status")).not.toContain("已保存")
+    expect(节点组("n1") !== null).toBe(true)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(节点组("盘1") === null).toBe(true)
+  })
+
+  test("读盘慢于防抖、第二次发送已起飞 ⇒ 仍不采纳、不显示「已保存」（NF-1 变体二）", async () => {
+    let 放行读!: (回: 读回) => void
+    const 读闸 = new Promise<读回>((收) => (放行读 = 收))
+    let 放行第二次!: (回: 写应答) => void
+    const 第二闸 = new Promise<写应答>((收) => (放行第二次 = 收))
+    let 写次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        写次 += 1
+        return 写次 === 1 ? { kind: "error", message: "网络断了", code: "network" } : 第二闸
+      },
+      读: () => 读闸,
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    // 第二次编辑在第一次「读盘」还没回来时就排上了，并且已经飞出去。
+    拖(节点组("n1")!, 180, 100, 240, 100)
+    await 过防抖()
+    expect(写们.length).toBe(2)
+
+    放行读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } })
+    await 等到条件(() => 文案("hgraph-save-status")?.includes("没存上") === true)
+
+    expect(文案("hgraph-save-status")).not.toContain("已保存")
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(节点组("盘1") === null).toBe(true)
+
+    放行第二次(成功("v10"))
+    await flush()
+    // 采纳仍未发生：盘上 id 没有进文档。
+    expect(节点组("盘1") === null).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
