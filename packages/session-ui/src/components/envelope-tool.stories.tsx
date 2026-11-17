@@ -80,6 +80,45 @@ export const ToolError = {
   ),
 }
 
+// 已知错误码 → 错误码 + 消息 + 一行引导。
+export const WriteFailed = {
+  args: { tool: "openhive-case_import_rows", status: "error", defaultOpen: true },
+  render: () => (
+    <ErrorCard
+      tool="openhive-case_import_rows"
+      status="error"
+      defaultOpen
+      文本={信封({ error: "write_failed", message: "写入 3 行后回读为空" })}
+    />
+  ),
+}
+
+// 表外错误码 → 只有错误码 + 消息两行，引导行不渲染（`错误码引导键` 返回 undefined）。
+export const UnknownErrorCode = {
+  args: { tool: "openhive-case_query_rows", status: "error", defaultOpen: true },
+  render: () => (
+    <ErrorCard
+      tool="openhive-case_query_rows"
+      status="error"
+      defaultOpen
+      文本={信封({ error: "internal_error", message: "服务端内部错误（ref: 3f2a）" })}
+    />
+  ),
+}
+
+// 非 JSON 文本（传输层错误等）→ 原样显示，既无错误码也无引导行。
+export const RawText = {
+  args: { tool: "openhive-case_query_rows", status: "error", defaultOpen: true },
+  render: () => (
+    <ErrorCard
+      tool="openhive-case_query_rows"
+      status="error"
+      defaultOpen
+      文本={"Error: fetch failed（连接被重置）"}
+    />
+  ),
+}
+
 export const ManyGaps = {
   ...story.Basic,
   args: {
