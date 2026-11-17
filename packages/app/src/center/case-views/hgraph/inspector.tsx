@@ -57,7 +57,7 @@
  * - 外环档 / 线宽档共用 `解档位` 一处校验（`#002-06`）；外环颜色只能选
  *   `外环色表` 的 7 个预设 + 「自动」（自动 = 删键）。
  */
-import { For, Show, createEffect, createSignal, type JSX } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { 是事件节点, type 图文件, type 节点, type 边, type 文字, type 属性 } from "./file"
 import { 是角色边 } from "./edge"
 import { 外环色表, 文字色表, type 画布动作 } from "./canvas"
@@ -70,6 +70,32 @@ import { 可改键, type 类别 } from "./whitelist"
 
 /** 收起态窄条宽度（CSS px，FR-050）。编辑器算「检查器占用宽」也读这一份。 */
 export const 收起宽 = 40
+
+/** 展开态最多占可用宽的多少（中栏变窄时按比例收窄，先收窄再考虑自动收起）。 */
+const 面板宽比例 = 0.4
+/** 展开态最窄宽：再窄文字与输入框排不下。 */
+export const 最窄面板宽 = 240
+/** 可用宽低于此值 ⇒ 自动收起成 40px 窄条（展开也放不下、还把画布挤没）。 */
+export const 自动收起阈 = 400
+
+/**
+ * 可用宽 ⇒ 展开态面板宽：默认 `面板宽`（320），窄中栏里按 40% 收窄，地板 240。
+ * **测不到（undefined / 0）⇒ 320**：hidden 页签与 happy-dom 量不到尺寸，走既有默认，
+ * 组件测试因此保持稳定。
+ */
+export function 展开宽(可用宽: number | undefined): number {
+  if (可用宽 === undefined || !(可用宽 > 0)) return 面板宽
+  return Math.round(Math.min(面板宽, Math.max(最窄面板宽, 可用宽 * 面板宽比例)))
+}
+
+/**
+ * 是否要在这次宽度变化时自动收起：**只在由宽入窄那一瞬**为真（含首次量到就极窄）。
+ * 已经窄了再窄不重复触发；变宽不自动展开（那是替用户做主）。
+ */
+export function 需自动收起(旧宽: number | undefined, 新宽: number): boolean {
+  if (!(新宽 > 0) || 新宽 >= 自动收起阈) return false
+  return 旧宽 === undefined || !(旧宽 > 0) || 旧宽 >= 自动收起阈
+}
 
 /**
  * 「库里现在」要显示的最小快照形状（R30）。**刻意不 import `entity-api.ts` 的类型**：
@@ -114,6 +140,16 @@ export interface 检查器Props {
   readonly 收起?: boolean
   /** 收起状态变化（点窄条 / 收起按钮 / `I` 展开）。缺省 = 只读展示，不可收起。 */
   readonly 收起变化?: (收起: boolean) => void
+  /**
+   * 面板可用的父容器宽（CSS px）：窄中栏里面板按比例收窄。缺省 = 自己量父容器；
+   * 量不到（hidden 页签 / happy-dom）⇒ 按默认 320，既有行为不变。
+   */
+  readonly 可用宽?: number
+  /**
+   * 面板**实际**占宽变化（展开 = 收窄后的宽，收起 = 40）：编辑器据此给画布让位，
+   * 不再假定面板恒 320。
+   */
+  readonly 宽度变化?: (宽: number) => void
 }
 
 const 行 = "flex items-start gap-2 py-0.5"
@@ -308,6 +344,52 @@ function 外环补丁(档: number | undefined, 颜色: string | undefined): Reco
 }
 
 export function 检查器(props: 检查器Props): JSX.Element {
+  // -------------------------------------------------------------------------
+  // 中栏自适应：宽度按父容器宽收窄，极窄自动收起（画布随中栏变，面板不能恒 320）
+  // -------------------------------------------------------------------------
+
+  /** 面板元素（`Show` 里才有）：量父容器宽要它——父容器 = 编辑器根，即整块中栏。 */
+  const [面板, set面板] = createSignal<HTMLElement>()
+  /** 自己量到的父容器宽；量不到保持 undefined ⇒ `展开宽` 回默认 320。 */
+  const [量到宽, set量到宽] = createSignal<number | undefined>(undefined)
+  const 可用宽 = () => props.可用宽 ?? 量到宽()
+  const 宽 = () => (props.收起 === true ? 收起宽 : 展开宽(可用宽()))
+
+  onMount(() => {
+    // 上层给了 `可用宽`（测试接缝）就不再自己量：两套来源各判一次会打架（`#010-06`）。
+    if (props.可用宽 !== undefined) return
+    if (typeof ResizeObserver !== "function") return
+    const 量 = () => {
+      const 父 = 面板()?.parentElement
+      const 新 = Math.round(父?.getBoundingClientRect().width ?? 0)
+      if (新 > 0) set量到宽(新)
+    }
+    const 观察 = new ResizeObserver(量)
+    createEffect(() => {
+      const 父 = 面板()?.parentElement
+      if (父 === undefined || 父 === null) return
+      观察.disconnect()
+      观察.observe(父)
+      量()
+    })
+    onCleanup(() => 观察.disconnect())
+  })
+
+  // 极窄 ⇒ 自动收起；只在跨过边界那一瞬（`需自动收起`），变宽不替用户展开。
+  let 上次可用宽: number | undefined
+  createEffect(() => {
+    const 新 = 可用宽()
+    const 旧 = 上次可用宽
+    上次可用宽 = 新
+    if (新 === undefined || props.收起 === true) return
+    if (需自动收起(旧, 新)) props.收起变化?.(true)
+  })
+
+  // 实际占宽报给编辑器（画布让位按它算，不再假定恒 320）。
+  createEffect(() => {
+    props.宽度变化?.(宽())
+  })
+
   const 批量 = () => props.选中.length >= 2
   const 单个 = () =>
     props.选中.length === 1 ? props.文档.节点.find((点) => 点.id === props.选中[0]) : undefined
@@ -839,11 +921,12 @@ export function 检查器(props: 检查器Props): JSX.Element {
     // T014 / FR-050：未选中 ⇒ 整个检查器不渲染（不是空壳）。
     <Show when={props.选中.length > 0}>
       <aside
+        ref={set面板}
         data-slot="hgraph-inspector"
         aria-label="检查器"
         class="absolute z-10 flex flex-col overflow-hidden rounded-xl border border-v2-border-border-strong bg-v2-background-bg-layer-02 shadow"
         style={{
-          width: `${props.收起 === true ? 收起宽 : 面板宽}px`,
+          width: `${宽()}px`,
           right: `${面板边距}px`,
           top: `${面板边距}px`,
           height: "100%",

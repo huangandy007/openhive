@@ -12,7 +12,7 @@ import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 图文件, 节点, 边, 文字 } from "./file"
 import { 外环色表, type 画布动作 } from "./canvas"
-import { 检查器, type 节点快照 } from "./inspector"
+import { 检查器, 展开宽, 需自动收起, type 节点快照 } from "./inspector"
 
 const 挂过的: Array<() => void> = []
 
@@ -138,6 +138,8 @@ function 挂检查器(选项: {
   打开出处?: (材料: string, 行号: number) => void
   收起?: boolean
   收起变化?: (值: boolean) => void
+  可用宽?: number
+  宽度变化?: (宽: number) => void
 }) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -147,6 +149,8 @@ function 挂检查器(选项: {
   const [选中, set选中] = createSignal<readonly string[]>(选项.选中)
   // T014 收起态：默认展开；用例可注入初值，也可读回点击后的状态。
   const [收起, set收起] = createSignal(选项.收起 ?? false)
+  // 中栏自适应：可用宽走信号，用例可在挂载后改宽复现「跨过极窄边界」。
+  const [可用宽, set可用宽] = createSignal<number | undefined>(选项.可用宽)
   挂过的.push(
     render(
       () => (
@@ -163,6 +167,8 @@ function 挂检查器(选项: {
           打开出处={选项.打开出处}
           收起={收起()}
           收起变化={选项.收起变化 ?? set收起}
+          可用宽={可用宽()}
+          宽度变化={选项.宽度变化}
         />
       ),
       host,
@@ -171,7 +177,7 @@ function 挂检查器(选项: {
   // 前提（`#005-18` / `#013-12`）：挂载点确实进了文档——检查器在「无选中」时本来就不渲染，
   // 所以前提是「挂载执行了」，而不是「一定有元素」。
   expect(document.body.contains(host)).toBe(true)
-  return { ...幽, set选中, 收起, set收起 }
+  return { ...幽, set选中, 收起, set收起, set可用宽 }
 }
 
 const 取 = (选择器: string) => document.body.querySelector(选择器) as HTMLElement | null
@@ -1630,5 +1636,84 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     // 只回写改过的两个字段，其余键一个都不碰。
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 名称: "张三", 备注: "旧备注" }])
     expect(收起()).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 中栏自适应：宽度按可用宽收窄，极窄时自动收起
+// ---------------------------------------------------------------------------
+
+describe("检查器 · 中栏自适应", () => {
+  test("展开宽按可用宽的 40% 收窄，夹在 240–320；测不到 ⇒ 320（既有行为）", () => {
+    // 测不到（happy-dom / 未挂载父容器）必须回 320：既有用例全靠这个默认值。
+    expect(展开宽(undefined)).toBe(320)
+    expect(展开宽(0)).toBe(320)
+    // 够宽 ⇒ 不缩小。
+    expect(展开宽(1000)).toBe(320)
+    // 700 × 0.4 = 280 ⇒ 按比例收窄。
+    expect(展开宽(700)).toBe(280)
+    // 再窄也不低于 240（文字/输入排不下）。
+    expect(展开宽(500)).toBe(240)
+    expect(展开宽(300)).toBe(240)
+  })
+
+  test("需自动收起只在**由宽入窄**那一瞬为真（首次量到极窄也算）", () => {
+    expect(需自动收起(undefined, 380)).toBe(true)
+    expect(需自动收起(700, 380)).toBe(true)
+    expect(需自动收起(400, 399)).toBe(true)
+    // 已经窄了再窄：不重复触发。
+    expect(需自动收起(380, 360)).toBe(false)
+    // 变宽不触发（不替用户自动展开）。
+    expect(需自动收起(380, 700)).toBe(false)
+    // 量不到 / 够宽：不触发。
+    expect(需自动收起(undefined, 0)).toBe(false)
+    expect(需自动收起(700, 400)).toBe(false)
+  })
+
+  test("面板宽度跟可用宽走：800 ⇒ 320px，700 ⇒ 280px；收起仍是 40px", () => {
+    const { set可用宽 } = 挂检查器({ 选中: ["n1"], 可用宽: 800, 快照 })
+    const 容器 = 取("[data-slot='hgraph-inspector']") as HTMLElement
+    expect(容器.style.width).toBe("320px")
+
+    set可用宽(700)
+    expect(容器.style.width).toBe("280px")
+
+    // 收起态不受可用宽影响：窄条恒 40。
+    set可用宽(380)
+    expect(容器.style.width).toBe("40px")
+  })
+
+  test("可用宽 < 400 ⇒ 自动收起一次；再窄不重复触发，变宽不自动展开", () => {
+    const 收起们: boolean[] = []
+    const { set可用宽 } = 挂检查器({
+      选中: ["n1"],
+      可用宽: 700,
+      快照,
+      收起变化: (值) => 收起们.push(值),
+    })
+    expect(收起们).toEqual([])
+
+    set可用宽(380)
+    expect(收起们).toEqual([true])
+
+    set可用宽(360)
+    expect(收起们).toEqual([true])
+  })
+
+  test("把实际占宽报给编辑器：320 → 280 → 收起 40", () => {
+    const 报的宽: number[] = []
+    const { set可用宽, set收起 } = 挂检查器({
+      选中: ["n1"],
+      可用宽: 800,
+      快照,
+      宽度变化: (宽) => 报的宽.push(宽),
+    })
+    expect(报的宽[报的宽.length - 1]).toBe(320)
+
+    set可用宽(700)
+    expect(报的宽[报的宽.length - 1]).toBe(280)
+
+    set收起(true)
+    expect(报的宽[报的宽.length - 1]).toBe(40)
   })
 })
