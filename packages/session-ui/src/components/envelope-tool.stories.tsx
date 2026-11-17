@@ -101,7 +101,7 @@ export const UnknownErrorCode = {
       tool="openhive-case_query_rows"
       status="error"
       defaultOpen
-      文本={信封({ error: "internal_error", message: "服务端内部错误（ref: 3f2a）" })}
+      文本={信封({ error: "identity_required", message: "共享项目成员调用案件工具时需要先建立身份" })}
     />
   ),
 }
