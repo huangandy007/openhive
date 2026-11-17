@@ -394,6 +394,24 @@ describe("T018 · 节点形状与外环", () => {
     expect(节点组("孤")!.querySelector("[data-slot='hgraph-node-ring']") === null).toBe(true)
   })
 
+  test("节点名称与外环外沿之间留 2–4px（需求第 5 项：不能紧贴）", () => {
+    // 最粗档：档 4 ⇒ stroke-width 4、环 r=18 ⇒ 外沿 20（最坏情况；细档只会更宽）。
+    挂(造图([造节点("a", 100, 100, { 外环: { 档: 4 } })], []))
+    const 环 = 节点组("a")!.querySelector("[data-slot='hgraph-node-ring']")
+    const 标签 = 节点组("a")!.querySelector("[data-slot='hgraph-node-label']")
+    expect(环 !== null).toBe(true)
+    expect(标签 !== null).toBe(true)
+
+    const r = Number(环!.getAttribute("r"))
+    const 描边 = Number(环!.getAttribute("stroke-width"))
+    const y = Number(标签!.getAttribute("y"))
+    const 字号 = Number(标签!.getAttribute("font-size"))
+    // happy-dom 量不到排版（`#005-32`）：按 SVG 几何自算——12px 字上升约 0.8em。
+    const 间距 = y - 字号 * 0.8 - (r + 描边 / 2)
+    expect(间距 >= 2).toBe(true)
+    expect(间距 <= 4).toBe(true)
+  })
+
   test("#14 手动外环 {档:1} 且 0 条边 ⇒ tier \"1\"（冻结生效）", () => {
     挂(造图([造节点("a", 100, 100, { 外环: { 档: 1 } })], []))
     const 环 = 节点组("a")!.querySelector("[data-slot='hgraph-node-ring']")

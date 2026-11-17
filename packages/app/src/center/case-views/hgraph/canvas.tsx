@@ -1610,11 +1610,15 @@ export function 画布(props: 画布Props): JSX.Element {
                     </g>
                   </Show>
                   {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
+                  {/*
+                    需求第 5 项：名称不能紧贴外环。外环最外沿 20（r18 + 最粗描边 4/2），
+                    `y` 是基线、12px 字上升约 0.8em ⇒ 上沿 ≈ y - 9.6；取 32 ⇒ 22.4，间距 2.4px。
+                  */}
                   <Show when={保留标签().has(点.id)}>
                     <text
                       data-slot="hgraph-node-label"
                       text-anchor="middle"
-                      y={27}
+                      y={32}
                       font-size="12"
                       fill="var(--v2-text-text-base)"
                     >
