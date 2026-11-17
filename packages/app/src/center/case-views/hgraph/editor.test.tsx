@@ -6161,6 +6161,23 @@ describe("顶栏：图例 / 撤销 / 重做 / 已保存 同一行", () => {
     // 肉眼与「有 svg」断言都看不出来（本轮实测：`bullet-list` 曾渲染成 plus）。
     expect(图例钮!.querySelector("use")!.getAttribute("href")).toBe("#opencode-v2-icon-bullet-list")
   })
+
+  test("中栏变窄时工具栏与画布条都能换行，不横向溢出", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    // 画布随中栏自适应后，这两条栏不再有固定 760 的宽度兜底：窄中栏里 nowrap 会把
+    // 右侧按钮顶出可视区（横向溢出、且没有任何滚动条）。这里只钉类名，
+    // 真实换行由 tailwind 的 flex-wrap 决定（`#005-32`：happy-dom 量不出布局）。
+    const 工具栏 = 取("[data-slot='hgraph-toolbar']")!
+    expect(工具栏.classList.contains("flex-wrap")).toBe(true)
+    expect(工具栏.classList.contains("flex-nowrap")).toBe(false)
+    // 画布条：搜索框 160 + 「筛选」+ 计数文案，窄中栏下一行放不下。
+    const 画布条 = 取("[data-slot='hgraph-canvas-bar']")!
+    expect(画布条.classList.contains("flex-wrap")).toBe(true)
+    expect(画布条.classList.contains("flex-nowrap")).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------

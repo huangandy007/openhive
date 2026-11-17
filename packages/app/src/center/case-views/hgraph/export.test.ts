@@ -259,6 +259,21 @@ describe("尺寸（R64）", () => {
     expect(a3串).toContain('fill="#ffffff"')
     expect(a3串.indexOf('fill="#ffffff"')).toBeLessThan(a3串.indexOf('data-slot="hgraph-viewport"'))
   })
+
+  test("内容按**逻辑画布** 760×680 放大，不跟窗口（屏幕档 1520 ⇒ 正好 2 倍）", async () => {
+    const 账 = 记账依赖()
+    const 回 = await 跑导出({
+      选项: { 尺寸: "屏幕", 标题块: false, 附附录: false },
+      依赖: 账.依赖,
+    })
+    expect(回.kind).toBe("ok")
+    // 画布 viewBox 现在随中栏变（canvas.tsx `画布尺寸`）；导出这条路径靠 `渲染SVG` 里
+    // 固定 760×680 的离屏容器把尺寸锁回逻辑画布，再按 viewBox 等比放大：
+    // 1520 / 760 = 2、1360 / 680 = 2 ⇒ 平移 0、缩放 2。
+    expect(账.账.光栅化们[0]!.svg).toContain(
+      'data-slot="hgraph-export-content" transform="translate(0 0) scale(2)"',
+    )
+  })
 })
 
 // ---------------------------------------------------------------------------

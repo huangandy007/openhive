@@ -56,10 +56,32 @@ import { 形状, 填充, 类型描边, 多边形, 默认节点填充, 面板让�
 import type { 图节点 } from "../../case-detail-api"
 import type { 排列模式 } from "../graph-layout"
 
-/** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
+/**
+ * 逻辑画布尺寸：服务端放置节点用的坐标系（`hgraph-edit.ts` 760×680），同时也是
+ * **导出**与「容器测不到尺寸」（hidden 页签 / happy-dom）时的兜底。真实可视区域由
+ * 容器测量（`画布可视尺寸`），不再写死——`画布宽/高` 只当兜底与坐标系，不当作可视尺寸。
+ */
 export const 画布宽 = 760
 export const 画布高 = 680
 const 节点半径 = 15
+
+/** 画布可视尺寸（CSS px；viewBox 单位与它一一对应）。 */
+export interface 画布可视尺寸 {
+  readonly 宽: number
+  readonly 高: number
+}
+
+/**
+ * 容器尺寸变化时保视野中心（窗口缩放 / 侧栏开合 / 页签切换）：
+ * 取变化前视野中心的内容坐标，按新尺寸回推视口平移；**缩放不动**。
+ * 不保中心的话，量到真实尺寸那一刻画面会被甩到左上角（初值 0,0）。
+ */
+export function 尺寸变化保中心(旧: 画布可视尺寸, 新: 画布可视尺寸, 视: 视口变换): 视口变换 {
+  if (!(旧.宽 > 0) || !(旧.高 > 0) || !(新.宽 > 0) || !(新.高 > 0) || !(视.缩放 > 0)) return 视
+  const 心x = (旧.宽 / 2 - 视.x) / 视.缩放
+  const 心y = (旧.高 / 2 - 视.y) / 视.缩放
+  return { 缩放: 视.缩放, x: 新.宽 / 2 - 心x * 视.缩放, y: 新.高 / 2 - 心y * 视.缩放 }
+}
 /** 手抖 1px 不算拖动（同 `graph.tsx` 的死区），否则「点一下看选中」会变成「挪半步」。 */
 const 拖动阈值 = 3
 
@@ -209,7 +231,8 @@ export interface 画布动作 {
   readonly 加文字: (x: number, y: number) => void
   /**
    * 画布中心加文字（T013）：原画布内模式条的「加文字」入口搬到工具栏后不再知道画布尺寸，
-   * 由编辑器按 `画布宽/画布高` 算落点，落同一条 `加文字`。省略 = 片段测试没有这个入口。
+   * 由编辑器按**当前视口中心**（`注册视口中心`；缺省回逻辑画布中心）算落点，落同一条
+   * `加文字`。省略 = 片段测试没有这个入口。
    */
   readonly 加文字在中心?: () => void
   readonly 改字段: (类别: "节点" | "边" | "文字", id: string, 补丁: Record<string, unknown>) => void
@@ -320,7 +343,7 @@ export interface 画布Props {
    * 居中 / 适配请求（T017b / R70）：视口归画布，编辑器只递增序号驱动，**不**把视口状态
    * 提上去（T011 已确认同一画布实例是视口保持的唯一机制）。
    * - `居中请求` 序号变化 ⇒ 该节点落 viewBox 中心，缩放不变；
-   * - `适配请求` 序号变化 ⇒ `适配视口(适配目标 ?? 全部节点, {宽:760, 高:680})`。
+   * - `适配请求` 序号变化 ⇒ `适配视口(适配目标 ?? 全部节点, 画布可视尺寸)`。
    */
   readonly 居中请求?: { readonly id: string; readonly 序号: number }
   readonly 适配请求?: number
@@ -332,14 +355,15 @@ export interface 画布Props {
    */
   readonly 让位请求?: { readonly id: string; readonly 序号: number }
   /**
-   * 检查器当前在**屏幕上**占用的宽度（CSS px，T008 / FR-015）：编辑器按状态给值
-   * （展开 320 / 收起 40 / 未选中 0）。视口是 viewBox 单位，画布按容器缩放比换算，
-   * 不再假定「1 CSS px = 1 viewBox 单位」。省略 = 320（历史行为）。
+   * 检查器当前在**屏幕上**占用的宽度（CSS px，T008 / FR-015）：编辑器传检查器**自报**的
+   * 实际宽（展开 = 按中栏宽收窄后的宽 / 收起 40 / 未选中 0）。视口是 viewBox 单位，
+   * 画布按容器缩放比换算，不再假定「1 CSS px = 1 viewBox 单位」。省略 = 320（历史行为）。
    */
   readonly 检查器宽?: number
   /**
    * 容器尺寸测试缝（T008 fix1）：happy-dom 无布局、`getBoundingClientRect()` 恒 0，
-   * 量不出 viewBox → 容器的缩放比。省略时量真实容器；量不到按 1:1。
+   * 量不到容器 ⇒ viewBox 停在兜底逻辑画布 760×680、坐标换算按 1:1。给值时直接当可视
+   * 尺寸（viewBox = 该尺寸），不观察容器。
    */
   readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
   /**
@@ -389,12 +413,15 @@ export interface 画布Props {
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
-function 默认换算(容器: HTMLElement | undefined, 视口: 视口变换): 坐标换算 {
+function 默认换算(
+  矩: { readonly left: number; readonly top: number; readonly width: number; readonly height: number } | undefined,
+  视口: 视口变换,
+  尺: 画布可视尺寸,
+): 坐标换算 {
   return (屏幕) => {
-    const 矩 = 容器?.getBoundingClientRect()
-    const 比 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 画布宽, 矩.height / 画布高) : 0
-    const 视x = 比 > 0 ? (屏幕.clientX - (矩!.left + (矩!.width - 画布宽 * 比) / 2)) / 比 : 屏幕.clientX
-    const 视y = 比 > 0 ? (屏幕.clientY - (矩!.top + (矩!.height - 画布高 * 比) / 2)) / 比 : 屏幕.clientY
+    const 比 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 尺.宽, 矩.height / 尺.高) : 0
+    const 视x = 比 > 0 ? (屏幕.clientX - (矩!.left + (矩!.width - 尺.宽 * 比) / 2)) / 比 : 屏幕.clientX
+    const 视y = 比 > 0 ? (屏幕.clientY - (矩!.top + (矩!.height - 尺.高 * 比) / 2)) / 比 : 屏幕.clientY
     return { x: (视x - 视口.x) / 视口.缩放, y: (视y - 视口.y) / 视口.缩放 }
   }
 }
@@ -465,6 +492,35 @@ type 菜单目标 =
 export function 画布(props: 画布Props): JSX.Element {
   let 容器: HTMLDivElement | undefined
   const [视口, set视口] = createSignal<视口变换>({ 缩放: 1, x: 0, y: 0 })
+  /** 可视尺寸：初值 = 逻辑画布，容器量到后跟随（`#006-19`：happy-dom 不触发 RO ⇒ 停在兜底）。 */
+  const [画布尺寸, set画布尺寸] = createSignal<画布可视尺寸>({ 宽: 画布宽, 高: 画布高 })
+  /** 容器矩形：注入尺寸（测试 / 导出固定）优先，否则读真实布局。 */
+  const 读矩形 = () => {
+    if (props.容器尺寸 !== undefined) {
+      return { left: 0, top: 0, width: props.容器尺寸.宽, height: props.容器尺寸.高 }
+    }
+    return 容器?.getBoundingClientRect()
+  }
+  /** 量一次容器：尺寸变了 ⇒ viewBox 跟着变，视野中心的内容坐标保持不动。 */
+  const 量尺寸 = () => {
+    const 矩 = 读矩形()
+    const 宽 = Math.round(矩?.width ?? 0)
+    const 高 = Math.round(矩?.height ?? 0)
+    if (宽 <= 0 || 高 <= 0) return
+    const 旧 = 画布尺寸()
+    if (旧.宽 === 宽 && 旧.高 === 高) return
+    set视口((视) => 尺寸变化保中心(旧, { 宽, 高 }, 视))
+    set画布尺寸({ 宽, 高 })
+  }
+  onMount(() => {
+    量尺寸()
+    // 注入尺寸是静态缝（测试 / 导出），不观察也无从变化。
+    if (props.容器尺寸 !== undefined) return
+    if (typeof ResizeObserver !== "function" || 容器 === undefined) return
+    const 观察 = new ResizeObserver(() => 量尺寸())
+    观察.observe(容器)
+    onCleanup(() => 观察.disconnect())
+  })
   /**
    * 视口中心 = viewBox 中心逆变换回内容坐标（`缩放/x/y` 是画布的 `translate` + `scale`）。
    * 注册只读闭包给外壳（I1）：不把视口状态提上去，外壳每次点「加事件」都读当前值。
@@ -472,9 +528,10 @@ export function 画布(props: 画布Props): JSX.Element {
   onMount(() => {
     props.注册视口中心?.(() => {
       const 视 = 视口()
+      const 尺 = 画布尺寸()
       return {
-        x: (画布宽 / 2 - 视.x) / 视.缩放,
-        y: (画布高 / 2 - 视.y) / 视.缩放,
+        x: (尺.宽 / 2 - 视.x) / 视.缩放,
+        y: (尺.高 / 2 - 视.y) / 视.缩放,
       }
     })
   })
@@ -572,7 +629,8 @@ export function 画布(props: 画布Props): JSX.Element {
     const 点 = props.文档.节点.find((行) => 行.id === 请求.id)
     if (点 === undefined) return
     const 缩放 = 视口().缩放
-    set视口({ 缩放, x: 画布宽 / 2 - 数(点.x) * 缩放, y: 画布高 / 2 - 数(点.y) * 缩放 })
+    const 尺 = 画布尺寸()
+    set视口({ 缩放, x: 尺.宽 / 2 - 数(点.x) * 缩放, y: 尺.高 / 2 - 数(点.y) * 缩放 })
   })
 
   /** 适配：`适配视口` 口径与留白归 geometry.ts；空目标 = 全部节点。 */
@@ -583,7 +641,8 @@ export function 画布(props: 画布Props): JSX.Element {
     上次适配 = 请求
     const 目标 = props.适配目标
     const 点们 = 目标 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => 目标.includes(点.id))
-    set视口(适配视口(点们, { 宽: 画布宽, 高: 画布高 }))
+    const 尺 = 画布尺寸()
+    set视口(适配视口(点们, { 宽: 尺.宽, 高: 尺.高 }))
   })
 
   /** 选中对象的画布锚点（T008）：节点 / 文字用自己的坐标，边取两端中点。 */
@@ -605,12 +664,10 @@ export function 画布(props: 画布Props): JSX.Element {
    * 容器测不到尺寸（happy-dom）时按 1:1——与 `默认换算` 的退化口径一致。
    */
   const 视图缩放比 = () => {
-    const 矩 =
-      props.容器尺寸 === undefined
-        ? 容器?.getBoundingClientRect()
-        : { width: props.容器尺寸.宽, height: props.容器尺寸.高 }
+    const 矩 = 读矩形()
+    const 尺 = 画布尺寸()
     if (矩 === undefined || 矩.width <= 0 || 矩.height <= 0) return 1
-    return Math.min(矩.width / 画布宽, 矩.height / 画布高) || 1
+    return Math.min(矩.width / 尺.宽, 矩.height / 尺.高) || 1
   }
 
   /**
@@ -632,7 +689,7 @@ export function 画布(props: 画布Props): JSX.Element {
     const 新x = 面板让位平移x(
       锚,
       { 缩放: 视.缩放, x: 视.x },
-      画布宽,
+      画布尺寸().宽,
       (props.检查器宽 ?? 面板宽) / 比,
       面板边距 / 比,
       true,
@@ -696,7 +753,7 @@ export function 画布(props: 画布Props): JSX.Element {
   }
 
   const 到内容 = (点: { readonly clientX: number; readonly clientY: number }, 用视口: 视口变换 = 视口()) =>
-    props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
+    props.坐标换算 === undefined ? 默认换算(读矩形(), 用视口, 画布尺寸())(点) : props.坐标换算(点)
 
   /**
    * 松手点 → 命中元素（T007 / FR-013）。默认问 `elementFromPoint`；happy-dom 没有布局，
@@ -1354,7 +1411,7 @@ export function 画布(props: 画布Props): JSX.Element {
 
       <svg
         data-slot="hgraph-svg"
-        viewBox={`0 0 ${画布宽} ${画布高}`}
+        viewBox={`0 0 ${画布尺寸().宽} ${画布尺寸().高}`}
         preserveAspectRatio="xMidYMid meet"
         class="block h-full w-full select-none"
       >

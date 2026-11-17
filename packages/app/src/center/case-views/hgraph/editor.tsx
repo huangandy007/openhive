@@ -62,7 +62,7 @@ import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
 import { 工具栏, 工具钮 } from "./toolbar"
 import { 重做图标, 撤销图标 } from "./bar-icons"
-import { 检查器, 收起宽, type 节点快照 } from "./inspector"
+import { 检查器, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
@@ -650,11 +650,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    */
   const [详情收起, set详情收起] = createSignal(false)
   /**
-   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
-   * 对象）；展开 ⇒ 320；收起 ⇒ 40（T014 / FR-050）。画布只消费这个数、不再自己假定
-   * 面板宽度——收起后仍按 320 让位会把画面无故推走。
+   * 检查器**自报**的占宽（CSS px）：展开 = 按中栏宽收窄后的实际宽（≥240），收起 = 40。
+   * 初值 320 = 既有默认（量不到尺寸时检查器也报 320，两边一致）。
    */
-  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 详情收起() ? 收起宽 : 面板宽)
+  const [检查器宽, set检查器宽] = createSignal(面板宽)
+  /**
+   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
+   * 对象）；选中 ⇒ 用检查器自报的宽。画布只消费这个数、不再自己假定面板宽度——收起后
+   * 仍按 320 让位会把画面无故推走，中栏收窄后按 320 让位同理。
+   */
+  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 检查器宽())
   /**
    * T008 / FR-015：选中变化 ⇒ 请画布让位一次（检查器浮在右侧，会盖住底下那一列）。
    * 只有「单个选中 id」真的变了才递增序号——拖动改的是文档坐标、不改选中，所以后续
@@ -1866,8 +1871,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     加边: (从, 到) => 直接连线(从, 到),
     补依据: (边id) => 开补依据(边id),
     加文字: 应用加文字,
-    // T013：模式条搬进工具栏后，落点按画布尺寸算（与旧画布内按钮同一公式）。
-    加文字在中心: () => 应用加文字(画布宽 / 2, 画布高 / 2 + 文档().文字.length * 28),
+    // T013：模式条搬进工具栏后，落点按**当前视口中心**算（画布尺寸随中栏变，不能再写死
+    // 逻辑画布的 760/2、680/2；与 `加事件` 同一出口 `读视口中心`，`#002-06`）。
+    加文字在中心: () => {
+      const 位 = 读视口中心?.() ?? { x: 画布宽 / 2, y: 画布高 / 2 }
+      应用加文字(位.x, 位.y + 文档().文字.length * 28)
+    },
     加节点: (位置) => {
       // R29：UI 发起的加节点必须自带坐标（工具栏 = 画布中心阶梯偏移；右键/双击 = 点处）。
       // 阶梯公式与选择器共用一个出处（`阶梯位置`，#002-06）。
@@ -2280,7 +2289,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       */}
       <div
         data-slot="hgraph-canvas-bar"
-        class="relative flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+        class="relative flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
       >
         {/*
           T017b（R72）：搜索框在画布条左端。名称子串、大小写不敏感，结果顺序 = 文档顺序；
@@ -2764,6 +2773,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             动作表={动作}
             收起={详情收起()}
             收起变化={set详情收起}
+            宽度变化={set检查器宽}
             快照={props.详情api === undefined ? undefined : 快照表()}
             载入中={快照载入()}
             刷新节点={props.详情api === undefined ? undefined : (库id) => void 刷新节点(库id)}

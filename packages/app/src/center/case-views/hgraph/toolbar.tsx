@@ -191,7 +191,7 @@ export function 工具栏(props: 工具栏Props): JSX.Element {
       data-slot="hgraph-toolbar"
       role="toolbar"
       aria-label="关系图工具栏"
-      class="flex flex-nowrap items-center gap-1 bg-v2-background-bg-base px-2 py-1"
+      class="flex flex-wrap items-center gap-1 bg-v2-background-bg-base px-2 py-1"
     >
       {/* 选择：三种模式（指针 / 手 / 连线）。T013 撤掉画布内模式条后，「手」只在这里可发现。 */}
       <分组 名="选择">

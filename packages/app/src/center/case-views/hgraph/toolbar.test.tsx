@@ -231,15 +231,19 @@ describe("T015 · 工具栏分组与模式按下态", () => {
     expect(删除.getAttribute("aria-pressed")).toBe("false")
   })
 
-  test("单行不折行：没有 flex-wrap，也没有会裁剪提示的 overflow 滚动类", () => {
+  test("窄中栏允许折行（flex-wrap），且不靠会裁剪提示的 overflow 容器收容", () => {
     挂工具栏()
 
     const 栏 = 取("[data-slot='hgraph-toolbar']") as HTMLElement | null
     expect(栏 !== null).toBe(true)
-    expect(栏!.className.includes("flex-nowrap")).toBe(true)
-    expect(栏!.className.includes("flex-wrap")).toBe(false)
-    // happy-dom 无布局（`scrollWidth`/`clientWidth` 恒 0），量不出是否真的横向溢出；
-    // 这里只钉实现不依赖 wrap，也不靠滚动容器收容。真栈补量见报告。
+    // 2026-11-17 用户裁定（中栏自适应）：画布随中栏铺满后，工具栏不再有固定 760 宽度
+    // 兜底，窄中栏里 nowrap 会把右侧按钮顶出可视区且没有滚动条 ⇒ 改为折行。
+    // 这条推翻了 T015 当时的「单行不折行」前提（当时画布宽度固定）。
+    expect(栏!.className.includes("flex-wrap")).toBe(true)
+    expect(栏!.className.includes("flex-nowrap")).toBe(false)
+    // 折行是布局，不是滚动容器：overflow 滚动类会裁剪悬停提示浮层。
+    // happy-dom 无布局（`scrollWidth`/`clientWidth` 恒 0），量不出是否真的横向溢出，
+    // 只钉类名；真栈补量见报告。
     expect(/overflow-(x-|y-)?(auto|scroll|hidden)/.test(栏!.className)).toBe(false)
   })
 })
