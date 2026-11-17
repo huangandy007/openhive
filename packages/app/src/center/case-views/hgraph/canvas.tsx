@@ -8,8 +8,9 @@
  * ## 两条交互口径（FR-019 / FR-020 / FR-022）
  *
  * - **指针模式**：拖节点 = 移动，永不建边；拖空白 = 框选（`Shift` = 追加选中）。
- * - **平移画布**：空格 + 拖 / 中键拖 / 双指（触控板横向或像素级纵向滚动，设计 §5.15）；
- *   空白拖**不再**平移（FR-020）。
+ * - **平移画布**：手模式左键拖 / 空格 + 拖 / 中键拖 / 双指（触控板**横向分量占优**的滚动，
+ *   设计 §5.15）；空白拖**不再**平移（FR-020）。空格按住或手模式 = 容器光标 `grab`，
+ *   拖动中 `grabbing`。
  * - **连线模式**：从节点拖到另一节点 = 加边；拖到空白**不建边**（`连线目标` 返回 `null`）；
  *   空白拖同样是框选（平移仍走空格 / 中键 / 双指）。
  * - 锁定节点（`锁定: true`）：不可拖动、不被框选命中（后者由 `框选命中` 保证）、也不进
@@ -27,8 +28,10 @@
  * `#006-06`）。因此「屏幕坐标 → 画布坐标」是入参 `坐标换算`；默认实现读容器矩形 +
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
-import type { 边, 图文件, 节点, 文字 } from "./file"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 边线型 } from "./edge"
+import { 是输入目标 } from "./keys"
 import {
   适配视口,
   截断标签,
@@ -39,7 +42,9 @@ import {
   边偏移,
   平行边序 as 算平行边序,
   线宽像素,
+  连接度数,
   外环档表,
+  是手动外环档,
   type 矩形,
   type 视口变换,
   type 对齐边,
@@ -47,15 +52,61 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 多边形, type 位点 } from "../graph"
+import { 形状, 填充, 类型描边, 多边形, 默认节点填充, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import type { 图节点 } from "../../case-detail-api"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
-const 画布宽 = 760
-const 画布高 = 680
+export const 画布宽 = 760
+export const 画布高 = 680
 const 节点半径 = 15
 /** 手抖 1px 不算拖动（同 `graph.tsx` 的死区），否则「点一下看选中」会变成「挪半步」。 */
 const 拖动阈值 = 3
+
+/**
+ * 事件卡（FR-056）：尺寸**固定 96×34、rx=6**，不做随名伸缩——几何与命中测试都按这个
+ * 固定盒子算，伸缩会让两者一起漂。`data-node-shape="event-card"` 是契约槽位。
+ */
+const 事件卡宽 = 96
+const 事件卡高 = 34
+const 事件卡圆角 = 6
+
+/** 读保留属性键（`金额` / `时间精度`）；空串按缺失处理，不把空值拼进文案。 */
+const 属性值 = (点: 节点, 键: string): string | undefined => {
+  const 值 = (点.属性 ?? []).find((行) => 行.键 === 键)?.值
+  return typeof 值 === "string" && 值 !== "" ? 值 : undefined
+}
+
+/**
+ * 事件卡第一行：`类型首字 · 金额`；无金额 ⇒ 只显示类型首字（FR-056）。
+ * 首字按码点取（同节点首字：`Array.from`，`slice` 会劈开补充平面字符）。
+ */
+function 事件卡首行(点: 节点): string {
+  const 首字 = Array.from(点.类型 ?? "")[0] ?? ""
+  const 金额 = 属性值(点, "金额")
+  return 金额 === undefined ? 首字 : `${首字} · ${金额}`
+}
+
+/**
+ * 事件卡第二行：`时间.首` 按 `时间精度` 渲染——日 → `MM-DD`；时 → `MM-DD HH时`；
+ * 分 / 未标 → `MM-DD HH:mm`（FR-056）。
+ *
+ * 只切字符串、不走 `Date`：后者会把时间按本地时区挪一遍（同 `format.ts` 的口径），
+ * 卡片上显示的必须就是文件里那个时刻。原文连日期都认不出 ⇒ 原样吐回，不编时刻；
+ * 精度要时分而原文只到日 ⇒ 只出日期（补 `00:00` 等于替数据编一个时刻）。
+ */
+function 事件卡次行(点: 节点): string {
+  const 原文 = (点.时间?.首 ?? "").trim()
+  const 匹配 = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(原文)
+  if (匹配 === null) return 原文
+  const [, , 月, 日, 时, 分] = 匹配
+  const 日期 = `${月}-${日}`
+  const 精度 = 属性值(点, "时间精度")
+  if (精度 === "日") return 日期
+  if (时 === undefined || 分 === undefined) return 日期
+  if (精度 === "时") return `${日期} ${时}时`
+  return `${日期} ${时}:${分}`
+}
 
 /**
  * `多边形` 只读 `x/y`，但入参类型是完整 `位点`（`图节点` + 坐标）；节点组已平移到中心，
@@ -77,11 +128,12 @@ const 落在内嵌界面 = (目标: EventTarget | null) =>
 
 /**
  * 滚轮是否来自触控板双指平移（设计 §5.15）：平移 = 空格 + 拖 / 中键拖 / **双指**。
- * 判据：没有 Ctrl（Ctrl + 滚轮是捏合缩放），且有横向分量或纵向是像素级小数
- * （鼠标滚轮是整数档）。真机触控板无法在本机自动化验证，单测只钉判定式。
+ * 判据：没有 Ctrl（Ctrl + 滚轮是捏合缩放），且**横向分量占优**
+ * （`|deltaX| > |deltaY|`）——触控板纵向滑动（含精密触控板的 3.75 这类小数档）归缩放，
+ * 不能因为「纵向不是整数」就被误判成平移。真机触控板无法在本机自动化验证，单测只钉判定式。
  */
 export function 是双指平移(事件: { readonly deltaX: number; readonly deltaY: number; readonly ctrlKey?: boolean }): boolean {
-  return 事件.ctrlKey !== true && (事件.deltaX !== 0 || 事件.deltaY % 1 !== 0)
+  return 事件.ctrlKey !== true && Math.abs(事件.deltaX) > Math.abs(事件.deltaY)
 }
 
 /**
@@ -106,7 +158,24 @@ export function 文字色(颜色: string | undefined): string {
   return 文字色表[颜色 ?? ""] ?? 默认文字色
 }
 
-export type 模式 = "指针" | "连线"
+/**
+ * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
+ * 查不到（含空 / 自定义色名）⇒ 默认描边色，不猜用户意图。
+ *
+ * **模块作用域 + 导出**（T014）：检查器「外环颜色」下拉的选项必须取自同一张表
+ * （`#002-06`：色名清单只写一处），不要在 inspector 里另抄一份。
+ */
+export const 外环色表: Readonly<Record<string, string>> = {
+  红: "var(--v2-state-border-danger)",
+  橙: "var(--v2-state-border-warning)",
+  黄: "var(--v2-state-border-warning)",
+  绿: "var(--v2-state-border-success)",
+  蓝: "var(--v2-state-border-info)",
+  金: "var(--v2-brand-gold-deep)",
+  灰: "var(--v2-text-text-muted)",
+}
+
+export type 模式 = "指针" | "手" | "连线"
 
 export type 坐标换算 = (屏幕: { readonly clientX: number; readonly clientY: number }) => {
   readonly x: number
@@ -138,6 +207,11 @@ export interface 画布动作 {
    */
   readonly 补依据?: (边id: string) => void
   readonly 加文字: (x: number, y: number) => void
+  /**
+   * 画布中心加文字（T013）：原画布内模式条的「加文字」入口搬到工具栏后不再知道画布尺寸，
+   * 由编辑器按 `画布宽/画布高` 算落点，落同一条 `加文字`。省略 = 片段测试没有这个入口。
+   */
+  readonly 加文字在中心?: () => void
   readonly 改字段: (类别: "节点" | "边" | "文字", id: string, 补丁: Record<string, unknown>) => void
   readonly 删对象: (目标: readonly { readonly 类别: "节点" | "边" | "文字"; readonly id: string }[]) => void
   readonly 撤销: () => void
@@ -145,6 +219,11 @@ export interface 画布动作 {
   readonly 切换模式: (模式: 模式) => void
   /** 省略位置 ⇒ 编辑器按画布中心 + 既有节点数做阶梯偏移（R29）。 */
   readonly 加节点: (位置?: { readonly x: number; readonly y: number }) => void
+  /**
+   * 加手写事件（T012 / FR-025）：工具栏与右键空白是**同一个动作**，只差落点
+   * （工具栏省略位置 ⇒ 画布中心；右键传右键点的内容坐标）。
+   */
+  readonly 加事件?: (位置?: { readonly x: number; readonly y: number }) => void
   readonly 删除所选: () => void
   /** `undefined` = 收起改名输入框（Esc / 提交后），不产生操作。 */
   readonly 重命名: (id: string | undefined) => void
@@ -194,6 +273,11 @@ export interface 画布动作 {
   readonly 适配全部?: () => void
   /** 「显示全部标签」开关（T017b / R71）：>800 节点时工具栏提供，强制打开标签。 */
   readonly 显示全部标签切换?: () => void
+  /**
+   * 强度过滤（FR-045 / FR-028）：「找」组入口。打开画布条的筛选面板——「只看 ≥ N 档」
+   * 控件在那里，工具栏不另存一份阈值（`#002-06`）。
+   */
+  readonly 强度过滤?: () => void
 }
 
 export interface 画布Props {
@@ -201,6 +285,11 @@ export interface 画布Props {
   readonly 选中: readonly string[]
   readonly 模式: 模式
   readonly 坐标换算?: 坐标换算
+  /**
+   * 屏幕坐标 → 命中元素（T007 / FR-013 测试缝）。默认 `document.elementFromPoint`；
+   * happy-dom 无布局、它恒返回 `null`（20.12.0 实测），组件测试只能注入。
+   */
+  readonly 屏幕命中?: (x: number, y: number) => Element | null
   readonly 动作: 画布动作
   /** 正在内联改名的节点 id；由编辑器的 `重命名` 动作设置。 */
   readonly 重命名id?: string
@@ -237,6 +326,23 @@ export interface 画布Props {
   readonly 适配请求?: number
   readonly 适配目标?: readonly string[]
   /**
+   * 检查器让位（T008 / FR-015）：编辑器在**选中变化**时递增 `序号`，画布只在序号变化时
+   * 平移一次——拖动改的是文档坐标，不改请求，所以视口不会持续跟随。
+   * 对象本来就落在未覆盖区 ⇒ 不动画面。
+   */
+  readonly 让位请求?: { readonly id: string; readonly 序号: number }
+  /**
+   * 检查器当前在**屏幕上**占用的宽度（CSS px，T008 / FR-015）：编辑器按状态给值
+   * （展开 320 / 收起 40 / 未选中 0）。视口是 viewBox 单位，画布按容器缩放比换算，
+   * 不再假定「1 CSS px = 1 viewBox 单位」。省略 = 320（历史行为）。
+   */
+  readonly 检查器宽?: number
+  /**
+   * 容器尺寸测试缝（T008 fix1）：happy-dom 无布局、`getBoundingClientRect()` 恒 0，
+   * 量不出 viewBox → 容器的缩放比。省略时量真实容器；量不到按 1:1。
+   */
+  readonly 容器尺寸?: { readonly 宽: number; readonly 高: number }
+  /**
    * 标签分级的 `开`（T017b / R71）：`false` ⇒ 只留选中与悬停（>800 节点默认关标签的落点）；
    * `undefined` ⇒ 按缩放档位取舍。`true` = 工具栏强制打开。
    */
@@ -258,6 +364,28 @@ export interface 画布Props {
    * T015 的隐藏只读渲染不传 ⇒ 导出永远含展开图例。
    */
   readonly 图例初始收起?: boolean
+  /**
+   * T013：编辑态图例已搬到画布条 ⇒ 外壳传 `true` 时本画布**不渲染**图例。
+   * 省略（导出 / 演示 / 片段测试）⇒ 仍渲染在 svg 内（导出必须含图例，R74）。
+   */
+  readonly 不渲染图例?: boolean
+  /**
+   * 强度过滤（T017 / FR-028）：`undefined` = 关闭；`0..4` ⇒ 只渲染 `边档 >= N` 的边。
+   * 与 `可见` 取交集（渲染集合 = 演示可见 ∩ 强度可见），**只作用于边**——节点一律不隐藏。
+   * 档位换算复用 `geometry.ts` 的 `边档`（内部即 `线宽档`），这里不另算（`#002-06`）。
+   */
+  readonly 强度阈值?: number
+  /**
+   * 角落提示的「一键恢复」：把外壳的阈值置回关闭。画布不持有这个 UI 态，只发意图；
+   * 省略时提示只报条数、不渲染恢复按钮（导出 / 片段渲染）。
+   */
+  readonly 恢复强度?: () => void
+  /**
+   * 视口中心读取（FR-025 / final-fix1b I1）：画布把闭包交给外壳，外壳点「加事件」时
+   * 才能把**当前视口中心**换算成内容坐标。视口仍只归画布持有；这里只注册只读函数，
+   * 不改既有视口状态机。省略 = 外壳退回固定画布中心。
+   */
+  readonly 注册视口中心?: (读: () => { readonly x: number; readonly y: number }) => void
 }
 
 /** 默认换算：容器矩形 → viewBox（`xMidYMid meet`）→ 逆视口变换。 */
@@ -271,7 +399,10 @@ function 默认换算(容器: HTMLElement | undefined, 视口: 视口变换): �
   }
 }
 
-/** pointerdown 落点元素上读属性（`closest` 覆盖节点组内的圆/文字）。 */
+/**
+ * 指针落点元素上读属性（`closest` 覆盖节点组内的圆 / 首字 / 名字标签）。
+ * 按下取事件目标、松手取 `elementFromPoint` 的结果——**同一处判据**（T007 / FR-013）。
+ */
 function 读属性(目标: EventTarget | null, 名: string): string | undefined {
   if (!(目标 instanceof Element)) return undefined
   return 目标.closest(`[${名}]`)?.getAttribute(名) ?? undefined
@@ -334,19 +465,44 @@ type 菜单目标 =
 export function 画布(props: 画布Props): JSX.Element {
   let 容器: HTMLDivElement | undefined
   const [视口, set视口] = createSignal<视口变换>({ 缩放: 1, x: 0, y: 0 })
+  /**
+   * 视口中心 = viewBox 中心逆变换回内容坐标（`缩放/x/y` 是画布的 `translate` + `scale`）。
+   * 注册只读闭包给外壳（I1）：不把视口状态提上去，外壳每次点「加事件」都读当前值。
+   */
+  onMount(() => {
+    props.注册视口中心?.(() => {
+      const 视 = 视口()
+      return {
+        x: (画布宽 / 2 - 视.x) / 视.缩放,
+        y: (画布高 / 2 - 视.y) / 视.缩放,
+      }
+    })
+  })
   const [拖影, set拖影] = createSignal<ReadonlyMap<string, { readonly x: number; readonly y: number }>>(new Map())
   const [框, set框] = createSignal<矩形 | undefined>()
   const [连线落点, set连线落点] = createSignal<{ 从: string; x: number; y: number } | undefined>()
+  /** 连线松手落空提示（T007 / FR-013）：下次按下或成功连边时清掉，不常驻。 */
+  const [松手提示, set松手提示] = createSignal<string | undefined>()
   const [编辑id, set编辑id] = createSignal<string | undefined>()
   const [编辑值, set编辑值] = createSignal("")
   const [菜单, set菜单] = createSignal<菜单目标 | undefined>()
 
   let 指针: 指针态 | undefined
   /**
-   * 空格按住 = 平移态（FR-020 / 设计 §5.15）。不用信号：只在指针按下的瞬间读一次；
-   * 键抬起（`onKeyUp`）与容器失焦（`onBlur`）都清零，避免空格丢在别处后永久平移。
+   * 空格按住 = 平移态（FR-020 / 设计 §5.15）。用信号：按下瞬间要读它决定平移还是框选，
+   * 同时它也是容器光标的输入（`grab`）。键抬起（`onKeyUp`）与容器失焦（`onBlur`）
+   * 都清零，避免空格丢在别处后永久平移。
    */
-  let 空格 = false
+  const [空格按下, set空格按下] = createSignal(false)
+  /** 空格式平移正在进行（pointerdown → pointerup）：光标 `grabbing`，松手回 `grab`。 */
+  const [平移中, set平移中] = createSignal(false)
+  /** 容器光标：平移中 `grabbing` > 空格按住 / 手模式 `grab` > 默认。 */
+  const 光标 = () => (平移中() ? "grabbing" : 空格按下() || props.模式 === "手" ? "grab" : "default")
+  /**
+   * 对象光标（节点 / 文字 / 边）：指针与连线模式保持 `pointer`；手模式交给容器继承
+   * `grab`/`grabbing`，否则悬停在节点上仍显示 pointer，与「手」语义矛盾（FR-012）。
+   */
+  const 对象光标 = () => (props.模式 === "手" ? undefined : "cursor-pointer")
   /** 改名输入的收尾锁：Enter 提交后移除输入框会再触发一次 blur，不能提交两遍。 */
   let 改名收尾 = false
   createEffect(() => {
@@ -430,6 +586,61 @@ export function 画布(props: 画布Props): JSX.Element {
     set视口(适配视口(点们, { 宽: 画布宽, 高: 画布高 }))
   })
 
+  /** 选中对象的画布锚点（T008）：节点 / 文字用自己的坐标，边取两端中点。 */
+  const 选中锚点 = (id: string) => {
+    const 点 = props.文档.节点.find((行) => 行.id === id)
+    if (点 !== undefined) return { x: 数(点.x), y: 数(点.y) }
+    const 文 = props.文档.文字.find((行) => 行.id === id)
+    if (文 !== undefined) return { x: 数(文.x), y: 数(文.y) }
+    const 边行 = props.文档.边.find((行) => 行.id === id)
+    if (边行 === undefined) return undefined
+    const 甲 = props.文档.节点.find((行) => 行.id === 边行.从)
+    const 乙 = props.文档.节点.find((行) => 行.id === 边行.到)
+    if (甲 === undefined || 乙 === undefined) return undefined
+    return { x: (数(甲.x) + 数(乙.x)) / 2, y: (数(甲.y) + 数(乙.y)) / 2 }
+  }
+
+  /**
+   * viewBox → 容器的缩放比（`preserveAspectRatio="xMidYMid meet"` 取较小的那一维）。
+   * 容器测不到尺寸（happy-dom）时按 1:1——与 `默认换算` 的退化口径一致。
+   */
+  const 视图缩放比 = () => {
+    const 矩 =
+      props.容器尺寸 === undefined
+        ? 容器?.getBoundingClientRect()
+        : { width: props.容器尺寸.宽, height: props.容器尺寸.高 }
+    if (矩 === undefined || 矩.width <= 0 || 矩.height <= 0) return 1
+    return Math.min(矩.width / 画布宽, 矩.height / 画布高) || 1
+  }
+
+  /**
+   * 检查器让位（T008 / FR-015）：**只在请求序号变化时**平移一次——拖动改的是节点坐标，
+   * 不改请求，视口因此不会持续跟随。目标 = 未覆盖区中心；对象本来没被盖住就不动画面。
+   *
+   * 面板宽度是**屏幕 CSS px**，视口是 viewBox 单位：先按容器缩放比换算，否则窄容器下
+   * 320 会被当成 320 个 viewBox 单位、右界算大而完全不触发（T008 fix1 / D1）。
+   */
+  let 上次让位: number | undefined
+  createEffect(() => {
+    const 请求 = props.让位请求
+    if (请求 === undefined || 请求.序号 === 上次让位) return
+    上次让位 = 请求.序号
+    const 锚 = 选中锚点(请求.id)
+    if (锚 === undefined) return
+    const 视 = 视口()
+    const 比 = 视图缩放比()
+    const 新x = 面板让位平移x(
+      锚,
+      { 缩放: 视.缩放, x: 视.x },
+      画布宽,
+      (props.检查器宽 ?? 面板宽) / 比,
+      面板边距 / 比,
+      true,
+    )
+    if (新x === undefined) return
+    set视口({ ...视, x: 新x })
+  })
+
   const 提交改名 = (id: string, 值: string) => {
     // 输入框被移除（Enter/Esc 已收尾）后浏览器可能再补一次 blur：此时编辑器里的
     // `重命名id` 已经不是它了，不能再提交（否则 Esc 会变成保存）。
@@ -487,6 +698,13 @@ export function 画布(props: 画布Props): JSX.Element {
   const 到内容 = (点: { readonly clientX: number; readonly clientY: number }, 用视口: 视口变换 = 视口()) =>
     props.坐标换算 === undefined ? 默认换算(容器, 用视口)(点) : props.坐标换算(点)
 
+  /**
+   * 松手点 → 命中元素（T007 / FR-013）。默认问 `elementFromPoint`；happy-dom 没有布局，
+   * 它恒返回 `null`（20.12.0 实测），此时由调用方回退数学命中（`连线目标`）。
+   */
+  const 屏幕命中元素 = (x: number, y: number): Element | null =>
+    props.屏幕命中 !== undefined ? props.屏幕命中(x, y) : (容器?.ownerDocument?.elementFromPoint?.(x, y) ?? null)
+
   const 节点表 = createMemo(() => new Map(props.文档.节点.map((点) => [点.id, 点])))
   /**
    * 悬空边角标（R-F4 / contracts/hgraph-format §1）：端点在 `节点` 里缺失的边画不出线，
@@ -501,9 +719,22 @@ export function 画布(props: 画布Props): JSX.Element {
   const 可见节点们 = createMemo(() =>
     props.可见 === undefined ? props.文档.节点 : props.文档.节点.filter((点) => props.可见!.节点.has(点.id)),
   )
-  const 可见边们 = createMemo(() =>
+  /** 外壳给的可见边（演示步进 / 隔离·筛选）；强度过滤只在这里再叠一个条件。 */
+  const 基础可见边们 = createMemo(() =>
     props.可见 === undefined ? props.文档.边 : props.文档.边.filter((行) => props.可见!.边.has(行.id)),
   )
+  /**
+   * T017 / FR-028：渲染边 = 演示可见 ∩ `边档 >= N`（同一处叠加，不新建过滤层）。
+   * `边档` 是唯一档位出处（手动档优先、阈值度量兜底），画布不自算。
+   */
+  const 可见边们 = createMemo(() => {
+    const 阈 = props.强度阈值
+    const 基础 = 基础可见边们()
+    if (阈 === undefined) return 基础
+    return 基础.filter((行) => 边档(行, props.文档.设置) >= 阈)
+  })
+  /** 角落提示的条数 = **实际被强度过滤隐藏**的边数（阈值本身不是条数）。 */
+  const 强度隐藏数 = createMemo(() => 基础可见边们().length - 可见边们().length)
   // --- T018：视觉规格（形状 / 边几何 / 外环） --------------------------------------------
 
   /**
@@ -517,19 +748,37 @@ export function 画布(props: 画布Props): JSX.Element {
   const 环档 = (点: 节点) => 环档表().get(点.id) ?? 0
 
   /**
-   * 外环预设色名 → 主题槽位（设计只写「预设色名」没给清单；T018 协调者裁定，R74）。
-   * 查不到（含空 / 自定义色名）⇒ 默认描边色，不猜用户意图。
+   * FR-033（terminal review final-fix1a）：外环「自动」= `外环.颜色` 缺省/空 ⇒ 取节点
+   * **类型色**（与检查器色点同一张 `graph.tsx` 映射；这里只做字段适配，不另抄色值）。
+   * 手动设色仍走 `外环色表`；表里查不到的自定义色名保持原兜底（不猜用户意图）。
    */
-  const 外环色表: Readonly<Record<string, string>> = {
-    红: "var(--v2-state-border-danger)",
-    橙: "var(--v2-state-border-warning)",
-    黄: "var(--v2-state-border-warning)",
-    绿: "var(--v2-state-border-success)",
-    蓝: "var(--v2-state-border-info)",
-    金: "var(--v2-brand-gold-deep)",
-    灰: "var(--v2-text-text-muted)",
+  /** hgraph 节点 → `graph.tsx` 的图节点字段适配（类型色映射只此一份，`#002-06`）。 */
+  const 图节点样子 = (点: 节点): 图节点 => ({
+    id: 点.id,
+    type: 点.类型,
+    value: 点.名称,
+    trust_state: 点.来源?.可信 ?? "",
+    中心: false,
+    跳数: 0,
+    关联数: 0,
+    度数: 0,
+  })
+  const 类型色 = (点: 节点) => {
+    const 色 = 填充(图节点样子(点))
+    // final-fix2 N1：未映射类型落回 `填充` 的默认底色（与画布同阶）⇒ 外环改用描边色，
+    // 否则高连接节点的粗环几乎看不见。判据只读 `填充` 的同一兜底值，不另抄类型表。
+    return 色 === 默认节点填充 ? "var(--v2-border-border-strong)" : 色
   }
-  const 外环色 = (点: 节点) => 外环色表[点.外环?.颜色 ?? ""] ?? "var(--v2-border-border-strong)"
+  const 手动外环 = (点: 节点) => (点.外环?.颜色 ?? "") !== ""
+  const 外环色 = (点: 节点) =>
+    手动外环(点) ? (外环色表[点.外环!.颜色!] ?? "var(--v2-border-border-strong)") : 类型色(点)
+  /** 连接数角标的数据源：与档表/标签同一份口径（`geometry.ts` 的 `连接度数`）。 */
+  const 连接数表 = createMemo(() => 连接度数(props.文档.边))
+  /**
+   * 自动档 ≥3 才出角标；手动设色**或手动设档**的节点都不显示（FR-033 两条通道都只服务
+   * 「自动」）。判据复用 `是手动外环档`，与 `外环档()` 的冻结口径同源。
+   */
+  const 显示角标 = (点: 节点) => !手动外环(点) && !是手动外环档(点.外环?.档) && 环档(点) >= 3
 
   /**
    * 标签分级（R71）：`标签取舍` 由画布调用——缩放只有这里知道；`选中` / `悬停` / `开` /
@@ -560,6 +809,7 @@ export function 画布(props: 画布Props): JSX.Element {
     // 菜单内部的点击交给菜单项自己；点外面则收起菜单。
     if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
     set菜单(undefined)
+    set松手提示(undefined)
     // 中键（button === 1）是平移入口（设计 §5.15）；其它非左键不处理。
     if (事件.button !== 0 && 事件.button !== 1) return
     if (落在内嵌界面(目标)) return
@@ -574,11 +824,30 @@ export function 画布(props: 画布Props): JSX.Element {
     if (中键) 事件.preventDefault()
 
     const 内容 = 到内容(事件)
-    const 节点id = 读属性(目标, "data-node-id")
-    const 文字id = 读属性(目标, "data-text-id")
+    // T007 / FR-047：`pointerdown.target` 可能是盖在画布上的透明条（没有对象 id），
+    // 这时按坐标问命中缝；target 自己命中对象时以它为准（连线起点等既有语义不变）。
+    const 命中 = 屏幕命中元素(事件.clientX, 事件.clientY)
+    const 节点id = 读属性(目标, "data-node-id") ?? 读属性(命中, "data-node-id")
+    const 文字id = 读属性(目标, "data-text-id") ?? 读属性(命中, "data-text-id")
 
     // 中键无论在节点还是空白上都是平移（不是拖动节点 / 不是连线）。
     if (中键) {
+      指针 = {
+        类型: "画布",
+        起点屏x: 事件.clientX,
+        起点屏y: 事件.clientY,
+        起点x: 内容.x,
+        起点y: 内容.y,
+        原视口: 视口(),
+        移动: false,
+      }
+      return
+    }
+
+    // 「手」模式（T015 / FR-012）：左键在**任意位置**拖动都是平移——不选中、不拖节点、
+    // 不框选。按下即置 `平移中`，光标 `grabbing`；松手回 `grab`（模式本身仍是手）。
+    if (props.模式 === "手") {
+      set平移中(true)
       指针 = {
         类型: "画布",
         起点屏x: 事件.clientX,
@@ -698,7 +967,8 @@ export function 画布(props: 画布Props): JSX.Element {
     }
 
     // 空白按下：空格按住 ⇒ 平移；否则框选（Shift = 追加，FR-020）。
-    if (空格) {
+    if (空格按下()) {
+      set平移中(true)
       指针 = {
         类型: "画布",
         起点屏x: 事件.clientX,
@@ -786,6 +1056,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const 松开 = (事件: PointerEvent) => {
     const 现 = 指针
     指针 = undefined
+    // 平移结束（含 pointercancel / 捕获失效）：光标从 `grabbing` 回到 `grab`（空格仍按住的语义）。
+    set平移中(false)
     if (容器 !== undefined && 容器.hasPointerCapture?.(事件.pointerId)) 容器.releasePointerCapture(事件.pointerId)
     if (现 === undefined) return
     // 运动帧收尾（R71）：拖动 / 平移 / 框选停下后延迟恢复标签；单纯点选不动视口就不触发。
@@ -843,10 +1115,21 @@ export function 画布(props: 画布Props): JSX.Element {
     }
 
     const 内容 = 到内容(事件)
+    // T007 / FR-013：松手与按下用**同一套** DOM 命中（`读属性` 的 `closest`，覆盖名字标签）。
+    // 释放事件的 target 是被指针捕获的容器，不能当命中元素，按坐标问 DOM；DOM 给不出元素
+    // （happy-dom 无布局 / 环境没有 `elementFromPoint`）才回退数学命中（`连线目标`）。
+    const 命中 = 屏幕命中元素(事件.clientX, 事件.clientY)
+    const 命中id = 命中 === null ? undefined : 读属性(命中, "data-node-id")
+    const 到 =
+      命中 === null ? (连线目标({ 从: 现.从, x: 内容.x, y: 内容.y }, props.文档.节点)?.到 ?? undefined) : 命中id
     set连线落点(undefined)
-    const 目标 = 连线目标({ 从: 现.从, x: 内容.x, y: 内容.y }, props.文档.节点)
-    // 拖到空白 ⇒ `null` ⇒ **不建边**（FR-019）。
-    if (目标 !== null) props.动作.加边(目标.从, 目标.到)
+    if (到 !== undefined && 到 !== 现.从) {
+      set松手提示(undefined)
+      props.动作.加边(现.从, 到)
+      return
+    }
+    // 未命中（空白 / 预览线）⇒ 不建边并提示；命中起点自身只按「不建自环」静默（FR-019）。
+    if (到 === undefined) set松手提示("松手不在节点上，未建立连线")
   }
 
   const 按键 = (事件: KeyboardEvent) => {
@@ -855,18 +1138,14 @@ export function 画布(props: 画布Props): JSX.Element {
     // 输入框判定按 tagName 读，**不能**用 `instanceof HTMLElement`：画布内文字编辑框
     // 在 `<foreignObject>` 里，happy-dom 下它是 SVG 命名空间节点（HTMLElement 为 false），
     // 旧守卫会漏掉它 ⇒ 选中非空时在输入框里按 Delete 会删节点（M1 实测）。
-    const 目标 = 事件.target
-    if (目标 !== null && "tagName" in 目标) {
-      const 名 = String(目标.tagName).toUpperCase()
-      const 可编辑 = "isContentEditable" in 目标 && 目标.isContentEditable === true
-      if (名 === "INPUT" || 名 === "TEXTAREA" || 名 === "SELECT" || 可编辑) return
-    }
+    // 守卫本体与编辑器三处 keydown 共用（`keys.ts`，`#002-06`）。
+    if (是输入目标(事件.target)) return
     // 除 Esc 之外的任何键都解除「退出后首个 Esc 抑制」。
     if (事件.key !== "Escape") 忽略退出键 = false
     // 空格 = 平移修饰键（FR-020）：只记状态、不产生动作；拦掉默认行为（页面滚动）。
     if (事件.key === " ") {
       事件.preventDefault()
-      空格 = true
+      set空格按下(true)
       return
     }
     const 主键 = 事件.ctrlKey || 事件.metaKey
@@ -892,22 +1171,9 @@ export function 画布(props: 画布Props): JSX.Element {
       props.动作.复制所选?.(0)
       return
     }
-    if (事件.key === "Delete") {
-      // 选中到类型的翻译归编辑器（同一个出口只认 `删除所选`）。
-      if (props.选中.length > 0) {
-        事件.preventDefault()
-        props.动作.删除所选()
-      }
-      return
-    }
-    if (事件.key === "F2") {
-      const 节点们 = props.选中.filter((id) => props.文档.节点.some((行) => 行.id === id))
-      if (节点们.length === 1) {
-        事件.preventDefault()
-        props.动作.重命名(节点们[0])
-      }
-      return
-    }
+    // Delete / F2 都不在这里处理（T005 / FR-014）：它们监听在编辑器根容器上并由其独家
+    // 接管——焦点在工具栏 / 检查器时画布收不到键，两份并存还会双删 / 双改名。
+    // 判据与入口见 `editor.tsx` 的 `命中删除键` 与根容器的 F2 分支。
     if (事件.key === "Escape") {
       if (忽略退出键) {
         忽略退出键 = false
@@ -919,6 +1185,7 @@ export function 画布(props: 画布Props): JSX.Element {
       set编辑id(undefined)
       if (props.重命名id !== undefined) props.动作.重命名(undefined)
       指针 = undefined
+      set平移中(false)
       props.动作.选择([], false)
     }
   }
@@ -977,8 +1244,6 @@ export function 画布(props: 画布Props): JSX.Element {
     props.动作.改字段("文字", id, { 内容: 值 })
   }
 
-  const 加文字 = () => props.动作.加文字(画布宽 / 2, 画布高 / 2 + props.文档.文字.length * 28)
-
   const 菜单节点 = () => {
     const 现 = 菜单()
     return 现?.类型 === "节点" ? props.文档.节点.find((行) => 行.id === 现.id) : undefined
@@ -1005,13 +1270,8 @@ export function 画布(props: 画布Props): JSX.Element {
   const 菜单项 =
     "block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
 
-  const 模式键 = (目标: 模式) =>
-    `rounded border px-2 py-0.5 text-12-regular ${
-      目标 === props.模式
-        ? "border-v2-brand-gold-deep bg-v2-background-bg-layer-03 text-v2-text-text-base"
-        : "border-v2-border-border-muted text-v2-text-text-muted"
-    }`
-
+  // FR-051（terminal review final-fix1a）：画布 1px 描边 + 圆角 8 + 与外围（bg-base）
+  // 不同的底色阶；全部走已有 v2 token 类（不写 hex / 任意值）。
   return (
     <div
       ref={(元素) => (容器 = 元素)}
@@ -1021,53 +1281,27 @@ export function 画布(props: 画布Props): JSX.Element {
       tabindex={props.只读 === true ? undefined : "0"}
       role="application"
       aria-label="关系图画布"
-      class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-v2-background-bg-base outline-none"
+      class="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-v2-border-border-muted bg-v2-background-bg-layer-01 outline-none"
+      style={{ cursor: 光标() }}
       onPointerDown={按下}
       onPointerMove={移动中}
       onPointerUp={松开}
       onPointerCancel={松开}
       onKeyDown={按键}
       onKeyUp={(事件) => {
-        if (事件.key === " ") 空格 = false
+        if (事件.key === " ") set空格按下(false)
       }}
-      onBlur={() => (空格 = false)}
+      onBlur={() => set空格按下(false)}
       onWheel={滚轮}
       onDblClick={双击}
       onContextMenu={右键}
     >
+      {/*
+        T013 / FR-047：画布内模式条已删除（指针 / 连线 / 加文字迁到工具栏）。
+        本容器保留为画布内浮层槽位；当前无内容，因而不会盖住任何可交互内容。
+      */}
       <Show when={props.只读 !== true}>
-        <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1">
-        <button
-          type="button"
-          data-slot="hgraph-mode-pointer"
-          aria-label="指针模式"
-          title="指针模式：拖动移动节点"
-          class={模式键("指针")}
-          onClick={() => props.动作.切换模式("指针")}
-        >
-          指针
-        </button>
-        <button
-          type="button"
-          data-slot="hgraph-mode-connect"
-          aria-label="连线模式"
-          title="连线模式：从节点拖到另一节点成边"
-          class={模式键("连线")}
-          onClick={() => props.动作.切换模式("连线")}
-        >
-          连线
-        </button>
-        <button
-          type="button"
-          data-slot="hgraph-add-text"
-          aria-label="加文字"
-          title="加文字"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
-          onClick={加文字}
-        >
-          加文字
-        </button>
-        </div>
+        <div data-slot="hgraph-canvas-chrome" class="absolute left-2 top-2 z-10 flex items-center gap-1" />
       </Show>
 
       {/* 悬空边角标（R-F4）：右上角，读侧事实，只读态也显示。 */}
@@ -1078,6 +1312,43 @@ export function 画布(props: 画布Props): JSX.Element {
           class="absolute right-2 top-2 z-10 text-12-regular text-v2-text-text-muted"
         >
           {悬空数()} 条边指向不存在的节点
+        </div>
+      </Show>
+
+      {/*
+        强度过滤角落提示（T017 / FR-028）：条数 = 实际隐藏数；一键恢复交回外壳。
+        放左上角：右下角被检查器（320px、right:0、height:100%）盖住，恢复按钮会点不到；
+        左下角归「已隐藏 N 个节点」角标。容器 `pointer-events-none` 不吃画布拖拽，
+        只放行按钮自身。
+      */}
+      <Show when={强度隐藏数() > 0}>
+        <div
+          data-slot="hgraph-strength-hidden-note"
+          role="status"
+          class="pointer-events-none absolute left-2 top-2 z-10 flex items-center gap-2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 px-2 py-1 text-12-regular text-v2-text-text-muted shadow"
+        >
+          <span data-slot="hgraph-strength-hidden-text">已隐藏 {强度隐藏数()} 条较弱关系</span>
+          <Show when={props.恢复强度 !== undefined}>
+            <button
+              type="button"
+              data-slot="hgraph-strength-restore"
+              class="pointer-events-auto rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+              onClick={() => props.恢复强度?.()}
+            >
+              恢复
+            </button>
+          </Show>
+        </div>
+      </Show>
+
+      {/* 松手落空提示（T007 / FR-013）：本地瞬态，不写盘、不进撤销栈。 */}
+      <Show when={松手提示()}>
+        <div
+          data-slot="hgraph-connect-hint"
+          role="status"
+          class="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-03 px-2 py-1 text-12-regular text-v2-text-text-base"
+        >
+          {松手提示()}
         </div>
       </Show>
 
@@ -1094,6 +1365,18 @@ export function 画布(props: 画布Props): JSX.Element {
               const 乙 = () => props.文档.节点.find((点) => 点.id === 行.到)
               const 偏移 = () => 边偏移(平行序().get(行.id) ?? 0)
               const 档 = () => 边档(行, props.文档.设置)
+              // 线型只由 `edge.ts` 判一次（T012 裁定二），这里仅翻译成 SVG 虚线样式。
+              const 线型 = () => 边线型(行, 甲(), 乙())
+              const 边虚线 = () => {
+                switch (线型()) {
+                  case "虚线":
+                    return "4 3"
+                  case "点线":
+                    return "1 3"
+                  default:
+                    return undefined
+                }
+              }
               const 线色 = () =>
                 行.性质 === "事实" ? "var(--v2-border-border-strong)" : "var(--v2-text-text-muted)"
               /**
@@ -1152,8 +1435,8 @@ export function 画布(props: 画布Props): JSX.Element {
                             stroke={线色()}
                             stroke-width={线宽像素(档())}
                             stroke-opacity={档() <= 1 ? "0.55" : undefined}
-                            stroke-dasharray={行.性质 === "推断" ? "4 3" : undefined}
-                            class="cursor-pointer"
+                            stroke-dasharray={边虚线()}
+                            class={对象光标()}
                           />
                           {/* 只有有向边画箭头（方向是唯一被表达的信息；无向画了会误导）。 */}
                           <Show when={行.方向 === "有向"}>
@@ -1168,7 +1451,7 @@ export function 画布(props: 画布Props): JSX.Element {
                               text-anchor="middle"
                               font-size="11"
                               fill="var(--v2-text-text-muted)"
-                              class="cursor-pointer"
+                              class={对象光标()}
                             >
                               {行.标签}
                             </text>
@@ -1188,8 +1471,12 @@ export function 画布(props: 画布Props): JSX.Element {
               const 选中 = () => props.选中.includes(点.id)
               // 形状映射只此一份（`graph.tsx` 的 `形状`，R74/#002-06）。
               const 形 = () => 形状(点.类型 ?? "")
-              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : "var(--v2-background-bg-layer-02)")
-              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : "var(--v2-border-border-strong)")
+              // 对象类别 > 类型→形状：事件不进那个映射（FR-056）。
+              const 是事件 = () => 是事件节点(点)
+              // FR-052：未选中节点用类型色浅底 + 类型色描边（`graph.tsx` 同一张映射）；
+              // 选中态保持品牌金（FR-053 精修延后）。
+              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : 填充(图节点样子(点)))
+              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : 类型描边(图节点样子(点)))
               const 描边宽 = () => (选中() ? 3 : 1.5)
               const 虚线 = () => (点.锁定 === true ? "3 2" : undefined)
               return (
@@ -1200,7 +1487,7 @@ export function 画布(props: 画布Props): JSX.Element {
                   data-selected={选中() ? "true" : undefined}
                   data-locked={点.锁定 === true ? "true" : undefined}
                   transform={`translate(${位().x} ${位().y})`}
-                  class="cursor-pointer"
+                  class={对象光标()}
                   onPointerEnter={() => set悬停id(点.id)}
                   onPointerLeave={() => set悬停id((旧) => (旧 === 点.id ? undefined : 旧))}
                 >
@@ -1217,6 +1504,43 @@ export function 画布(props: 画布Props): JSX.Element {
                   </Show>
                   {/* 类型用形状 + 首字双通道，颜色不是唯一通道（FR-048）。 */}
                   <Switch fallback={<circle r={节点半径} fill={填充色()} stroke={描边色()} stroke-width={描边宽()} stroke-dasharray={虚线()} data-slot="hgraph-node-shape" />}>
+                    {/* 事件卡（FR-056）：两行文字属卡片自身，所以首字槽由下面的 Show 让开。 */}
+                    <Match when={是事件()}>
+                      <g>
+                        <rect
+                          data-slot="hgraph-node-shape"
+                          data-node-shape="event-card"
+                          x={-事件卡宽 / 2}
+                          y={-事件卡高 / 2}
+                          width={事件卡宽}
+                          height={事件卡高}
+                          rx={事件卡圆角}
+                          fill={填充色()}
+                          stroke={描边色()}
+                          stroke-width={描边宽()}
+                          stroke-dasharray={虚线()}
+                        />
+                        <text
+                          data-slot="hgraph-event-card-line1"
+                          text-anchor="middle"
+                          y={-2}
+                          font-size="12"
+                          font-weight="600"
+                          fill="var(--v2-text-text-base)"
+                        >
+                          {事件卡首行(点)}
+                        </text>
+                        <text
+                          data-slot="hgraph-event-card-line2"
+                          text-anchor="middle"
+                          y={11}
+                          font-size="10"
+                          fill="var(--v2-text-text-muted)"
+                        >
+                          {事件卡次行(点)}
+                        </text>
+                      </g>
+                    </Match>
                     <Match when={形() === "rect"}>
                       <rect
                         data-slot="hgraph-node-shape"
@@ -1252,10 +1576,39 @@ export function 画布(props: 画布Props): JSX.Element {
                       />
                     </Match>
                   </Switch>
-                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。 */}
-                  <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
-                    {Array.from(点.类型 ?? "")[0] ?? ""}
-                  </text>
+                  {/* 首字按码点取：`slice` 会把补充平面字符劈成孤立代理项。
+                      事件卡的第一行已含类型首字，圆心的首字槽让开（同一 DOM 结构，不复制分支）。 */}
+                  <Show when={!是事件()}>
+                    <text text-anchor="middle" y={4} font-size="11" fill="var(--v2-text-text-base)">
+                      {Array.from(点.类型 ?? "")[0] ?? ""}
+                    </text>
+                  </Show>
+                  {/*
+                    FR-033 第二条通道：自动外环 ≥3 档的节点在右上角挂连接数角标。
+                    数字取自 `连接度数`（与档表/标签同一份口径）；手动设色的节点只有环、不挂角标。
+                  */}
+                  <Show when={显示角标(点)}>
+                    <g data-slot="hgraph-degree-badge">
+                      <circle
+                        cx={是事件() ? 事件卡宽 / 2 - 6 : 节点半径 - 2}
+                        cy={是事件() ? -事件卡高 / 2 + 6 : -(节点半径 - 2)}
+                        r={6.5}
+                        fill="var(--v2-background-bg-layer-01)"
+                        stroke={外环色(点)}
+                        stroke-width={1}
+                      />
+                      <text
+                        x={是事件() ? 事件卡宽 / 2 - 6 : 节点半径 - 2}
+                        y={是事件() ? -事件卡高 / 2 + 9.5 : -(节点半径 - 5.5)}
+                        text-anchor="middle"
+                        font-size="9"
+                        font-weight="600"
+                        fill="var(--v2-text-text-base)"
+                      >
+                        {连接数表().get(点.id) ?? 0}
+                      </text>
+                    </g>
+                  </Show>
                   {/* R71：标签分级（缩放 / 选中 / 悬停 / 遮挡）由 `标签取舍` 定，超 12 字截断。 */}
                   <Show when={保留标签().has(点.id)}>
                     <text
@@ -1287,7 +1640,7 @@ export function 画布(props: 画布Props): JSX.Element {
                   font-weight={行.加粗 === true ? "700" : "400"}
                   text-anchor={行.对齐 === "左" ? "start" : 行.对齐 === "右" ? "end" : "middle"}
                   fill={文字色(行.颜色)}
-                  class="cursor-pointer"
+                  class={对象光标()}
                 >
                   {/*
                     FR-024 / R-F11：按 `宽度` 折行（估算，见 `text-fold.ts`）。每行一个
@@ -1329,9 +1682,11 @@ export function 画布(props: 画布Props): JSX.Element {
                 <Show when={起()}>
                   {(点) => {
                     const 位 = () => 节点位(点())
+                    // T007 / FR-013：预览线不参与命中，松手点落到它上面时看到的是下层。
                     return (
                       <line
                         data-slot="hgraph-connect"
+                        pointer-events="none"
                         x1={位().x}
                         y1={位().y}
                         x2={落().x}
@@ -1410,7 +1765,9 @@ export function 画布(props: 画布Props): JSX.Element {
           T018 图例：放 svg 内、viewport 之后（T015 只序列化这个 svg）——固定屏幕坐标，
           不吃缩放/平移；演示态由「初始收起」收掉，导出（不传）永远含展开图例。
         */}
-        <图例 初始收起={props.图例初始收起} />
+        <Show when={props.不渲染图例 !== true}>
+          <图例 初始收起={props.图例初始收起} />
+        </Show>
       </svg>
 
       <Show when={菜单()}>
@@ -1558,6 +1915,20 @@ export function 画布(props: 画布Props): JSX.Element {
                 }}
               >
                 加节点
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-slot="hgraph-menu-add-event"
+                class={菜单项}
+                onClick={() => {
+                  const 位 = 现()
+                  if (位.类型 !== "空白") return
+                  关闭菜单()
+                  props.动作.加事件?.({ x: 位.内容x, y: 位.内容y })
+                }}
+              >
+                加事件
               </button>
               <button
                 type="button"

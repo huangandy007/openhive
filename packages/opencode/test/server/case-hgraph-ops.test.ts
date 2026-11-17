@@ -457,6 +457,54 @@ describe("T006 · 幂等键与整批原子", () => {
     }),
   )
 
+  it("幂等键按「人＋项目＋归一路径」隔离：换路径 / 换人 都不重放，同人同路径同键仍重放", () =>
+    Effect.gen(function* () {
+      const 甲 = "幂等/路径甲.hgraph"
+      const 乙 = "幂等/路径乙.hgraph"
+      摆图(甲, 空图("路径甲"))
+      摆图(乙, 空图("路径乙"))
+      const 体 = {
+        幂等键: "键-隔离-1",
+        操作: [{ 操作: "加节点", 节点: [{ id: "tmp1", ...手写节点("张三") }] }],
+      }
+
+      const 首 = yield* 操作({ ...体, path: 甲 })
+      const 首体 = yield* 读回<{ 重放: boolean; 结果: { 映射: Record<string, string> } }>(首)
+      expect(首.status).toBe(200)
+      expect(首体.重放).toBe(false)
+      expect(首体.结果.映射.tmp1).toBe("n1")
+
+      // 同一个人、同一个键、**不同路径** ⇒ 不重放，另一张图真的被写。
+      const 换路径 = yield* 操作({ ...体, path: 乙 })
+      const 换路径体 = yield* 读回<{ 重放: boolean }>(换路径)
+      expect(换路径.status).toBe(200)
+      expect(换路径体.重放).toBe(false)
+      const 乙图 = 解析图(readFileSync(join(我目录(), 乙), "utf8"))
+      expect(乙图.ok).toBe(true)
+      if (乙图.ok) expect(乙图.文档.节点).toHaveLength(1)
+
+      // 同项目、同路径、同一个键，但**换一个人** ⇒ 也不重放。
+      const 换人 = yield* 发体(成员, `${PREFIX}/ops`, {
+        projectId: 项目,
+        ...体,
+        path: 甲,
+        操作: [{ 操作: "加节点", 节点: [{ id: "tmp2", ...手写节点("李四") }] }],
+      })
+      const 换人体 = yield* 读回<{ 重放: boolean }>(换人)
+      expect(换人.status).toBe(200)
+      expect(换人体.重放).toBe(false)
+      const 甲图 = 解析图(readFileSync(join(我目录(), 甲), "utf8"))
+      expect(甲图.ok).toBe(true)
+      if (甲图.ok) expect(甲图.文档.节点.map((点) => 点.名称).sort()).toEqual(["张三", "李四"].sort())
+
+      // 同人 / 同路径 / 同键 ⇒ 仍重放（返回第一次那次的结果）。
+      const 回放 = yield* 操作({ ...体, path: 甲 })
+      const 回放体 = yield* 读回<{ 重放: boolean }>(回放)
+      expect(回放.status).toBe(200)
+      expect(回放体.重放).toBe(true)
+    }),
+  )
+
   it("批量 30 条中第 30 条不合格 ⇒ 整批不写（字节哈希不变）", () =>
     Effect.gen(function* () {
       const 相对 = "原子/三十条.hgraph"
@@ -511,6 +559,42 @@ describe("T006 · 幂等键与整批原子", () => {
       const 体 = yield* 读回<{ code: string; error: string }>(响应)
       expect(体.code).toBe("BAD_SHAPE")
       expect(体.error).toContain("时间")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  /**
+   * T009（014 contracts/hgraph-format §2 / data-model §3）：事件节点的 `时间` 与普通节点同一条
+   * 必填闸——绑定事件 id 与出处都给齐了，缺 `时间` 仍不许落盘，且拒因必须点名 `时间`
+   * （不能报成事件闸那两句，用户要能区分是哪一块缺了）。
+   */
+  it("T009 事件节点来源齐备但缺 `时间` ⇒ BAD_SHAPE 点名 `时间`，不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/事件缺时间.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("事件缺时间"),
+        节点: [
+          {
+            id: "n1",
+            名称: "转账 12000元",
+            类型: "资金交易",
+            来源: { kind: "事件", 实体: "ev_1" },
+            出处: ["mat_x#Sheet1#12"],
+            x: 10,
+            y: 20,
+          },
+        ],
+      })
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [{ 操作: "改字段", 目标: [{ 类别: "节点", id: "n1", 补丁: { 备注: "补一句" } }] }],
+      })
+      expect(响应.status).toBe(400)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("BAD_SHAPE")
+      expect(体.error).toBe("第 1 个节点缺了必填字段「时间」")
       expect(字节哈希(绝对)).toBe(前)
     }),
   )
@@ -950,6 +1034,218 @@ describe("T006 · per-path 串行锁", () => {
       放行()
       await Promise.all([甲, 乙, 丙])
       expect(顺序.indexOf("甲-出")).toBeLessThan(顺序.indexOf("乙-入"))
+    }),
+  )
+})
+
+/**
+ * FR-037（terminal review final-fix1a）· 事件必填闸与名称兜底。
+ *
+ * 契约 `hgraph-format.md:20-21` / data-model §6：
+ * 1. 事件节点 `时间` 缺失或首末皆空 ⇒ 拒写（`BAD_SHAPE`，话术点明「事件必须填时间」）；
+ * 2. 事件节点 `名称` 为空 ⇒ 落盘前兜底为 `<类型> · <金额|时长> · <时间>`，不报错、不编造。
+ *
+ * 这两条此前只覆盖「缺键」：`时间: {首:"",末:""}` 与 `名称: ""` 都能落盘（评审 Critical 3）。
+ */
+describe("FR-037 · 事件必填闸与名称兜底", () => {
+  it("事件节点时间首末皆空 ⇒ BAD_SHAPE「事件必须填时间」，整批不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/事件空时间.hgraph"
+      const 绝对 = 摆图(相对, 空图("事件空时间"))
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "加节点",
+            节点: [
+              {
+                名称: "转账 12000元",
+                类型: "资金交易",
+                来源: { kind: "事件", 实体: "ev_1" },
+                出处: ["mat_x#Sheet1#12"],
+                时间: { 首: "", 末: "" },
+              },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(400)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("BAD_SHAPE")
+      expect(体.error).toContain("事件必须填时间")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("事件名称空 ⇒ 落盘前兜底为「类型 · 金额 · 时间」", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/事件空名称.hgraph"
+      const 绝对 = 摆图(相对, 空图("事件空名称"))
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "加节点",
+            节点: [
+              {
+                名称: "",
+                类型: "资金交易",
+                来源: { kind: "事件", 实体: "ev_1" },
+                出处: ["mat_x#Sheet1#12"],
+                时间: { 首: "2026-11-01T10:00", 末: "2026-11-01T10:00" },
+                属性: [{ 键: "金额", 值: "12000元" }],
+              },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      expect(图.文档.节点).toHaveLength(1)
+      expect(图.文档.节点[0].名称).toBe("资金交易 · 12000元 · 2026-11-01T10:00")
+    }),
+  )
+
+  it("无金额 / 时长 ⇒ 兜底为「类型 · 时间」，不拿空值凑三段", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/事件无金额.hgraph"
+      const 绝对 = 摆图(相对, 空图("事件无金额"))
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "加节点",
+            节点: [
+              {
+                名称: "   ",
+                类型: "通话",
+                来源: { kind: "事件", 实体: "ev_2" },
+                出处: ["mat_x#Sheet1#13"],
+                时间: { 首: "2026-11-02T09:30", 末: "2026-11-02T09:35" },
+              },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      expect(图.文档.节点[0].名称).toBe("通话 · 2026-11-02T09:30")
+    }),
+  )
+
+  /**
+   * final-fix2 C3：事件判据必须与前端 `是事件节点` 同口径——`来源.kind = 手写` 但属性带
+   * `时间精度` 也是事件（手写事件）。fix1b 加了时间输入，用户清空即会触发这道闸。
+   */
+  it("手写事件（来源手写 + 属性含时间精度）时间首末皆空 ⇒ BAD_SHAPE，不写", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/手写事件空时间.hgraph"
+      const 绝对 = 摆图(相对, 空图("手写事件空时间"))
+      const 前 = 字节哈希(绝对)
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "加节点",
+            节点: [
+              {
+                名称: "手写转账",
+                类型: "资金交易",
+                来源: { kind: "手写" },
+                属性: [{ 键: "时间精度", 值: "分" }],
+                时间: { 首: "", 末: "" },
+              },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(400)
+      const 体 = yield* 读回<{ code: string; error: string }>(响应)
+      expect(体.code).toBe("BAD_SHAPE")
+      expect(体.error).toContain("事件必须填时间")
+      expect(字节哈希(绝对)).toBe(前)
+    }),
+  )
+
+  it("手写事件名称空 ⇒ 落盘前兜底为「类型 · 金额 · 时间」", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/手写事件空名称.hgraph"
+      const 绝对 = 摆图(相对, 空图("手写事件空名称"))
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [
+          {
+            操作: "加节点",
+            节点: [
+              {
+                名称: "",
+                类型: "资金交易",
+                来源: { kind: "手写" },
+                属性: [
+                  { 键: "时间精度", 值: "分" },
+                  { 键: "金额", 值: "12000元" },
+                ],
+                时间: { 首: "2026-11-03T10:00", 末: "2026-11-03T10:00" },
+              },
+            ],
+          },
+        ],
+      })
+      expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      expect(图.文档.节点[0].名称).toBe("资金交易 · 12000元 · 2026-11-03T10:00")
+    }),
+  )
+
+  /**
+   * final-fix2 N3：名称兜底只作用于本批写入涉及的节点。盘上既有空名事件（本次没动它）
+   * 不能因为「顺手全图兜底」被改名。
+   */
+  it("写别的对象不改变盘上既有空名事件（兜底只覆盖本批节点）", () =>
+    Effect.gen(function* () {
+      const 相对 = "原子/既有空名事件.hgraph"
+      const 绝对 = 摆图(相对, {
+        ...空图("既有空名事件"),
+        节点: [
+          {
+            id: "n1",
+            名称: "",
+            类型: "资金交易",
+            来源: { kind: "事件", 实体: "ev_old" },
+            出处: ["mat_x#Sheet1#12"],
+            时间: { 首: "2026-11-01T09:00", 末: "2026-11-01T09:00" },
+            x: 10,
+            y: 10,
+          },
+        ],
+      })
+
+      const 响应 = yield* 操作({
+        path: 相对,
+        操作: [{ 操作: "加节点", 节点: [手写节点("新来的")] }],
+      })
+      expect(响应.status).toBe(200)
+
+      const 图 = 解析图(readFileSync(绝对, "utf8"))
+      expect(图.ok).toBe(true)
+      if (!图.ok) return
+      const 既有 = 图.文档.节点.find((点) => 点.id === "n1")
+      expect(既有?.名称).toBe("")
     }),
   )
 })

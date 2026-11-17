@@ -44,18 +44,24 @@
  * 一律自带 `x/y`（R29）：服务端放置只留给 AI。
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { Icon } from "@opencode-ai/ui/v2/icon"
 import type { HgraphApi, 操作 } from "@/project/hgraph-api"
 import type { EntityApi, 实体清单项 } from "@/project/entity-api"
 import type { CaseDetailApi, 关系图结果, 实体档案 } from "../../case-detail-api"
+import { 时间文本 } from "../format"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
-import { 解析图, 序列化图, type 边, type 图文件, type 节点, type 文字 } from "./file"
-import { 画布, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 面板宽 } from "../graph"
+import { 解析图, 序列化图, 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 对齐映射, 同内容 } from "./same-content"
+import { 下一个默认名 } from "./default-name"
+import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
+import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
 import { 工具栏 } from "./toolbar"
-import { 检查器, type 节点快照 } from "./inspector"
+import { 检查器, 收起宽, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
 import {
@@ -73,7 +79,8 @@ import {
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
-import { 手画边, 可连线 } from "./edge"
+import { 手画边, 可连线, 是角色边, 是角色边方向, 角色边, 角色边依据 } from "./edge"
+import { 是输入目标 } from "./keys"
 
 export interface 编辑器Props {
   readonly path: string
@@ -84,6 +91,11 @@ export interface 编辑器Props {
   readonly 初始版本: string
   /** 测试缝：happy-dom 没有布局，坐标换算见 `canvas.tsx` 头注释。 */
   readonly 坐标换算?: 坐标换算
+  /**
+   * 屏幕命中测试缝（T007 / FR-047）：happy-dom 没有 `elementFromPoint`，注入「坐标下面是
+   * 哪个元素」；省略 = 画布自己的默认实现。只用于验证按下按坐标命中节点，不是产品入口。
+   */
+  readonly 屏幕命中?: (x: number, y: number) => Element | null
   /** 外部改动轮询间隔（毫秒，R54）；默认 10 秒，测试缝。 */
   readonly 轮询毫秒?: number
   /**
@@ -120,6 +132,16 @@ type 路径面板内容 =
   | { readonly 空: false; readonly 跳数: number; readonly 路径: readonly string[] }
 
 const 防抖毫秒 = 500
+
+/**
+ * 画布条宽 → 图例是否折叠（FR-057）。
+ * `undefined` / `0` = 还没量到（happy-dom 恒 0），返回 `undefined` 表示「不改折叠态」；
+ * 899 ⇒ 折叠、900 ⇒ 展开，边界只在这里判一次（`#002-06`）。
+ */
+export function 图例应折叠(宽: number | undefined): boolean | undefined {
+  if (宽 === undefined || 宽 <= 0) return undefined
+  return 宽 < 900
+}
 
 /**
  * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
@@ -289,6 +311,18 @@ function 换id(文档: 图文件, 映射: Readonly<Record<string, string>>): 图
 }
 
 /**
+ * 换 id 后同一类别里出现重复 id（T004 / FR-004）：服务端的 `映射` 把两个本地对象落到了
+ * 同一个真实 id。这份文档**不能落地**——之后所有「按 id 找对象」的地方都会二选一。
+ *
+ * 判据看**结果文档**而不是「映射值彼此撞车」：`映射` 落到一个已存在的真实 id 同样会撞
+ * （伪造/异常应答的典型形状），只比映射值会漏掉这一类。
+ */
+function 有重复id(文档: 图文件): boolean {
+  const 撞 = (行们: readonly { readonly id: string }[]) => new Set(行们.map((行) => 行.id)).size !== 行们.length
+  return 撞(文档.节点) || 撞(文档.边) || 撞(文档.文字)
+}
+
+/**
  * 应答 `映射` 也要作用到**仍在待发**的操作上：请求飞行中新加的对象还带着临时 id
  * （例如加文字后立刻拖动），下一批如果原样发出去，服务端不认识那个临时 id。
  */
@@ -419,6 +453,46 @@ export function 布局目标(
 }
 
 /**
+ * Delete 键的唯一判定（T005）：监听在**编辑器根容器**上——焦点落在工具栏按钮 / 检查器
+ * 上时，画布容器的 keydown 根本收不到（点过工具栏后快捷键失效）。
+ *
+ * 判据原样搬自画布旧监听：演示（只读）静默；`input` / `textarea` / `select` /
+ * contentEditable 内不删对象（框里的 Delete 归浏览器删字）；空选中不接管（不吞默认行为）。
+ *
+ * 导出只为让「同一出口」拼装夹具挂同一份判定，不给生产新增第二个调用点。
+ */
+export function 命中删除键(
+  事件: KeyboardEvent,
+  状态: { readonly 演示中: boolean; readonly 有选中: boolean },
+): boolean {
+  if (状态.演示中) return false
+  if (是输入目标(事件.target)) return false
+  return 事件.key === "Delete" && 状态.有选中
+}
+
+/**
+ * FR-014（terminal review final-fix1a）：F2 与 Delete **同一作用域**——都挂在编辑器根容器
+ * 并由其独家接管（画布已不监听同一按键）。输入框 / 可编辑目标守卫与 `命中删除键` 逐字一致：
+ * 在输入框里按 F2 不触发改名。
+ *
+ * 返回要重命名的节点 id；没有「恰好一个在文档里的选中节点」⇒ `undefined`（也意味着调用方
+ * 不该 `preventDefault`）。
+ */
+export function 命中重命名键(
+  事件: KeyboardEvent,
+  状态: {
+    readonly 演示中: boolean
+    readonly 选中: readonly string[]
+    readonly 节点们: readonly { readonly id: string }[]
+  },
+): string | undefined {
+  if (状态.演示中 || 事件.key !== "F2") return undefined
+  if (是输入目标(事件.target)) return undefined
+  const 节点们 = 状态.选中.filter((id) => 状态.节点们.some((行) => 行.id === id))
+  return 节点们.length === 1 ? 节点们[0] : undefined
+}
+
+/**
  * R85：判「文档内容变了」用的规范化键。
  *
  * 服务端每次**非空**写入都会刷新 `更新于` 并推进版本（同值补丁也算一次写，`hgraph-ops.ts`
@@ -470,7 +544,25 @@ const 可重试失败 = (回: { readonly code?: string }) =>
 
 let 批次序号 = 0
 
+/**
+ * 每客户端实例的标识段（T004 fix1 / C1）：幂等键形状 `web:<图路径>:<实例段>:<序号>`。
+ *
+ * 序号只在本实例内递增；刷新 / 新标签页会从 1 重新计数。若键只有 `web:<路径>:<序号>`，
+ * 新页面第一次写的键会和上一页面第一次写的键**逐字相同**——服务端幂等表只按
+ * 「人＋项目＋归一路径＋键」查（`hgraph-ops.ts:352/358/371-374`），**不校验载荷**，
+ * 10 分钟内会把上一页面的旧结果当成重放返回；客户端又不消费 `重放`，这次的改动就被
+ * 静默吞掉（版本若恰好一致，轮询也看不出）。故每实例带一段「时间戳 + 计数 + 随机」，
+ * 让各页面实例的序号空间互不相交；同一页面内取值稳定不变。
+ */
+let 实例计数 = 0
+function 新实例标识(): string {
+  实例计数 += 1
+  return `${Date.now().toString(36)}-${实例计数.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function 编辑器(props: 编辑器Props): JSX.Element {
+  /** FR-025 / I1：画布挂载后注册的只读视口中心；未注册时退回固定画布中心。 */
+  let 读视口中心: (() => { readonly x: number; readonly y: number }) | undefined
   const [文档, set文档] = createSignal(props.初始文档)
   const [版本, set版本] = createSignal(props.初始版本)
   const [已存文档, set已存文档] = createSignal(props.初始文档)
@@ -480,6 +572,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [撤销栈, set撤销栈] = createSignal<撤销栈>(新建撤销栈())
   const [选中, set选中] = createSignal<readonly string[]>([])
   const [模式, set模式] = createSignal<模式>("指针")
+  /**
+   * 画布条宽（T013 / FR-057）：<900 图例折叠为「图例」按钮。
+   * happy-dom 没有布局 ⇒ `clientWidth` 恒 0（`#005-32`）；0 视为「还没量到」，
+   * 不据此折叠（真浏览器挂载后 ResizeObserver 会给出真宽）。
+   */
+  const [画布条宽, set画布条宽] = createSignal<number | undefined>(undefined)
+  /** 图例收起态：由画布条宽驱动，用户仍可点开/收起（受控传给 `图例`）。 */
+  const [图例收起, set图例收起] = createSignal(false)
+  let 画布条元素: HTMLDivElement | undefined
   /** 正在内联改名的节点；`undefined` = 没有输入框。 */
   const [重命名id, set重命名id] = createSignal<string | undefined>()
   /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
@@ -493,12 +594,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * 「补依据」复用同一个浮层（检查器把缺依据的事实边改成推断时走这里，不直接 `改字段`）。
    */
   const [待连线, set待连线] = createSignal<
-    | { readonly 从: string; readonly 到: string; readonly 模式: "新建" }
+    | { readonly 从: string; readonly 到: string; readonly 模式: "新建"; readonly 角色: boolean }
     | { readonly 边id: string; readonly 模式: "补依据" }
     | undefined
   >()
   const [连线依据, set连线依据] = createSignal("")
   const [连线标签, set连线标签] = createSignal("")
+  /** 事件 → 非事件的连线：角色必填（取代依据），确认时按 `角色边` 落库。 */
+  const [连线角色, set连线角色] = createSignal("")
   /** 默认「中」（brief 固定默认）；只有 UI 选择，不替构造器定默认。 */
   const [连线可信度, set连线可信度] = createSignal<"高" | "中" | "低">("中")
   /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
@@ -523,6 +626,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [文件已不存在, set文件已不存在] = createSignal(false)
   /** 重载成功提示条（R55）；一段时间后自动消失，不常驻。 */
   const [重载提示, set重载提示] = createSignal(false)
+  /** 换 id 撞车提示（T004 / FR-004）：文档已按盘上整图重载，告诉用户本地与盘上不一致。 */
+  const [不一致提示, set不一致提示] = createSignal(false)
   /** AI 改动无法整体还原时的提示（R94）；只压不写，也不压半还原的步。 */
   const [撤销提示, set撤销提示] = createSignal<string | undefined>()
   /** T014：从库加入面板（本地动作，开面板不产生写；只有「加入」才落一个批次）。 */
@@ -544,6 +649,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** T017b（R72）：性质筛选作用在边上（全部 / 事实 / 推断）。 */
   const [筛选性质, set筛选性质] = createSignal<"全部" | "事实" | "推断">("全部")
   const [筛选面板开, set筛选面板开] = createSignal(false)
+  /**
+   * T017 / FR-028：强度过滤阈值。`undefined` = 关闭；0..4 ⇒ 只显示 `边档 >= N` 的边。
+   * 只是渲染态，不进文档、不写盘；画布在同一处过滤并回传实际隐藏条数。
+   */
+  const [强度阈值, set强度阈值] = createSignal<number | undefined>()
   /** T017b（R71）：>800 节点默认关标签，这个开关强制打开。 */
   const [全部标签, set全部标签] = createSignal(false)
   /** T017b（R72）：搜索框的词与结果光标（结果顺序 = 文档顺序）。 */
@@ -555,6 +665,35 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [居中请求, set居中请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
   // 初值 `undefined`（不是 0）：挂载时不能自动适配——没有用户请求就不动视口（R70）。
   const [适配请求, set适配请求] = createSignal<number | undefined>()
+  /** T008：检查器让位请求——选中变化时递增一次；同一选中期间拖动不再递增。 */
+  const [让位请求, set让位请求] = createSignal<{ readonly id: string; readonly 序号: number } | undefined>()
+  /**
+   * T014 / FR-050：检查器收起态。`Esc` 收起、点窄条 / 按 `I` 展开；收起后选中另一个
+   * 对象仍保持收起（用户的选择），宽度由 `检查器占用宽` 换算成 40。
+   */
+  const [详情收起, set详情收起] = createSignal(false)
+  /**
+   * 检查器在屏幕上实际占用的宽度（CSS px，T008 / FR-015）：未选中 ⇒ 0（没有要让位的
+   * 对象）；展开 ⇒ 320；收起 ⇒ 40（T014 / FR-050）。画布只消费这个数、不再自己假定
+   * 面板宽度——收起后仍按 320 让位会把画面无故推走。
+   */
+  const 检查器占用宽 = () => (选中().length === 0 ? 0 : 详情收起() ? 收起宽 : 面板宽)
+  /**
+   * T008 / FR-015：选中变化 ⇒ 请画布让位一次（检查器浮在右侧，会盖住底下那一列）。
+   * 只有「单个选中 id」真的变了才递增序号——拖动改的是文档坐标、不改选中，所以后续
+   * 拖动不再跟随；文档变化触发的 id 映射（同 id 重新装数组）也不会重复请求。
+   * 是否真的被遮住由画布按自己的视口判断。
+   */
+  let 上次让位id: string | undefined
+  createEffect(() => {
+    const 当前 = 选中()
+    if (演示中()) return
+    const id = 当前.length === 1 ? 当前[0] : undefined
+    if (id === 上次让位id) return
+    上次让位id = id
+    if (id === undefined) return
+    set让位请求((旧) => ({ id, 序号: (旧?.序号 ?? 0) + 1 }))
+  })
   /** 查找路径面板（R72）：`空` = 不连通；命中时带跳数与路径。 */
   const [路径面板, set路径面板] = createSignal<路径面板内容 | undefined>()
   /**
@@ -744,6 +883,10 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    */
   let 草稿弹出: Array<{ 方向: "撤销" | "重做"; 步: 撤销步 }> = []
   let 计时: ReturnType<typeof setTimeout> | undefined
+  /**
+   * `发送` 全程持有的发送槽。失败确认（读盘 + 判定）也算在内：只有它复位之后才允许下一次
+   * 发送，这样读盘窗口内的新编辑只进 `待发`，不会另起一次写（review-fix4 串行确认）。
+   */
   let 正在发 = false
   /**
    * 文档代（R89）：每次外部重载成功 +1。`发送` 在 await 前捕获它；应答回来时若代已变，
@@ -752,6 +895,15 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   let 文档代 = 0
   /** 轮询读到、但还没应用的外部变更（询问「重新载入」时用）。 */
   let 待重载: 外部变更 | undefined
+  /**
+   * 上次**可重试失败**那次写的（载荷指纹, 幂等键）。只在「下一次发送的载荷逐字相同」
+   * 时复用键——这样重试能让服务端判重放；载荷一变就换新键，免得旧结果被重放、新改动被吞。
+   * 成功 / 不可重试失败 / 结果作废时清空：复用只对「紧接着的那次重试」成立。
+   */
+  let 上次幂等: { readonly 载荷: string; readonly 键: string } | undefined
+  /** 本实例的幂等键前缀（C1）：`web:<路径>:<实例段>`；序号只在本实例内递增。 */
+  const 幂等前缀 = `web:${props.path}:${新实例标识()}`
+  let 幂等序号 = 0
   let 轮询计时: ReturnType<typeof setInterval> | undefined
   let 提示计时: ReturnType<typeof setTimeout> | undefined
   /** 上一 tick 的 `读` 还没回来：不叠第二次（远端慢时避免并发风暴）。 */
@@ -821,6 +973,76 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
   }
 
+  /**
+   * FR-007 / contracts/hgraph-write.md §冲突与超时：超时（可重试）与 409 失败后**先读一次盘**。
+   *
+   * 盘上规范化内容 == 「已存文档 + 本批」⇒ 服务端其实已经接受了这一批（超时应答丢了 / 同键
+   * 重放的另一种形态），静默采纳：文档、版本以盘上为准，清错误与询问条。比较忽略服务端重
+   * 分配的 id 与 `更新于`，见 `same-content.ts`。
+   *
+   * 返回 `true` = 已采纳；`false` = 调用方维持既有失败流程。读失败 / 应答过期 / 内容不同
+   * 一律 `false`（宁可多问一次，也不把不同内容当成自己的写）。
+   *
+   * **串行确认（review-fix4）**：调用方在整个读盘与判定期间持有 `正在发`，所以这里不会
+   * 有「第二次发送已起飞 / 已成功」的时序；未发编辑只会攒在 `待发`。
+   * **未发编辑必须重放**：采纳 = 盘上文档为基线，把 `待发` 用位置对齐映射换成盘上 id 后
+   * 重新折上去（否则编辑丢失或留下临时 id）。撤销栈按外部重载口径清空（Ruling），但未发
+   * 编辑的逆操作草稿保留并同样重映射，使它们仍可撤销。
+   *
+   * 判定只看内容，不看版本：`版本()` 会被轮询的同值补丁推进（R85），拿它推断「后续发送
+   * 成功」会误丢保留批（review-fix3 NEW-2 / F2）。
+   */
+  const 采纳盘上结果 = async (代: number, 批: readonly 操作[], 前: 图文件): Promise<boolean> => {
+    let 读: Awaited<ReturnType<HgraphApi["读"]>>
+    try {
+      读 = await props.api.读({ projectId: props.projectId, path: props.path })
+    } catch {
+      return false
+    }
+    // 期间被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。`正在发` 由调用方
+    // 全程持有，不需要在这里复核「有没有第二次发送」。
+    if (已卸载 || 代 !== 文档代 || 文件已不存在()) return false
+    if (读.kind !== "ok") return false
+    const 解析 = 解析图(读.value.内容)
+    if (!解析.ok) return false
+    const 期望 = 批.reduce(应用本地, 前)
+    if (!同内容(解析.文档, 期望)) return false
+
+    // 采纳 = 整图重载口径（Ruling review-fix3 C1）：盘上为准，撤销栈清空；
+    // 失败批已在盘上、不再保留。未发编辑先按位置对齐换成盘上 id，再折到盘上文档之上。
+    const 映射 = 对齐映射(期望, 解析.文档)
+    待发 = 待发.map((操作) => 换操作id(操作, 映射))
+    草稿逆操作 = 草稿逆操作.map((操作) => 换操作id(操作, 映射))
+    // 撤销栈既然清空，待发批里弹出的撤销/重做步与「仅撤销重做」标记都失去宿主（它们的 id
+    // 也属于旧文档）；未发编辑按普通新批次处理。
+    草稿弹出 = []
+    草稿仅撤销重做 = false
+    草稿含合并撤销 = false
+    文档代 += 1
+    clearTimeout(计时)
+    待重载 = undefined
+    上次幂等 = undefined
+    set文档(待发.reduce(应用本地, 解析.文档))
+    set已存文档(解析.文档)
+    set版本(读.value.版本)
+    set状态(待发.length > 0 ? "待发" : "已存")
+    set错误(undefined)
+    set最新版本(undefined)
+    set可重试(false)
+    set询问重载(false)
+    set撤销栈(清空(撤销栈()))
+    set选中([])
+    set重命名id(undefined)
+    set待确认布局(false)
+    set布局模式(undefined)
+    set待确认合并(undefined)
+    set合并保留(undefined)
+    set收起菜单((旧) => 旧 + 1)
+    // 只有未发编辑才需要再发一次（用户的新改动，不是自动重试）。
+    if (待发.length > 0) 排发()
+    return true
+  }
+
   /** 409 之后把盘上最新取回来填「待重载」，让现有「重新载入」按钮可用（R113 §2）。 */
   const 取回最新版本 = async (代: number) => {
     try {
@@ -833,6 +1055,56 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     } catch {
       // `读` 失败什么都不做：下一轮询 tick 会自行问 / 静默重载（R113 §2）。
     }
+  }
+
+  /**
+   * 应答 `映射` 撞 id 的收口（T004 / FR-004）：这份应答不落地、读盘整图重载、提示用户。
+   *
+   * 同步先摘掉飞行中新增的待发——整图重载会丢弃它们（与 `执行重载` 同一口径），也避免
+   * `发送` 末尾再排一次发。**不在这里置「已存」**：本地此刻仍是带临时 id 的乐观文档、
+   * 版本也没推进，读盘成功之前说「已保存」就是撒谎（I1 / M2）。
+   *
+   * 读 / 解析失败 ⇒ 状态回到「待发」并给可操作提示（不一致文案）；文档没被撞车映射污染，
+   * 下一轮询发现版本不同会自行静默重载，用户也可据提示手动重载。
+   */
+  const 收口撞车id = (代: number) => {
+    clearTimeout(计时)
+    待发 = []
+    草稿逆操作 = []
+    草稿副本 = []
+    草稿仅撤销重做 = false
+    草稿弹出 = []
+    草稿含合并撤销 = false
+    set可重试(false)
+    void (async () => {
+      let 变更: 外部变更 | undefined
+      try {
+        const 读 = await props.api.读({ projectId: props.projectId, path: props.path })
+        // 解析失败不算成功：拿版本换掉待重载却保留旧文档，就等于把不一致藏起来。
+        if (读.kind === "ok") {
+          const 解析 = 解析图(读.value.内容)
+          if (解析.ok) 变更 = { 版本: 读.value.版本, 文档: 解析.文档 }
+        }
+      } catch {
+        // 读失败：落到下面的「不装作已存」分支。
+      }
+      // 过期（R89 代际 / `#005-03` 卸载 / 终态）⇒ 整段作废，状态由各自的分支收口。
+      if (已卸载 || 代 !== 文档代 || 文件已不存在()) return
+      // m-1：演示期间不换文档、也不弹提示（演示不该被打断）。本地与盘上仍不一致，
+      // 别把状态留在「发送中」；退出演示后下一轮询会自行收敛。
+      if (演示中()) {
+        set状态("待发")
+        return
+      }
+      if (变更 !== undefined) {
+        执行重载(变更)
+      } else {
+        // I1 / M2：读或解析失败 ⇒ 不当成功。本地文档与服务端不一致、版本未推进。
+        set状态("待发")
+        set错误("图和你本地不一致，请重新载入")
+      }
+      弹不一致提示()
+    })()
   }
 
   const 发送 = async () => {
@@ -852,6 +1124,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     草稿弹出 = []
     草稿含合并撤销 = false
     const 批次 = `批-${++批次序号}`
+    // 发送时的版本快照：只作为请求体的 CAS 基线与幂等载荷，**不**用于推断「后续发送是否成功」
+    // （版本会被轮询的同值补丁推进，review-fix3 F2）。
+    const 发送版本 = 版本()
+    // 幂等键（T004）：载荷指纹 = 请求体里会变的两个字段（版本 + 操作序列）；`批次` 每次
+    // 自增、不能参与指纹。与上次**失败**载荷逐字相同 ⇒ 复用旧键（服务端判重放，不推进版本）。
+    // 键带本实例的标识段（C1）：刷新后序号从 1 重来，也不与上一页面的键相撞。
+    const 载荷 = JSON.stringify([发送版本 ?? null, 批])
+    const 幂等键 = 上次幂等?.载荷 === 载荷 ? 上次幂等.键 : `${幂等前缀}:${++幂等序号}`
     // 发送时快照 = 已存基线 + 本批；它才是「服务端接受这一批之后」的文档。
     // 不能用 `文档()` 的**将来值**当基线：请求飞行中用户可能又改了（B-1 的两个方向）。
     const 快照 = 文档()
@@ -864,16 +1144,20 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 回 = await props.api.写({
       projectId: props.projectId,
       path: props.path,
-      版本: 版本(),
+      版本: 发送版本,
       操作: 批,
       批次,
+      幂等键,
     })
-    正在发 = false
 
+    // 串行确认（review-fix4）：从这里到每条出口都持有 `正在发` —— 失败确认的读盘与判定
+    // 也在其中，读盘窗口内的编辑只进 `待发`，第二次发送不可能起飞。
     // R89：await 期间文档被外部重载替换过 ⇒ 这批应答相对旧文档，文档/版本/栈/选中映射
     // 一律不落地（成功失败都一样）。只续上重载后新产生的待发，状态以当前文档为准。
     if (代 !== 文档代) {
+      正在发 = false
       // 这批应答跟着旧文档一起作废：之前的「可重试」保留批也已被重载丢弃。
+      上次幂等 = undefined
       set可重试(false)
       if (状态() === "发送中") set状态(待发.length > 0 ? "待发" : "已存")
       if (待发.length > 0) 排发()
@@ -881,8 +1165,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
 
     if (回.kind === "ok") {
+      正在发 = false
+      上次幂等 = undefined
       const 映射 = 回.value.结果.映射
       const 基 = 换id(快照, 映射)
+      // T004 / FR-004：映射撞 id ⇒ 这份应答**一个字节都不落地**（否则文档里出现重复 id，
+      // 之后所有按 id 找对象的地方都会二选一）。改走整图重载并提示。
+      if (有重复id(基)) {
+        收口撞车id(代)
+        return
+      }
       // 飞行中新增的待发操作：临时 id 换成正式 id，再折到新基线之上（不丢用户改动）。
       待发 = 待发.map((操作) => 换操作id(操作, 映射))
       // 飞行中新增操作的逆操作草稿引用本批临时 id 时也要一起换，否则下一批撤销打到旧 id。
@@ -921,6 +1213,13 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 还有没发出去的改动就不算「已保存」。
       set状态(待发.length > 0 ? "待发" : "已存")
     } else if (可重试失败(回)) {
+      // FR-007：先读盘。盘上已是「已存 + 本批」（超时应答丢了 / 服务端已写成功）⇒ 静默采纳
+      // （未发编辑在采纳里重映射并重放）。读盘与判定期间 `正在发` 仍为 true。
+      if (await 采纳盘上结果(代, 批, 前)) {
+        正在发 = false
+        return
+      }
+      正在发 = false
       // R113 §1（FR-049）：可重试失败**保留改动**——文档 / 已存文档 / 版本都不回滚，
       // 整批放回待发**头部**（失败批在前，飞行中那批在后），草稿与弹出步一并向后接。
       // 顺序与 `应用` 同一口径：草稿是「后做的在前」，所以更早的批接在草稿**尾部**。
@@ -932,6 +1231,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 空草稿不是一次新操作：与 `应用` 里 `待发.length === 0 ? …` 同一判定。
       草稿仅撤销重做 = 仅撤销重做 && (保留前待发为空 || 草稿仅撤销重做)
       草稿含合并撤销 = 批含合并撤销 || 草稿含合并撤销
+      // 只有可重试失败才留键：用户点「重试」时载荷若逐字相同，服务端应判重放。
+      上次幂等 = { 载荷, 键: 幂等键 }
       set错误("没存上")
       // 「最新版本」只属于 409：非 409 的失败不能把它留着（与改动前的分支口径一致）。
       set最新版本(undefined)
@@ -943,6 +1244,14 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       return
     } else {
       // 非可重试失败：回滚到服务端已接受态；飞行中新增、从未发出的待发重折回来。
+      上次幂等 = undefined
+      // FR-007：409 也先读盘；盘上内容与本批相同 ⇒ 静默采纳（未发编辑同样重映射重放），
+      // 不提示「被改过」。读盘与判定期间 `正在发` 仍为 true。
+      if (回.code === "VERSION_CONFLICT" && (await 采纳盘上结果(代, 批, 前))) {
+        正在发 = false
+        return
+      }
+      正在发 = false
       回滚失败批({ 前, 快照id们, 批弹出 })
       set可重试(false)
       if (回.code === "VERSION_CONFLICT") {
@@ -980,10 +1289,24 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   /** 重载成功提示（R55）：文案逐字；5 秒后自动消失，不常驻。 */
   const 弹重载提示 = () => {
+    set不一致提示(false)
     set重载提示(true)
     clearTimeout(提示计时)
     提示计时 = setTimeout(() => {
       if (!已卸载) set重载提示(false)
+    }, 5000)
+  }
+
+  /**
+   * 换 id 撞车提示（T004 / FR-004）：与「图已重新载入」互斥——同一时刻只让用户看到一句，
+   * 且这一句要说清「本地与盘上不一致，请重新载入」（整图重载已自动做过一次）。
+   */
+  const 弹不一致提示 = () => {
+    set重载提示(false)
+    set不一致提示(true)
+    clearTimeout(提示计时)
+    提示计时 = setTimeout(() => {
+      if (!已卸载) set不一致提示(false)
     }, 5000)
   }
 
@@ -1057,7 +1380,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
    * 一个轮询 tick（R54）：只读 `api.读`，按 `版本`（内容哈希）发现变化。
    *
    * - `读` 失败 ⇒ 静默跳过本 tick（不弹错、不动文档 / 栈），下一 tick 再试；
-   * - 版本变但规范化内容相同 ⇒ 只推进版本（R85：服务端同值补丁也会推进版本）；
+   * - 版本变但盘上内容仍是**已存基线** ⇒ 只推进版本（R85：服务端同值补丁也会推进版本；
+   *   不拿乐观文档比，见下方 same-content 分支的注释）；
    * - 有本地未发改动（飞行中 / 待发 / 发送中）或新内容解析失败 ⇒ 只问不重载；
    * - 否则静默重载。
    */
@@ -1083,8 +1407,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         return
       }
       const 解析 = 解析图(回.value.内容)
-      if (解析.ok && 内容键(解析.文档) === 内容键(文档())) {
-        // R85：版本推进了，但用户可见内容没变 ⇒ 不掉栈、不提示、不触发回调。
+      if (解析.ok && 内容键(解析.文档) === 内容键(已存文档())) {
+        // R85：版本推进了，但盘上内容仍是我们的**已存基线**（含服务端同值补丁）⇒ 只推进
+        // 版本，不掉栈、不提示、不触发回调。
+        // 不能拿 `文档()`（乐观文档 = 已存 + 未发批）比：那等于把「本批已落盘」当成真，
+        // 接着推进版本却不采纳、不清待发，重试会换幂等键把同一批再写一遍（review-fix5
+        // NEW-1）。有未发批时落到下面的询问分支，由 `采纳盘上结果` 唯一收口（`#002-06`）。
         set版本(新版本)
         待重载 = undefined
         set询问重载(false)
@@ -1104,6 +1432,22 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
   onMount(() => {
     轮询计时 = setInterval(() => void 轮询(), props.轮询毫秒 ?? 10_000)
+  })
+
+  // T013 / FR-057：量画布条宽，<900 时图例折叠。只在宽度变化时改折叠态，
+  // 用户手动点开/收起不会在每次渲染时被打回。
+  onMount(() => {
+    if (画布条元素 === undefined) return
+    const 测量 = () => set画布条宽(画布条元素!.clientWidth)
+    测量()
+    if (typeof ResizeObserver === "undefined") return
+    const 观察 = new ResizeObserver(测量)
+    观察.observe(画布条元素)
+    onCleanup(() => 观察.disconnect())
+  })
+  createEffect(() => {
+    const 应折叠 = 图例应折叠(画布条宽())
+    if (应折叠 !== undefined) set图例收起(应折叠)
   })
 
   const 重新载入 = () => {
@@ -1496,20 +1840,35 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     void 退出全屏(舞台)
   })
 
+  /** 本次连线是否走角色边（事件 → 非事件）；其余情况仍是手画边。 */
+  const 角色连线 = () => {
+    const 值 = 待连线()
+    return 值?.模式 === "新建" && 值.角色
+  }
+
+  /** 确认按钮的可用判据：角色连线要求角色非空，其余要求依据非空（同一 `可连线` 口径）。 */
+  const 连线可确认 = () => (角色连线() ? 可连线(连线角色()) : 可连线(连线依据()))
+
   /** 收起连线浮层并清空草稿（确认/取消/Esc 共用同一个复位）。 */
   const 关连线 = () => {
     set待连线(undefined)
     set连线依据("")
     set连线标签("")
+    set连线角色("")
     set连线可信度("中")
   }
 
   /** 画布连线拖拽落下：只开浮层，**不写盘**（R-F1）。 */
   const 开新建连线 = (从: string, 到: string) => {
+    const 起点 = 文档().节点.find((点) => 点.id === 从)
+    const 终点 = 文档().节点.find((点) => 点.id === 到)
+    // FR-027：事件 → 非事件参与方收「角色」并落角色边；事件→事件、实体→实体仍是手画边。
+    const 是角色 = 是角色边方向(起点, 终点)
     set连线依据("")
     set连线标签("")
+    set连线角色("")
     set连线可信度("中")
-    set待连线({ 从, 到, 模式: "新建" })
+    set待连线({ 从, 到, 模式: "新建", 角色: 是角色 })
   }
 
   /** 检查器「事实 → 推断」缺依据：复用同一个浮层收必填项，不直接发 `改字段`。 */
@@ -1517,20 +1876,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     const 条 = 文档().边.find((行) => 行.id === 边id)
     set连线依据(条?.来源?.依据 ?? "")
     set连线标签("")
+    set连线角色("")
     set连线可信度(条?.可信度 ?? "中")
     set待连线({ 边id, 模式: "补依据" })
   }
 
   /**
-   * 连线浮层确认：新建 ⇒ 一条 `加边`（`手画边` 的固定规则只在 `edge.ts` 一份，`#002-06`）；
-   * 补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
+   * 连线浮层确认：新建角色边 ⇒ `角色边`（依据固定话术，不收用户依据）；
+   * 新建普通边 ⇒ `手画边`；补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
    */
   const 确认连线 = () => {
     const 值 = 待连线()
     if (值 === undefined) return
+    const 可信度 = 连线可信度()
+    if (值.模式 === "新建" && 值.角色) {
+      const 角色 = 连线角色().trim()
+      if (!可连线(角色)) return
+      const 起点 = 文档().节点.find((点) => 点.id === 值.从)
+      if (起点 === undefined) {
+        关连线()
+        return
+      }
+      应用([{ 操作: "加边", 边: [{ ...角色边(起点, 值.到, 角色, 可信度) }] }])
+      关连线()
+      return
+    }
     const 依据 = 连线依据()
     if (!可连线(依据)) return
-    const 可信度 = 连线可信度()
     if (值.模式 === "新建") {
       // `操作.边` 的元素类型是 `Record<string, unknown>`；`边` 是接口（无隐式索引签名），
       // 展开成对象字面量再交出去，不改协议类型（#002-06：规则仍在 edge.ts 一份）。
@@ -1564,13 +1936,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     return `${值.从} ${名(值.从)} → ${值.到} ${名(值.到)}`
   }
 
+  /** 加文字的唯一落批点：工具栏「加文字」与右键/双击等入口共用。 */
+  const 应用加文字 = (x: number, y: number) =>
+    应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }])
+
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
     加边: (从, 到) => 开新建连线(从, 到),
     补依据: (边id) => 开补依据(边id),
-    加文字: (x, y) =>
-      应用([{ 操作: "加文字", 文字: [{ id: 临时id("t"), 内容: "文字", x, y, 字号: "中" }] }]),
+    加文字: 应用加文字,
+    // T013：模式条搬进工具栏后，落点按画布尺寸算（与旧画布内按钮同一公式）。
+    加文字在中心: () => 应用加文字(画布宽 / 2, 画布高 / 2 + 文档().文字.length * 28),
     加节点: (位置) => {
       // R29：UI 发起的加节点必须自带坐标（工具栏 = 画布中心阶梯偏移；右键/双击 = 点处）。
       // 阶梯公式与选择器共用一个出处（`阶梯位置`，#002-06）。
@@ -1582,7 +1959,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           节点: [
             {
               id,
-              名称: "新节点",
+              名称: 下一个默认名(文档()),
               类型: "未分类",
               来源: { kind: "手写" },
               时间: { 首: "", 末: "" },
@@ -1595,9 +1972,66 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 新节点立刻选中：加完就能 F2 改名 / 继续拖。
       set选中([id])
     },
+    /**
+     * T012 / FR-025：手写事件两入口共用这一条。落点与 `加节点` 同源（R29）——
+     * 工具栏省略位置 = 当前视口中心，右键空白传右键点；**一个** `加节点` 批次，
+     * 一次撤销撤整批。时间给当前时刻（T009 的必填闸要求事件有时间，新建时不许空着）；
+     * 名称给兜底占位，类型沿用加节点的「未分类」。不切模式、不另加文字块。
+     */
+    加事件: (位置) => {
+      // FR-025 / I1：工具栏省略位置 ⇒ 当前视口中心（画布注册的只读闭包）；
+      // 画布还没挂载（理论上不会）时退回固定画布中心，**不再**用 `阶梯位置` 的内容坐标。
+      const 位 = 位置 ?? 读视口中心?.() ?? { x: 画布宽 / 2, y: 画布高 / 2 }
+      const id = 临时id("n")
+      const 时间 = 时间文本(Date.now() / 1000)
+      应用([
+        {
+          操作: "加节点",
+          节点: [
+            {
+              id,
+              名称: "新事件",
+              类型: "未分类",
+              来源: { kind: "手写" },
+              属性: [{ 键: "时间精度", 值: "分" }],
+              时间: { 首: 时间, 末: 时间 },
+              x: Math.round(位.x),
+              y: Math.round(位.y),
+            },
+          ],
+        },
+      ])
+      // 与新节点一致：加完立刻选中，面板可直接填九格。
+      set选中([id])
+    },
     // T014：选择器只是编辑器内的覆盖面板，加入时走 `应用` 一条 `加节点`（一次撤销）。
     从库加入: () => 打开选择器(),
-    改字段: (类别, id, 补丁) => 应用([{ 操作: "改字段", 目标: [{ 类别, id, 补丁 }] }]),
+    改字段: (类别, id, 补丁) => {
+      type 目标 = { readonly 类别: "节点" | "边" | "文字"; readonly id: string; readonly 补丁: Record<string, unknown> }
+      const 目标们: 目标[] = [{ 类别, id, 补丁 }]
+      // FR-027 / final-fix1b I2：手写事件改名 ⇒ 同一批次重写出发角色边的固定依据，
+      // 否则依据与新名称不符，`边线型` 会把实线静默降级成虚线。判据用 `是角色边`。
+      if (类别 === "节点" && typeof 补丁.名称 === "string") {
+        const 点 = 文档().节点.find((行) => 行.id === id)
+        if (
+          点 !== undefined &&
+          是事件节点(点) &&
+          点.来源?.kind === "手写" &&
+          补丁.名称 !== (点.名称 ?? "")
+        ) {
+          const 改名后 = { ...点, 名称: 补丁.名称 }
+          for (const 条 of 文档().边) {
+            if (条.从 !== id) continue
+            const 终点 = 文档().节点.find((行) => 行.id === 条.到)
+            if (!是角色边(条, 点, 终点)) continue
+            const 依据 = 角色边依据(改名后, 条.标签)
+            if (依据 === (条.来源?.依据 ?? "")) continue
+            目标们.push({ 类别: "边", id: 条.id, 补丁: { 来源: { ...条.来源, 依据 } } })
+          }
+        }
+      }
+      应用([{ 操作: "改字段", 目标: 目标们 }])
+    },
     删对象: (目标) => 应用([{ 操作: "删对象", 目标: [...目标] }]),
     删除所选: () => {
       // 选中 id 到类别的翻译只在这里做一次（工具栏/快捷键/菜单都只调 `删除所选`）。
@@ -1660,6 +2094,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     查找路径: 执行查找路径,
     适配全部: () => set适配请求((旧) => (旧 ?? 0) + 1),
     显示全部标签切换: () => set全部标签((旧) => !旧),
+    // FR-045：工具栏「强度过滤」只负责把筛选面板打开；阈值仍由画布条控件持有。
+    强度过滤: () => set筛选面板开(true),
   }
 
   const 状态文案 = () => {
@@ -1671,13 +2107,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 合并确认条当前保留者的名称（文案与下拉共用同一处取名）。 */
   const 合并保留名称 = () => 文档().节点.find((点) => 点.id === 合并保留())?.名称 ?? ""
 
+  const 在浮层内 = (目标: EventTarget | null, 选择器: string) =>
+    目标 instanceof Element && 目标.closest(选择器) !== null
+
   /**
-   * 菜单「点外面就关」：指针与键盘两条路径共用这一份判定。
-   * 菜单内部的点击由菜单项自己收尾（跳过，避免双收）。
+   * 菜单 / 浮层「点外面就关」：指针与键盘两条路径共用这一份判定。
+   * 浮层内部的点击由浮层自己收尾（跳过，避免双收）。
+   *
+   * FR-042（terminal review final-fix1a）：筛选面板与「从库加入」都在这里收口——它们的
+   * 开关按钮**不算外部**，否则 `pointerdown` 先关、紧接着的 `click` 又打开，再点一次
+   * 就永远收不起来。
    */
   const 收起菜单事件 = (事件: PointerEvent | MouseEvent) => {
     const 目标 = 事件.target
-    if (目标 instanceof Element && 目标.closest("[data-slot='hgraph-menu']") !== null) return
+    if (在浮层内(目标, "[data-slot='hgraph-menu']")) return
+    // 浮层的「点外部关闭」只认 `pointerdown`：真实点击必先有 pointerdown，而键盘激活
+    // （Enter/空格）只派发 click——若这也算外部，开启浮层的那颗按钮会在同一次激活里
+    // 先开（子监听）再被根容器关掉。菜单仍走 pointerdown + click 两条（T010 R33）。
+    if (事件.type === "pointerdown") {
+      if (筛选面板开() && !在浮层内(目标, "[data-slot='hgraph-filter-panel'], [data-slot='hgraph-filter-toggle']")) {
+        set筛选面板开(false)
+      }
+      if (选择器开() && !在浮层内(目标, "[data-slot='hgraph-entity-picker']")) {
+        set选择器开(false)
+        // 收起即放弃绑定：下次打开必须回到「加入」模式（与选择器自己的 onClose 同口径）。
+        set绑定目标(undefined)
+      }
+    }
     set收起菜单((旧) => 旧 + 1)
   }
 
@@ -1693,86 +2149,58 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // `pointerdown`，只挂上面那条收不到 ⇒ 过期菜单留着，再点菜单项会作用到已换过的选中。
       // 同一判定再走一遍 click 路径。
       onClick={收起菜单事件}
+      // T005：Delete 由本容器独家接管（画布已不处理）。焦点在工具栏按钮 / 检查器上时
+      // 画布容器的 keydown 收不到；输入守卫与演示静默共用 `命中删除键` 一份判据。
+      onKeyDown={(事件) => {
+        if (命中删除键(事件, { 演示中: 演示中(), 有选中: 选中().length > 0 })) {
+          事件.preventDefault()
+          动作.删除所选()
+          return
+        }
+        // T014 / FR-050：`I` 展开、「Esc」先取消选中再收起。同样收口在根容器——
+        // 焦点在工具栏 / 检查器时画布的 keydown 收不到。
+        //
+        // 已被下游处理过的键不再处理：演示态的 Esc 会同步退出演示（`演示中()` 到这里
+        // 已经是 false），若再按编辑态规则取消选中，就会把演示前的选中一并清掉。
+        if (演示中() || 事件.defaultPrevented) return
+        // FR-042：浮层（筛选 / 从库加入）Esc 关闭。**排在输入框守卫之前**——焦点在面板
+        // 自己的 checkbox/select 上时也要能关；关掉即返回，不再落到「取消选中」分支。
+        if (事件.key === "Escape" && (筛选面板开() || 选择器开())) {
+          事件.preventDefault()
+          if (筛选面板开()) set筛选面板开(false)
+          if (选择器开()) {
+            set选择器开(false)
+            set绑定目标(undefined)
+          }
+          return
+        }
+        // FR-014：F2 与 Delete 同一作用域——根容器独家接管，画布已不处理；输入框守卫
+        // 与 `命中删除键` 同一条判据（`命中重命名键`）。
+        const 重命名谁 = 命中重命名键(事件, { 演示中: 演示中(), 选中: 选中(), 节点们: 文档().节点 })
+        if (重命名谁 !== undefined) {
+          事件.preventDefault()
+          动作.重命名(重命名谁)
+          return
+        }
+        if (是输入目标(事件.target)) return
+        if ((事件.key === "i" || 事件.key === "I") && !事件.ctrlKey && !事件.metaKey && !事件.altKey) {
+          if (选中().length === 0) return
+          事件.preventDefault()
+          set详情收起(false)
+          return
+        }
+        if (事件.key === "Escape") {
+          事件.preventDefault()
+          if (选中().length > 0) 动作.选择([], false)
+          set详情收起(true)
+        }
+      }}
     >
       {/* 演示态收起全部 chrome（条件渲染，不是 display:none）。 */}
       <Show when={!演示中()}>
-        <div data-slot="hgraph-editor-bar" class="flex shrink-0 items-center gap-2 px-2 py-1">
-        {/*
-          T017b（R72）：搜索框在编辑器左上。名称子串、大小写不敏感，结果顺序 = 文档顺序；
-          Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
-        */}
-        {/* `data-center-seq` 是验收 #13「一次 Enter 只推进一次序号」的可观测口径。 */}
-        <div data-slot="hgraph-search-wrap" data-center-seq={居中请求()?.序号 ?? 0} class="relative">
-          <input
-            data-slot="hgraph-search"
-            aria-label="搜索节点"
-            placeholder="搜索节点…"
-            class="w-40 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
-            value={搜索词()}
-            onInput={(事件) => {
-              set搜索词(事件.currentTarget.value)
-              set搜索光标(0)
-              set搜索收起(false)
-            }}
-            onKeyDown={(事件) => {
-              if (事件.key === "Enter") {
-                事件.preventDefault()
-                const 目标 = 搜索结果()[当前光标()]
-                if (目标 !== undefined) 选中搜索结果(目标.id)
-                return
-              }
-              if (事件.key === "ArrowDown") {
-                事件.preventDefault()
-                set搜索光标(Math.min(搜索结果().length - 1, 当前光标() + 1))
-                return
-              }
-              if (事件.key === "ArrowUp") {
-                事件.preventDefault()
-                set搜索光标(Math.max(0, 当前光标() - 1))
-              }
-            }}
-          />
-          <Show when={搜索词().trim() !== "" && !搜索收起()}>
-            <div
-              data-slot="hgraph-search-results"
-              class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
-            >
-              <Show
-                when={搜索结果().length > 0}
-                fallback={
-                  <p data-slot="hgraph-search-empty" class="px-2 py-1 text-12-regular text-v2-text-text-muted">
-                    没有匹配的节点
-                  </p>
-                }
-              >
-                <For each={搜索结果()}>
-                  {(点, 序) => (
-                    <button
-                      type="button"
-                      data-slot="hgraph-search-result"
-                      data-active={序() === 当前光标() ? "true" : undefined}
-                      class="block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
-                      onClick={() => 选中搜索结果(点.id)}
-                    >
-                      {点.名称 ?? 点.id}
-                    </button>
-                  )}
-                </For>
-              </Show>
-            </div>
-          </Show>
-        </div>
-        <button
-          type="button"
-          data-slot="hgraph-filter-toggle"
-          aria-label="筛选"
-          aria-pressed={筛选面板开() ? "true" : "false"}
-          title="按类型 / 性质筛选"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
-          onClick={() => set筛选面板开((旧) => !旧)}
-        >
-          筛选
-        </button>
+        {/* FR-043：顶栏显式 34px。重试与导出回执是「已保存」状态的附属件，不另起一行。 */}
+        <div data-slot="hgraph-editor-bar" class="flex h-[34px] shrink-0 items-center gap-2 px-2">
+        {/* T013 / FR-043：搜索 / 筛选 / 计数已迁到画布条；顶栏只留撤销 / 重做 / 已保存。 */}
         <button
           type="button"
           data-slot="hgraph-undo"
@@ -1795,9 +2223,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         >
           重做
         </button>
-        <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
-          节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
-        </p>
         <span
           data-slot="hgraph-save-status"
           data-state={状态()}
@@ -1877,6 +2302,17 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </p>
       </Show>
 
+      {/* T004 / FR-004：换 id 撞车 ⇒ 已按盘上整图重载，说明为什么本地被换掉。 */}
+      <Show when={不一致提示()}>
+        <p
+          data-slot="hgraph-inconsistent-notice"
+          role="status"
+          class="shrink-0 border-t border-v2-border-border-muted px-2 py-1 text-12-regular text-v2-text-text-muted"
+        >
+          图和你本地不一致，请重新载入
+        </p>
+      </Show>
+
       {/* R94：AI 改动里有 diff 覆盖不了的部分 ⇒ 未压栈，明确告诉用户不可整批撤销。 */}
       <Show when={撤销提示()}>
         <p
@@ -1892,9 +2328,118 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         选中={选中()}
         文档={文档()}
         动作表={动作}
+        模式={模式()}
         标签开={标签开()}
         隔离中={隔离集() !== undefined}
       />
+
+      {/*
+        T013 / FR-043：第三行——画布条。搜索 / 筛选 / 节点·边·文字计数 / 图例都在这里。
+        图例不再压画布：条宽 <900 折叠为「图例」按钮，点开为画布条下方浮层（FR-057）。
+      */}
+      <div
+        ref={(元素) => (画布条元素 = 元素)}
+        data-slot="hgraph-canvas-bar"
+        data-legend-collapsed={图例收起() ? "true" : undefined}
+        class="relative flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
+      >
+        {/*
+          T017b（R72）：搜索框在画布条左端。名称子串、大小写不敏感，结果顺序 = 文档顺序；
+          Enter 选中并请求画布居中（R70），↑/↓ 移动光标，全程零写。
+        */}
+        {/* `data-center-seq` 是验收 #13「一次 Enter 只推进一次序号」的可观测口径。 */}
+        <div data-slot="hgraph-search-wrap" data-center-seq={居中请求()?.序号 ?? 0} class="relative">
+          <input
+            data-slot="hgraph-search"
+            aria-label="搜索节点"
+            placeholder="搜索节点…"
+            class="w-40 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+            value={搜索词()}
+            onInput={(事件) => {
+              set搜索词(事件.currentTarget.value)
+              set搜索光标(0)
+              set搜索收起(false)
+            }}
+            onKeyDown={(事件) => {
+              if (事件.key === "Enter") {
+                事件.preventDefault()
+                const 目标 = 搜索结果()[当前光标()]
+                if (目标 !== undefined) 选中搜索结果(目标.id)
+                return
+              }
+              if (事件.key === "ArrowDown") {
+                事件.preventDefault()
+                set搜索光标(Math.min(搜索结果().length - 1, 当前光标() + 1))
+                return
+              }
+              if (事件.key === "ArrowUp") {
+                事件.preventDefault()
+                set搜索光标(Math.max(0, 当前光标() - 1))
+              }
+            }}
+          />
+          <Show when={搜索词().trim() !== "" && !搜索收起()}>
+            <div
+              data-slot="hgraph-search-results"
+              class="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-40 overflow-y-auto rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 p-1 shadow"
+            >
+              <Show
+                when={搜索结果().length > 0}
+                fallback={
+                  <p data-slot="hgraph-search-empty" class="px-2 py-1 text-12-regular text-v2-text-text-muted">
+                    没有匹配的节点
+                  </p>
+                }
+              >
+                <For each={搜索结果()}>
+                  {(点, 序) => (
+                    <button
+                      type="button"
+                      data-slot="hgraph-search-result"
+                      data-active={序() === 当前光标() ? "true" : undefined}
+                      class="block w-full rounded px-2 py-1 text-left text-12-regular text-v2-text-text-base hover:bg-v2-background-bg-layer-03"
+                      onClick={() => 选中搜索结果(点.id)}
+                    >
+                      {点.名称 ?? 点.id}
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
+          </Show>
+        </div>
+        <button
+          type="button"
+          data-slot="hgraph-filter-toggle"
+          aria-label="筛选"
+          aria-pressed={筛选面板开() ? "true" : "false"}
+          title="按类型 / 性质 / 强度筛选"
+          class="inline-flex items-center gap-1 rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base"
+          onClick={() => set筛选面板开((旧) => !旧)}
+        >
+          <Icon name="magnifying-glass" size="small" />
+          筛选
+        </button>
+        <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
+          节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
+        </p>
+        <div class="ml-auto flex items-center">
+          <svg
+            data-slot="hgraph-canvas-bar-legend"
+            aria-label="图例"
+            viewBox={
+              图例收起()
+                ? `0 0 ${图例收起宽} ${图例收起高}`
+                : `0 0 ${图例宽} ${图例高}`
+            }
+            width={图例收起() ? 图例收起宽 : 图例宽}
+            height={图例收起() ? 图例收起高 : 图例高}
+            class={图例收起() ? "block" : "absolute right-2 top-full z-20 block"}
+          >
+            <图例 收起={图例收起()} 收起变化={(值) => set图例收起(值)} 外置 />
+          </svg>
+        </div>
+      </div>
 
       {/*
         T017b（R71 / §5.10）：>300 提示拆图；>1000 只提示性能风险，**不拦、不截断**。
@@ -1917,59 +2462,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         >
           节点超过 1000 个：拖动和缩放可能变慢，不会拦截或截断内容
         </p>
-      </Show>
-
-      {/* T017b（R72）：筛选面板——类型（文档里出现过的）＋ 性质（全部/事实/推断）。度量筛选待 T018。 */}
-      <Show when={筛选面板开()}>
-        <div
-          data-slot="hgraph-filter-panel"
-          role="dialog"
-          aria-label="筛选"
-          class="flex shrink-0 flex-wrap items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
-        >
-          <span class="text-12-regular text-v2-text-text-muted">类型</span>
-          <For each={类型们()}>
-            {(类) => (
-              <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
-                <input
-                  type="checkbox"
-                  data-slot="hgraph-filter-type"
-                  value={类}
-                  checked={筛选类型().has(类)}
-                  onChange={(事件) => 切换筛选类型(类, 事件.currentTarget.checked)}
-                />
-                {类}
-              </label>
-            )}
-          </For>
-          <label class="text-12-regular text-v2-text-text-muted">
-            性质
-            <select
-              data-slot="hgraph-filter-kind"
-              class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={筛选性质()}
-              onChange={(事件) => {
-                const 值 = 事件.currentTarget.value
-                if (值 === "全部" || 值 === "事实" || 值 === "推断") set筛选性质(值)
-              }}
-            >
-              <option value="全部">全部</option>
-              <option value="事实">事实</option>
-              <option value="推断">推断</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            data-slot="hgraph-filter-clear"
-            class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
-            onClick={() => {
-              set筛选类型(new Set<string>())
-              set筛选性质("全部")
-            }}
-          >
-            清除筛选
-          </button>
-        </div>
       </Show>
 
       {/* T017b（R72）：查找路径面板——命中列跳数与途经名称；不连通只说明，不改选中。 */}
@@ -2132,7 +2624,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           <span data-slot="hgraph-connect-title" class="text-12-regular text-v2-text-text-muted">
             {连线标题()}
           </span>
-          <Show when={待连线()?.模式 === "新建"}>
+          <Show when={待连线()?.模式 === "新建" && !角色连线()}>
             <input
               data-slot="hgraph-connect-label"
               aria-label="连线标签"
@@ -2142,19 +2634,37 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               onInput={(事件) => set连线标签(事件.currentTarget.value)}
             />
           </Show>
-          <input
-            data-slot="hgraph-connect-basis"
-            aria-label="连线依据"
-            placeholder="依据（必填）"
-            class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-            value={连线依据()}
-            onInput={(事件) => set连线依据(事件.currentTarget.value)}
-            onKeyDown={(事件) => {
-              if (事件.key !== "Escape") return
-              事件.preventDefault()
-              关连线()
-            }}
-          />
+          {/* FR-027：事件 → 参与方收「角色」必填；依据由 `角色边` 按固定话术生成。 */}
+          <Show when={角色连线()}>
+            <input
+              data-slot="hgraph-connect-role"
+              aria-label="角色"
+              placeholder="收款方"
+              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={连线角色()}
+              onInput={(事件) => set连线角色(事件.currentTarget.value)}
+              onKeyDown={(事件) => {
+                if (事件.key !== "Escape") return
+                事件.preventDefault()
+                关连线()
+              }}
+            />
+          </Show>
+          <Show when={!角色连线()}>
+            <input
+              data-slot="hgraph-connect-basis"
+              aria-label="连线依据"
+              placeholder="依据（必填）"
+              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+              value={连线依据()}
+              onInput={(事件) => set连线依据(事件.currentTarget.value)}
+              onKeyDown={(事件) => {
+                if (事件.key !== "Escape") return
+                事件.preventDefault()
+                关连线()
+              }}
+            />
+          </Show>
           <select
             data-slot="hgraph-connect-confidence"
             aria-label="可信度"
@@ -2173,7 +2683,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             type="button"
             data-slot="hgraph-connect-ok"
             class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
-            disabled={!可连线(连线依据())}
+            disabled={!连线可确认()}
             onClick={确认连线}
           >
             确认
@@ -2219,12 +2729,16 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
 
           T018 / R74：演示态收起图例（设计 §5.14），退出演示恢复展开；导出走 T015 的
           隐藏只读渲染，不传 `图例初始收起` ⇒ 导出永远含展开图例。
+
+          T013 / FR-057：编辑态图例已搬到画布条（`不渲染图例`），画布内不再有图例；
+          演示态画布条整条收起，故仍由画布渲染那枚收起态「图例」按钮。
         */}
         <画布
           文档={文档()}
           选中={演示中() ? [] : 选中()}
           模式={模式()}
           坐标换算={props.坐标换算}
+          屏幕命中={props.屏幕命中}
           动作={动作}
           重命名id={演示中() ? undefined : 重命名id()}
           收起菜单={收起菜单()}
@@ -2233,10 +2747,98 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           聚焦请求={聚焦请求()}
           居中请求={演示中() ? undefined : 居中请求()}
           适配请求={适配请求()}
+          让位请求={演示中() ? undefined : 让位请求()}
+          检查器宽={检查器占用宽()}
           标签开={标签开()}
           档表={档表()}
           图例初始收起={演示中()}
+          不渲染图例={!演示中()}
+          强度阈值={演示中() ? undefined : 强度阈值()}
+          恢复强度={() => set强度阈值(undefined)}
+          注册视口中心={(读) => {
+            读视口中心 = 读
+          }}
         />
+        {/*
+          T017b（R72）＋ T017（FR-028）＋ FR-042（terminal review final-fix1a）：筛选面板
+          是**画布内的绝对定位覆盖层**，不再是画布上方的 flex 兄弟——打开筛选不会把画布挤矮。
+          `z-30` 高于画布右键菜单（z-20）；Esc / 点外部由根容器统一收口。
+        */}
+        <Show when={筛选面板开()}>
+          <div
+            data-slot="hgraph-filter-panel"
+            role="dialog"
+            aria-label="筛选"
+            class="absolute left-2 top-2 z-30 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-2 rounded border border-v2-border-border-strong bg-v2-background-bg-layer-02 px-2 py-2 shadow"
+          >
+            <span class="text-12-regular text-v2-text-text-muted">类型</span>
+            <For each={类型们()}>
+              {(类) => (
+                <label class="flex items-center gap-1 text-12-regular text-v2-text-text-muted">
+                  <input
+                    type="checkbox"
+                    data-slot="hgraph-filter-type"
+                    value={类}
+                    checked={筛选类型().has(类)}
+                    onChange={(事件) => 切换筛选类型(类, 事件.currentTarget.checked)}
+                  />
+                  {类}
+                </label>
+              )}
+            </For>
+            <label class="text-12-regular text-v2-text-text-muted">
+              性质
+              <select
+                data-slot="hgraph-filter-kind"
+                class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+                value={筛选性质()}
+                onChange={(事件) => {
+                  const 值 = 事件.currentTarget.value
+                  if (值 === "全部" || 值 === "事实" || 值 === "推断") set筛选性质(值)
+                }}
+              >
+                <option value="全部">全部</option>
+                <option value="事实">事实</option>
+                <option value="推断">推断</option>
+              </select>
+            </label>
+            {/*
+              T017 / FR-028：「只看 ≥ N 档」。N 是边档下限（含边界），关闭 = 不过滤；
+              档位换算在画布（`边档`），这里只存阈值。恢复入口在画布角落提示里。
+            */}
+            <label class="text-12-regular text-v2-text-text-muted">
+              只看 ≥
+              <select
+                data-slot="hgraph-strength-filter"
+                aria-label="只看 ≥ N 档"
+                class="ml-1 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+                value={强度阈值() === undefined ? "关闭" : String(强度阈值())}
+                onChange={(事件) => {
+                  const 值 = 事件.currentTarget.value
+                  set强度阈值(值 === "关闭" ? undefined : Number(值))
+                }}
+              >
+                <option value="关闭">关闭</option>
+                <option value="0">0 档</option>
+                <option value="1">1 档</option>
+                <option value="2">2 档</option>
+                <option value="3">3 档</option>
+                <option value="4">4 档</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              data-slot="hgraph-filter-clear"
+              class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-muted"
+              onClick={() => {
+                set筛选类型(new Set<string>())
+                set筛选性质("全部")
+              }}
+            >
+              清除筛选
+            </button>
+          </div>
+        </Show>
         {/* T017b（R72）：隔离与筛选共用「已隐藏 N 个节点」；角落明说，不能悄悄藏。 */}
         <Show when={!演示中() && 隐藏数() > 0}>
           <div
@@ -2262,6 +2864,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
             选中={选中()}
             文档={文档()}
             动作表={动作}
+            收起={详情收起()}
+            收起变化={set详情收起}
             快照={props.详情api === undefined ? undefined : 快照表()}
             载入中={快照载入()}
             刷新节点={props.详情api === undefined ? undefined : (库id) => void 刷新节点(库id)}

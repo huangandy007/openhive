@@ -210,6 +210,8 @@ function 挂覆盖层(初 = 0) {
   const host = document.createElement("div")
   document.body.appendChild(host)
   挂过的.push(render(() => <演示覆盖层 步号={初} />, host))
+  // 前提（`#005-18` / `#013-12`）：覆盖层确实渲染出了元素，避免「整块没挂上」把缺失断言衬成假绿。
+  expect(host.firstElementChild !== null).toBe(true)
 }
 
 describe("演示覆盖层 · 纯视觉层（R45）", () => {
@@ -218,7 +220,7 @@ describe("演示覆盖层 · 纯视觉层（R45）", () => {
     await flush()
 
     const 层 = 覆盖层()
-    expect(层).not.toBeNull()
+    expect(层 !== null).toBe(true)
     expect(步骤文案()).toBe("第 2 步")
     // R41：覆盖层不吃指针/滚轮，事件落回下面的只读画布（真实命中转发 happy-dom 测不到）。
     expect(层!.classList.contains("pointer-events-none")).toBe(true)
@@ -313,7 +315,7 @@ describe("工具栏 · 演示入口", () => {
     await flush()
 
     const 键 = document.body.querySelector("[data-slot='hgraph-toolbar-present']") as HTMLButtonElement | null
-    expect(键).not.toBeNull()
+    expect(键 !== null).toBe(true)
     expect(键!.getAttribute("aria-label")).toBe("演示")
     expect(键!.getAttribute("title")).toBe("演示")
 
@@ -380,6 +382,8 @@ function 挂编辑器(api: HgraphApi, 文档: 图文件 = 步进图()) {
       host,
     ),
   )
+  // 前提（`#005-18` / `#013-12`）：编辑器确实渲染出了元素，避免「整块没挂上」把缺失断言衬成假绿。
+  expect(host.firstElementChild !== null).toBe(true)
 }
 
 const 取 = (选择器: string) => document.body.querySelector(选择器)
@@ -476,40 +480,40 @@ describe("编辑器 · 演示态", () => {
     点选("n1", 200, 100)
     await flush()
     expect(节点组("n1")!.getAttribute("data-selected")).toBe("true")
-    expect(取("[data-slot='hgraph-toolbar']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-inspector']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-editor-bar']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-save-status']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-toolbar']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-editor-bar']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-save-status']") !== null).toBe(true)
 
     进入演示()
     await flush()
 
     // 条件渲染而不是 display:none：元素根本不在 DOM。
-    expect(取("[data-slot='hgraph-toolbar']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector']")).toBeNull()
-    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-toolbar']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
     // M4：顶栏与保存状态条也属于「全部 chrome」，此前报告里写了但没断言。
-    expect(取("[data-slot='hgraph-editor-bar']")).toBeNull()
-    expect(取("[data-slot='hgraph-save-status']")).toBeNull()
+    expect(取("[data-slot='hgraph-editor-bar']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-save-status']") === null).toBe(true)
 
     // 画布进入只读演示态：chrome 按钮不渲染、选中描边一个都没有。
     expect(画布()!.getAttribute("data-readonly")).toBe("true")
-    expect(取("[data-slot='hgraph-canvas-chrome']")).toBeNull()
-    expect(取("[data-slot='hgraph-mode-pointer']")).toBeNull()
-    expect(取("[data-selected='true']")).toBeNull()
+    expect(取("[data-slot='hgraph-canvas-chrome']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-mode-pointer']") === null).toBe(true)
+    expect(取("[data-selected='true']") === null).toBe(true)
 
     // 网格尚未实现（T018）⇒ 这里只钉「没有网格节点」，不新画一个。
-    expect(取("[data-slot='hgraph-grid']")).toBeNull()
+    expect(取("[data-slot='hgraph-grid']") === null).toBe(true)
 
     // 第 0 步：缺省 / 出现序=0 的节点在；第 1/2 步的节点不在。
-    expect(节点组("n0")).not.toBeNull()
-    expect(节点组("n3")).not.toBeNull()
-    expect(节点组("n1")).toBeNull()
-    expect(节点组("n2")).toBeNull()
+    expect(节点组("n0") !== null).toBe(true)
+    expect(节点组("n3") !== null).toBe(true)
+    expect(节点组("n1") === null).toBe(true)
+    expect(节点组("n2") === null).toBe(true)
     // 端点未出现的边不渲染。
-    expect(取("[data-edge-id='e02']")).toBeNull()
+    expect(取("[data-edge-id='e02']") === null).toBe(true)
     // R35：文字不参与步进，照常显示（哪怕写了出现序=5）。
-    expect(文字行("t1")).not.toBeNull()
+    expect(文字行("t1") !== null).toBe(true)
   })
 
   test("#4 空格 / Backspace 步进；Esc 退出后工具栏与检查器回来，焦点还给画布", async () => {
@@ -528,26 +532,31 @@ describe("编辑器 · 演示态", () => {
     按键(父, { key: " " })
     await flush()
     expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 1 步")
-    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n1") !== null).toBe(true)
 
     按键(父, { key: " " })
     await flush()
-    expect(节点组("n2")).not.toBeNull()
-    expect(取("[data-edge-id='e03']")).not.toBeNull()
+    expect(节点组("n2") !== null).toBe(true)
+    expect(取("[data-edge-id='e03']") !== null).toBe(true)
 
     按键(父, { key: "Backspace" })
     await flush()
-    expect(节点组("n2")).toBeNull()
-    expect(节点组("n1")).not.toBeNull()
+    expect(节点组("n2") === null).toBe(true)
+    expect(节点组("n1") !== null).toBe(true)
 
     // Esc 走父容器（真实全屏里浏览器会先退全屏，这里用桩路径之外的普通 Esc）。
     按键(父, { key: "Escape" })
     await flush()
-    expect(取("[data-slot='hgraph-present']")).toBeNull()
-    expect(取("[data-slot='hgraph-toolbar']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-inspector']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-present']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-toolbar']") !== null).toBe(true)
+    // T014 / FR-050 必要更替：未选中 ⇒ 检查器不渲染（旧口径是空壳里给一句提示）。
+    // 「回来」改用下面这一步证明：选中节点后面板才出现。
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(true)
+    点选("n1", 100, 100)
+    await flush()
+    expect(取("[data-slot='hgraph-inspector']") === null).toBe(false)
     // 编辑态的完整图回来（演示只过滤渲染，不改文档）。
-    expect(节点组("n2")).not.toBeNull()
+    expect(节点组("n2") !== null).toBe(true)
     expect(画布()!.getAttribute("data-readonly")).toBeNull()
     // I1：退出后焦点回到画布容器，父容器的 tabindex 收回。
     expect(document.activeElement).toBe(画布())
@@ -587,7 +596,7 @@ describe("编辑器 · 演示态", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
     await flush()
 
-    expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
     expect(取("[data-slot='hgraph-present-step']")!.textContent).toContain("第 0 步")
   })
 
@@ -603,17 +612,17 @@ describe("编辑器 · 演示态", () => {
     await flush()
     const 父 = 舞台()!
     expect(document.activeElement).toBe(父)
-    expect(节点组("n3")).not.toBeNull()
+    expect(节点组("n3") !== null).toBe(true)
 
     按键(父, { key: "Delete" })
     await 过防抖()
-    expect(节点组("n3")).not.toBeNull()
+    expect(节点组("n3") !== null).toBe(true)
     expect(写们.length).toBe(0)
 
     // Esc 退出后编辑快捷键恢复：同一条用例里先后各按一次 Delete，中间那次零动作。
     按键(父, { key: "Escape" })
     await flush()
-    expect(取("[data-slot='hgraph-present']")).toBeNull()
+    expect(取("[data-slot='hgraph-present']") === null).toBe(true)
     // 选中在演示期间保持不变 ⇒ 退出后 Delete 仍有目标。
     expect(节点组("n3")!.getAttribute("data-selected")).toBe("true")
 
@@ -625,7 +634,7 @@ describe("编辑器 · 演示态", () => {
     const 活 = document.activeElement as Element
     按键(活, { key: "Delete" })
     await 过防抖()
-    expect(节点组("n3")).toBeNull()
+    expect(节点组("n3") === null).toBe(true)
     expect(写们.length).toBe(1)
     expect(写们[0]!.操作).toEqual([{ 操作: "删对象", 目标: [{ 类别: "节点", id: "n3" }] }])
   })
@@ -728,7 +737,7 @@ describe("编辑器 · 演示态", () => {
       document.dispatchEvent(new Event("fullscreenchange"))
       await flush()
 
-      expect(取("[data-slot='hgraph-present']")).toBeNull()
+      expect(取("[data-slot='hgraph-present']") === null).toBe(true)
       // 全屏已是浏览器退的：我们自己不再调 exitFullscreen。
       expect(退出数).toBe(0)
       expect(写们.length).toBe(0)
@@ -759,7 +768,7 @@ describe("编辑器 · 演示态", () => {
       按键(舞台()!, { key: "Escape" })
       await flush()
       expect(退出数).toBe(0)
-      expect(取("[data-slot='hgraph-present']")).toBeNull()
+      expect(取("[data-slot='hgraph-present']") === null).toBe(true)
     } finally {
       还原()
     }
@@ -831,22 +840,22 @@ describe("编辑器 · 演示态", () => {
       进入演示()
       await flush()
       await flush()
-      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+      expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
 
       // 用户点顶栏全屏：全屏元素是 documentElement（不是舞台）。
       const 文档 = document as unknown as Record<string, unknown>
       文档.fullscreenElement = document.documentElement
       document.dispatchEvent(new Event("fullscreenchange"))
       await flush()
-      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
+      expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
 
       // 用户再点一次顶栏（或按 Esc）退出全屏。
       文档.fullscreenElement = null
       document.dispatchEvent(new Event("fullscreenchange"))
       await flush()
       // 我们从未进过全屏 ⇒ 这次 null 不是「退出演示」的信号。
-      expect(取("[data-slot='hgraph-present']")).not.toBeNull()
-      expect(节点组("n0")).not.toBeNull()
+      expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
+      expect(节点组("n0") !== null).toBe(true)
     } finally {
       还原()
     }
@@ -934,6 +943,8 @@ describe("只读画布 · 编辑快捷键完全静默（M1）", () => {
         host,
       ),
     )
+    // 前提（`#005-18` / `#013-12`）：只读画布确实渲染出了元素，避免「整块没挂上」把缺失断言衬成假绿。
+    expect(host.firstElementChild !== null).toBe(true)
     return 幽
   }
 
@@ -951,6 +962,6 @@ describe("只读画布 · 编辑快捷键完全静默（M1）", () => {
     await flush()
 
     expect(幽.计数).toEqual({})
-    expect(节点组("n3")).not.toBeNull()
+    expect(节点组("n3") !== null).toBe(true)
   })
 })

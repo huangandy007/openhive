@@ -353,6 +353,8 @@ describe("graph_add", () => {
     expect(结果.版本).toMatch(/^[0-9a-f]{32}$/)
     expect(结果.映射).toEqual({ tmp1: "n1", tmp2: "n2", tmpE1: "e1" })
     expect(结果.复用).toEqual([])
+    // FR-005：没有复用时不出提示。
+    expect(结果.提示).toBeUndefined()
     expect(结果.新增).toEqual({ 节点: 2, 边: 1 })
     expect(结果.重放).toBe(false)
 
@@ -375,11 +377,27 @@ describe("graph_add", () => {
 
     const 次 = await graph_add(ctx(), { 路径: "add/复用.hgraph", 节点: [手写节点("张三", { 临时id: "tmp2" })] })
     expect(次.复用).toEqual(["张三"])
+    // FR-005：复用命中时必须有一行可见提示（MCP 工具结果直接呈现）。
+    expect(次.提示).toBe("已复用图上已有节点：张三")
     expect(次.映射).toEqual({ tmp2: "n1" })
     expect(次.新增).toEqual({ 节点: 0, 边: 0 })
     // 放置里也给出复用节点的实际坐标（读回文件里那一行）。
     expect(次.放置).toEqual([{ 临时id: "tmp2", x: 首.放置[0]!.x, y: 首.放置[0]!.y }])
     expect(读回图("add/复用.hgraph").节点).toHaveLength(1)
+  })
+
+  // T003：核心的「同名复用」改成显式开关，只有 AI 的 `graph_add` 传 `true`。同一批里两个同名
+  // 节点 ⇒ 复用命中 1 个（映射都指向它），节点数不变——这钉住工具层确实把开关打开了。
+  test("同名 ⇒ 复用命中 1 个（同一批两个同名节点也复用）", async () => {
+    摆图("add/同名一份.hgraph", 空图("同名一份"))
+    const 结果 = await graph_add(ctx(), {
+      路径: "add/同名一份.hgraph",
+      节点: [手写节点("张三", { 临时id: "tmp1" }), 手写节点("张三", { 临时id: "tmp2" })],
+    })
+    expect(结果.新增).toEqual({ 节点: 1, 边: 0 })
+    expect(结果.复用).toEqual(["张三"])
+    expect(结果.映射).toEqual({ tmp1: "n1", tmp2: "n1" })
+    expect(读回图("add/同名一份.hgraph").节点).toHaveLength(1)
   })
 
   test("整批原子：30 条里第 30 条缺 `来源` ⇒ 一条都不写，版本（内容哈希）不变", async () => {

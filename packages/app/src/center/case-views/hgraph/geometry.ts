@@ -39,6 +39,14 @@ export type 对齐边 = "左" | "居中" | "右" | "顶" | "垂直居中" | "底
 
 export type 等距轴 = "水平" | "垂直"
 
+/**
+ * 批量对齐的六个方向；顺序即按钮顺序。工具栏与检查器共用这一份，别各写一遍。
+ */
+export const 对齐们: readonly 对齐边[] = ["左", "居中", "右", "顶", "垂直居中", "底"]
+
+/** 批量等距的两个轴；顺序即按钮顺序（工具栏与检查器共用）。 */
+export const 等距们: readonly 等距轴[] = ["水平", "垂直"]
+
 /** 连线落点：从哪个节点拖出（`从`）＋ 当前指针的画布坐标。 */
 export interface 连线落点 {
   readonly 从: string
@@ -508,11 +516,19 @@ export function 线宽档(值: number, 阈值: readonly number[]): number {
 }
 
 /**
+ * 手动外环档是否有效（`0..4` 整数口径见 `最大档`）。`外环档` 与画布「角标只服务自动档」
+ * 共用这一处判据，别各写一遍 `档 >= 0 && 档 <= 4`。
+ */
+export function 是手动外环档(档: number | undefined): 档 is number {
+  return 档 !== undefined && Number.isFinite(档) && 档 >= 0 && 档 <= 最大档
+}
+
+/**
  * 外环档：`手动` 存在且落在 `0..4` ⇒ 原样（冻结；连接数再涨也不变），否则同 `线宽档` 口径。
  * 只设了颜色、没设档 ⇒ 手动为 `undefined`，仍走自动。
  */
 export function 外环档(连接数: number, 阈值: readonly number[], 手动?: number): number {
-  if (手动 !== undefined && Number.isFinite(手动) && 手动 >= 0 && 手动 <= 最大档) return 手动
+  if (是手动外环档(手动)) return 手动
   return 线宽档(连接数, 阈值)
 }
 

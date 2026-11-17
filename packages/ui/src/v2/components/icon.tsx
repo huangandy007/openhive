@@ -159,6 +159,60 @@ const icons = {
     viewBox: "0 0 16 16",
     body: `<path d="M13.1112 13.5555V14.0555H13.6112V13.5555H13.1112ZM2.889 13.5555H2.389L2.389 14.0555H2.889V13.5555ZM3.38901 5.55546L3.38901 5.05546L2.38901 5.05546L2.38901 5.55546L2.88901 5.55546L3.38901 5.55546ZM14.4446 2.44434H14.9446V1.94434L14.4446 1.94434L14.4446 2.44434ZM14.4446 5.55545L14.4446 6.05545L14.9446 6.05545V5.55545H14.4446ZM1.55566 5.55546L1.05566 5.55545L1.05566 6.05546L1.55566 6.05546L1.55566 5.55546ZM1.5557 2.44436L1.5557 1.94436L1.05571 1.94436L1.0557 2.44435L1.5557 2.44436ZM13.1112 5.55546H12.6112V13.5555H13.1112H13.6112V5.55546H13.1112ZM2.889 13.5555H3.389L3.38901 5.55546L2.88901 5.55546L2.38901 5.55546L2.389 13.5555H2.889ZM14.4446 2.44434H13.9446V5.55545H14.4446H14.9446V2.44434H14.4446ZM1.55566 5.55546L2.05566 5.55547L2.0557 2.44436L1.5557 2.44436L1.0557 2.44435L1.05566 5.55545L1.55566 5.55546ZM6.22234 8.22213V8.72213H9.7779V8.22213V7.72213H6.22234V8.22213ZM13.1112 13.5555V13.0555H2.889V13.5555V14.0555H13.1112V13.5555ZM1.5557 2.44436L1.5557 2.94436L14.4446 2.94434L14.4446 2.44434L14.4446 1.94434L1.5557 1.94436L1.5557 2.44436ZM14.4446 5.55545L14.4446 5.05545L1.55566 5.05546L1.55566 5.55546L1.55566 6.05546L14.4446 6.05545L14.4446 5.55545Z" fill="currentColor"/>`,
   },
+  // openhive 定制 · 【同步上游时保留】（T015，2026-11-17）：关系图工具栏需要 13 个图形，
+  // 上游表里没有。只追加键，不改表结构与 `name` 类型（项目第一号约束：最小化合并冲突）。
+  pointer: {
+    viewBox: "0 0 16 16",
+    body: `<path d="M4 2.5L12.3 9.2L8.7 9.8L10.7 13.4L9.1 14.2L7.1 10.6L4.4 12.6L4 2.5Z" stroke="currentColor" stroke-linejoin="round"/>`,
+  },
+  hand: {
+    viewBox: "0 0 16 16",
+    body: `<path d="M5.5 7.4V4.1C5.5 3.49 5.99 3 6.6 3C7.21 3 7.7 3.49 7.7 4.1V6.9M7.7 6.6V3.5C7.7 2.89 8.19 2.4 8.8 2.4C9.41 2.4 9.9 2.89 9.9 3.5V6.9M9.9 6.9V4.6C9.9 3.99 10.39 3.5 11 3.5C11.61 3.5 12.1 3.99 12.1 4.6V9.4C12.1 12.11 10.31 13.9 7.8 13.9C6.2 13.9 5.05 13.13 4.2 11.8L2.75 9.4C2.45 8.91 2.6 8.28 3.09 7.98C3.51 7.72 4.06 7.83 4.41 8.24L5.5 9.5V7.4Z" stroke="currentColor" stroke-linejoin="round" stroke-linecap="round"/>`,
+  },
+  connect: {
+    viewBox: "0 0 16 16",
+    body: `<circle cx="3.6" cy="12.4" r="1.7" stroke="currentColor"/><circle cx="12.4" cy="3.6" r="1.7" stroke="currentColor"/><path d="M4.9 11.1L11.1 4.9" stroke="currentColor" stroke-linecap="round"/>`,
+  },
+  "text-plus": {
+    viewBox: "0 0 16 16",
+    body: `<path d="M2 3.2H10M6 3.2V12.6M3.8 12.6H8.2" stroke="currentColor" stroke-linecap="round"/><path d="M12.2 8.4V13.4M9.7 10.9H14.7" stroke="currentColor" stroke-linecap="round"/>`,
+  },
+  trash: {
+    viewBox: "0 0 16 16",
+    body: `<path d="M2.6 4H13.4M6 4V2.6H10V4M3.9 4L4.7 13.4H11.3L12.1 4M6.5 6.5V11M9.5 6.5V11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>`,
+  },
+  lock: {
+    viewBox: "0 0 16 16",
+    body: `<rect x="3.5" y="7" width="9" height="6.8" rx="1" stroke="currentColor"/><path d="M5.6 7V5C5.6 3.67 6.67 2.6 8 2.6C9.33 2.6 10.4 3.67 10.4 5V7" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="10.4" r="0.9" fill="currentColor"/>`,
+  },
+  align: {
+    viewBox: "0 0 16 16",
+    body: `<path d="M2.5 2.6V13.4" stroke="currentColor" stroke-linecap="round"/><rect x="4.2" y="3.4" width="9" height="2.4" stroke="currentColor"/><rect x="4.2" y="6.8" width="6" height="2.4" stroke="currentColor"/><rect x="4.2" y="10.2" width="7.5" height="2.4" stroke="currentColor"/>`,
+  },
+  "space-between": {
+    viewBox: "0 0 16 16",
+    body: `<path d="M2.6 2.5V13.5M13.4 2.5V13.5M4.8 8H11.2M4.8 8L6.3 6.5M4.8 8L6.3 9.5M11.2 8L9.7 6.5M11.2 8L9.7 9.5" stroke="currentColor" stroke-linecap="round"/>`,
+  },
+  isolate: {
+    viewBox: "0 0 16 16",
+    body: `<rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.6" stroke="currentColor" stroke-dasharray="2 1.6"/><circle cx="8" cy="8" r="2.2" fill="currentColor"/>`,
+  },
+  path: {
+    viewBox: "0 0 16 16",
+    body: `<circle cx="3.2" cy="12.6" r="1.5" stroke="currentColor"/><circle cx="12.8" cy="3.4" r="1.5" stroke="currentColor"/><path d="M4.7 12.6H8.4V3.4H11.3" stroke="currentColor" stroke-linejoin="round"/>`,
+  },
+  merge: {
+    viewBox: "0 0 16 16",
+    body: `<path d="M3.4 2.6L8 7.2L12.6 2.6M8 7.2V13.4M8 13.4L5.9 11.3M8 13.4L10.1 11.3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>`,
+  },
+  present: {
+    viewBox: "0 0 16 16",
+    body: `<rect x="2.2" y="2.6" width="11.6" height="8.4" rx="1" stroke="currentColor"/><path d="M6.4 11V13.4M9.6 11V13.4M5.4 13.4H10.6" stroke="currentColor" stroke-linecap="round"/><path d="M6.9 4.8L10 6.8L6.9 8.8V4.8Z" fill="currentColor"/>`,
+  },
+  "path-label": {
+    viewBox: "0 0 16 16",
+    body: `<path d="M2.4 12.6H13.6" stroke="currentColor" stroke-linecap="round"/><rect x="3.8" y="2.6" width="8.4" height="5.8" rx="1" stroke="currentColor"/><path d="M6.2 12.6L7.6 8.4" stroke="currentColor" stroke-linecap="round"/>`,
+  },
 }
 
 const spriteID = "opencode-v2-icon-sprite"

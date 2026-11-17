@@ -22,9 +22,34 @@ export interface GraphProps {
    */
 }
 
-/** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[280px]` 一致（测试钉着）。 */
-export const 面板宽 = 280
-export const 面板边距 = 24
+/** 检视面板浮在画布右侧的宽度与留白——宽度必须与面板 class 的 `w-[320px]` 一致（测试钉着）。 */
+export const 面板宽 = 320
+export const 面板边距 = 0
+
+/**
+ * 面板让位的平移量（关系图与 hgraph 检查器共用这一份，`#002-06`）：
+ * 对象在屏幕上的 x 已经越过「未被面板覆盖」的右界时，才把它挪过去。
+ *
+ * - `面板占宽` / `边距` 必须与 `画布宽` **同一坐标单位**：关系图里 viewBox = 容器像素，
+ *   直接传常量；hgraph 的 viewBox 固定 760×680，调用方先把 CSS px 按容器缩放比换算。
+ * - 返回新的视口 `x`；本来没被盖住 ⇒ `undefined`（画面不动，别乱晃）。
+ * - `居中` 为真 ⇒ 目标 = 未覆盖区中心（FR-015）；否则只挪到右界（关系图的最小让位）。
+ * - 让得太多会把对象自己顶出左边界：以「对象仍在画布内」为下限。
+ */
+export function 面板让位平移x(
+  点: { readonly x: number },
+  视口: { readonly 缩放: number; readonly x: number },
+  画布宽: number,
+  面板占宽: number,
+  边距 = 0,
+  居中 = false,
+): number | undefined {
+  const 右界 = 画布宽 - 面板占宽 - 边距
+  const 屏x = 点.x * 视口.缩放 + 视口.x
+  if (屏x <= 右界) return undefined
+  const 目标屏x = 居中 ? (边距 + 右界) / 2 : 右界
+  return Math.max(视口.x - (屏x - 目标屏x), 边距 - 点.x * 视口.缩放)
+}
 
 // 布局纯函数住在 `graph-layout.ts`（关系图编辑器共用同一套）。这里保留同名 re-export，
 // 既有调用方与 `graph.test.tsx` 一行不改（`#002-06` 同一前提单一出处）。
@@ -50,13 +75,32 @@ export function 形状(类型: string): 形 {
   return "circle"
 }
 
-function 填充(点: 图节点): string {
+/**
+ * 未映射类型的填充兜底（与画布底色同阶）。导出是给 hgraph 外环用的：外环直接用它做
+ * 「有没有类型色」的判据——回退到描边色，别把同阶的底色当成可见的颜色。
+ */
+export const 默认节点填充 = "var(--v2-background-bg-layer-02)"
+
+export function 填充(点: 图节点): string {
   if (点.中心) return "var(--v2-background-bg-accent-soft)"
   if (点.type === "号码") return "var(--v2-state-bg-info)"
   if (点.type === "账户") return "var(--v2-state-bg-success)"
   if (点.type === "地点") return "var(--v2-state-bg-warning)"
   if (点.type === "组织") return "var(--v2-background-bg-layer-03)"
-  return "var(--v2-background-bg-layer-02)"
+  return 默认节点填充
+}
+
+/**
+ * 类型色描边（FR-052）：与 `填充` **同一组已识别类型**（号码/账户/地点/组织）。
+ *
+ * hgraph 画布只消费这一份，不另抄色表（`#002-06`）。组织与未识别类型没有专属描边槽位，
+ * 回退 `border-strong`——「不得呈灰斑」按已识别类型解释，不新造调色板（设计 08 §4.3）。
+ */
+export function 类型描边(点: 图节点): string {
+  if (点.type === "号码") return "var(--v2-state-border-info)"
+  if (点.type === "账户") return "var(--v2-state-border-success)"
+  if (点.type === "地点") return "var(--v2-state-border-warning)"
+  return "var(--v2-border-border-strong)"
 }
 
 /** 需要再看一眼的两态。`已确认` 是可信态——把它也算进来，整张图会全是虚线圈。 */
@@ -594,17 +638,14 @@ export function Graph(props: GraphProps): JSX.Element {
   }
 
   /**
-   * 检视面板浮在画布右边缘（`w-[280px]`），底下那一列节点点不到也拖不到——真栈实操时
+   * 检视面板浮在画布右边缘（`w-[320px]`），底下那一列节点点不到也拖不到——真栈实操时
    * 在面板正下方起手拖动，按到的是面板按钮（误触「以此为中心」开了新关系图）。
    * 点选就把它让出来：平移画布，不改布局坐标。
    */
   const 让出面板 = (行: 位点) => {
-    const 右界 = 尺寸().宽 - 面板宽 - 面板边距
-    const 屏x = 行.x * 缩放() + 平移().x
-    if (屏x <= 右界) return
-    const 新 = 平移().x - (屏x - 右界)
-    // 让得太多会把节点自己顶出左边界：以「节点仍在画布内」为下限。
-    set平移({ ...平移(), x: Math.max(新, 面板边距 - 行.x * 缩放()) })
+    const 新 = 面板让位平移x(行, { 缩放: 缩放(), x: 平移().x }, 尺寸().宽, 面板宽, 面板边距)
+    if (新 === undefined) return
+    set平移({ ...平移(), x: 新 })
   }
 
   /**
@@ -1299,7 +1340,7 @@ export function Graph(props: GraphProps): JSX.Element {
             <div
               data-slot="graph-zoom-bar"
               class="absolute bottom-2 flex gap-1 transition-[right]"
-              style={{ right: 选中() === null ? "8px" : "292px" }}
+              style={{ right: 选中() === null ? "8px" : `${面板宽 + 8}px` }}
             >
               <For each={[["out", "−"], ["in", "＋"], ["fit", "适应"]] as const}>
                 {([种, 标签]) => (
@@ -1323,7 +1364,7 @@ export function Graph(props: GraphProps): JSX.Element {
             <aside
               data-slot="graph-panel"
               data-panel-kind="node"
-              class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+              class="absolute inset-y-0 right-0 z-10 flex w-[320px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
             >
               <div class="flex items-start gap-2">
                 <div class="min-w-0 flex-1">
@@ -1408,7 +1449,7 @@ export function Graph(props: GraphProps): JSX.Element {
               <aside
                 data-slot="graph-panel"
                 data-panel-kind="edge"
-                class="absolute inset-y-0 right-0 z-10 flex w-[280px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
+                class="absolute inset-y-0 right-0 z-10 flex w-[320px] flex-col gap-2 overflow-y-auto border-l border-v2-border-border-muted bg-v2-background-bg-base p-3"
               >
                 <div class="flex items-start gap-2">
                   <div class="min-w-0 flex-1">

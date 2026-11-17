@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
 import type { 图文件, 节点, 边, 文字 } from "./file"
-import type { 画布动作 } from "./canvas"
+import { 外环色表, type 画布动作 } from "./canvas"
 import { 检查器, type 节点快照 } from "./inspector"
 
 const 挂过的: Array<() => void> = []
@@ -136,6 +136,8 @@ function 挂检查器(选项: {
   打开档案?: (实体id: string, 标题: string) => void
   绑定?: (节点id: string) => void
   打开出处?: (材料: string, 行号: number) => void
+  收起?: boolean
+  收起变化?: (值: boolean) => void
 }) {
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -143,6 +145,8 @@ function 挂检查器(选项: {
   const 文档 = 选项.文档 ?? 造图()
   // 选中用信号：M3 要断言「换选再回来」时提示消失。
   const [选中, set选中] = createSignal<readonly string[]>(选项.选中)
+  // T014 收起态：默认展开；用例可注入初值，也可读回点击后的状态。
+  const [收起, set收起] = createSignal(选项.收起 ?? false)
   挂过的.push(
     render(
       () => (
@@ -157,12 +161,17 @@ function 挂检查器(选项: {
           打开档案={选项.打开档案}
           绑定={选项.绑定}
           打开出处={选项.打开出处}
+          收起={收起()}
+          收起变化={选项.收起变化 ?? set收起}
         />
       ),
       host,
     ),
   )
-  return { ...幽, set选中 }
+  // 前提（`#005-18` / `#013-12`）：挂载点确实进了文档——检查器在「无选中」时本来就不渲染，
+  // 所以前提是「挂载执行了」，而不是「一定有元素」。
+  expect(document.body.contains(host)).toBe(true)
+  return { ...幽, set选中, 收起, set收起 }
 }
 
 const 取 = (选择器: string) => document.body.querySelector(选择器) as HTMLElement | null
@@ -191,7 +200,7 @@ describe("检查器 · 三段两源", () => {
     挂检查器({ 选中: ["n1"], 快照 })
 
     const 名称 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement | null
-    expect(名称).not.toBeNull()
+    expect(名称 !== null).toBe(true)
     expect(名称!.value).toBe("张三")
     // 库里现在是自己的值，不是文档值的副本。
     expect(文本("hgraph-snapshot-值")).toBe("张三丰")
@@ -212,29 +221,47 @@ describe("检查器 · 三段两源", () => {
     expect(文本("hgraph-readonly-时间")).toBe("2026-01-01 ~ 2026-02-01")
   })
 
+  /**
+   * T002（014 关系图可用性）：`来源.kind = 事件` 是合法类别，徽标必须显示「事件」，
+   * 不能被旧的 `default` 分支静默显示成「手写」。
+   *
+   * 元素存在性按 LEARNINGS `#013-12` 用布尔比较（`toBeNull()` 在本机 happy-dom 里会假绿）。
+   */
+  test("来源.kind = 事件 ⇒ 徽标文案含『事件』且不含『手写』", () => {
+    挂检查器({ 选中: ["n1"], 文档: 造图({ 来源: { kind: "事件" } }) })
+
+    const 徽标 = 取("[data-slot='hgraph-readonly-来源']")
+    // 先立「元素在文档里」这个前提，再断文案——否则空串也能让「不含手写」通过。
+    expect(徽标 === null).toBe(false)
+    expect(document.body.contains(徽标)).toBe(true)
+    const 文案 = 徽标?.textContent?.trim() ?? ""
+    expect(文案).toContain("事件")
+    expect(文案.includes("手写")).toBe(false)
+  })
+
   test("没注入快照 ⇒ 明写「还没有接入库里的数据」，不伪造空属性", () => {
     挂检查器({ 选中: ["n1"] })
 
     expect(文本("hgraph-snapshot-empty")).toBe("还没有接入库里的数据")
-    expect(取("[data-slot='hgraph-snapshot-值']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-值']") === null).toBe(true)
   })
 
   test("注入了快照但节点没绑库 ⇒ 「这条不在库里」，不拿别的实体回填", () => {
     挂检查器({ 选中: ["n2"], 快照 })
 
     expect(文本("hgraph-snapshot-empty")).toBe("这条不在库里")
-    expect(取("[data-slot='hgraph-snapshot-值']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-值']") === null).toBe(true)
   })
 
   test("「刷新此节点」只在注入刷新口时出现；点击把库 id 交回去", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-snapshot-refresh']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-refresh']") === null).toBe(true)
 
     document.body.innerHTML = ""
     const 刷过: string[] = []
     挂检查器({ 选中: ["n1"], 快照, 刷新节点: (id) => 刷过.push(id) })
     const 按钮 = 取("[data-slot='hgraph-snapshot-refresh']") as HTMLButtonElement | null
-    expect(按钮).not.toBeNull()
+    expect(按钮 !== null).toBe(true)
     按钮!.click()
     expect(刷过).toEqual(["ent1"])
   })
@@ -323,7 +350,7 @@ describe("检查器 · 出现序", () => {
   test("#6 改为 2 后失焦：恰好 1 次改字段，补丁是 出现序: 2", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
     const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement | null
-    expect(输入).not.toBeNull()
+    expect(输入 !== null).toBe(true)
     // 缺省不写 0，输入框留空（缺省值不在文档里伪造）。
     expect(输入!.value).toBe("")
 
@@ -411,7 +438,7 @@ describe("检查器 · 批量态", () => {
   test("选中 2 个：对齐/等距/合并/删除都可用（R-F12：合并不再占位）", () => {
     const 幽 = 挂检查器({ 选中: ["n1", "n2"], 快照 })
 
-    expect(取("[data-slot='hgraph-batch']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-batch']") !== null).toBe(true)
     const 对齐 = 取("[data-slot='hgraph-batch-align-左']") as HTMLButtonElement
     const 等距 = 取("[data-slot='hgraph-batch-space-水平']") as HTMLButtonElement
     expect(对齐.disabled).toBe(false)
@@ -433,15 +460,16 @@ describe("检查器 · 批量态", () => {
 
   test("选中 1 个：不出现批量面板，单个详情可改", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-batch']")).toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-batch']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") !== null).toBe(true)
   })
 
-  test("没有选中：只给提示，不显示空属性或伪造快照", () => {
+  test("没有选中：检查器整个不渲染（不显示空属性或伪造快照）", () => {
     挂检查器({ 选中: [] })
-    expect(文本("hgraph-inspector-hint")).toContain("选中")
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-snapshot-empty']")).toBeNull()
+    // T014 / FR-050 必要更替：旧口径是「空面板里给一句提示」，新口径是未选中不渲染。
+    expect(document.body.querySelector("[data-slot='hgraph-inspector']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-snapshot-empty']") === null).toBe(true)
   })
 })
 
@@ -477,7 +505,7 @@ describe("检查器 · 从库加入后的空属性/出处（R59）", () => {
     挂检查器({ 选中: ["n1"], 快照: {}, 刷新节点: () => {} })
 
     expect(文本("hgraph-snapshot-empty")).toBe("这条不在库里")
-    expect(取("[data-slot='hgraph-snapshot-refresh']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-refresh']") !== null).toBe(true)
   })
 })
 
@@ -491,7 +519,7 @@ describe("检查器 · 打开档案（R63）", () => {
     挂检查器({ 选中: ["n1"], 快照, 打开档案: (id, 标题) => 收到.push([id, 标题]) })
 
     const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮!.disabled).toBe(false)
     钮!.click()
 
@@ -502,14 +530,14 @@ describe("检查器 · 打开档案（R63）", () => {
     挂检查器({ 选中: ["n2"], 快照, 打开档案: () => {} })
 
     const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮!.disabled).toBe(true)
     expect(钮!.getAttribute("title")).toBe("这条不在库里")
   })
 
   test("未注入回调：按钮不在 DOM（不放禁用假按钮）", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-open-archive']")).toBeNull()
+    expect(取("[data-slot='hgraph-open-archive']") === null).toBe(true)
   })
 })
 
@@ -521,7 +549,7 @@ describe("检查器 · 恢复自动（外环手动档删键）", () => {
   test("有 `外环` 时按钮在；点击 ⇒ 改字段(\"节点\", id, {外环:null})，算一步撤销", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
     const 钮 = 取("[data-slot='hgraph-ring-auto']")
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮?.textContent?.trim()).toBe("恢复自动")
 
     钮?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
@@ -532,7 +560,7 @@ describe("检查器 · 恢复自动（外环手动档删键）", () => {
 
   test("没有 `外环` 时不渲染按钮（自动档下没有「恢复」可言）", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-ring-auto']")).toBeNull()
+    expect(取("[data-slot='hgraph-ring-auto']") === null).toBe(true)
   })
 })
 
@@ -544,10 +572,20 @@ describe("检查器 · 边段（R-F12）", () => {
   test("只选中一条边 ⇒ 渲染边段、不渲染节点段/快照段/空提示", () => {
     挂检查器({ 选中: ["e1"], 文档: 带边图() })
 
-    expect(取("[data-slot='hgraph-inspector-edge']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-snapshot']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-hint']")).toBeNull()
+    expect(取("[data-slot='hgraph-inspector-edge']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-snapshot']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
+  })
+
+  /** final-fix2 C2：边操作脚「跳到两端」——口径 = 两端节点一并选中（同一 `选择` 出口）。 */
+  test("边操作脚「跳到两端」⇒ 选择两端节点（不追加）", () => {
+    const 幽 = 挂检查器({ 选中: ["e1"], 文档: 带边图() })
+    const 键 = 取("[data-slot='hgraph-inspector-edge-jump']") as HTMLButtonElement | null
+    expect(键 === null).toBe(false)
+    键!.click()
+    expect(幽.计数.选择).toBe(1)
+    expect(幽.参数.选择![0]).toEqual([["n1", "n2"], false])
   })
 
   test("改标签后失焦 ⇒ 恰好一次改字段(\"边\", id, {标签})", () => {
@@ -702,9 +740,9 @@ describe("检查器 · 文字段（R-F11 UI）", () => {
   test("选中文字 ⇒ 渲染文字段、不渲染节点段", () => {
     挂检查器({ 选中: ["t1"], 文档: 带文字图() })
 
-    expect(取("[data-slot='hgraph-inspector-text']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-hint']")).toBeNull()
+    expect(取("[data-slot='hgraph-inspector-text']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
   })
 
   test("内容失焦即存；改字号/对齐/颜色各发一次正确补丁", () => {
@@ -783,7 +821,7 @@ describe("检查器 · 绑定到库实体（FR-027）", () => {
     挂检查器({ 选中: ["n2"], 绑定: (id) => 绑过.push(id) })
 
     const 键 = 取("[data-slot='hgraph-bind']") as HTMLButtonElement | null
-    expect(键).not.toBeNull()
+    expect(键 !== null).toBe(true)
     expect(键!.textContent?.trim()).toBe("绑定到库实体")
     键!.click()
     expect(绑过).toEqual(["n2"])
@@ -794,19 +832,19 @@ describe("检查器 · 绑定到库实体（FR-027）", () => {
     图.节点[1] = { ...图.节点[1]!, 来源: { kind: "推断", 依据: "两人同日同酒店" }, 可信度: "中" }
     挂检查器({ 选中: ["n2"], 文档: 图, 绑定: () => {} })
 
-    expect(取("[data-slot='hgraph-bind']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-bind']") !== null).toBe(true)
   })
 
   test("已绑库（来源.kind=实体）⇒ 不渲染", () => {
     挂检查器({ 选中: ["n1"], 快照, 绑定: () => {} })
 
-    expect(取("[data-slot='hgraph-bind']")).toBeNull()
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
   })
 
   test("未注入 绑定 ⇒ 不渲染（不放禁用假按钮）", () => {
     挂检查器({ 选中: ["n2"] })
 
-    expect(取("[data-slot='hgraph-bind']")).toBeNull()
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
   })
 })
 
@@ -945,5 +983,460 @@ describe("检查器 · 出处可点（FR-033）", () => {
     expect(出处按钮s().length).toBe(0)
     expect(文本("hgraph-edge-readonly-证据")).toBe("转账 → 没有井号")
     expect(文本("hgraph-edge-readonly-出处")).toBe("也没有")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T011 · 事件两态 + 参与方段（手写可编 / 绑定只读）
+// ---------------------------------------------------------------------------
+
+/**
+ * 事件夹具（T011）：
+ * - `ev手写`：`来源.kind = 手写`（九格可编）；参与方一条已对上（角色边 `收款方`）、一条未对上
+ *   （保留属性 `参与方·付款方` 的原文）；
+ * - `ev绑定`：`来源.kind = 事件`（九格只读）；带一条未对上参与方，保证参与方段有内容；
+ * - `李四`：角色边的对端实体节点（名字取自节点，不按姓名匹配——spec §Assumptions）。
+ */
+function 事件图(): 图文件 {
+  return {
+    ...造图(),
+    节点: [
+      {
+        id: "ev手写",
+        名称: "转账给李四",
+        类型: "资金交易",
+        来源: { kind: "手写" },
+        属性: [
+          { 键: "金额", 值: "12000元" },
+          { 键: "时间精度", 值: "分" },
+          { 键: "参与方·付款方", 值: "王*五" },
+          { 键: "用途", 值: "借款" },
+        ],
+        出处: [],
+        时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-04 14:22:00" },
+        x: 100,
+        y: 100,
+      },
+      {
+        id: "ev绑定",
+        名称: "库转账",
+        类型: "资金交易",
+        来源: { kind: "事件", 实体: "event-1", 值: "库转账", 可信: "已核实" },
+        属性: [
+          { 键: "金额", 值: "5000元" },
+          { 键: "参与方·付款方", 值: "王*五" },
+        ],
+        出处: ["m1#流水#7"],
+        时间: { 首: "2026-03-04 09:00:00", 末: "2026-03-04 09:00:00" },
+        x: 200,
+        y: 100,
+      },
+      {
+        id: "李四",
+        名称: "李四",
+        类型: "人物",
+        来源: { kind: "实体", 实体: "ent2", 值: "李四" },
+        时间: { 首: "", 末: "" },
+        x: 300,
+        y: 200,
+      },
+    ],
+    边: [
+      {
+        id: "r1",
+        从: "ev手写",
+        到: "李四",
+        标签: "收款方",
+        性质: "推断",
+        方向: "有向",
+        来源: { kind: "推断", 依据: "手写事件「转账给李四」的收款方" },
+        可信度: "中",
+        时间: { 首: "", 末: "" },
+      },
+    ],
+  }
+}
+
+describe("检查器 · T011 事件两态与参与方", () => {
+  const 输入们 = () => [...document.body.querySelectorAll<HTMLElement>("input[data-slot^='hgraph-field-']")]
+
+  test("手写事件九格逐项有可编辑控件（时间/金额/其他/参与方也不缺）", () => {
+    挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    // 名称/类型/细类/备注/出现序（既有）+ 时间首/末 + 金额（final-fix1b）。
+    for (const slot of ["名称", "类型", "细类", "备注", "出现序", "时间首", "时间末", "金额"]) {
+      expect(取(`[data-slot='hgraph-field-${slot}']`)?.tagName).toBe("INPUT")
+    }
+    // 时间精度必须是保留下来的 select，选项只有 日/时/分（它是手写事件判据的键）。
+    const 精度 = 取("[data-slot='hgraph-field-时间精度']") as HTMLSelectElement
+    expect(精度?.tagName).toBe("SELECT")
+    expect(精度.value).toBe("分")
+    expect([...精度.querySelectorAll("option")].map((项) => (项 as HTMLOptionElement).value)).toEqual([
+      "日",
+      "时",
+      "分",
+    ])
+    // 金额写保留属性；其他属性只列非保留键（金额/时间精度/参与方·* 不重复出现）。
+    expect((取("[data-slot='hgraph-field-金额']") as HTMLInputElement).value).toBe("12000元")
+    const 其他键 = [...document.body.querySelectorAll<HTMLInputElement>("[data-slot='hgraph-field-属性键']")].map(
+      (项) => 项.value,
+    )
+    expect(其他键).toEqual(["用途"])
+    expect((取("[data-slot='hgraph-field-属性值']") as HTMLInputElement).value).toBe("借款")
+    expect(取("[data-slot='hgraph-field-属性新增']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-属性删除']") !== null).toBe(true)
+
+    // 参与方：未对上行有「角色 + 名字」两个输入；已对上角色边只读展示。
+    expect((取("[data-slot='hgraph-field-参与方角色']") as HTMLInputElement).value).toBe("付款方")
+    expect((取("[data-slot='hgraph-field-参与方名字']") as HTMLInputElement).value).toBe("王*五")
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    const 已对上 = 行们.find((行) => (行.textContent ?? "").includes("收款方：李四"))
+    expect(已对上 !== undefined).toBe(true)
+    expect(已对上!.querySelectorAll("input").length).toBe(0)
+
+    // 手写事件没有可信态控件（data-model §2：手写不写 来源.可信）。
+    expect(取("[data-slot='hgraph-field-可信态']") === null).toBe(true)
+    // 只读区标题「来自库快照，请在库中修改」对手写事件为假 ⇒ 不渲染。
+    expect((document.body.textContent ?? "").includes("来自库快照")).toBe(false)
+    // 出处空 ⇒ 明示「手写无出处」，不是 `—`。
+    expect(文本("hgraph-readonly-出处")).toBe("手写无出处")
+    // 操作脚左「看参与方」。
+    expect(取("[data-slot='hgraph-inspector-participants-jump']") !== null).toBe(true)
+  })
+
+  test("绑定事件只有备注/外环可改；只读区保留原文案", () => {
+    挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
+    // T014 / FR-032 必要更替：外环颜色由自由文本输入框改为预设下拉（不再是 input）。
+    expect(输入们().length).toBe(2)
+    expect(输入们().map((项) => 项.getAttribute("data-slot"))).toEqual([
+      "hgraph-field-外环档",
+      "hgraph-field-备注",
+    ])
+    expect(取("[data-slot='hgraph-field-外环颜色']")?.tagName).toBe("SELECT")
+    expect(文本("hgraph-field-名称")).toBe("库转账")
+    expect(文本("hgraph-field-类型")).toBe("资金交易")
+    // 绑定事件的九格仍是库快照：只读区保留原文案，且没有手写事件的专用控件。
+    expect((document.body.textContent ?? "").includes("来自库快照，请在库中修改")).toBe(true)
+    expect(取("[data-slot='hgraph-field-时间首']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-参与方名字']") === null).toBe(true)
+    // final-fix2 C2：绑定事件的操作脚也有「看参与方」；点击后参与方段高亮。
+    const 看参与方 = 取("[data-slot='hgraph-inspector-participants-jump']") as HTMLButtonElement | null
+    expect(看参与方 === null).toBe(false)
+    看参与方!.click()
+    expect(取("[data-slot='hgraph-event-participants']")!.getAttribute("data-highlight")).toBe("true")
+  })
+
+  test("手写事件时间首/末失焦即存：整对象补丁，另一侧保留", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 首 = 取("[data-slot='hgraph-field-时间首']") as HTMLInputElement
+    首.value = "2026-03-05 08:00"
+    失焦(首)
+    expect(幽.参数.改字段![0]).toEqual([
+      "节点",
+      "ev手写",
+      { 时间: { 首: "2026-03-05 08:00", 末: "2026-03-04 14:22:00" } },
+    ])
+
+    const 末 = 取("[data-slot='hgraph-field-时间末']") as HTMLInputElement
+    末.value = "2026-03-05 09:30"
+    失焦(末)
+    expect(幽.参数.改字段![1]).toEqual([
+      "节点",
+      "ev手写",
+      { 时间: { 首: "2026-03-04 14:22:00", 末: "2026-03-05 09:30" } },
+    ])
+  })
+
+  test("时间精度下拉与金额文本框都写保留属性，且不丢时间精度键", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 精度 = 取("[data-slot='hgraph-field-时间精度']") as HTMLSelectElement
+    选择(精度, "时")
+
+    expect(幽.计数.改字段).toBe(1)
+    const 精度补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(精度补丁.属性.find((项) => 项.键 === "时间精度")).toEqual({ 键: "时间精度", 值: "时" })
+    expect(精度补丁.属性.find((项) => 项.键 === "金额")).toEqual({ 键: "金额", 值: "12000元" })
+
+    const 金额 = 取("[data-slot='hgraph-field-金额']") as HTMLInputElement
+    金额.value = "20000元"
+    失焦(金额)
+    expect(幽.计数.改字段).toBe(2)
+    const 金额补丁 = 幽.参数.改字段![1]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(金额补丁.属性.find((项) => 项.键 === "金额")).toEqual({ 键: "金额", 值: "20000元" })
+    expect(金额补丁.属性.some((项) => 项.键 === "时间精度")).toBe(true)
+  })
+
+  test("其他属性可改、可删、可增；保留键不进入「其他」列表", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 值 = 取("[data-slot='hgraph-field-属性值']") as HTMLInputElement
+    值.value = "还款"
+    失焦(值)
+    const 改后 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(改后.属性.find((项) => 项.键 === "用途")).toEqual({ 键: "用途", 值: "还款" })
+    expect(改后.属性.some((项) => 项.键 === "时间精度")).toBe(true)
+
+    ;(取("[data-slot='hgraph-field-属性删除']") as HTMLButtonElement).click()
+    const 删后 = 幽.参数.改字段![1]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(删后.属性.some((项) => 项.键 === "用途")).toBe(false)
+
+    ;(取("[data-slot='hgraph-field-属性新增']") as HTMLButtonElement).click()
+    const 增后 = 幽.参数.改字段![2]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(增后.属性.length).toBe(5)
+  })
+
+  test("参与方名字失焦 ⇒ 写/更新保留属性 `参与方·<角色>`", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 名字 = 取("[data-slot='hgraph-field-参与方名字']") as HTMLInputElement
+    名字.value = "王五"
+    失焦(名字)
+
+    expect(幽.计数.改字段).toBe(1)
+    const 补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(补丁.属性.find((项) => 项.键 === "参与方·付款方")).toEqual({ 键: "参与方·付款方", 值: "王五" })
+  })
+
+  test("新建参与方行（角色 + 名字）⇒ 追加对应保留属性", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    const 角色 = 取("[data-slot='hgraph-field-参与方新角色']") as HTMLInputElement
+    角色.value = "经手人"
+    角色.dispatchEvent(new Event("input", { bubbles: true }))
+    const 名字 = 取("[data-slot='hgraph-field-参与方新名字']") as HTMLInputElement
+    名字.value = "赵六"
+    名字.dispatchEvent(new Event("input", { bubbles: true }))
+    失焦(名字)
+
+    expect(幽.计数.改字段).toBe(1)
+    const 补丁 = 幽.参数.改字段![0]![2] as { 属性: Array<{ 键: string; 值: string }> }
+    expect(补丁.属性.find((项) => 项.键 === "参与方·经手人")).toEqual({ 键: "参与方·经手人", 值: "赵六" })
+  })
+
+  test("操作脚「看参与方」⇒ 参与方段高亮（等价可见动作）", () => {
+    挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+    ;(取("[data-slot='hgraph-inspector-participants-jump']") as HTMLButtonElement).click()
+    expect(取("[data-slot='hgraph-event-participants']")!.getAttribute("data-highlight")).toBe("true")
+  })
+
+  test("参与方行只认角色边：事件→实体手写边（标签空）不产生参与方行", () => {
+    const 图 = 事件图()
+    图.边.push({
+      id: "h1",
+      从: "ev手写",
+      到: "李四",
+      标签: "",
+      性质: "推断",
+      方向: "有向",
+      来源: { kind: "手写", 依据: "随手画" },
+      可信度: "中",
+      时间: { 首: "", 末: "" },
+    })
+    挂检查器({ 选中: ["ev手写"], 文档: 图 })
+
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    expect(行们.length).toBe(2)
+    // 手写边标签为空：若被误当成参与方行，该行文本恰是「：李四」（无角色名）。
+    expect(行们.some((行) => (行.textContent ?? "").trim() === "：李四")).toBe(false)
+  })
+
+  test("绑定事件无解绑控件（态只在加入时变化，无反向入口）", () => {
+    挂检查器({ 选中: ["ev绑定"], 文档: 事件图() })
+
+    // 前提：参与方段渲染出来了（本任务新增），下面「没有解绑」才有对象所指。
+    expect(取("[data-slot='hgraph-event-participants']") === null).toBe(false)
+    expect(取("[data-slot='hgraph-unbind']") === null).toBe(true)
+    // 文案层也没有「解绑」入口；绑定入口只属于手写/推断节点。
+    const 解绑键们 = [...document.body.querySelectorAll("button")].filter((键) =>
+      (键.textContent ?? "").includes("解绑"),
+    )
+    expect(解绑键们.length).toBe(0)
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
+  })
+
+  test("已对上档案只读 `角色：名字`；未对上档案是可编的角色 + 名字（灰字保留）", () => {
+    const 幽 = 挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
+
+    expect(取("[data-slot='hgraph-event-participants']") === null).toBe(false)
+    const 行们 = [...document.body.querySelectorAll<HTMLElement>("[data-slot='hgraph-event-participant-row']")]
+    expect(行们.length).toBe(2)
+
+    // 已对上档案（角色边）：只有 `角色：名字`，不带输入框、不带灰字。
+    const 已对上 = 行们.find((行) => (行.textContent ?? "").includes("收款方：李四"))
+    expect(已对上 === undefined).toBe(false)
+    expect(已对上!.querySelectorAll("input").length).toBe(0)
+    expect((已对上?.textContent ?? "").includes("未对上档案")).toBe(false)
+
+    // 未对上档案（保留属性 `参与方·<角色>`）：角色 + 名字两个可编输入，灰字逐字保留。
+    const 未对上 = 行们.find((行) => {
+      const 角色 = 行.querySelector<HTMLInputElement>("[data-slot='hgraph-field-参与方角色']")
+      return 角色?.value === "付款方"
+    })
+    expect(未对上 === undefined).toBe(false)
+    const 名字 = 未对上!.querySelector<HTMLInputElement>("[data-slot='hgraph-field-参与方名字']")
+    expect(名字 === null).toBe(false)
+    expect(名字!.value).toBe("王*五")
+    const 灰 = 未对上!.querySelector<HTMLElement>("[data-slot='hgraph-event-participant-unmatched']")
+    expect(灰 === null).toBe(false)
+    expect(灰?.textContent?.trim()).toBe("未对上档案")
+    expect(灰?.className).toContain("text-v2-text-text-muted")
+
+    // 不建节点、不改字段：仅渲染不会写。
+    expect(幽.计数.加节点 ?? 0).toBe(0)
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T014 · 四段骨架 / 收起窄条 / 未选中不渲染 / 档位与色值收口（FR-031/032/034/050）
+// ---------------------------------------------------------------------------
+
+describe("检查器 · T014 四段骨架与收起", () => {
+  test("选中节点 ⇒ 头 / 可改 / 只读 / 操作脚四段齐", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+
+    // 段名沿用既有：可改区是 `hgraph-inspector-edit`，只读区是 `hgraph-inspector-readonly`。
+    for (const 段 of [
+      "hgraph-inspector-head",
+      "hgraph-inspector-edit",
+      "hgraph-inspector-readonly",
+      "hgraph-inspector-actions",
+    ]) {
+      expect(document.body.querySelector(`[data-slot='${段}']`) === null).toBe(false)
+    }
+
+    // 只读区：灰底 + 🔒 + 悬停说明（FR-034）。
+    const 只读 = 取("[data-slot='hgraph-inspector-readonly']") as HTMLElement
+    expect(只读.className).toContain("bg-v2-background-bg-layer-01")
+    expect((只读.textContent ?? "").includes("🔒")).toBe(true)
+    expect(
+      只读.querySelector("[data-slot='hgraph-inspector-readonly-lock']")?.getAttribute("title"),
+    ).toBe("来自库快照，请在库中修改")
+
+    // 头段：名称 / 类型·细类 / 来源徽标 / 收起入口（FR-034）。
+    expect(文本("hgraph-inspector-head-title")).toBe("张三")
+    const 头 = 文本("hgraph-inspector-head") ?? ""
+    expect(头).toContain("人物 · 嫌疑人")
+    expect(头).toContain("实体")
+    expect(取("[data-slot='hgraph-inspector-collapse']") === null).toBe(false)
+
+    // 操作脚：左主操作、右删除。
+    expect(取("[data-slot='hgraph-inspector-neighbors']") === null).toBe(false)
+    expect(取("[data-slot='hgraph-inspector-delete']") === null).toBe(false)
+  })
+
+  test("收起态是 40px 竖条「详情」+ 类型色点；展开体不在 DOM", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 收起: true, 快照 })
+
+    const 容器 = 取("[data-slot='hgraph-inspector']") as HTMLElement
+    expect(容器.style.width).toBe("40px")
+
+    const 条 = 取("[data-slot='hgraph-inspector-collapsed']") as HTMLButtonElement
+    expect(条 === null).toBe(false)
+    expect((条.textContent ?? "").includes("详情")).toBe(true)
+
+    const 点 = 条.querySelector<HTMLElement>("[data-slot='hgraph-inspector-collapsed-dot']")
+    expect(点 === null).toBe(false)
+    expect((点!.style.background ?? "") === "").toBe(false)
+
+    // 收起时只剩窄条：头段与展开体都不渲染。
+    expect(取("[data-slot='hgraph-inspector-head']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-actions']") === null).toBe(true)
+
+    // 点窄条 ⇒ 展开（FR-050）。
+    条.click()
+    expect(幽.收起()).toBe(false)
+  })
+
+  test("类型色点取 graph.tsx 的类型色（号码 ⇒ info），不借用外环色", () => {
+    // 号码在图例映射里是 `var(--v2-state-bg-info)`；外环没有颜色 ⇒ 旧实现会落成中性灰。
+    // 这里同时钉展开头段与收起窄条两处，两处都读同一个 `头().色`。
+    const 展开 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }) })
+    const 色块 = 取("[data-slot='hgraph-inspector-head-color']") as HTMLElement
+    expect(色块 !== null).toBe(true)
+    expect(色块.style.background).toBe("var(--v2-state-bg-info)")
+
+    展开.set选中([])
+    const 收起 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码" }), 收起: true })
+    const 窄条 = 取("[data-slot='hgraph-inspector-collapsed']") as HTMLButtonElement
+    const 点 = 窄条.querySelector<HTMLElement>("[data-slot='hgraph-inspector-collapsed-dot']")
+    expect(点 !== null).toBe(true)
+    expect(点!.style.background).toBe("var(--v2-state-bg-info)")
+    expect(收起.收起()).toBe(true)
+  })
+
+  test("选中边 ⇒ 头 / 边可改 / 边只读 / 操作脚四段齐；文字没有只读段", async () => {
+    const 文档: 图文件 = {
+      ...带边图(),
+      文字: [{ id: "t1", 内容: "备注", x: 50, y: 50, 字号: "中" }],
+    }
+    const { set选中 } = 挂检查器({ 选中: ["e1"], 文档 })
+
+    // 边用另一套槽位名：可改区 `-edge`、只读区 `-edge-readonly`。
+    for (const 段 of [
+      "hgraph-inspector-head",
+      "hgraph-inspector-edge",
+      "hgraph-inspector-edge-readonly",
+      "hgraph-inspector-actions",
+    ]) {
+      expect(取(`[data-slot='${段}']`) === null).toBe(false)
+    }
+    // 节点那套只读槽位不该混进边面板。
+    expect(取("[data-slot='hgraph-inspector-readonly']") === null).toBe(true)
+
+    // 文字面板没有只读段（没有库快照来源），只有可改段。
+    set选中(["t1"])
+    await Promise.resolve()
+    // 前提：确实切到了文字面板；否则两个「不存在」断言在空面板上也绿（`#005-18`）。
+    expect(取("[data-slot='hgraph-inspector-text']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-readonly']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-edge-readonly']") === null).toBe(true)
+  })
+
+  test("未选中 ⇒ 检查器不渲染（不是空壳、不占位）", () => {
+    挂检查器({ 选中: [] })
+
+    expect(document.body.querySelector("[data-slot='hgraph-inspector']") === null).toBe(true)
+    expect(document.body.querySelector("[data-slot='hgraph-inspector-collapsed']") === null).toBe(true)
+    expect(document.body.querySelector("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
+  })
+
+  test("外环档 12 ⇒ 就地提示且不调用改字段（与线宽档同一实现点）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-外环档']") as HTMLInputElement
+
+    输入.value = "12"
+    失焦(输入)
+
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+    expect(文本("hgraph-field-外环档-提示")).toBe("要填 0–4 的整数")
+  })
+
+  test("外环档清空 ⇒ 删键：外环只留颜色（与线宽档同语义）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
+    const 输入 = 取("[data-slot='hgraph-field-外环档']") as HTMLInputElement
+
+    输入.value = ""
+    失焦(输入)
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: { 颜色: "红" } }])
+  })
+
+  test("外环颜色是 <select>：7 预设 + 自动 = 8 个选项（色名取自外环色表）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 颜色: "红" } }), 快照 })
+
+    const 选 = 取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement
+    expect(选.tagName).toBe("SELECT")
+    const 值们 = [...选.querySelectorAll("option")].map((项) => 项.value)
+    expect(值们.length).toBe(8)
+    expect(值们[0]).toBe("自动")
+    expect(值们.slice(1)).toEqual(Object.keys(外环色表))
+
+    选择(选, "蓝")
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: { 颜色: "蓝" } }])
+  })
+
+  test("外环颜色选「自动」⇒ 删键（外环整键 null）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 颜色: "红" } }), 快照 })
+
+    选择(取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement, "自动")
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: null }])
   })
 })

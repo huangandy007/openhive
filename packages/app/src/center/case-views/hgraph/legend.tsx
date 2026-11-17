@@ -14,16 +14,37 @@
  * 不写文件、不进撤销栈、不调动作表。`初始收起` 由外壳传入：编辑器在演示态传 `true`
  * （设计 §5.14 演示态隐藏图例），T015 的隐藏只读渲染不传 ⇒ 导出永远含**展开**图例。
  * 同一个画布实例会随演示切换保持挂载，所以 prop 变化时跟随（不是只有挂载那一次）。
+ *
+ * ## T013：编辑态搬到画布条
+ *
+ * 编辑态图例不再放画布内（FR-057），由 `editor.tsx` 的画布条渲染：外壳传 `外置`
+ * 去掉 `(12,48)` 偏移，并用受控 `收起`/`收起变化` 按画布条宽（<900 折叠）驱动。
+ * 导出仍走画布内嵌渲染（不传 `外置`），坐标 `(12,48)` 与文案都不变。
  */
 import { Show, createEffect, createSignal, type JSX } from "solid-js"
 
 export interface 图例Props {
   /** 初始是否收起；演示态传 `true`。后续变化也跟随（同一画布实例不重挂）。 */
   readonly 初始收起?: boolean
+  /**
+   * 受控收起态（T013 编辑态画布条）：给出时由外壳按画布条宽驱动，内部不再自己管开关；
+   * 点击折叠/展开仍经 `收起变化` 交回外壳。省略 = 现状（自管，导出/演示沿用）。
+   */
+  readonly 收起?: boolean
+  readonly 收起变化?: (收起: boolean) => void
+  /**
+   * 外置到 HTML 容器（编辑态画布条）：去掉编辑态下移 48 的偏移——那是为了避开画布内
+   * 左上角 chrome，放在自带布局的条里不需要。省略 = 现状（导出仍用 `(12,48)`，R108）。
+   */
+  readonly 外置?: boolean
 }
 
-const 宽 = 196
-const 高 = 108
+/** 版式几何（M2）：编辑器画布条只引用这四个常量，不再各写一份数字。 */
+export const 图例宽 = 196
+export const 图例高 = 108
+export const 图例收起宽 = 52
+export const 图例收起高 = 22
+
 const 底色 = "var(--v2-background-bg-layer-01)"
 const 框色 = "var(--v2-border-border-muted)"
 const 字色 = "var(--v2-text-text-base)"
@@ -34,16 +55,25 @@ const 样色 = "var(--v2-text-text-muted)"
 const 文案们 = ["线粗 = 关系强弱", "环粗 = 连接多少", "实线 = 事实，虚线 = 推断", "箭头 = 方向"]
 
 export function 图例(props: 图例Props): JSX.Element {
-  const [收起, set收起] = createSignal(props.初始收起 === true)
-  createEffect(() => set收起(props.初始收起 === true))
+  const [内部收起, set内部收起] = createSignal(props.初始收起 === true)
+  // 受控时（`收起` 给出）内部状态不跟 `初始收起` 走，避免外壳的阈值被演示态信号覆盖。
+  createEffect(() => {
+    if (props.收起 !== undefined) return
+    set内部收起(props.初始收起 === true)
+  })
+  const 收起 = () => props.收起 ?? 内部收起()
+  const 设收起 = (值: boolean) => {
+    if (props.收起 === undefined) set内部收起(值)
+    props.收起变化?.(值)
+  }
 
   return (
-    <g data-slot="hgraph-legend" transform="translate(12 48)">
+    <g data-slot="hgraph-legend" transform={props.外置 === true ? undefined : "translate(12 48)"}>
       <Show
         when={收起()}
         fallback={
           <>
-            <rect x="0" y="0" width={宽} height={高} rx="4" fill={底色} stroke={框色} />
+            <rect x="0" y="0" width={图例宽} height={图例高} rx="4" fill={底色} stroke={框色} />
             <text x="10" y="17" font-size="12" fill={字色}>
               图例
             </text>
@@ -53,7 +83,7 @@ export function 图例(props: 图例Props): JSX.Element {
               role="button"
               aria-label="收起图例"
               class="cursor-pointer"
-              onClick={() => set收起(true)}
+              onClick={() => 设收起(true)}
             >
               <rect x="160" y="6" width="28" height="16" rx="3" fill="transparent" />
               <text x="163" y="17" font-size="11" fill={样色}>
@@ -115,9 +145,9 @@ export function 图例(props: 图例Props): JSX.Element {
           role="button"
           aria-label="展开图例"
           class="cursor-pointer"
-          onClick={() => set收起(false)}
+          onClick={() => 设收起(false)}
         >
-          <rect x="0" y="0" width="52" height="22" rx="4" fill={底色} stroke={框色} />
+          <rect x="0" y="0" width={图例收起宽} height={图例收起高} rx="4" fill={底色} stroke={框色} />
           <text x="10" y="15" font-size="12" fill={字色}>
             图例
           </text>
