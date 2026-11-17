@@ -43,11 +43,12 @@ export function 统计收尾(部件们: readonly 统计输入部件[]): 收尾�
   for (const 部件 of 部件们) {
     if (typeof 部件.tool !== "string") continue
     if (!是信封工具键(部件.tool) || 是图工具键(部件.tool)) continue
+    // `查询次数` 按工具键计数：服务端预算成功、失败都算，故解析前就 +1（Ruling 8）。
+    查询次数 += 1
     const 解析 = 解析工具输出(部件.state?.output)
-    // 解析失败 / 非信封 / 工具错误一律跳过，不计入任何字段。
+    // 解析失败 / 非信封 / 工具错误只影响材料与缺口，不影响上面的计数。
     if (解析.种类 !== "信封") continue
 
-    查询次数 += 1
     for (const 出处 of 解析.信封.出处) {
       if (出处.代表 !== null) 材料.add(材料键(出处.代表))
     }
