@@ -243,7 +243,7 @@ export const dict: Record<string, string> = {
   // 【openhive 定制】收尾行（015 contracts/ui-card-contract.md §3）
   "ui.closingLine.summary": "{{count}} queries this reply · {{materials}} materials covered",
   "ui.closingLine.gaps": "{{gaps}} gaps (first: {{first}})",
-  "ui.closingLine.budget": "Reached the 12-query cap; uncovered items are shown in the tool cards",
+  "ui.closingLine.budget": "Reached the 12-query cap; see the tool cards below for uncovered items",
   "ui.envelopeTool.tool.search_materials": "Search materials",
   "ui.envelopeTool.tool.query_entities": "Query entities",
   "ui.envelopeTool.tool.query_relations": "Query relations",

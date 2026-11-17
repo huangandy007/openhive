@@ -24,6 +24,19 @@ export function 合并消息部件(按消息: readonly (readonly 统计输入部
   return 按消息.flatMap((部件们) => 部件们 ?? [])
 }
 
+/**
+ * 接线纯函数（F1 审查）：按消息顺序逐条取 parts 再合并。
+ *
+ * 抽出来是为了让「收尾行吃本轮全部消息」这条接线能被用例钉住——
+ * 真实链路里每步 LLM 调用新建一条 assistant 消息，tool part 分散在各条上。
+ */
+export function 收尾部件(
+  消息们: readonly { readonly id: string }[],
+  取部件: (消息id: string) => readonly 统计输入部件[] | undefined,
+): 统计输入部件[] {
+  return 合并消息部件(消息们.map((消息) => 取部件(消息.id)))
+}
+
 export interface 收尾统计 {
   readonly 查询次数: number
   readonly 覆盖材料数: number
@@ -56,6 +69,7 @@ const 材料键 = (代表: string) => {
  * `packages/opencode/src/server/openhive/case-mcp-server.ts` 的 `预算上限缺口`，
  * 第 12 次起被追加进成功信封的 `缺口`）。前端只认这段文案，不自己数次数——
  * 服务端按 `(userId, projectId)` + 10 分钟空闲窗口计数，前端按轮次计数必然对不上。
+ * 这条文案只驱动 `已达上限`；`统计收尾` 会把它从「缺口总项 / 首条缺口」里排除，避免重复念。
  */
 const 服务端上限缺口前缀 = "近 10 分钟内查询已达 12 次"
 
@@ -80,8 +94,11 @@ export function 统计收尾(部件们: readonly 统计输入部件[]): 收尾�
       const 键 = 材料键(出处.代表)
       if (键 !== null) 材料.add(键)
     }
-    缺口总项 += 解析.信封.缺口.length
-    if (首条缺口 === null) 首条缺口 = 解析.信封.缺口.find((条) => 条 !== "") ?? null
+    // 服务端注入的上限文案是机器话术，不是真实缺口：既不计入「缺口总项」，也不当「首条缺口」，
+    // 否则同一句话会在收尾行出现两遍（`.gaps` 与 `.budget` 各念一次）。
+    const 真实缺口 = 解析.信封.缺口.filter((条) => !条.startsWith(服务端上限缺口前缀))
+    缺口总项 += 真实缺口.length
+    if (首条缺口 === null) 首条缺口 = 真实缺口.find((条) => 条 !== "") ?? null
     if (解析.信封.缺口.some((条) => 条.startsWith(服务端上限缺口前缀))) 已达上限 = true
   }
 

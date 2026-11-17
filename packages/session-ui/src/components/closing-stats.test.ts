@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { dict as zh } from "@opencode-ai/ui/i18n/zh"
-import { 合并消息部件, 收尾行文本, 统计收尾 } from "./closing-stats"
+import { 合并消息部件, 收尾部件, 收尾行文本, 统计收尾 } from "./closing-stats"
 
 /**
  * 收尾行统计与文案的纯函数用例（015 T006，测试先行）。
@@ -179,29 +180,33 @@ describe("统计收尾", () => {
 describe("i18n 文案（F4）", () => {
   const 取 = (键: string) => (zh as Partial<Record<string, string>>)[键]
 
-  test("9 条 errorHint 全部存在且非空，write_failed 不与 bad_input 重复", () => {
-    const 错误码们 = [
-      "bad_input",
-      "not_found",
-      "not_a_member",
-      "forbidden",
-      "too_many",
-      "ambiguous_path",
-      "write_failed",
-      "tool_failed",
-      "unknown_tool",
-    ]
-    for (const 码 of 错误码们) {
-      const 文案 = 取(`ui.envelopeTool.errorHint.${码}`)
-      expect(文案, `ui.envelopeTool.errorHint.${码}`).toBeTruthy()
+  // 期望文案的唯一出处：`docs/superpowers/specs/2026-11-09-事实卡片抽象/09-AI探索与MCP工具-设计.md`
+  // §8.3「错误映射」表（9 个错误码各一句）。`tool_failed` 一项 §8.3 要求「保持现状那一句固定中文」，
+  // 即服务端 `case-mcp-server.ts` 的 `工具失败文案`。逐字抄录，防文案悄悄漂移。
+  const 错误引导逐字: Record<string, string> = {
+    bad_input: "参数不对，我再试一次",
+    not_found: "没找到这个实体",
+    not_a_member: "无权访问该项目",
+    forbidden: "只有项目属主能改",
+    too_many: "一次给太多，请分批",
+    ambiguous_path: "请先列图，再点名",
+    write_failed: "写进去了但读不回来",
+    tool_failed: "工具执行失败，已记入服务端日志",
+    unknown_tool: "没有这个工具",
+  }
+
+  test("9 条 errorHint 与 09 §8.3 逐字一致，write_failed 不与 bad_input 重复", () => {
+    for (const [码, 期望] of Object.entries(错误引导逐字)) {
+      expect(取(`ui.envelopeTool.errorHint.${码}`), `ui.envelopeTool.errorHint.${码}`).toBe(期望)
     }
     expect(取("ui.envelopeTool.errorHint.write_failed")).not.toBe(取("ui.envelopeTool.errorHint.bad_input"))
   })
 
-  test("3 条 closingLine 文案全部存在且非空", () => {
-    for (const 段 of ["summary", "gaps", "budget"]) {
-      expect(取(`ui.closingLine.${段}`), `ui.closingLine.${段}`).toBeTruthy()
-    }
+  test("3 条 closingLine 文案逐字一致（budget 按 spec FR-025「以下未覆盖项」）", () => {
+    expect(取("ui.closingLine.summary")).toBe("本轮回答查询 {{count}} 次 · 覆盖材料 {{materials}} 份")
+    expect(取("ui.closingLine.gaps")).toBe("缺口 {{gaps}} 项（如：{{first}}）")
+    // 旧值「已达 12 次上限，未覆盖项见工具卡缺口」与 spec 的「以下未覆盖项」不符；逐字钉住防再漂。
+    expect(取("ui.closingLine.budget")).toBe("已达 12 次上限，以下未覆盖项见工具卡缺口")
   })
 })
 
@@ -216,6 +221,46 @@ describe("合并消息部件（F1 跨消息）", () => {
 
   test("缺 part 列表的消息（undefined）跳过，不抛错", () => {
     expect(合并消息部件([消息("openhive-case_query_entities"), undefined]).length).toBe(1)
+  })
+})
+
+describe("收尾部件（接线层，F1）", () => {
+  test("按传入顺序逐条取部件再合并：1 + 2 = 3 次，且 getter 收到的 id 顺序与传入一致", () => {
+    const 部件库: Record<string, ReturnType<typeof 工具部件>[]> = {
+      甲: [工具部件("openhive-case_query_entities", 信封文本(最小信封([], [])))],
+      乙: [
+        工具部件("openhive-case_query_events", 信封文本(最小信封([], []))),
+        工具部件("openhive-case_get_citation", 信封文本(最小信封([], []))),
+      ],
+    }
+    const 见过的id: string[] = []
+    const 合并 = 收尾部件([{ id: "甲" }, { id: "乙" }], (id) => {
+      见过的id.push(id)
+      return 部件库[id]
+    })
+    expect(统计收尾(合并).查询次数).toBe(3)
+    // 顺序断言：防止将来接线只取第一条 / 最后一条消息。
+    expect(见过的id).toEqual(["甲", "乙"])
+  })
+
+  /**
+   * 结构钉子——**结构性回归钉子，不是行为测试**。
+   *
+   * 本包没有 DOM 测试基建（无 happy-dom preload、无 Solid 渲染器），挂不起
+   * `<AssistantParts>` 去断言行内 `<ClosingLine>` 实际拿到几条消息的部件。
+   * F1 的真实 bug 恰恰是「接线位置」——`<ClosingLine>` 被放回单条消息的渲染器里，
+   * 纯函数用例（`收尾部件` / `合并消息部件`）全绿也看不见。所以只能读源码钉住：
+   * ① 接线表达式确实在跑「本轮全部消息」；② 单条消息的文本渲染器里没有 `<ClosingLine>`。
+   */
+  test("结构钉子：收尾行数据源接在本轮全部消息上，且不在单条消息的文本渲染器里", () => {
+    const 源码 = readFileSync(new URL("./message-part.tsx", import.meta.url), "utf8")
+    expect(源码).toContain("收尾部件(props.messages")
+
+    const 起 = 源码.indexOf("function TextPartDisplay")
+    expect(起).toBeGreaterThan(-1)
+    const 止 = 源码.indexOf("\nPART_MAPPING", 起 + 1)
+    const 函数体 = 源码.slice(起, 止 === -1 ? undefined : 止)
+    expect(函数体).not.toContain("<ClosingLine")
   })
 })
 
@@ -242,6 +287,42 @@ describe("收尾行文本", () => {
     const 文本 = 收尾行文本(统计收尾(parts), 假t)
     expect(文本).toContain("ui.closingLine.summary")
     expect(文本).not.toContain("ui.closingLine.budget")
+  })
+
+  test("F3 预算缺口不重复计入：只有服务端上限文案 ⇒ 缺口总项 0、首条缺口 null、已达上限 true，文本只含 budget 不含 gaps", () => {
+    const parts = [
+      工具部件(
+        "openhive-case_query_rows",
+        信封文本(最小信封(["近 10 分钟内查询已达 12 次，必须收尾并列出未覆盖项"], [])),
+      ),
+    ]
+    const 统计 = 统计收尾(parts)
+    // 服务端注入的上限文案是机器话术，不是真实缺口：若被计入，收尾行会把它当「首条缺口」
+    // 再念一遍（同一句话出现两遍）。旧实现：缺口总项=1、首条缺口=该句、文本同时含 gaps ⇒ 必红。
+    expect(统计.缺口总项).toBe(0)
+    expect(统计.首条缺口).toBeNull()
+    expect(统计.已达上限).toBe(true)
+    const 文本 = 收尾行文本(统计, 假t)
+    expect(文本).toContain("ui.closingLine.budget")
+    expect(文本).not.toContain("ui.closingLine.gaps")
+  })
+
+  test("F3 真实缺口与上限文案并存 ⇒ 缺口总项只数真实缺口，首条缺口是真实缺口", () => {
+    const parts = [
+      工具部件(
+        "openhive-case_query_rows",
+        信封文本(
+          最小信封(
+            ["2 份资金材料未解析", "近 10 分钟内查询已达 12 次，必须收尾并列出未覆盖项"],
+            [],
+          ),
+        ),
+      ),
+    ]
+    const 统计 = 统计收尾(parts)
+    expect(统计.缺口总项).toBe(1)
+    expect(统计.首条缺口).toBe("2 份资金材料未解析")
+    expect(统计.已达上限).toBe(true)
   })
 
   test("F3：只有 1 次调用、其信封缺口含服务端上限文案 ⇒ 含 .budget（服务端注入驱动）", () => {
