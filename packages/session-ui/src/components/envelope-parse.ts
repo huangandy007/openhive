@@ -53,6 +53,24 @@ export function 工具名文本(t: (键: string) => string, 工具键: string): 
   return 文本 === 键 ? 名 : 文本
 }
 
+/** 9 个错误码 → 引导文案的 i18n 键（`09` §8.3）；表外的码没有引导话术。 */
+const 错误码引导键表: Record<string, string> = {
+  bad_input: "ui.envelopeTool.errorHint.bad_input",
+  not_found: "ui.envelopeTool.errorHint.not_found",
+  not_a_member: "ui.envelopeTool.errorHint.not_a_member",
+  forbidden: "ui.envelopeTool.errorHint.forbidden",
+  too_many: "ui.envelopeTool.errorHint.too_many",
+  ambiguous_path: "ui.envelopeTool.errorHint.ambiguous_path",
+  write_failed: "ui.envelopeTool.errorHint.write_failed",
+  tool_failed: "ui.envelopeTool.errorHint.tool_failed",
+  unknown_tool: "ui.envelopeTool.errorHint.unknown_tool",
+}
+
+/** 错误码 → 引导文案的 i18n 键；未知码给 `undefined`（不回退成固定话术）。 */
+export function 错误码引导键(码: string): string | undefined {
+  return 错误码引导键表[码]
+}
+
 const 是记录 = (值: unknown): 值 is Record<string, unknown> =>
   typeof 值 === "object" && 值 !== null && !Array.isArray(值)
 

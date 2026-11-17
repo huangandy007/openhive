@@ -230,6 +230,15 @@ export const dict: Record<string, string> = {
   "ui.envelopeTool.object": "Object data",
   "ui.envelopeTool.error": "Tool call failed",
   "ui.envelopeTool.errorCode": "Code",
+  "ui.envelopeTool.errorHint.bad_input": "Invalid arguments; I'll retry",
+  "ui.envelopeTool.errorHint.not_found": "No such entity",
+  "ui.envelopeTool.errorHint.not_a_member": "No access to this project",
+  "ui.envelopeTool.errorHint.forbidden": "Only the project owner can change this",
+  "ui.envelopeTool.errorHint.too_many": "Too much at once; please split into batches",
+  "ui.envelopeTool.errorHint.ambiguous_path": "List the graph first, then name the entity",
+  "ui.envelopeTool.errorHint.write_failed": "Written, but cannot be read back",
+  "ui.envelopeTool.errorHint.tool_failed": "Tool execution failed; logged on the server",
+  "ui.envelopeTool.errorHint.unknown_tool": "No such tool",
 
   // 【openhive 定制】收尾行（015 contracts/ui-card-contract.md §3）
   "ui.closingLine.summary": "{{count}} queries this reply · {{materials}} materials covered",
