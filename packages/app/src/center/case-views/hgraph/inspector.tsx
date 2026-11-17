@@ -1120,24 +1120,16 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </span>
                   }
                 >
-                  {/* 需求第 6 项②：细类跟着类型走；「（无）」等价清空（发 null 删键）。 */}
-                  <select
+                  {/* 2026-11-17 用户裁定：细类改回**可自由输入**的文本框（原先是被备选表限死的
+                      下拉）。备选表 `细类备选` 只留给「改类型清细类」的判据，不再驱动本控件。
+                      失焦即存（与名称/备注同一条路径）；首尾空白裁掉，裁后为空 ⇒ 发 null 删键。 */}
+                  <input
                     id="hgraph-field-细类"
                     data-slot="hgraph-field-细类"
                     class={输入}
                     value={点().细类 ?? ""}
-                    onChange={(事件) => 提交(点(), "细类", 事件.currentTarget.value)}
-                  >
-                    <option value="">（无）</option>
-                    <For each={细类备选(点().类型)}>{(名) => <option value={名}>{名}</option>}</For>
-                    <Show
-                      when={
-                        (点().细类 ?? "") !== "" && !细类备选(点().类型).includes(点().细类 ?? "")
-                      }
-                    >
-                      <option value={点().细类}>{点().细类}</option>
-                    </Show>
-                  </select>
+                    onBlur={(事件) => 提交(点(), "细类", 事件.currentTarget.value.trim())}
+                  />
                 </Show>
               </div>
               <div class={行}>

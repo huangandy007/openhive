@@ -316,8 +316,8 @@ describe("检查器 · 失焦即存", () => {
     expect(幽.计数.改字段 ?? 0).toBe(0)
   })
 
-  // 需求第 6 项②：类型 / 细类改成 `<select>` 后，改值的触发从失焦变成 `change`；
-  // 「没变就不发补丁」的同一条纪律照旧守着。
+  // 类型仍是 `<select>`（change 触发）；细类 2026-11-17 由用户裁定改回**文本框**（失焦触发），
+  // 所以「没变就不发补丁」在这里按两条触发路径分别钉。
   test("值没变（change 成同一个值）不发补丁", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
     const 类型 = 取("[data-slot='hgraph-field-类型']") as HTMLSelectElement
@@ -325,12 +325,24 @@ describe("检查器 · 失焦即存", () => {
     expect(幽.计数.改字段 ?? 0).toBe(0)
   })
 
-  test("细类选「（无）」⇒ 细类: null（可删键，不是空串）", () => {
+  test("细类文本框原值失焦不发补丁（文本路径同样遵守「没变不发」）", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
-    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
     expect(细类.value).toBe("嫌疑人")
 
-    选择(细类, "")
+    失焦(细类)
+
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+  })
+
+  test("清空细类文本框 ⇒ 细类: null（可删键，不是空串）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
+    expect(细类.tagName).toBe("INPUT")
+    expect(细类.value).toBe("嫌疑人")
+
+    细类.value = ""
+    失焦(细类)
 
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: null }])
   })
@@ -1074,12 +1086,13 @@ describe("检查器 · T011 事件两态与参与方", () => {
 
   test("手写事件九格逐项有可编辑控件（时间/金额/其他/参与方也不缺）", () => {
     挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
-    // 名称/备注/出现序/时间首末/金额（既有）+ 类型/细类（需求第 6 项②改为下拉）。
-    // 备注改多行（需求第 6 项③）。可编辑 = 不是只读 `span`，这里按控件种类逐项钉住。
+    // 名称/备注/出现序/时间首末/金额（既有）+ 类型（需求第 6 项②改为下拉）、细类
+    //（2026-11-17 用户裁定改回可自由输入的文本框）。备注改多行（需求第 6 项③）。
+    // 可编辑 = 不是只读 `span`，这里按控件种类逐项钉住。
     const 控件: Record<string, string> = {
       名称: "INPUT",
       类型: "SELECT",
-      细类: "SELECT",
+      细类: "INPUT",
       备注: "TEXTAREA",
       出现序: "INPUT",
       时间首: "INPUT",
@@ -1498,7 +1511,7 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     expect(提示们[0]!.textContent ?? "").toContain("收起")
   })
 
-  test("② 类型 / 细类是下拉：选项取统一备选表，库里的旧值仍显示", () => {
+  test("② 类型是下拉：选项取统一备选表，库里的旧值仍显示", () => {
     挂检查器({ 选中: ["n1"], 快照 })
 
     const 类型 = 取("[data-slot='hgraph-field-类型']") as HTMLSelectElement | null
@@ -1511,17 +1524,37 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     // 夹具的类型「人物」不在表里：必须作为额外一项保留（不能显示成空）。
     expect(类型!.value).toBe("人物")
 
-    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement | null
+    // 细类：2026-11-17 用户裁定改回文本框——可自由输入，不再由备选表限制。
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement | null
     expect(细类 !== null).toBe(true)
-    expect(细类!.tagName).toBe("SELECT")
+    expect(细类!.tagName).toBe("INPUT")
     expect(细类!.value).toBe("嫌疑人")
+    expect(细类!.getAttribute("list") === null).toBe(true)
   })
 
-  test("② 细类选项跟随类型：号码 ⇒ 手机号 / 身份证 / 固定电话（外加「（无）」）", () => {
-    挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码", 细类: "手机号" }), 快照 })
+  test("② 细类可自由输入：不在备选表里的值照样提交", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码", 细类: "手机号" }), 快照 })
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
+    expect(细类.value).toBe("手机号")
 
-    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement
-    expect([...细类.options].map((项) => 项.value)).toEqual(["", "手机号", "身份证", "固定电话"])
+    细类.value = "境外号码"
+    失焦(细类)
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: "境外号码" }])
+  })
+
+  test("② 细类首尾空白裁掉；全空白等于清空（发 null）", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
+
+    细类.value = "  境外号码 "
+    失焦(细类)
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: "境外号码" }])
+
+    // 第二次：全空白同一出口 ⇒ 删键（不是写入一串空格）。
+    细类.value = "   "
+    失焦(细类)
+    expect(幽.参数.改字段![1]).toEqual(["节点", "n1", { 细类: null }])
   })
 
   test("② 改类型 ⇒ 一条改字段；新类型不允许原细类时，同一补丁里清掉细类", () => {
@@ -1532,10 +1565,12 @@ describe("检查器 · 需求第 6 项的面板细节", () => {
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 类型: "号码", 细类: null }])
   })
 
-  test("② 改细类 ⇒ 只发改细类", () => {
+  test("② 改细类 ⇒ 只发改细类（文本框失焦即存）", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码", 细类: "手机号" }), 快照 })
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
 
-    选择(取("[data-slot='hgraph-field-细类']") as HTMLSelectElement, "身份证")
+    细类.value = "身份证"
+    失焦(细类)
 
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: "身份证" }])
   })
