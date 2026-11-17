@@ -41,6 +41,7 @@ import { BasicTool, GenericTool } from "./basic-tool"
 import { 信封错误卡, 信封渲染兜底 } from "./envelope-tool"
 import { 是信封工具键 } from "./envelope-parse"
 import { ClosingLine } from "./closing-line"
+import { 合并消息部件 } from "./closing-stats"
 import { Accordion } from "@opencode-ai/ui/accordion"
 import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
@@ -740,6 +741,15 @@ export function AssistantParts(props: {
   const emptyParts: PartType[] = []
   const emptyTools: ToolPart[] = []
   const msgs = createMemo(() => index(props.messages))
+  // 收尾行吃**本轮全部** assistant 消息的 parts：tool part 挂在当步消息上，
+  // 最终回答是另一条无 tool 的消息（F1，见 `closing-stats.ts` 的 `合并消息部件`）。
+  const 收尾部件 = createMemo(() =>
+    合并消息部件(
+      props.messages.map((message) =>
+        list(data.store.part?.[message.id], emptyParts).filter((part): part is ToolPart => part.type === "tool"),
+      ),
+    ),
+  )
   const part = createMemo(
     () =>
       new Map(
@@ -766,7 +776,8 @@ export function AssistantParts(props: {
   const last = createMemo(() => grouped().at(-1)?.key)
 
   return (
-    <Index each={grouped()}>
+    <>
+      <Index each={grouped()}>
       {(entryAccessor) => {
         const entryType = createMemo(() => entryAccessor().type)
 
@@ -826,7 +837,9 @@ export function AssistantParts(props: {
           </Switch>
         )
       }}
-    </Index>
+      </Index>
+      <ClosingLine parts={收尾部件()} />
+    </>
   )
 }
 
@@ -1768,7 +1781,6 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
                 {meta()}
               </span>
             </Show>
-            <ClosingLine parts={(data.store.part?.[props.message.id] ?? []).filter((p): p is ToolPart => p.type === "tool")} />
           </div>
         </Show>
       </div>

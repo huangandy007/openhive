@@ -6,7 +6,7 @@ import * as mod from "./closing-line"
  * 三态验收（015 T008）：
  * ① 0 次信封调用 ⇒ 组件不渲染任何内容（画布为空白）；
  * ② 2 次信封调用带 2 条缺口 ⇒ 一行统计 + 缺口段；
- * ③ 12 次信封调用 ⇒ 多出「已达 12 次上限」提示。
+ * ③ 信封缺口含服务端上限文案 ⇒ 多出「已达 12 次上限」提示（服务端注入驱动，不按次数数）。
  *
  * `parts` 形状照抄同包 `closing-stats.test.ts` 的夹具（tool + state.output）。
  * storybook 没有全局 `I18nProvider`，`useI18n` 走英文 fallback，故画布文案为英文。
@@ -43,13 +43,13 @@ const 两缺口部件 = [
   ),
 ]
 
-/** ③ 12 次信封调用 ⇒ `收尾行文本` 追加 budget 段（缺口可有可无）。 */
-const 十二次部件 = Array.from({ length: 12 }, (_, i) =>
+/** ③ 服务端第 12 次起把上限文案追加进信封 `缺口` ⇒ `收尾行文本` 追加 budget 段。 */
+const 上限部件 = [
   工具部件(
-    `openhive-case_query_events`,
-    信封文本(信封([], [`m-${i + 1}#事件表#1`])),
+    "openhive-case_query_events",
+    信封文本(信封(["近 10 分钟内查询已达 12 次，必须收尾并列出未覆盖项"], ["m-1#事件表#1"])),
   ),
-)
+]
 
 const docs = `### 收尾行 · ClosingLine
 
@@ -59,7 +59,7 @@ const docs = `### 收尾行 · ClosingLine
 ### 三态
 1. **ZeroQueries**：0 次信封调用 ⇒ 不渲染任何节点（画布空白）。
 2. **TwoGaps**：2 次信封调用、2 条缺口 ⇒ summary + gaps 两段。
-3. **TwelveQueries**：12 次信封调用 ⇒ summary + budget 上限提示。
+3. **BudgetGap**：信封缺口含服务端上限文案 ⇒ summary + gaps + budget 上限提示。
 
 > storybook 无全局 \`I18nProvider\`，画布文案是英文 fallback。
 `
@@ -88,7 +88,7 @@ export const TwoGaps = {
   args: { parts: 两缺口部件 },
 }
 
-export const TwelveQueries = {
+export const BudgetGap = {
   ...story.Basic,
-  args: { parts: 十二次部件 },
+  args: { parts: 上限部件 },
 }
