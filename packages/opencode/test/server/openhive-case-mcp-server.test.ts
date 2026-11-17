@@ -193,7 +193,7 @@ test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 
     const 描述 = 工具.description ?? ""
     const 位置 = 三段标记.map((标记) => 描述.indexOf(标记))
     // 失败时把工具名与缺的段一起打出来：只报「false」看不出是谁缺。
-    expect({ 工具: 工具.name, 缺段: 三段标记.filter((_, 序) => 位置[序]! < 0) }).toEqual({
+    expect({ 工具: 工具.name, 缺段: 三段标记.filter((_, 序) => 位置[序] < 0) }).toEqual({
       工具: 工具.name,
       缺段: [],
     })
