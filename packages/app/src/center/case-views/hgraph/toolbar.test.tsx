@@ -297,6 +297,25 @@ describe("T015 · 悬停 300ms 出说明（含快捷键）", () => {
   })
 })
 
+describe("T015b · 只留一套提示（需求第 3 项）", () => {
+  const 等 = (毫秒: number) => new Promise((解) => setTimeout(解, 毫秒))
+
+  test("工具钮没有原生 title：悬停只出 TooltipV2 的详细说明（一套）", async () => {
+    挂工具栏()
+
+    const 键 = 钮("hgraph-toolbar-present")!
+    // 原生 title 与 TooltipV2 同时在场 = 两套提示（真浏览器里先弹原生、再弹自定义）。
+    expect(键.getAttribute("title") === null).toBe(true)
+    expect(键.getAttribute("aria-label")).toBe("演示")
+
+    悬停(键)
+    await 等(350)
+    const 提示们 = document.querySelectorAll("[data-slot='hgraph-toolbar-tip']")
+    expect(提示们.length).toBe(1)
+    expect(提示们[0].textContent ?? "").toContain("演示")
+  })
+})
+
 describe("T016 · 排列模式下拉原样透传", () => {
   test("默认环形；选『分层』后点自动布局 ⇒ 动作表收到的模式是 分层", async () => {
     const { 布局记录 } = 挂工具栏()

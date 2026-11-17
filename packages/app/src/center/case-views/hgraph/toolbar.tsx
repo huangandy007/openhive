@@ -12,8 +12,9 @@
  * - 模式按钮（指针 / 手 / 连线）随 `模式` 呈现按下态（品牌金边框 + 浅金底），
  *   `aria-pressed` 反映当前模式；动作按钮的 `aria-pressed` 恒 `"false"`。
  * - 删除是危险操作，用危险色 token（不与「加节点」同权重）。
- * - 悬停 300ms 出带快捷键的说明，走 `TooltipV2` 的 portal（父容器不裁剪）；`title`
- *   保留为无障碍兜底（既有用例已钉 merge / present）。
+ * - 悬停 300ms 出带快捷键的说明，走 `TooltipV2` 的 portal（父容器不裁剪）。
+ *   **不挂原生 `title`**：两套提示会在真浏览器里先后弹出（先原生、再自定义）；
+ *   无障碍名只有 `aria-label` 一处。
  * - 对齐 / 等距各有 6 / 2 个变体，13 枚图形键里只有一枚通用 glyph；变体沿用文字标签，
  *   图形键用在该簇的组图标上（换成同一枚图标会无法区分方向）。
  */
@@ -59,11 +60,13 @@ const 钮危 =
 
 interface 工具钮Props {
   readonly slot: string
-  /** 无障碍名：`aria-label` 与 `title` 共用（title 是既有用例的既有口径）。 */
+  /** 无障碍名：只写进 `aria-label`（不挂 `title`，见文件头）。 */
   readonly 名称: string
   /** 300ms 悬停说明，带快捷键。 */
   readonly 说明: string
   readonly 图标?: string
+  /** 内联图形（如顶栏撤销 / 重做）：与 `图标` 二选一，优先于 `图标`。 */
+  readonly 图标节点?: JSX.Element
   /** 变体簇（对齐 / 等距）的可见短标签；与 `图标` 二选一。 */
   readonly 标签?: string
   /** 只给屏幕阅读器的文字：既有用例按 `textContent` 钉了「解锁」「只看邻居」。 */
@@ -75,7 +78,7 @@ interface 工具钮Props {
   readonly 点: () => void
 }
 
-function 工具钮(props: 工具钮Props): JSX.Element {
+export function 工具钮(props: 工具钮Props): JSX.Element {
   const [出, set出] = createSignal(false)
   let 定时: ReturnType<typeof setTimeout> | undefined
   let 壳: HTMLSpanElement | undefined
@@ -129,12 +132,11 @@ function 工具钮(props: 工具钮Props): JSX.Element {
           data-kind={props.种类 === "mode" ? "mode" : props.种类 === "toggle" ? "toggle" : "action"}
           aria-label={props.名称}
           aria-pressed={props.种类 === "action" ? "false" : props.按下 === true ? "true" : "false"}
-          title={props.名称}
           class={类()}
           disabled={props.禁用}
           onClick={props.点}
         >
-          <Show when={props.标签 !== undefined} fallback={<Icon name={props.图标 ?? "plus"} size="small" />}>
+          <Show when={props.标签 !== undefined} fallback={props.图标节点 ?? <Icon name={props.图标 ?? "plus"} size="small" />}>
             {props.标签}
           </Show>
           <Show when={props.隐藏文字 !== undefined}>

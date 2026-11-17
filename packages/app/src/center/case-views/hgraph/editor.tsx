@@ -55,12 +55,13 @@ import { 解析图, 序列化图, 是事件节点, type 边, type 图文件, typ
 import { 对齐映射, 同内容 } from "./same-content"
 import { 下一个默认名 } from "./default-name"
 import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
-import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
+import { 图例, 图例宽, 图例高, 图例说明 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
 import { 绑定补丁 } from "./bind"
 import { 临时id, 是临时id } from "./temp-id"
 import { 对齐 as 对齐位置, 隐藏计数, 查找路径, 等距 as 等距位置, 外环档表 } from "./geometry"
-import { 工具栏 } from "./toolbar"
+import { 工具栏, 工具钮 } from "./toolbar"
+import { 重做图标, 撤销图标 } from "./bar-icons"
 import { 检查器, 收起宽, type 节点快照 } from "./inspector"
 import { 导出PNG, type 导出尺寸, type 导出依赖, type 导出选项 } from "./export"
 import { 处理演示按键, 演示步进, 演示覆盖层, 请求全屏, 退出全屏 } from "./present"
@@ -132,16 +133,6 @@ type 路径面板内容 =
   | { readonly 空: false; readonly 跳数: number; readonly 路径: readonly string[] }
 
 const 防抖毫秒 = 500
-
-/**
- * 画布条宽 → 图例是否折叠（FR-057）。
- * `undefined` / `0` = 还没量到（happy-dom 恒 0），返回 `undefined` 表示「不改折叠态」；
- * 899 ⇒ 折叠、900 ⇒ 展开，边界只在这里判一次（`#002-06`）。
- */
-export function 图例应折叠(宽: number | undefined): boolean | undefined {
-  if (宽 === undefined || 宽 <= 0) return undefined
-  return 宽 < 900
-}
 
 /**
  * `改字段` 的补丁：`null` / `undefined` 表示删该键（与后端契约 §3.1 同义）；
@@ -572,15 +563,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const [撤销栈, set撤销栈] = createSignal<撤销栈>(新建撤销栈())
   const [选中, set选中] = createSignal<readonly string[]>([])
   const [模式, set模式] = createSignal<模式>("指针")
-  /**
-   * 画布条宽（T013 / FR-057）：<900 图例折叠为「图例」按钮。
-   * happy-dom 没有布局 ⇒ `clientWidth` 恒 0（`#005-32`）；0 视为「还没量到」，
-   * 不据此折叠（真浏览器挂载后 ResizeObserver 会给出真宽）。
-   */
-  const [画布条宽, set画布条宽] = createSignal<number | undefined>(undefined)
-  /** 图例收起态：由画布条宽驱动，用户仍可点开/收起（受控传给 `图例`）。 */
-  const [图例收起, set图例收起] = createSignal(false)
-  let 画布条元素: HTMLDivElement | undefined
+  /** 图例收起态：顶栏「图例」按钮是唯一开关（点开 = 浮层，受控传给 `图例`）。 */
+  const [图例收起, set图例收起] = createSignal(true)
   /** 正在内联改名的节点；`undefined` = 没有输入框。 */
   const [重命名id, set重命名id] = createSignal<string | undefined>()
   /** 自动布局的确认条（FR-022；不用 `window.confirm`，happy-dom 会挂）。 */
@@ -1434,22 +1418,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     轮询计时 = setInterval(() => void 轮询(), props.轮询毫秒 ?? 10_000)
   })
 
-  // T013 / FR-057：量画布条宽，<900 时图例折叠。只在宽度变化时改折叠态，
-  // 用户手动点开/收起不会在每次渲染时被打回。
-  onMount(() => {
-    if (画布条元素 === undefined) return
-    const 测量 = () => set画布条宽(画布条元素!.clientWidth)
-    测量()
-    if (typeof ResizeObserver === "undefined") return
-    const 观察 = new ResizeObserver(测量)
-    观察.observe(画布条元素)
-    onCleanup(() => 观察.disconnect())
-  })
-  createEffect(() => {
-    const 应折叠 = 图例应折叠(画布条宽())
-    if (应折叠 !== undefined) set图例收起(应折叠)
-  })
-
   const 重新载入 = () => {
     if (待重载 === undefined) {
       set询问重载(false)
@@ -2200,29 +2168,50 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       <Show when={!演示中()}>
         {/* FR-043：顶栏显式 34px。重试与导出回执是「已保存」状态的附属件，不另起一行。 */}
         <div data-slot="hgraph-editor-bar" class="flex h-[34px] shrink-0 items-center gap-2 px-2">
-        {/* T013 / FR-043：搜索 / 筛选 / 计数已迁到画布条；顶栏只留撤销 / 重做 / 已保存。 */}
-        <button
-          type="button"
-          data-slot="hgraph-undo"
-          aria-label="撤销"
-          title="撤销（Ctrl+Z）"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
-          disabled={!可撤销(撤销栈())}
-          onClick={撤销一步}
-        >
-          撤销
-        </button>
-        <button
-          type="button"
-          data-slot="hgraph-redo"
-          aria-label="重做"
-          title="重做（Ctrl+Shift+Z）"
-          class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
-          disabled={!可重做(撤销栈())}
-          onClick={重做一步}
-        >
-          重做
-        </button>
+        {/*
+          需求第 2 项：图例 / 撤销 / 重做 / 已保存 同一行，顺序固定；前三个是图标按钮。
+          三个都走 `工具钮` ⇒ 悬停只有一套提示（说明原文），不挂原生 `title`（需求第 3 项）。
+        */}
+        <div class="relative flex items-center">
+          <工具钮
+            slot="hgraph-bar-legend"
+            名称="图例"
+            说明={`图例：${图例说明}`}
+            图标="bullet-list"
+            种类="toggle"
+            按下={!图例收起()}
+            点={() => set图例收起((旧) => !旧)}
+          />
+          <Show when={!图例收起()}>
+            <svg
+              data-slot="hgraph-bar-legend-float"
+              viewBox={`0 0 ${图例宽} ${图例高}`}
+              width={图例宽}
+              height={图例高}
+              class="absolute left-0 top-full z-30 mt-1 block"
+            >
+              <图例 收起={false} 收起变化={(值) => set图例收起(值)} 外置 />
+            </svg>
+          </Show>
+        </div>
+        <工具钮
+          slot="hgraph-undo"
+          名称="撤销"
+          说明="撤销（Ctrl+Z）"
+          图标节点={<撤销图标 />}
+          种类="action"
+          禁用={!可撤销(撤销栈())}
+          点={撤销一步}
+        />
+        <工具钮
+          slot="hgraph-redo"
+          名称="重做"
+          说明="重做（Ctrl+Shift+Z）"
+          图标节点={<重做图标 />}
+          种类="action"
+          禁用={!可重做(撤销栈())}
+          点={重做一步}
+        />
         <span
           data-slot="hgraph-save-status"
           data-state={状态()}
@@ -2334,13 +2323,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       />
 
       {/*
-        T013 / FR-043：第三行——画布条。搜索 / 筛选 / 节点·边·文字计数 / 图例都在这里。
-        图例不再压画布：条宽 <900 折叠为「图例」按钮，点开为画布条下方浮层（FR-057）。
+        T013 / FR-043：第三行——画布条。搜索 / 筛选 / 节点·边·文字计数都在这里。
+        图例已搬去顶栏（需求第 2 项）：顶栏「图例」图标按钮的浮层，不再压画布。
       */}
       <div
-        ref={(元素) => (画布条元素 = 元素)}
         data-slot="hgraph-canvas-bar"
-        data-legend-collapsed={图例收起() ? "true" : undefined}
         class="relative flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
       >
         {/*
@@ -2423,22 +2410,6 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         <p data-slot="hgraph-counts" class="text-13-regular text-v2-text-text-muted">
           节点 {文档().节点.length} · 边 {文档().边.length} · 文字 {文档().文字.length}
         </p>
-        <div class="ml-auto flex items-center">
-          <svg
-            data-slot="hgraph-canvas-bar-legend"
-            aria-label="图例"
-            viewBox={
-              图例收起()
-                ? `0 0 ${图例收起宽} ${图例收起高}`
-                : `0 0 ${图例宽} ${图例高}`
-            }
-            width={图例收起() ? 图例收起宽 : 图例宽}
-            height={图例收起() ? 图例收起高 : 图例高}
-            class={图例收起() ? "block" : "absolute right-2 top-full z-20 block"}
-          >
-            <图例 收起={图例收起()} 收起变化={(值) => set图例收起(值)} 外置 />
-          </svg>
-        </div>
       </div>
 
       {/*

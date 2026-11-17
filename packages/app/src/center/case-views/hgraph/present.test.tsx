@@ -317,7 +317,8 @@ describe("工具栏 · 演示入口", () => {
     const 键 = document.body.querySelector("[data-slot='hgraph-toolbar-present']") as HTMLButtonElement | null
     expect(键 !== null).toBe(true)
     expect(键!.getAttribute("aria-label")).toBe("演示")
-    expect(键!.getAttribute("title")).toBe("演示")
+    // 单一提示源（需求第 3 项）：没有原生 title，说明只走 TooltipV2。
+    expect(键!.getAttribute("title") === null).toBe(true)
 
     键!.click()
     await flush()

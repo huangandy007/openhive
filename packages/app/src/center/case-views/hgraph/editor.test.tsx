@@ -26,7 +26,7 @@ import { 解析图, 序列化图, type 边, type 图文件, type 节点, type �
 import { 画布 as 画布组件, type 画布动作, type 坐标换算 } from "./canvas"
 import { 检查器 } from "./inspector"
 import { 工具栏 } from "./toolbar"
-import { 编辑器, 图例应折叠, 命中删除键, 命中重命名键, 构图, 布局目标 } from "./editor"
+import { 编辑器, 命中删除键, 命中重命名键, 构图, 布局目标 } from "./editor"
 import { 是输入目标 } from "./keys"
 import { 角色边 } from "./edge"
 import { 适配视口 } from "./geometry"
@@ -2336,7 +2336,9 @@ describe("T010 · 单一出口", () => {
     expect(对齐.disabled).toBe(false)
     expect((取("[data-slot='hgraph-toolbar-space-水平']") as HTMLButtonElement).disabled).toBe(false)
     expect(合并.disabled).toBe(false)
-    expect(合并.getAttribute("title")).toBe("合并所选")
+    // 单一提示源（需求第 3 项）：没有原生 title，说明只走 TooltipV2。
+    expect(合并.getAttribute("aria-label")).toBe("合并所选")
+    expect(合并.getAttribute("title") === null).toBe(true)
 
     // 检查器批量面板也出现且可用（FR-028）。
     expect(取("[data-slot='hgraph-batch']") !== null).toBe(true)
@@ -5241,23 +5243,26 @@ describe("T018 修复轮 1 · 图例与档表（R75 / R108）", () => {
     expect(写们.length).toBe(0)
   })
 
-  test("演示中 ⇒ 画布图例收起；退出演示恢复展开", async () => {
+  // 需求第 2 项之后，图例不再长在画布条上：它是顶栏「图例」图标按钮的浮层（默认收起）。
+  // 演示态收起全部 chrome（顶栏整条条件渲染掉）⇒ 图例自然跟着不渲染；退出演示回到默认收起。
+  test("演示中 ⇒ 顶栏整条（含图例浮层）不渲染；退出演示仍是默认收起", async () => {
     const { api } = 假api()
     挂上(api)
     await flush()
-    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(4)
+    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(0)
+    expect(取("[data-slot='hgraph-editor-bar']") !== null).toBe(true)
 
     按钮("hgraph-toolbar-present").click()
     await flush()
     expect(取("[data-slot='hgraph-present']") !== null).toBe(true)
-    expect(取("[data-slot='hgraph-legend-collapsed']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-editor-bar']") === null).toBe(true)
     expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(0)
 
     按键(取("[data-slot='hgraph-stage']")!, { key: "Escape" })
     await flush()
     await flush()
-    expect(取("[data-slot='hgraph-legend-collapsed']") === null).toBe(true)
-    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(4)
+    expect(取("[data-slot='hgraph-editor-bar']") !== null).toBe(true)
+    expect(document.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(0)
   })
 })
 
@@ -6152,7 +6157,7 @@ describe("final-fix1b I2 · 改名同步角色边依据", () => {
 // ---------------------------------------------------------------------------
 
 describe("T013 · 三行布局与图例搬家", () => {
-  test("画布条存在，搜索 / 筛选 / 计数 / 图例四个包围盒都在其中", async () => {
+  test("画布条存在，搜索 / 筛选 / 计数三个包围盒都在其中", async () => {
     const { api } = 假api()
     挂上(api)
     await flush()
@@ -6165,7 +6170,6 @@ describe("T013 · 三行布局与图例搬家", () => {
       "[data-slot='hgraph-search-wrap']",
       "[data-slot='hgraph-filter-toggle']",
       "[data-slot='hgraph-counts']",
-      "[data-slot='hgraph-legend']",
     ]) {
       const 元素 = 取(选择)
       expect(元素 !== null).toBe(true)
@@ -6248,31 +6252,66 @@ describe("T013 · 三行布局与图例搬家", () => {
     expect(文案("hgraph-counts")).toBe("节点 1 · 边 0 · 文字 0")
   })
 
-  test("图例在画布外：画布内无图例，且没有以 hgraph-canvas 为祖先的图例", async () => {
+  test("图例在顶栏按钮里：画布条无图例；默认收起，点开见四条说明", async () => {
     const { api } = 假api()
     挂上(api)
     await flush()
 
-    const 图例们 = document.body.querySelectorAll("[data-slot='hgraph-legend']")
-    expect(图例们.length > 0).toBe(true)
-    expect(画布() !== null).toBe(true)
+    const 条 = 取("[data-slot='hgraph-canvas-bar']")
+    expect(条 !== null).toBe(true)
+    expect(条!.querySelector("[data-slot='hgraph-legend']") === null).toBe(true)
     expect(画布()!.querySelector("[data-slot='hgraph-legend']") === null).toBe(true)
-    for (const 图例 of 图例们) {
-      expect(图例.closest("[data-slot='hgraph-canvas']") === null).toBe(true)
-    }
+
+    const 钮 = 取("[data-slot='hgraph-bar-legend']") as HTMLButtonElement | null
+    expect(钮 !== null).toBe(true)
+    expect(取("[data-slot='hgraph-editor-bar']")!.contains(钮!)).toBe(true)
+    // 默认收起：展开图例（四条说明）不渲染。
+    expect(取("[data-slot='hgraph-legend']") === null).toBe(true)
+
+    钮!.click()
+    await flush()
+    const 图例 = 取("[data-slot='hgraph-legend']")
+    expect(图例 !== null).toBe(true)
+    expect(图例!.querySelectorAll("[data-slot='hgraph-legend-item']").length).toBe(4)
   })
 })
 
 // ---------------------------------------------------------------------------
-// T013 · 画布条宽阈值（纯函数，不依赖 happy-dom 的布局）
+// 顶栏：图例 / 撤销 / 重做 / 已保存 同一行（需求第 2 项）
 // ---------------------------------------------------------------------------
 
-describe("T013 · 画布条宽阈值", () => {
-  test("899 折叠、900 展开、未量到（undefined / 0）不擅自改折叠态", () => {
-    expect(图例应折叠(899)).toBe(true)
-    expect(图例应折叠(900)).toBe(false)
-    expect(图例应折叠(undefined)).toBe(undefined)
-    expect(图例应折叠(0)).toBe(undefined)
+describe("顶栏：图例 / 撤销 / 重做 / 已保存 同一行", () => {
+  test("顺序为 图例 → 撤销 → 重做 → 已保存，前三个是只有图标的按钮", async () => {
+    const { api } = 假api()
+    挂上(api)
+    await flush()
+
+    const 栏 = 取("[data-slot='hgraph-editor-bar']")
+    expect(栏 !== null).toBe(true)
+    const 图例钮 = 取("[data-slot='hgraph-bar-legend']")
+    const 撤销钮 = 取("[data-slot='hgraph-undo']")
+    const 重做钮 = 取("[data-slot='hgraph-redo']")
+    const 已保存 = 取("[data-slot='hgraph-save-status']")
+    for (const 元素 of [图例钮, 撤销钮, 重做钮, 已保存]) {
+      expect(元素 !== null).toBe(true)
+      expect(栏!.contains(元素!)).toBe(true)
+    }
+
+    // 文档序即视觉序（同一行从左到右）：compareDocumentPosition 不依赖布局（`#005-32`）。
+    const 在之前 = (左: Element, 右: Element) =>
+      (左.compareDocumentPosition(右) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    expect(在之前(图例钮!, 撤销钮!)).toBe(true)
+    expect(在之前(撤销钮!, 重做钮!)).toBe(true)
+    expect(在之前(重做钮!, 已保存!)).toBe(true)
+
+    // 三个都是图标按钮：有 svg、没有可见文字（可见文字只能是图标）。
+    for (const 钮 of [图例钮!, 撤销钮!, 重做钮!]) {
+      expect(钮.querySelector("svg") !== null).toBe(true)
+      expect((钮.textContent ?? "").trim()).toBe("")
+    }
+    // 撤销 / 重做各是自己的弯箭头：不能都退回 `工具钮` 的默认图标（那样仍是「有 svg」）。
+    expect(撤销钮!.querySelector("svg")!.getAttribute("data-icon")).toBe("undo")
+    expect(重做钮!.querySelector("svg")!.getAttribute("data-icon")).toBe("redo")
   })
 })
 
