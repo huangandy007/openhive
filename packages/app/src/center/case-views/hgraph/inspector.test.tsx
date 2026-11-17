@@ -310,20 +310,21 @@ describe("检查器 · 失焦即存", () => {
     expect(幽.计数.改字段 ?? 0).toBe(0)
   })
 
-  test("值没变失焦不发补丁", () => {
+  // 需求第 6 项②：类型 / 细类改成 `<select>` 后，改值的触发从失焦变成 `change`；
+  // 「没变就不发补丁」的同一条纪律照旧守着。
+  test("值没变（change 成同一个值）不发补丁", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
-    const 输入 = 取("[data-slot='hgraph-field-类型']") as HTMLInputElement
-    失焦(输入)
+    const 类型 = 取("[data-slot='hgraph-field-类型']") as HTMLSelectElement
+    选择(类型, 类型.value)
     expect(幽.计数.改字段 ?? 0).toBe(0)
   })
 
-  test("清空细类后失焦 ⇒ 细类: null（可删键，不是空串）", () => {
+  test("细类选「（无）」⇒ 细类: null（可删键，不是空串）", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
-    const 输入 = 取("[data-slot='hgraph-field-细类']") as HTMLInputElement
-    expect(输入.value).toBe("嫌疑人")
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement
+    expect(细类.value).toBe("嫌疑人")
 
-    输入.value = ""
-    失焦(输入)
+    选择(细类, "")
 
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: null }])
   })
@@ -550,7 +551,9 @@ describe("检查器 · 恢复自动（外环手动档删键）", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
     const 钮 = 取("[data-slot='hgraph-ring-auto']")
     expect(钮 !== null).toBe(true)
-    expect(钮?.textContent?.trim()).toBe("恢复自动")
+    // 需求第 6 项④：文字按钮 → 图标按钮，名字只留在 aria-label（悬停另有一份说明）。
+    expect(钮?.getAttribute("aria-label")).toBe("恢复自动")
+    expect(钮?.querySelector("svg") !== null).toBe(true)
 
     钮?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
 
@@ -1058,13 +1061,27 @@ function 事件图(): 图文件 {
 }
 
 describe("检查器 · T011 事件两态与参与方", () => {
-  const 输入们 = () => [...document.body.querySelectorAll<HTMLElement>("input[data-slot^='hgraph-field-']")]
+  // 需求第 6 项③：备注是多行输入，所以「可改控件」不再只有 `input`。
+  const 输入们 = () => [
+    ...document.body.querySelectorAll<HTMLElement>("input[data-slot^='hgraph-field-'], textarea[data-slot^='hgraph-field-']"),
+  ]
 
   test("手写事件九格逐项有可编辑控件（时间/金额/其他/参与方也不缺）", () => {
     挂检查器({ 选中: ["ev手写"], 文档: 事件图() })
-    // 名称/类型/细类/备注/出现序（既有）+ 时间首/末 + 金额（final-fix1b）。
-    for (const slot of ["名称", "类型", "细类", "备注", "出现序", "时间首", "时间末", "金额"]) {
-      expect(取(`[data-slot='hgraph-field-${slot}']`)?.tagName).toBe("INPUT")
+    // 名称/备注/出现序/时间首末/金额（既有）+ 类型/细类（需求第 6 项②改为下拉）。
+    // 备注改多行（需求第 6 项③）。可编辑 = 不是只读 `span`，这里按控件种类逐项钉住。
+    const 控件: Record<string, string> = {
+      名称: "INPUT",
+      类型: "SELECT",
+      细类: "SELECT",
+      备注: "TEXTAREA",
+      出现序: "INPUT",
+      时间首: "INPUT",
+      时间末: "INPUT",
+      金额: "INPUT",
+    }
+    for (const [slot, 种类] of Object.entries(控件)) {
+      expect(取(`[data-slot='hgraph-field-${slot}']`)?.tagName).toBe(种类)
     }
     // 时间精度必须是保留下来的 select，选项只有 日/时/分（它是手写事件判据的键）。
     const 精度 = 取("[data-slot='hgraph-field-时间精度']") as HTMLSelectElement
@@ -1438,5 +1455,177 @@ describe("检查器 · T014 四段骨架与收起", () => {
     选择(取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement, "自动")
 
     expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 外环: null }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 需求第 6 项：面板细节（图标按钮 / 下拉 / 多行备注 / 底部 删除·取消·确认）
+// ---------------------------------------------------------------------------
+
+const 冲刷 = () => new Promise<void>((解) => setTimeout(解, 0))
+
+describe("检查器 · 需求第 6 项的面板细节", () => {
+  test("① 收起按钮是图标按钮：只有 aria-label 一套提示，没有原生 title、没有可见文字", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+
+    const 钮 = 取("[data-slot='hgraph-inspector-collapse']") as HTMLButtonElement | null
+    expect(钮 !== null).toBe(true)
+    expect(钮!.getAttribute("aria-label")).toBe("收起检查器")
+    // 双提示的根因就是原生 title 与 TooltipV2 同时在场（需求第 3 项同一口径）。
+    expect(钮!.getAttribute("title") === null).toBe(true)
+    expect(钮!.querySelector("svg") !== null).toBe(true)
+    expect((钮!.textContent ?? "").trim()).toBe("")
+  })
+
+  test("① 收起按钮悬停 300ms ⇒ 恰好一条说明", async () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+    const 钮 = 取("[data-slot='hgraph-inspector-collapse']") as HTMLButtonElement
+    const 触发器 = 钮.closest("[data-component='tooltip-v2-trigger']") ?? 钮
+    触发器.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerType: "mouse" }))
+    await new Promise<void>((解) => setTimeout(解, 350))
+
+    const 提示们 = document.querySelectorAll("[data-slot='hgraph-toolbar-tip']")
+    expect(提示们.length).toBe(1)
+    expect(提示们[0]!.textContent ?? "").toContain("收起")
+  })
+
+  test("② 类型 / 细类是下拉：选项取统一备选表，库里的旧值仍显示", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+
+    const 类型 = 取("[data-slot='hgraph-field-类型']") as HTMLSelectElement | null
+    expect(类型 !== null).toBe(true)
+    expect(类型!.tagName).toBe("SELECT")
+    const 类型们 = [...类型!.options].map((项) => 项.value)
+    for (const 名 of ["人", "号码", "账户", "虚拟身份", "车辆", "物品", "地点", "组织", "未分类"]) {
+      expect(类型们.includes(名)).toBe(true)
+    }
+    // 夹具的类型「人物」不在表里：必须作为额外一项保留（不能显示成空）。
+    expect(类型!.value).toBe("人物")
+
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement | null
+    expect(细类 !== null).toBe(true)
+    expect(细类!.tagName).toBe("SELECT")
+    expect(细类!.value).toBe("嫌疑人")
+  })
+
+  test("② 细类选项跟随类型：号码 ⇒ 手机号 / 身份证 / 固定电话（外加「（无）」）", () => {
+    挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码", 细类: "手机号" }), 快照 })
+
+    const 细类 = 取("[data-slot='hgraph-field-细类']") as HTMLSelectElement
+    expect([...细类.options].map((项) => 项.value)).toEqual(["", "手机号", "身份证", "固定电话"])
+  })
+
+  test("② 改类型 ⇒ 一条改字段；新类型不允许原细类时，同一补丁里清掉细类", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+
+    选择(取("[data-slot='hgraph-field-类型']") as HTMLSelectElement, "号码")
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 类型: "号码", 细类: null }])
+  })
+
+  test("② 改细类 ⇒ 只发改细类", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 类型: "号码", 细类: "手机号" }), 快照 })
+
+    选择(取("[data-slot='hgraph-field-细类']") as HTMLSelectElement, "身份证")
+
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 细类: "身份证" }])
+  })
+
+  test("③ 节点备注与边备注都是多行输入（textarea），失焦照旧即存", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+    const 备注 = 取("[data-slot='hgraph-field-备注']") as HTMLTextAreaElement
+    expect(备注.tagName).toBe("TEXTAREA")
+    expect(备注.value).toBe("旧备注")
+    备注.value = "第一行\n第二行"
+    失焦(备注)
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 备注: "第一行\n第二行" }])
+
+    const 边图 = 带边图()
+    const 幽边 = 挂检查器({ 选中: ["e1"], 文档: 边图, 快照 })
+    const 边备注 = 取("[data-slot='hgraph-field-边备注']") as HTMLTextAreaElement
+    expect(边备注.tagName).toBe("TEXTAREA")
+    边备注.value = "两行\n备注"
+    失焦(边备注)
+    expect(幽边.参数.改字段![0]).toEqual(["边", "e1", { 备注: "两行\n备注" }])
+  })
+
+  test("④ 外环行：颜色下拉收窄；恢复自动是图标按钮、排在颜色之后、只有一套提示", () => {
+    挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 1, 颜色: "红" } }), 快照 })
+
+    const 颜色 = 取("[data-slot='hgraph-field-外环颜色']") as HTMLSelectElement
+    expect(颜色.className.includes("w-20")).toBe(true)
+    expect(颜色.className.includes("flex-1")).toBe(false)
+
+    const 自动 = 取("[data-slot='hgraph-ring-auto']") as HTMLButtonElement | null
+    expect(自动 !== null).toBe(true)
+    expect(颜色.parentElement!.contains(自动!)).toBe(true)
+    expect((颜色.compareDocumentPosition(自动!) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect(自动!.getAttribute("aria-label")).toBe("恢复自动")
+    expect(自动!.getAttribute("title") === null).toBe(true)
+    expect(自动!.querySelector("svg") !== null).toBe(true)
+    expect((自动!.textContent ?? "").trim()).toBe("")
+  })
+
+  test("⑤ 底部 删除 / 取消 / 确认 同一行，顺序固定", () => {
+    挂检查器({ 选中: ["n1"], 快照 })
+
+    const 脚 = 取("[data-slot='hgraph-inspector-actions']")
+    expect(脚 !== null).toBe(true)
+    const 删 = 取("[data-slot='hgraph-inspector-delete']")
+    const 取消 = 取("[data-slot='hgraph-inspector-cancel']")
+    const 确认 = 取("[data-slot='hgraph-inspector-ok']")
+    for (const 元素 of [删, 取消, 确认]) {
+      expect(元素 !== null).toBe(true)
+      expect(脚!.contains(元素!)).toBe(true)
+    }
+    const 在之前 = (左: Element, 右: Element) =>
+      (左.compareDocumentPosition(右) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    expect(在之前(删!, 取消!)).toBe(true)
+    expect(在之前(取消!, 确认!)).toBe(true)
+  })
+
+  test("⑤ 确认 ⇒ 不改字段，只收起面板", () => {
+    const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
+
+    ;(取("[data-slot='hgraph-inspector-ok']") as HTMLButtonElement).click()
+
+    expect(幽.计数.改字段 ?? 0).toBe(0)
+    expect(幽.收起()).toBe(true)
+  })
+
+  test("⑤ 取消 ⇒ 把本次面板改过的字段写回打开面板时的值，然后收起", async () => {
+    const 原图 = 造图()
+    const 图 = createSignal(原图)
+    const [文档, set文档] = 图
+    const 幽 = 幽灵动作表()
+    const [收起, set收起] = createSignal(false)
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    挂过的.push(
+      render(
+        () => (
+          <检查器
+            选中={["n1"]}
+            文档={文档()}
+            动作表={幽.动作}
+            快照={快照}
+            收起={收起()}
+            收起变化={set收起}
+          />
+        ),
+        host,
+      ),
+    )
+
+    // 面板打开后，面板里改了名称与备注（编辑器把改动落进文档）。
+    const 首 = 原图.节点[0]!
+    set文档({ ...原图, 节点: [{ ...首, 名称: "张三丰", 备注: "新备注" }, 原图.节点[1]!] })
+    await 冲刷()
+
+    ;(取("[data-slot='hgraph-inspector-cancel']") as HTMLButtonElement).click()
+
+    // 只回写改过的两个字段，其余键一个都不碰。
+    expect(幽.参数.改字段![0]).toEqual(["节点", "n1", { 名称: "张三", 备注: "旧备注" }])
+    expect(收起()).toBe(true)
   })
 })

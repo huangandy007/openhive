@@ -64,6 +64,9 @@ import { 外环色表, 文字色表, type 画布动作 } from "./canvas"
 import { 等距们, 对齐们 } from "./geometry"
 import { 解析出处 } from "./citation"
 import { 填充, 面板宽, 面板边距 } from "../graph"
+import { 工具钮 } from "./toolbar"
+import { 实体类型们, 细类备选 } from "./field-options"
+import { 可改键, type 类别 } from "./whitelist"
 
 /** 收起态窄条宽度（CSS px，FR-050）。编辑器算「检查器占用宽」也读这一份。 */
 export const 收起宽 = 40
@@ -118,6 +121,9 @@ const 标签 = "w-14 shrink-0 text-12-regular text-v2-text-text-muted"
 const 值样式 = "min-w-0 flex-1 break-all text-12-regular text-v2-text-text-base"
 const 输入 =
   "min-w-0 flex-1 rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
+/** 需求第 6 项④：外环颜色只有 1–2 个字，下拉收窄（不撑满整行），恢复自动紧接其后。 */
+const 窄输入 =
+  "min-w-0 flex-none w-20 rounded border border-v2-border-border-muted px-1 text-12-regular text-v2-text-text-base"
 const 按钮 =
   "rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-text-text-base disabled:opacity-40"
 
@@ -344,6 +350,77 @@ export function 检查器(props: 检查器Props): JSX.Element {
     const 补丁 = 字段补丁(键, 新值)
     if (补丁 === undefined) return
     props.动作表.改字段("节点", 点.id, 补丁)
+  }
+
+  /**
+   * 改类型：新类型不在细类白名单里就同一补丁清掉细类——否则会留下「类型=人 / 细类=手机号」
+   * 这种后端会判非法的组合。只发一条 `改字段`（一步撤销，不拆两步）。
+   */
+  const 提交类型 = (点: 节点, 新值: string) => {
+    if (新值 === (点.类型 ?? "")) return
+    if (新值.trim() === "") return
+    const 补丁: Record<string, unknown> = { 类型: 新值 }
+    const 现细 = 点.细类 ?? ""
+    if (现细 !== "" && !细类备选(新值).includes(现细)) 补丁.细类 = null
+    props.动作表.改字段("节点", 点.id, 补丁)
+  }
+
+  // -------------------------------------------------------------------------
+  // 需求第 6 项⑤：打开面板时的基线快照 + 底部 取消 / 确认
+  // -------------------------------------------------------------------------
+
+  /** 当下面板编辑的那个对象（节点 / 边 / 文字各一，都没有 ⇒ undefined）。 */
+  const 当前对象 = ():
+    | { readonly 类别: 类别; readonly id: string; readonly 对象: Record<string, unknown> }
+    | undefined => {
+    const 点 = 单个()
+    if (点 !== undefined) return { 类别: "节点", id: 点.id, 对象: { ...点 } }
+    const 条 = 单个边()
+    if (条 !== undefined) return { 类别: "边", id: 条.id, 对象: { ...条 } }
+    const 文 = 单个文字()
+    if (文 !== undefined) return { 类别: "文字", id: 文.id, 对象: { ...文 } }
+    return undefined
+  }
+
+  /**
+   * 基线快照：只在「对象换了」时重取。面板里的每次编辑都会让 `文档` 变 ⇒ 若每次重取，
+   * 取消就退不回去了（那是上一次编辑之后的值，不是打开面板时的值）。
+   */
+  const [基线, set基线] = createSignal<
+    { readonly 类别: 类别; readonly id: string; readonly 对象: Record<string, unknown> } | undefined
+  >(undefined)
+  createEffect(() => {
+    const 现 = 当前对象()
+    if (现 === undefined) {
+      set基线(undefined)
+      return
+    }
+    const 旧 = 基线()
+    if (旧?.类别 === 现.类别 && 旧.id === 现.id) return
+    set基线({ ...现, 对象: structuredClone(现.对象) })
+  })
+
+  /** 取消：把**本次面板改过的键**写回基线值（null = 删键），再收起面板。 */
+  const 取消改动 = () => {
+    const 基 = 基线()
+    const 现 = 当前对象()
+    if (基 !== undefined && 现 !== undefined && 基.类别 === 现.类别 && 基.id === 现.id) {
+      const 补丁: Record<string, unknown> = {}
+      for (const 键 of 可改键[基.类别]) {
+        const 旧值 = 基.对象[键]
+        if (JSON.stringify(旧值) === JSON.stringify(现.对象[键])) continue
+        补丁[键] = 旧值 === undefined ? null : 旧值
+      }
+      if (Object.keys(补丁).length > 0) props.动作表.改字段(基.类别, 基.id, 补丁)
+    }
+    set基线(undefined)
+    props.收起变化?.(true)
+  }
+
+  /** 确认：面板改动在输入时已逐条发出（进撤销栈），这里只收起面板。 */
+  const 确认改动 = () => {
+    set基线(undefined)
+    props.收起变化?.(true)
   }
 
   const 提交外环档 = (点: 节点, 原值: string) => {
@@ -817,16 +894,15 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </div>
                   </Show>
                 </div>
-                <button
-                  type="button"
-                  data-slot="hgraph-inspector-collapse"
-                  aria-label="收起检查器"
-                  title="收起检查器"
-                  class={按钮}
-                  onClick={() => props.收起变化?.(true)}
-                >
-                  收起
-                </button>
+                {/* 需求第 6 项①：收起 = 图标按钮；说明只走 TooltipV2 一套（不挂原生 title）。 */}
+                <工具钮
+                  slot="hgraph-inspector-collapse"
+                  名称="收起检查器"
+                  说明="收起检查器（按 I 可再展开）"
+                  图标="chevron-right"
+                  种类="action"
+                  点={() => props.收起变化?.(true)}
+                />
               </header>
 
               {/* 内容溢出时面板内滚动，头段与操作脚固定（FR-049 的可滚动部分在这里）。 */}
@@ -933,13 +1009,20 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </span>
                   }
                 >
-                  <input
+                  {/* 需求第 6 项②：下拉备选取 `field-options.ts`（与后端同口径）；
+                      库里旧值不在表里时额外列一项，别把它显示成空。 */}
+                  <select
                     id="hgraph-field-类型"
                     data-slot="hgraph-field-类型"
                     class={输入}
                     value={点().类型 ?? ""}
-                    onBlur={(事件) => 提交(点(), "类型", 事件.currentTarget.value)}
-                  />
+                    onChange={(事件) => 提交类型(点(), 事件.currentTarget.value)}
+                  >
+                    <For each={实体类型们}>{(名) => <option value={名}>{名}</option>}</For>
+                    <Show when={!实体类型们.some((名) => 名 === (点().类型 ?? "")) && (点().类型 ?? "") !== ""}>
+                      <option value={点().类型}>{点().类型}</option>
+                    </Show>
+                  </select>
                 </Show>
               </div>
               <div class={行}>
@@ -954,13 +1037,24 @@ export function 检查器(props: 检查器Props): JSX.Element {
                     </span>
                   }
                 >
-                  <input
+                  {/* 需求第 6 项②：细类跟着类型走；「（无）」等价清空（发 null 删键）。 */}
+                  <select
                     id="hgraph-field-细类"
                     data-slot="hgraph-field-细类"
                     class={输入}
                     value={点().细类 ?? ""}
-                    onBlur={(事件) => 提交(点(), "细类", 事件.currentTarget.value)}
-                  />
+                    onChange={(事件) => 提交(点(), "细类", 事件.currentTarget.value)}
+                  >
+                    <option value="">（无）</option>
+                    <For each={细类备选(点().类型)}>{(名) => <option value={名}>{名}</option>}</For>
+                    <Show
+                      when={
+                        (点().细类 ?? "") !== "" && !细类备选(点().类型).includes(点().细类 ?? "")
+                      }
+                    >
+                      <option value={点().细类}>{点().细类}</option>
+                    </Show>
+                  </select>
                 </Show>
               </div>
               <div class={行}>
@@ -975,17 +1069,32 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   onFocus={() => set提示(undefined)}
                   onBlur={(事件) => 提交外环档(点(), 事件.currentTarget.value)}
                 />
-                {/* FR-032：只能从 7 个预设 + 「自动」选；选项取自 `外环色表`，不另抄色名。 */}
+                {/* FR-032：只能从 7 个预设 + 「自动」选；选项取自 `外环色表`，不另抄色名。
+                    需求第 6 项④：色名都只有 1–2 字，下拉不占满整行；恢复自动紧跟其后。 */}
                 <select
                   data-slot="hgraph-field-外环颜色"
                   aria-label="外环颜色"
-                  class={输入}
+                  class={窄输入}
                   value={点().外环?.颜色 ?? "自动"}
                   onChange={(事件) => 提交外环颜色(点(), 事件.currentTarget.value)}
                 >
                   <option value="自动">自动</option>
                   <For each={Object.keys(外环色表)}>{(名) => <option value={名}>{名}</option>}</For>
                 </select>
+                {/*
+                  R75：手动档是「冻结」，节点边数再涨也不变；删掉 `外环` 整键即恢复自动。
+                  需求第 6 项④：改成图标按钮（悬停给说明），排在颜色下拉之后。
+                */}
+                <Show when={点().外环 !== undefined}>
+                  <工具钮
+                    slot="hgraph-ring-auto"
+                    名称="恢复自动"
+                    说明="恢复自动：外环粗细按连接数自动计算（清掉手动档与颜色）"
+                    图标="reset"
+                    种类="action"
+                    点={() => props.动作表.改字段("节点", 点().id, 外环补丁(undefined, undefined))}
+                  />
+                </Show>
                 <Show when={节点提示("外环档")}>
                   <span
                     data-slot="hgraph-field-外环档-提示"
@@ -996,23 +1105,6 @@ export function 检查器(props: 检查器Props): JSX.Element {
                   </span>
                 </Show>
               </div>
-              {/*
-                R75：手动档是「冻结」，节点边数再涨也不变；删掉 `外环` 整键即恢复自动。
-                走同一个 `改字段` 出口，算一步撤销（不另写删键逻辑）。
-              */}
-              <Show when={点().外环 !== undefined}>
-                <div class={行}>
-                  <span class={标签} />
-                  <button
-                    type="button"
-                    data-slot="hgraph-ring-auto"
-                    class={按钮}
-                    onClick={() => props.动作表.改字段("节点", 点().id, 外环补丁(undefined, undefined))}
-                  >
-                    恢复自动
-                  </button>
-                </div>
-              </Show>
               {/* final-fix1b C2 / FR-036：手写事件九格——时间 / 精度 / 金额 / 其他属性。 */}
               <Show when={手写事件(点())}>
                 <div class={行}>
@@ -1105,10 +1197,12 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 <label class={标签} for="hgraph-field-备注">
                   备注
                 </label>
-                <input
+                {/* 需求第 6 项③：备注通常写得多，用多行输入（失焦照旧即存）。 */}
+                <textarea
                   id="hgraph-field-备注"
                   data-slot="hgraph-field-备注"
-                  class={输入}
+                  class={`${输入} min-h-12 resize-y`}
+                  rows={3}
                   value={点().备注 ?? ""}
                   onBlur={(事件) => 提交(点(), "备注", 事件.currentTarget.value)}
                 />
@@ -1516,10 +1610,12 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 <label class={标签} for="hgraph-field-边备注">
                   备注
                 </label>
-                <input
+                {/* 需求第 6 项③：边备注同样多行。 */}
+                <textarea
                   id="hgraph-field-边备注"
                   data-slot="hgraph-field-边备注"
-                  class={输入}
+                  class={`${输入} min-h-12 resize-y`}
+                  rows={3}
                   value={条().备注 ?? ""}
                   onBlur={(事件) => 提交边备注(条(), 事件.currentTarget.value)}
                 />
@@ -1761,12 +1857,18 @@ export function 检查器(props: 检查器Props): JSX.Element {
       </Show>
               </div>
 
-              {/* ---------------- 操作脚（FR-034：左主操作、右删除） ---------------- */}
+              {/*
+                ---------------- 操作脚（FR-034：左主操作、右删除） ----------------
+                需求第 6 项⑤：右组按「删除 → 取消 → 确认」排，三个按钮同一行。
+                取消 = 丢弃本次面板改动（按 `可改键` 白名单逐键回写打开时的快照）；
+                确认 = 只收起面板，改动本身已经落进文档、走撤销栈，不在这里再提交。
+              */}
               <Show when={单个() !== undefined || 单个边() !== undefined || 单个文字() !== undefined}>
                 <footer
                   data-slot="hgraph-inspector-actions"
                   class="flex shrink-0 items-center justify-between gap-1 border-t border-v2-border-border-muted p-2"
                 >
+                  <div class="flex items-center gap-1">
                   {/* final-fix2 C2：事件（手写与绑定）操作脚左「看参与方」（滚到参与方段并高亮）。 */}
                   <Show when={单个() !== undefined && 是事件节点(单个()!)}>
                     <button
@@ -1808,16 +1910,39 @@ export function 检查器(props: 检查器Props): JSX.Element {
                       只看邻居
                     </button>
                   </Show>
-                  <button
-                    type="button"
-                    data-slot="hgraph-inspector-delete"
-                    aria-label="删除"
-                    title="删除（Delete）"
-                    class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-state-fg-danger disabled:opacity-40"
-                    onClick={() => props.动作表.删除所选()}
-                  >
-                    删除
-                  </button>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      data-slot="hgraph-inspector-delete"
+                      aria-label="删除"
+                      title="删除（Delete）"
+                      class="rounded border border-v2-border-border-muted px-2 py-0.5 text-12-regular text-v2-state-fg-danger disabled:opacity-40"
+                      onClick={() => props.动作表.删除所选()}
+                    >
+                      删除
+                    </button>
+                    <button
+                      type="button"
+                      data-slot="hgraph-inspector-cancel"
+                      aria-label="取消"
+                      title="取消本次面板改动"
+                      class={按钮}
+                      onClick={取消改动}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      data-slot="hgraph-inspector-ok"
+                      aria-label="确认"
+                      title="确认：保留改动并收起面板"
+                      class={按钮}
+                      onClick={确认改动}
+                    >
+                      确认
+                    </button>
+                  </div>
                 </footer>
               </Show>
             </>
