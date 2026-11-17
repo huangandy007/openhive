@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
@@ -15,6 +15,7 @@ import {
   type 工具上下文,
   type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
+import { 空原因枚举 } from "../../src/server/openhive/case-envelope"
 import { 种探索数据集, type 探索数据集 } from "../fixtures/explore/dataset"
 import { 题集, type 期望条, type 工具名 } from "../fixtures/explore/cases"
 
@@ -187,6 +188,50 @@ function ctx(条: 期望条): 工具上下文 {
   return { db: db(), 身份: { userId: 用户, projectId } }
 }
 
+/** T003：主项目上下文（不带题集期望时用）。 */
+const 主ctx = (): 工具上下文 => ({ db: db(), 身份: { userId: 用户, projectId: 数据集.projectId } })
+
+/**
+ * T003 的验收断言出口：七字段信封 + 30 KB 数据预算。
+ *
+ * 预算按规格写成字面量 `30720`（`09` §3.4），**不引用实现常量**——否则常量被改小时
+ * 用例会跟着漂，等于自己验自己。
+ */
+const 数据预算字节上限 = 30 * 1024
+const 信封七字段 = ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const
+
+function 断七字段(结果: 工具结果): void {
+  const 记录 = 结果 as unknown as Record<string, unknown>
+  expect(信封七字段.filter((键) => !(键 in 记录) || 记录[键] === undefined)).toEqual([])
+  expect(typeof 结果.摘要).toBe("string")
+  expect(结果.摘要.length).toBeGreaterThan(0)
+  expect(typeof 结果.口径).toBe("string")
+  expect(结果.口径.length).toBeGreaterThan(0)
+  expect(Array.isArray(结果.缺口)).toBe(true)
+  expect(Array.isArray(结果.出处)).toBe(true)
+  expect(Array.isArray(结果.下一步)).toBe(true)
+  const 空 = 结果.数据 === null || (Array.isArray(结果.数据) && 结果.数据.length === 0)
+  expect(结果.空原因 === null).toBe(!空)
+  if (结果.空原因 !== null) expect(空原因枚举 as readonly string[]).toContain(结果.空原因)
+  for (const 条 of 结果.出处) {
+    expect(typeof 条.事实).toBe("string")
+    expect(typeof 条.代表).toBe("string")
+    expect(条.可下钻 === null || typeof 条.可下钻 === "string").toBe(true)
+  }
+  for (const 条 of 结果.下一步) {
+    expect(typeof 条.工具).toBe("string")
+    expect(条.参数 !== null && typeof 条.参数 === "object")
+    expect(typeof 条.为什么).toBe("string")
+  }
+}
+
+/** `数据` 的序列化字节必须 ≤ 30 KB；返回实得字节供报告对账。 */
+function 断数据字节(数据: unknown): number {
+  const 字节 = Buffer.byteLength(JSON.stringify(数据) ?? "")
+  expect(字节).toBeLessThanOrEqual(数据预算字节上限)
+  return 字节
+}
+
 /**
  * 工具层：账户 F（赵六）的两行流水都是 USD（`dataset.ts` 的 2/25 300、2/26 200）。
  * 裁定 A：全部是外币行 ⇒ `数据: []`、`空原因` 用既有枚举，缺口仍写明本页外币行数。
@@ -254,3 +299,80 @@ for (const 条 of 题集) {
     }
   })
 }
+
+/**
+ * T003：回放只钉了每道题关心的字段，没有逐条钉「七字段都在 + 数据不超上限」。
+ * 这里对本题集覆盖的 9 条信封工具各跑一次，用**同一份生产出口数据集**验收：
+ * 有 `限制` 的工具传一个远小于数据量的值（证明上限真的生效，不是靠数据本来就少），
+ * 没有 `限制` 的工具用 30 KB 序列化字节上限兜住。
+ */
+describe("T003：九条工具的七字段信封 + 数据上限", () => {
+  test("search_materials：限制 1 ⇒ 1 份材料，七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await search_materials(主ctx(), { 限制: 1 })
+    断七字段(结果)
+    // 主项目有 3 份材料：条数恰好 1 才证明限制生效。
+    expect(结果.数据).toHaveLength(1)
+    断数据字节(结果.数据)
+  })
+
+  test("query_entities：限制 3 ⇒ 3 个实体，七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await query_entities(主ctx(), { 限制: 3 })
+    断七字段(结果)
+    // 数据集里 12 个实体：条数恰好 3 才证明限制生效。
+    expect(结果.数据).toHaveLength(3)
+    断数据字节(结果.数据)
+  })
+
+  test("query_relations：限制 2 ⇒ 2 条关系，七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await query_relations(主ctx(), { 限制: 2 })
+    断七字段(结果)
+    expect(结果.数据).toHaveLength(2)
+    断数据字节(结果.数据)
+  })
+
+  test("query_events：限制 1 ⇒ 1 个事件，七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await query_events(主ctx(), { 限制: 1 })
+    断七字段(结果)
+    expect(结果.数据).toHaveLength(1)
+    断数据字节(结果.数据)
+  })
+
+  test("query_rows：限制 2 ⇒ 2 行明细，七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await query_rows(主ctx(), { 限制: 2 })
+    断七字段(结果)
+    expect(结果.数据).toHaveLength(2)
+    断数据字节(结果.数据)
+  })
+
+  test("get_citation：七字段齐全、数据 ≤ 30 KB", async () => {
+    // 出处 id 不能写死：先用同一份数据集解析出实体 id，再取它的事实详情。
+    const 实体们 = await query_entities(主ctx(), { 关键词: "张三" })
+    const 实体行们 = 实体们.数据 as { id: string }[]
+    expect(实体行们.length).toBeGreaterThan(0)
+    const 事实id = 实体行们[0]!.id
+    const 结果 = await get_citation(主ctx(), { 事实类型: "entity", 事实id })
+    断七字段(结果)
+    expect(结果.空原因).toBeNull()
+    expect(断数据字节(结果.数据)).toBeGreaterThan(0)
+  })
+
+  test("aggregate_money：七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await aggregate_money(主ctx(), { 账户: 数据集.账号.A })
+    断七字段(结果)
+    expect(结果.空原因).toBeNull()
+    expect(断数据字节(结果.数据)).toBeGreaterThan(0)
+  })
+
+  test("money_flow：七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await money_flow(主ctx(), { 账户: 数据集.账号.A })
+    断七字段(结果)
+    expect(结果.空原因).toBeNull()
+    expect(断数据字节(结果.数据)).toBeGreaterThan(0)
+  })
+
+  test("find_crossings：七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await find_crossings(主ctx(), { 甲: 数据集.账号.A, 乙: 数据集.账号.B })
+    断七字段(结果)
+    断数据字节(结果.数据)
+  })
+})
