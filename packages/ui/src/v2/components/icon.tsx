@@ -213,6 +213,13 @@ const icons = {
     viewBox: "0 0 16 16",
     body: `<path d="M2.4 12.6H13.6" stroke="currentColor" stroke-linecap="round"/><rect x="3.8" y="2.6" width="8.4" height="5.8" rx="1" stroke="currentColor"/><path d="M6.2 12.6L7.6 8.4" stroke="currentColor" stroke-linecap="round"/>`,
   },
+  // openhive 定制 · 【同步上游时保留】（2026-11-17）：顶栏「图例」按钮要「圆点 + 行」的列表图形，
+  // 上游表里没有（名字不在表里时 `Icon` 静默回退 plus，按钮看着像「新建」）。
+  // 只追加键，不改表结构（项目第一号约束：最小化合并冲突）；与上面 T015 那一批同一写法。
+  "bullet-list": {
+    viewBox: "0 0 16 16",
+    body: `<circle cx="4" cy="5.4" r="1.1" fill="currentColor"/><path d="M7.2 5.4H14" stroke="currentColor" stroke-linecap="round"/><circle cx="4" cy="10.6" r="1.1" fill="currentColor"/><path d="M7.2 10.6H14" stroke="currentColor" stroke-linecap="round"/>`,
+  },
 }
 
 const spriteID = "opencode-v2-icon-sprite"

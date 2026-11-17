@@ -6156,6 +6156,10 @@ describe("顶栏：图例 / 撤销 / 重做 / 已保存 同一行", () => {
     // 撤销 / 重做各是自己的弯箭头：不能都退回 `工具钮` 的默认图标（那样仍是「有 svg」）。
     expect(撤销钮!.querySelector("svg")!.getAttribute("data-icon")).toBe("undo")
     expect(重做钮!.querySelector("svg")!.getAttribute("data-icon")).toBe("redo")
+    // 图例用「圆点 + 行」的列表图形（图例条目就是这个形状）。
+    // 钉 href 而不是「有 svg」：`图标` 名字不在 v2 图标表里时 `Icon` 静默回退 plus，
+    // 肉眼与「有 svg」断言都看不出来（本轮实测：`bullet-list` 曾渲染成 plus）。
+    expect(图例钮!.querySelector("use")!.getAttribute("href")).toBe("#opencode-v2-icon-bullet-list")
   })
 })
 
