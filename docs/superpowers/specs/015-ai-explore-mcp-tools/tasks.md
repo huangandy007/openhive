@@ -176,7 +176,10 @@ T013 → T014               ┘
 > 由 T002 填写；每条 FR 一行，用例列写「文件名 + 用例名」，无覆盖写「缺口 + 原因」。
 
 > 生成于 2026-11-17（T002）。用例名逐条取自 `packages/opencode/test/server/` 实际文件；
-> 标记「缺口」的行写明缺哪条断言。统计：覆盖 27 条 / 缺口 15 条（共 42 条）。
+> 标记「缺口」的行写明缺哪条断言。统计：覆盖 30 条 / 缺口 17 条 / 部分 3 条（共 50 条，覆盖 spec 的 FR-001～050）。
+>
+> 2026-11-17 code review 补记：初版只覆盖 FR-001～028、FR-035～048（42 行），漏了 FR-032/033/034/049/050；
+> 其中 FR-034、FR-049 其实已实现且有用例，FR-050 是**真的没做**，已在本轮修复（`748c31b9`）。
 > 备注：`openhive-case-explore-seed.test.ts`、`openhive-case-identity-resolve.test.ts`、
 > `openhive-case-row-query.test.ts`、`case-hgraph-tools.test.ts` 用例存在且可跑，但不在 T001 的 15 份点名文件内。
 
@@ -227,3 +230,8 @@ T013 → T014               ┘
 | FR-029 | 部分：三处起手入口中两处已交付（实体档案「查个人」`entity-profile.test.tsx::点「查个人」…`、图谱节点「问 AI」既有实现）；「查一段时间」按 `plan.md` D5 后置，未进 `spec.md` 缺口表 | 部分 |
 | FR-030 | 部分：两枚新入口按钮的载荷是**实体规范值**而不是 `spec.md` 要求的「实体 id 或图文件路径」（`entity-profile.tsx:504/519`）；既有图谱「问 AI」载荷是节点值（`graph.tsx:1562`）。名称解析可兜住绝大多数情形，同形路径下无法唯一定位；**未修，记缺口**（终审 Minor 5） | 缺口 |
 | FR-031 | 缺口：三种需人裁决情形（同名多人 / 合并候选 / 推断升事实）的裁决按钮**本期未实现**（tasks.md 未派该任务，控制器 Ruling 11：不超范围实现），须产品排期 | 缺口 |
+| FR-032 | 部分：工具卡六块可见性由既有 `envelope-tool.tsx` 实现，本分支只在其上加错误引导行；**无组件四态用例**（`packages/session-ui` 无 DOM 测试基建，story 无断言且被 `tsconfig` 排除），真栈第 5 步人工验过「错误码 + 原因 + 引导」 | 部分 |
+| FR-033 | 部分：收尾行按**本轮全部 assistant 消息**的 parts 统计、措辞写「本轮回答」（`closing-stats.ts:62-89`、`i18n/zh.ts:243`）；与 spec 要求的「近 10 分钟窗口口径」有已知偏差（`research.md` D4、`run-report.md` §六）。另：只用图工具的一轮 `查询次数 === 0` ⇒ 整行不出现 | 部分 |
+| FR-034 | `envelope-parse.ts:57-70` 的 9 码映射 + `envelope-tool.tsx:217-233` 的引导行 + `i18n/{zh,en}.ts` 各 9 条；`envelope-parse.test.ts`（17 例，含原型链键 `toString` 用例）与 `closing-stats.test.ts` 的 9 句**逐字**断言。服务端第 10 码 `identity_required` 无文案（见缺口表） | 覆盖 |
+| FR-049 | 文本事实走 `原文切片`、行级事实走 `材料定位 {path, sheet, rowNo}` + `extras`，两分支共用切片/定位实现（`case-mcp-tools.ts`）。`openhive-case-mcp-tools.test.ts::get_citation 明细行：材料定位取材料的项目内路径，extras 备注原样回显`、`::…原文切片` 三条（`:1325`/`:1327`）、`::get_citation 材料没有正文：原文切片 null，缺口同一份材料只说一次`（`:1331`）、`::get_citation locator 越过正文：夹到末尾并在缺口里写明`（`:1339`）；locator 解析/压缩另由 `openhive-case-citation.test.ts` 15 例覆盖 | 覆盖 |
+| FR-050 | `openhive-case-mcp-server.test.ts`：① 遍历 tools/list 全部非 graph 工具，逐个断言描述含 `什么时候用：` / `什么时候别用：` / `返回后照抄：`；② 4 个原语（`query_rows`/`query_timeline`/`explore_entity`/`money_flow`）均以导出常量 `探索原语摘要`（`case-mcp-server.ts:196`）开头；③ 反向断言 `query_rows` 的「别用」段写明 `备注关键词` 会报参数错误。已知局限：常量被**逐字相同**地复制成字面量时行为不变，用例 2 抓不到（只有漂字才红） | 覆盖 |
