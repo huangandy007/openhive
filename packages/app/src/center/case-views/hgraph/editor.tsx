@@ -80,7 +80,7 @@ import {
 } from "./undo"
 import { 逆操作 as 求逆操作, diff逆操作 as 求diff逆操作 } from "./history"
 import { 复制计划, 复制节点id, 合并计划 } from "./graphops"
-import { 手画边, 可连线, 是角色边, 是角色边方向, 角色边, 角色边依据 } from "./edge"
+import { 手画边, 可连线, 是角色边, 角色边依据, 快速连线依据 } from "./edge"
 import { 是输入目标 } from "./keys"
 
 export interface 编辑器Props {
@@ -574,18 +574,11 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   /** 确认条里选中的保留者；默认 = 候选中文档顺序第一（R79）。 */
   const [合并保留, set合并保留] = createSignal<string | undefined>()
   /**
-   * 连线浮层（R-F1）：落下只开浮层、零写盘，依据/可信度收齐后才发一条 `加边`；
-   * 「补依据」复用同一个浮层（检查器把缺依据的事实边改成推断时走这里，不直接 `改字段`）。
+   * 「补依据」浮层：检查器把缺依据的事实边改成推断时走这里，收齐后才发一条 `改字段`。
+   * 拖拽新建连线**不再**走浮层（需求第 4 项：连上就立刻落边）。
    */
-  const [待连线, set待连线] = createSignal<
-    | { readonly 从: string; readonly 到: string; readonly 模式: "新建"; readonly 角色: boolean }
-    | { readonly 边id: string; readonly 模式: "补依据" }
-    | undefined
-  >()
+  const [待连线, set待连线] = createSignal<{ readonly 边id: string; readonly 模式: "补依据" } | undefined>()
   const [连线依据, set连线依据] = createSignal("")
-  const [连线标签, set连线标签] = createSignal("")
-  /** 事件 → 非事件的连线：角色必填（取代依据），确认时按 `角色边` 落库。 */
-  const [连线角色, set连线角色] = createSignal("")
   /** 默认「中」（brief 固定默认）；只有 UI 选择，不替构造器定默认。 */
   const [连线可信度, set连线可信度] = createSignal<"高" | "中" | "低">("中")
   /** 请求布局时带的模式；确认后才真正算（默认环形，R36）。 */
@@ -1808,76 +1801,39 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     void 退出全屏(舞台)
   })
 
-  /** 本次连线是否走角色边（事件 → 非事件）；其余情况仍是手画边。 */
-  const 角色连线 = () => {
-    const 值 = 待连线()
-    return 值?.模式 === "新建" && 值.角色
-  }
+  /** 确认按钮的可用判据：依据非空（`可连线` 口径）。 */
+  const 连线可确认 = () => 可连线(连线依据())
 
-  /** 确认按钮的可用判据：角色连线要求角色非空，其余要求依据非空（同一 `可连线` 口径）。 */
-  const 连线可确认 = () => (角色连线() ? 可连线(连线角色()) : 可连线(连线依据()))
-
-  /** 收起连线浮层并清空草稿（确认/取消/Esc 共用同一个复位）。 */
+  /** 收起补依据浮层并清空草稿（确认/取消/Esc 共用同一个复位）。 */
   const 关连线 = () => {
     set待连线(undefined)
     set连线依据("")
-    set连线标签("")
-    set连线角色("")
     set连线可信度("中")
   }
 
-  /** 画布连线拖拽落下：只开浮层，**不写盘**（R-F1）。 */
-  const 开新建连线 = (从: string, 到: string) => {
-    const 起点 = 文档().节点.find((点) => 点.id === 从)
-    const 终点 = 文档().节点.find((点) => 点.id === 到)
-    // FR-027：事件 → 非事件参与方收「角色」并落角色边；事件→事件、实体→实体仍是手画边。
-    const 是角色 = 是角色边方向(起点, 终点)
-    set连线依据("")
-    set连线标签("")
-    set连线角色("")
-    set连线可信度("中")
-    set待连线({ 从, 到, 模式: "新建", 角色: 是角色 })
+  /**
+   * 画布连线拖拽落下：**立刻**落一条手画边（占位依据「待补充依据」、可信度「中」、标签空）。
+   * 需求第 4 项：不再弹「标签 / 依据 / 可信度 + 确认」整行，细节留到检查器面板里改。
+   * 占位依据不是可选：后端硬闸拒收空依据的推断边（见 `快速连线依据`）。
+   */
+  const 直接连线 = (从: string, 到: string) => {
+    应用([{ 操作: "加边", 边: [{ ...手画边(从, 到, { 依据: 快速连线依据, 可信度: "中" }) }] }])
   }
 
-  /** 检查器「事实 → 推断」缺依据：复用同一个浮层收必填项，不直接发 `改字段`。 */
+  /** 检查器「事实 → 推断」缺依据：复用浮层收必填项，不直接发 `改字段`。 */
   const 开补依据 = (边id: string) => {
     const 条 = 文档().边.find((行) => 行.id === 边id)
     set连线依据(条?.来源?.依据 ?? "")
-    set连线标签("")
-    set连线角色("")
     set连线可信度(条?.可信度 ?? "中")
     set待连线({ 边id, 模式: "补依据" })
   }
 
-  /**
-   * 连线浮层确认：新建角色边 ⇒ `角色边`（依据固定话术，不收用户依据）；
-   * 新建普通边 ⇒ `手画边`；补依据 ⇒ 一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。
-   */
+  /** 补依据确认：一条 `改字段`，来源展开保留原 `kind` 等字段、只加/换 `依据`。 */
   const 确认连线 = () => {
     const 值 = 待连线()
     if (值 === undefined) return
-    const 可信度 = 连线可信度()
-    if (值.模式 === "新建" && 值.角色) {
-      const 角色 = 连线角色().trim()
-      if (!可连线(角色)) return
-      const 起点 = 文档().节点.find((点) => 点.id === 值.从)
-      if (起点 === undefined) {
-        关连线()
-        return
-      }
-      应用([{ 操作: "加边", 边: [{ ...角色边(起点, 值.到, 角色, 可信度) }] }])
-      关连线()
-      return
-    }
     const 依据 = 连线依据()
     if (!可连线(依据)) return
-    if (值.模式 === "新建") {
-      // `操作.边` 的元素类型是 `Record<string, unknown>`；`边` 是接口（无隐式索引签名），
-      // 展开成对象字面量再交出去，不改协议类型（#002-06：规则仍在 edge.ts 一份）。
-      应用([{ 操作: "加边", 边: [{ ...手画边(值.从, 值.到, { 依据, 可信度, 标签: 连线标签() }) }] }])
-      关连线()
-      return
-    }
     const 条 = 文档().边.find((行) => 行.id === 值.边id)
     if (条 === undefined) {
       关连线()
@@ -1886,22 +1842,18 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     应用([
       {
         操作: "改字段",
-        目标: [{ 类别: "边", id: 值.边id, 补丁: { 性质: "推断", 来源: { ...条.来源, 依据 }, 可信度 } }],
+        目标: [{ 类别: "边", id: 值.边id, 补丁: { 性质: "推断", 来源: { ...条.来源, 依据 }, 可信度: 连线可信度() } }],
       },
     ])
     关连线()
   }
 
-  /** 浮层标题：新建 = `<id> <名称> → <id> <名称>`（缺省回退 id）；补依据 = `从 → 到（补依据）`。 */
+  /** 浮层标题：`从 → 到（补依据）`。 */
   const 连线标题 = () => {
     const 值 = 待连线()
     if (值 === undefined) return ""
-    const 名 = (id: string) => 文档().节点.find((点) => 点.id === id)?.名称 || id
-    if (值.模式 === "补依据") {
-      const 条 = 文档().边.find((行) => 行.id === 值.边id)
-      return 条 === undefined ? "" : `${条.从} → ${条.到}（补依据）`
-    }
-    return `${值.从} ${名(值.从)} → ${值.到} ${名(值.到)}`
+    const 条 = 文档().边.find((行) => 行.id === 值.边id)
+    return 条 === undefined ? "" : `${条.从} → ${条.到}（补依据）`
   }
 
   /** 加文字的唯一落批点：工具栏「加文字」与右键/双击等入口共用。 */
@@ -1911,7 +1863,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
   const 动作: 画布动作 = {
     选择: (ids, 追加) => set选中(追加 ? [...new Set([...选中(), ...ids])] : ids),
     移动: (目标) => 应用([{ 操作: "移动", 目标: [...目标] }]),
-    加边: (从, 到) => 开新建连线(从, 到),
+    加边: (从, 到) => 直接连线(从, 到),
     补依据: (边id) => 开补依据(边id),
     加文字: 应用加文字,
     // T013：模式条搬进工具栏后，落点按画布尺寸算（与旧画布内按钮同一公式）。
@@ -2584,58 +2536,33 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
         </div>
       </Show>
 
-      {/* R-F1：连线浮层——拖完不写盘，依据必填 + 可信度（默认中）+ 标签可选；确认才一条 `加边`。 */}
+      {/*
+        补依据浮层（只有这一条路还在用）：检查器把缺依据的事实边改成推断时，收「依据 + 可信度」。
+        拖拽新建连线不再出任何填写行（需求第 4 项）。
+      */}
       <Show when={待连线()}>
         <div
           data-slot="hgraph-connect-bar"
           role="alertdialog"
-          aria-label="连线"
+          aria-label="补依据"
           class="flex shrink-0 items-center gap-2 border-t border-v2-border-border-muted px-2 py-1"
         >
           <span data-slot="hgraph-connect-title" class="text-12-regular text-v2-text-text-muted">
             {连线标题()}
           </span>
-          <Show when={待连线()?.模式 === "新建" && !角色连线()}>
-            <input
-              data-slot="hgraph-connect-label"
-              aria-label="连线标签"
-              placeholder="标签（可选）"
-              class="w-28 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={连线标签()}
-              onInput={(事件) => set连线标签(事件.currentTarget.value)}
-            />
-          </Show>
-          {/* FR-027：事件 → 参与方收「角色」必填；依据由 `角色边` 按固定话术生成。 */}
-          <Show when={角色连线()}>
-            <input
-              data-slot="hgraph-connect-role"
-              aria-label="角色"
-              placeholder="收款方"
-              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={连线角色()}
-              onInput={(事件) => set连线角色(事件.currentTarget.value)}
-              onKeyDown={(事件) => {
-                if (事件.key !== "Escape") return
-                事件.preventDefault()
-                关连线()
-              }}
-            />
-          </Show>
-          <Show when={!角色连线()}>
-            <input
-              data-slot="hgraph-connect-basis"
-              aria-label="连线依据"
-              placeholder="依据（必填）"
-              class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
-              value={连线依据()}
-              onInput={(事件) => set连线依据(事件.currentTarget.value)}
-              onKeyDown={(事件) => {
-                if (事件.key !== "Escape") return
-                事件.preventDefault()
-                关连线()
-              }}
-            />
-          </Show>
+          <input
+            data-slot="hgraph-connect-basis"
+            aria-label="连线依据"
+            placeholder="依据（必填）"
+            class="w-56 rounded border border-v2-border-border-muted px-1 py-0.5 text-12-regular text-v2-text-text-base"
+            value={连线依据()}
+            onInput={(事件) => set连线依据(事件.currentTarget.value)}
+            onKeyDown={(事件) => {
+              if (事件.key !== "Escape") return
+              事件.preventDefault()
+              关连线()
+            }}
+          />
           <select
             data-slot="hgraph-connect-confidence"
             aria-label="可信度"
