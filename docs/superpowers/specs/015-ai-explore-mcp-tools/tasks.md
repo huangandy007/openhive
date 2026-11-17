@@ -206,7 +206,7 @@ T013 → T014               ┘
 | FR-022 | 缺口：`openhive-case-mcp-server.test.ts::握手后 getInstructions() 逐条含八条纪律的检索关键词，且 1..8 编号都在` 只断言 8 条编号且显式断言「无第 9 条」；`09` 的「时间线优先」在实现里写成 `2b`（`case-mcp-server.ts:174`），没有任何用例断言它 | 缺口 |
 | FR-023 | 缺口：第 12 次注入、分发前计数、窗口重置、身份隔离均有断言（`openhive-case-mcp-server.test.ts::第 12 次工具调用起…`、`::计数在分发前：中间一次 bad_input 也占号…`、`::空闲超过窗口后重新计数…`、`::计数按 (userId, projectId) 隔离…`），但无「未知工具名不计数」的用例 | 缺口 |
 | FR-024 | `case-hgraph-tools.test.ts::第 12 次起图工具也带预算上限缺口（与查库工具同一预算出口，不套七字段信封）`（断言 `预算上限缺口` 显式字段） | 覆盖 |
-| FR-025 | 缺口：`openhive-case-mcp-server.test.ts::握手后 getInstructions()…` 断言「30 秒」「没有任何服务端闸」，但「已达查询上限，以下未覆盖：…」属回答层收尾行（T008/T009 未落地），`test/server/` 下无对应用例 | 缺口 |
+| FR-025 | 缺口：`openhive-case-mcp-server.test.ts::握手后 getInstructions()…` 断言「30 秒」「没有任何服务端闸」，「已达 12 次上限，未覆盖项见工具卡缺口」属回答层收尾行，T008/T009 已落地并经真栈复验通过（见 `run-report.md` §四），但 `test/server/` 与前端均无对应自动用例 | 缺口 |
 | FR-026 | 缺口：`test/server/` 下无「skill 作为全局资产发布到 `skills.paths`、不在仓库 `.opencode/skills/`」的用例；`grep -rl 资金研判` 仅命中 `packages/app/src/ai-session/capability-pipeline.test.tsx` 的分组名，不验资产位置 | 缺口 |
 | FR-027 | 缺口：无 skill 正文用例（只引用工具名、无 SQL、不复制返回结构、不重复全局纪律）；资产本体不在本仓库，`test/server/` 无可断言对象 | 缺口 |
 | FR-028 | 缺口：资金 4 条固定问题的 A/B 结果属真栈 + 真模型人工验收，`test/server/` 下无自动用例（tasks.md「明确不做的项」亦已列明） | 缺口 |
@@ -224,3 +224,6 @@ T013 → T014               ┘
 | FR-046 | 缺口：变异验证是过程证据（拆实现看红），`test/server/` 下无对应用例；本仓库的变异记录只在实现报告/LEARNINGS 中，未落成测试 | 缺口 |
 | FR-047 | 缺口：三层中只有工具层单测（本表各行）；真栈回放无自动化用例（`test/real-stack/` 仅有 `serve.ts`），数字一致性（复用 `01` 的 A4）未在本 feature 用例中落地 | 缺口 |
 | FR-048 | 缺口：缺口表属验收文档，`test/server/` 下无用例；本报告「缺口逐条列表」即为该条要求的人工产物 | 缺口 |
+| FR-029 | 部分：三处起手入口中两处已交付（实体档案「查个人」`entity-profile.test.tsx::点「查个人」…`、图谱节点「问 AI」既有实现）；「查一段时间」按 `plan.md` D5 后置，未进 `spec.md` 缺口表 | 部分 |
+| FR-030 | 部分：两枚新入口按钮的载荷是**实体规范值**而不是 `spec.md` 要求的「实体 id 或图文件路径」（`entity-profile.tsx:504/519`）；既有图谱「问 AI」载荷是节点值（`graph.tsx:1562`）。名称解析可兜住绝大多数情形，同形路径下无法唯一定位；**未修，记缺口**（终审 Minor 5） | 缺口 |
+| FR-031 | 缺口：三种需人裁决情形（同名多人 / 合并候选 / 推断升事实）的裁决按钮**本期未实现**（tasks.md 未派该任务，控制器 Ruling 11：不超范围实现），须产品排期 | 缺口 |
