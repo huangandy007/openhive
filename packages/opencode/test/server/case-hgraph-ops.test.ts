@@ -457,6 +457,54 @@ describe("T006 · 幂等键与整批原子", () => {
     }),
   )
 
+  it("幂等键按「人＋项目＋归一路径」隔离：换路径 / 换人 都不重放，同人同路径同键仍重放", () =>
+    Effect.gen(function* () {
+      const 甲 = "幂等/路径甲.hgraph"
+      const 乙 = "幂等/路径乙.hgraph"
+      摆图(甲, 空图("路径甲"))
+      摆图(乙, 空图("路径乙"))
+      const 体 = {
+        幂等键: "键-隔离-1",
+        操作: [{ 操作: "加节点", 节点: [{ id: "tmp1", ...手写节点("张三") }] }],
+      }
+
+      const 首 = yield* 操作({ ...体, path: 甲 })
+      const 首体 = yield* 读回<{ 重放: boolean; 结果: { 映射: Record<string, string> } }>(首)
+      expect(首.status).toBe(200)
+      expect(首体.重放).toBe(false)
+      expect(首体.结果.映射.tmp1).toBe("n1")
+
+      // 同一个人、同一个键、**不同路径** ⇒ 不重放，另一张图真的被写。
+      const 换路径 = yield* 操作({ ...体, path: 乙 })
+      const 换路径体 = yield* 读回<{ 重放: boolean }>(换路径)
+      expect(换路径.status).toBe(200)
+      expect(换路径体.重放).toBe(false)
+      const 乙图 = 解析图(readFileSync(join(我目录(), 乙), "utf8"))
+      expect(乙图.ok).toBe(true)
+      if (乙图.ok) expect(乙图.文档.节点).toHaveLength(1)
+
+      // 同项目、同路径、同一个键，但**换一个人** ⇒ 也不重放。
+      const 换人 = yield* 发体(成员, `${PREFIX}/ops`, {
+        projectId: 项目,
+        ...体,
+        path: 甲,
+        操作: [{ 操作: "加节点", 节点: [{ id: "tmp2", ...手写节点("李四") }] }],
+      })
+      const 换人体 = yield* 读回<{ 重放: boolean }>(换人)
+      expect(换人.status).toBe(200)
+      expect(换人体.重放).toBe(false)
+      const 甲图 = 解析图(readFileSync(join(我目录(), 甲), "utf8"))
+      expect(甲图.ok).toBe(true)
+      if (甲图.ok) expect(甲图.文档.节点.map((点) => 点.名称).sort()).toEqual(["张三", "李四"].sort())
+
+      // 同人 / 同路径 / 同键 ⇒ 仍重放（返回第一次那次的结果）。
+      const 回放 = yield* 操作({ ...体, path: 甲 })
+      const 回放体 = yield* 读回<{ 重放: boolean }>(回放)
+      expect(回放.status).toBe(200)
+      expect(回放体.重放).toBe(true)
+    }),
+  )
+
   it("批量 30 条中第 30 条不合格 ⇒ 整批不写（字节哈希不变）", () =>
     Effect.gen(function* () {
       const 相对 = "原子/三十条.hgraph"

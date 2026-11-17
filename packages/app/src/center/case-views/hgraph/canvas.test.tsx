@@ -159,6 +159,8 @@ function 挂(
       host,
     ),
   )
+  // 前提（`#005-18` / `#013-12`）：组件确实渲染出了元素，避免「整块没挂上」把缺失断言衬成假绿。
+  expect(host.firstElementChild !== null).toBe(true)
 }
 
 const 全部 = (选择器: string) => [...document.querySelectorAll(选择器)]
@@ -168,7 +170,7 @@ const 节点组 = (id: string) => 取(`[data-slot='hgraph-node'][data-node-id='$
 const 条目数 = () => 全部("[data-slot='hgraph-legend'] [data-slot='hgraph-legend-item']").length
 const 点 = (选择器: string) => {
   const 元素 = 取(选择器)
-  expect(元素).not.toBeNull()
+  expect(元素 !== null).toBe(true)
   元素!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
 }
 
@@ -321,6 +323,50 @@ describe("T018 · 节点形状与外环", () => {
     expect(首字们).toContain("𠮷")
   })
 
+  test("FR-052 未选中节点：已识别类型是类型色浅底 + 类型色描边；未识别回退中性", () => {
+    挂(
+      造图(
+        [
+          造节点("号码", 100, 100, { 类型: "号码" }),
+          造节点("账户", 200, 100, { 类型: "账户" }),
+          造节点("地点", 300, 100, { 类型: "地点" }),
+          造节点("组织", 400, 100, { 类型: "组织" }),
+          造节点("未分类", 500, 100, { 类型: "未分类" }),
+        ],
+        [],
+      ),
+    )
+    const 形 = (id: string) => 节点组(id)!.querySelector("[data-slot='hgraph-node-shape']")!
+
+    // 号码 / 账户 / 地点：浅底与 1.5px 描边都取类型色（与 `graph.tsx` 同一张映射）。
+    expect(形("号码").getAttribute("fill")).toBe("var(--v2-state-bg-info)")
+    expect(形("号码").getAttribute("stroke")).toBe("var(--v2-state-border-info)")
+    expect(形("账户").getAttribute("fill")).toBe("var(--v2-state-bg-success)")
+    expect(形("账户").getAttribute("stroke")).toBe("var(--v2-state-border-success)")
+    expect(形("地点").getAttribute("fill")).toBe("var(--v2-state-bg-warning)")
+    expect(形("地点").getAttribute("stroke")).toBe("var(--v2-state-border-warning)")
+    expect(形("号码").getAttribute("stroke-width")).toBe("1.5")
+    // 主判据：不再是「一排灰斑」。
+    for (const id of ["号码", "账户", "地点"]) {
+      expect(形(id).getAttribute("fill") === "var(--v2-background-bg-layer-02)").toBe(false)
+      expect(形(id).getAttribute("stroke") === "var(--v2-border-border-strong)").toBe(false)
+    }
+    // 组织：已识别但没有状态浅底槽 ⇒ 浅底 layer-03、描边回退中性（设计补色表缺口）。
+    expect(形("组织").getAttribute("fill")).toBe("var(--v2-background-bg-layer-03)")
+    expect(形("组织").getAttribute("stroke")).toBe("var(--v2-border-border-strong)")
+    // 未识别类型保持中性回退，不新造色。
+    expect(形("未分类").getAttribute("fill")).toBe("var(--v2-background-bg-layer-02)")
+    expect(形("未分类").getAttribute("stroke")).toBe("var(--v2-border-border-strong)")
+  })
+
+  test("FR-052 选中态仍是品牌金（精修 FR-053 延后，本次不改）", () => {
+    挂(造图([造节点("号码", 100, 100, { 类型: "号码" })], []), undefined, { 选中: ["号码"] })
+    const 形 = 节点组("号码")!.querySelector("[data-slot='hgraph-node-shape']")!
+    expect(形.getAttribute("fill")).toBe("var(--v2-brand-gold)")
+    expect(形.getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
+    expect(形.getAttribute("stroke-width")).toBe("3")
+  })
+
   test("#13 自动外环：5 条边的节点 tier = 3；孤立节点无环", () => {
     挂(
       造图(
@@ -343,15 +389,15 @@ describe("T018 · 节点形状与外环", () => {
       ),
     )
     const 环 = 节点组("a")!.querySelector("[data-slot='hgraph-node-ring']")
-    expect(环).not.toBeNull()
+    expect(环 !== null).toBe(true)
     expect(环!.getAttribute("data-ring-tier")).toBe("3")
-    expect(节点组("孤")!.querySelector("[data-slot='hgraph-node-ring']")).toBeNull()
+    expect(节点组("孤")!.querySelector("[data-slot='hgraph-node-ring']") === null).toBe(true)
   })
 
   test("#14 手动外环 {档:1} 且 0 条边 ⇒ tier \"1\"（冻结生效）", () => {
     挂(造图([造节点("a", 100, 100, { 外环: { 档: 1 } })], []))
     const 环 = 节点组("a")!.querySelector("[data-slot='hgraph-node-ring']")
-    expect(环).not.toBeNull()
+    expect(环 !== null).toBe(true)
     expect(环!.getAttribute("data-ring-tier")).toBe("1")
   })
 })
@@ -361,13 +407,13 @@ describe("T018 · 图例挂载", () => {
     挂(造图([造节点("a", 100, 100)], []))
 
     const 图例元素 = 取("[data-slot='hgraph-legend']")
-    expect(图例元素).not.toBeNull()
-    expect(图例元素!.closest("svg")).not.toBeNull()
+    expect(图例元素 !== null).toBe(true)
+    expect(图例元素!.closest("svg") !== null).toBe(true)
     expect(条目数()).toBe(4)
 
     点("[data-slot='hgraph-legend-toggle']")
     expect(条目数()).toBe(0)
-    expect(取("[data-slot='hgraph-legend-collapsed']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-legend-collapsed']") !== null).toBe(true)
 
     点("[data-slot='hgraph-legend-collapsed']")
     expect(条目数()).toBe(4)
@@ -376,7 +422,7 @@ describe("T018 · 图例挂载", () => {
   test("图例初始收起：编辑器演示态传 true ⇒ 挂载即收起", () => {
     挂(造图([造节点("a", 100, 100)], []), true)
     expect(条目数()).toBe(0)
-    expect(取("[data-slot='hgraph-legend-collapsed']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-legend-collapsed']") !== null).toBe(true)
   })
 
   test("图例在 hgraph-viewport 之后、同属 hgraph-svg（R74），坐标 (12,48)（R108）", () => {
@@ -384,9 +430,9 @@ describe("T018 · 图例挂载", () => {
     const svg = 取("[data-slot='hgraph-svg']")
     const 视口 = 取("[data-slot='hgraph-viewport']")
     const 图例 = 取("[data-slot='hgraph-legend']")
-    expect(svg).not.toBeNull()
-    expect(视口).not.toBeNull()
-    expect(图例).not.toBeNull()
+    expect(svg !== null).toBe(true)
+    expect(视口 !== null).toBe(true)
+    expect(图例 !== null).toBe(true)
     expect(图例!.closest("[data-slot='hgraph-svg']")).toBe(svg!)
     expect(svg!.contains(视口)).toBe(true)
     expect(视口!.compareDocumentPosition(图例!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
@@ -396,7 +442,7 @@ describe("T018 · 图例挂载", () => {
   test("收起态文案恰为「图例」", () => {
     挂(造图([造节点("a", 100, 100)], []), true)
     const 收起 = 取("[data-slot='hgraph-legend-collapsed']")
-    expect(收起).not.toBeNull()
+    expect(收起 !== null).toBe(true)
     expect(收起!.textContent?.trim()).toBe("图例")
   })
 })
@@ -406,7 +452,7 @@ describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () =>
     const { 动作, 计数 } = 记动作表()
     挂(造图([造节点("a", 100, 100)], []), undefined, { 选中: ["a"], 动作 })
     const 钮 = 取("[data-slot='hgraph-legend-toggle']")
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
 
     按一下(钮!, { x: 20, y: 24 })
     钮!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
@@ -419,7 +465,7 @@ describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () =>
     const { 动作, 计数 } = 记动作表()
     挂(造图([造节点("a", 100, 100)], []), undefined, { 动作 })
     const 图例 = 取("[data-slot='hgraph-legend']")
-    expect(图例).not.toBeNull()
+    expect(图例 !== null).toBe(true)
 
     图例!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 20, clientY: 24 }))
 
@@ -429,20 +475,20 @@ describe("T018 修复轮 1 · 图例指针事件不冒泡成画布动作", () =>
   test("右键图例 ⇒ 不弹「空白画布」菜单（无写入口）", () => {
     挂(造图([造节点("a", 100, 100)], []))
     const 图例 = 取("[data-slot='hgraph-legend']")
-    expect(图例).not.toBeNull()
+    expect(图例 !== null).toBe(true)
 
     图例!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 24 }))
 
-    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+    expect(取("[data-slot='hgraph-menu']") === null).toBe(true)
   })
 
   test("从图例上按下拖动 ⇒ 画布 transform 不变（不平移）", () => {
     挂(造图([造节点("a", 100, 100)], []))
     const 视口 = 取("[data-slot='hgraph-viewport']")
-    expect(视口).not.toBeNull()
+    expect(视口 !== null).toBe(true)
     const 前 = 视口!.getAttribute("transform")
     const 图例 = 取("[data-slot='hgraph-legend']")
-    expect(图例).not.toBeNull()
+    expect(图例 !== null).toBe(true)
 
     拖一下(图例!, { x: 20, y: 24 }, { x: 160, y: 164 })
 
@@ -455,7 +501,7 @@ describe("T019a · 悬空边（端点不在节点表）", () => {
     // 端点 n2 不在 `节点` 里 ⇒ 这条边画不出方向与端点，必须整条不渲染。
     挂(造图([造节点("n1", 100, 100)], [造边("悬空", "n1", "n2")]))
     expect(边组们().length).toBe(0)
-    expect(取("[data-edge-id='悬空']")).toBeNull()
+    expect(取("[data-edge-id='悬空']") === null).toBe(true)
   })
 
   test("自环与正常边照旧：悬空边不影响其它边的渲染", () => {
@@ -467,9 +513,9 @@ describe("T019a · 悬空边（端点不在节点表）", () => {
     )
     // 自环两端都在节点表 ⇒ 照常渲染；悬空边仍被剔除。
     expect(边组们().length).toBe(2)
-    expect(取("[data-edge-id='正常']")).not.toBeNull()
-    expect(取("[data-edge-id='自环']")).not.toBeNull()
-    expect(取("[data-edge-id='悬空']")).toBeNull()
+    expect(取("[data-edge-id='正常']") !== null).toBe(true)
+    expect(取("[data-edge-id='自环']") !== null).toBe(true)
+    expect(取("[data-edge-id='悬空']") === null).toBe(true)
   })
 })
 
@@ -492,7 +538,7 @@ describe("T019a · 只读态（动作层 mode）不派发写动作", () => {
     }
 
     expect(Object.keys(计数)).toEqual([])
-    expect(取("[data-slot='hgraph-menu']")).toBeNull()
+    expect(取("[data-slot='hgraph-menu']") === null).toBe(true)
   })
 
   test("连线模式：从节点拖到节点也不加边（模式不影响只读闸）", () => {
@@ -517,8 +563,8 @@ describe("T018 · 标签档表接线（R75）", () => {
       undefined,
       { 适配请求: 1, 档表: new Map([["a", 3]]) },
     )
-    expect(节点组("a")!.querySelector("[data-slot='hgraph-node-label']")).not.toBeNull()
-    expect(节点组("b")!.querySelector("[data-slot='hgraph-node-label']")).toBeNull()
+    expect(节点组("a")!.querySelector("[data-slot='hgraph-node-label']") !== null).toBe(true)
+    expect(节点组("b")!.querySelector("[data-slot='hgraph-node-label']") === null).toBe(true)
   })
 })
 
@@ -530,7 +576,7 @@ describe("T019a · 悬空边角标（R-F4）", () => {
   test("一条悬空边 ⇒ 角标「1 条边指向不存在的节点」＋ 可读 title", () => {
     挂(造图([造节点("n1", 100, 100)], [造边("悬空", "n1", "n2")]))
     const 角标 = 取("[data-slot='hgraph-dangling-badge']")
-    expect(角标).not.toBeNull()
+    expect(角标 !== null).toBe(true)
     expect(角标!.textContent?.trim()).toBe("1 条边指向不存在的节点")
     expect(角标!.getAttribute("title")).toBe("有 1 条边指向不存在的节点：读时不丢弃、不静默改文件")
   })
@@ -543,7 +589,7 @@ describe("T019a · 悬空边角标（R-F4）", () => {
 
   test("无悬空 ⇒ 角标不存在（正常边不算）", () => {
     挂(造图([造节点("n1", 100, 100), 造节点("n2", 300, 100)], [造边("e1", "n1", "n2")]))
-    expect(取("[data-slot='hgraph-dangling-badge']")).toBeNull()
+    expect(取("[data-slot='hgraph-dangling-badge']") === null).toBe(true)
   })
 
   test("只读态也显示（读侧事实，只读不是不提示的理由）", () => {
@@ -556,7 +602,7 @@ describe("T019a · 文字宽度与自动换行（R-F11 / FR-024）", () => {
   test("宽度 32 / 中号 ⇒ 4 个字折成 2 行（每行 2 字），字号走 16", () => {
     挂(造图([], [], {}, [造文字("甲乙丙丁", { 宽度: 32 })]))
     const 文 = 取("[data-slot='hgraph-text']")
-    expect(文).not.toBeNull()
+    expect(文 !== null).toBe(true)
     // 选中 / 拖动仍按文字 id 找元素。
     expect(文!.getAttribute("data-text-id")).toBe("t1")
     expect(文!.getAttribute("font-size")).toBe("16")
@@ -596,7 +642,7 @@ describe("T019a · 边可点选（R-F12 前置）", () => {
     挂(两节点一边(), undefined, { 动作 })
 
     const 线 = 取("[data-slot='hgraph-edge-line']")
-    expect(线).not.toBeNull()
+    expect(线 !== null).toBe(true)
     expect(线!.getAttribute("class") ?? "").toContain("cursor-pointer")
     按一下(线!, { x: 200, y: 100 })
 

@@ -168,6 +168,9 @@ function 挂检查器(选项: {
       host,
     ),
   )
+  // 前提（`#005-18` / `#013-12`）：挂载点确实进了文档——检查器在「无选中」时本来就不渲染，
+  // 所以前提是「挂载执行了」，而不是「一定有元素」。
+  expect(document.body.contains(host)).toBe(true)
   return { ...幽, set选中, 收起, set收起 }
 }
 
@@ -197,7 +200,7 @@ describe("检查器 · 三段两源", () => {
     挂检查器({ 选中: ["n1"], 快照 })
 
     const 名称 = 取("[data-slot='hgraph-field-名称']") as HTMLInputElement | null
-    expect(名称).not.toBeNull()
+    expect(名称 !== null).toBe(true)
     expect(名称!.value).toBe("张三")
     // 库里现在是自己的值，不是文档值的副本。
     expect(文本("hgraph-snapshot-值")).toBe("张三丰")
@@ -240,25 +243,25 @@ describe("检查器 · 三段两源", () => {
     挂检查器({ 选中: ["n1"] })
 
     expect(文本("hgraph-snapshot-empty")).toBe("还没有接入库里的数据")
-    expect(取("[data-slot='hgraph-snapshot-值']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-值']") === null).toBe(true)
   })
 
   test("注入了快照但节点没绑库 ⇒ 「这条不在库里」，不拿别的实体回填", () => {
     挂检查器({ 选中: ["n2"], 快照 })
 
     expect(文本("hgraph-snapshot-empty")).toBe("这条不在库里")
-    expect(取("[data-slot='hgraph-snapshot-值']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-值']") === null).toBe(true)
   })
 
   test("「刷新此节点」只在注入刷新口时出现；点击把库 id 交回去", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-snapshot-refresh']")).toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-refresh']") === null).toBe(true)
 
     document.body.innerHTML = ""
     const 刷过: string[] = []
     挂检查器({ 选中: ["n1"], 快照, 刷新节点: (id) => 刷过.push(id) })
     const 按钮 = 取("[data-slot='hgraph-snapshot-refresh']") as HTMLButtonElement | null
-    expect(按钮).not.toBeNull()
+    expect(按钮 !== null).toBe(true)
     按钮!.click()
     expect(刷过).toEqual(["ent1"])
   })
@@ -347,7 +350,7 @@ describe("检查器 · 出现序", () => {
   test("#6 改为 2 后失焦：恰好 1 次改字段，补丁是 出现序: 2", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 快照 })
     const 输入 = 取("[data-slot='hgraph-field-出现序']") as HTMLInputElement | null
-    expect(输入).not.toBeNull()
+    expect(输入 !== null).toBe(true)
     // 缺省不写 0，输入框留空（缺省值不在文档里伪造）。
     expect(输入!.value).toBe("")
 
@@ -435,7 +438,7 @@ describe("检查器 · 批量态", () => {
   test("选中 2 个：对齐/等距/合并/删除都可用（R-F12：合并不再占位）", () => {
     const 幽 = 挂检查器({ 选中: ["n1", "n2"], 快照 })
 
-    expect(取("[data-slot='hgraph-batch']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-batch']") !== null).toBe(true)
     const 对齐 = 取("[data-slot='hgraph-batch-align-左']") as HTMLButtonElement
     const 等距 = 取("[data-slot='hgraph-batch-space-水平']") as HTMLButtonElement
     expect(对齐.disabled).toBe(false)
@@ -457,8 +460,8 @@ describe("检查器 · 批量态", () => {
 
   test("选中 1 个：不出现批量面板，单个详情可改", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-batch']")).toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-batch']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") !== null).toBe(true)
   })
 
   test("没有选中：检查器整个不渲染（不显示空属性或伪造快照）", () => {
@@ -502,7 +505,7 @@ describe("检查器 · 从库加入后的空属性/出处（R59）", () => {
     挂检查器({ 选中: ["n1"], 快照: {}, 刷新节点: () => {} })
 
     expect(文本("hgraph-snapshot-empty")).toBe("这条不在库里")
-    expect(取("[data-slot='hgraph-snapshot-refresh']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-snapshot-refresh']") !== null).toBe(true)
   })
 })
 
@@ -516,7 +519,7 @@ describe("检查器 · 打开档案（R63）", () => {
     挂检查器({ 选中: ["n1"], 快照, 打开档案: (id, 标题) => 收到.push([id, 标题]) })
 
     const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮!.disabled).toBe(false)
     钮!.click()
 
@@ -527,14 +530,14 @@ describe("检查器 · 打开档案（R63）", () => {
     挂检查器({ 选中: ["n2"], 快照, 打开档案: () => {} })
 
     const 钮 = 取("[data-slot='hgraph-open-archive']") as HTMLButtonElement | null
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮!.disabled).toBe(true)
     expect(钮!.getAttribute("title")).toBe("这条不在库里")
   })
 
   test("未注入回调：按钮不在 DOM（不放禁用假按钮）", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-open-archive']")).toBeNull()
+    expect(取("[data-slot='hgraph-open-archive']") === null).toBe(true)
   })
 })
 
@@ -546,7 +549,7 @@ describe("检查器 · 恢复自动（外环手动档删键）", () => {
   test("有 `外环` 时按钮在；点击 ⇒ 改字段(\"节点\", id, {外环:null})，算一步撤销", () => {
     const 幽 = 挂检查器({ 选中: ["n1"], 文档: 造图({ 外环: { 档: 2, 颜色: "红" } }), 快照 })
     const 钮 = 取("[data-slot='hgraph-ring-auto']")
-    expect(钮).not.toBeNull()
+    expect(钮 !== null).toBe(true)
     expect(钮?.textContent?.trim()).toBe("恢复自动")
 
     钮?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
@@ -557,7 +560,7 @@ describe("检查器 · 恢复自动（外环手动档删键）", () => {
 
   test("没有 `外环` 时不渲染按钮（自动档下没有「恢复」可言）", () => {
     挂检查器({ 选中: ["n1"], 快照 })
-    expect(取("[data-slot='hgraph-ring-auto']")).toBeNull()
+    expect(取("[data-slot='hgraph-ring-auto']") === null).toBe(true)
   })
 })
 
@@ -569,10 +572,10 @@ describe("检查器 · 边段（R-F12）", () => {
   test("只选中一条边 ⇒ 渲染边段、不渲染节点段/快照段/空提示", () => {
     挂检查器({ 选中: ["e1"], 文档: 带边图() })
 
-    expect(取("[data-slot='hgraph-inspector-edge']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-snapshot']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-hint']")).toBeNull()
+    expect(取("[data-slot='hgraph-inspector-edge']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-snapshot']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
   })
 
   /** final-fix2 C2：边操作脚「跳到两端」——口径 = 两端节点一并选中（同一 `选择` 出口）。 */
@@ -737,9 +740,9 @@ describe("检查器 · 文字段（R-F11 UI）", () => {
   test("选中文字 ⇒ 渲染文字段、不渲染节点段", () => {
     挂检查器({ 选中: ["t1"], 文档: 带文字图() })
 
-    expect(取("[data-slot='hgraph-inspector-text']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-field-名称']")).toBeNull()
-    expect(取("[data-slot='hgraph-inspector-hint']")).toBeNull()
+    expect(取("[data-slot='hgraph-inspector-text']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-field-名称']") === null).toBe(true)
+    expect(取("[data-slot='hgraph-inspector-hint']") === null).toBe(true)
   })
 
   test("内容失焦即存；改字号/对齐/颜色各发一次正确补丁", () => {
@@ -818,7 +821,7 @@ describe("检查器 · 绑定到库实体（FR-027）", () => {
     挂检查器({ 选中: ["n2"], 绑定: (id) => 绑过.push(id) })
 
     const 键 = 取("[data-slot='hgraph-bind']") as HTMLButtonElement | null
-    expect(键).not.toBeNull()
+    expect(键 !== null).toBe(true)
     expect(键!.textContent?.trim()).toBe("绑定到库实体")
     键!.click()
     expect(绑过).toEqual(["n2"])
@@ -829,19 +832,19 @@ describe("检查器 · 绑定到库实体（FR-027）", () => {
     图.节点[1] = { ...图.节点[1]!, 来源: { kind: "推断", 依据: "两人同日同酒店" }, 可信度: "中" }
     挂检查器({ 选中: ["n2"], 文档: 图, 绑定: () => {} })
 
-    expect(取("[data-slot='hgraph-bind']")).not.toBeNull()
+    expect(取("[data-slot='hgraph-bind']") !== null).toBe(true)
   })
 
   test("已绑库（来源.kind=实体）⇒ 不渲染", () => {
     挂检查器({ 选中: ["n1"], 快照, 绑定: () => {} })
 
-    expect(取("[data-slot='hgraph-bind']")).toBeNull()
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
   })
 
   test("未注入 绑定 ⇒ 不渲染（不放禁用假按钮）", () => {
     挂检查器({ 选中: ["n2"] })
 
-    expect(取("[data-slot='hgraph-bind']")).toBeNull()
+    expect(取("[data-slot='hgraph-bind']") === null).toBe(true)
   })
 })
 

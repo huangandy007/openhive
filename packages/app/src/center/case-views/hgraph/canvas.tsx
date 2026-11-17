@@ -52,7 +52,8 @@ import {
 } from "./geometry"
 import { 图例 } from "./legend"
 import { 字号像素, 折行行们 } from "./text-fold"
-import { 形状, 填充, 多边形, 默认节点填充, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import { 形状, 填充, 类型描边, 多边形, 默认节点填充, 面板让位平移x, 面板宽, 面板边距, type 位点 } from "../graph"
+import type { 图节点 } from "../../case-detail-api"
 import type { 排列模式 } from "../graph-layout"
 
 /** 服务端放置的同一块画布（`hgraph-edit.ts` 760×680）；节点半径同源 15。 */
@@ -751,17 +752,19 @@ export function 画布(props: 画布Props): JSX.Element {
    * **类型色**（与检查器色点同一张 `graph.tsx` 映射；这里只做字段适配，不另抄色值）。
    * 手动设色仍走 `外环色表`；表里查不到的自定义色名保持原兜底（不猜用户意图）。
    */
+  /** hgraph 节点 → `graph.tsx` 的图节点字段适配（类型色映射只此一份，`#002-06`）。 */
+  const 图节点样子 = (点: 节点): 图节点 => ({
+    id: 点.id,
+    type: 点.类型,
+    value: 点.名称,
+    trust_state: 点.来源?.可信 ?? "",
+    中心: false,
+    跳数: 0,
+    关联数: 0,
+    度数: 0,
+  })
   const 类型色 = (点: 节点) => {
-    const 色 = 填充({
-      id: 点.id,
-      type: 点.类型,
-      value: 点.名称,
-      trust_state: 点.来源?.可信 ?? "",
-      中心: false,
-      跳数: 0,
-      关联数: 0,
-      度数: 0,
-    })
+    const 色 = 填充(图节点样子(点))
     // final-fix2 N1：未映射类型落回 `填充` 的默认底色（与画布同阶）⇒ 外环改用描边色，
     // 否则高连接节点的粗环几乎看不见。判据只读 `填充` 的同一兜底值，不另抄类型表。
     return 色 === 默认节点填充 ? "var(--v2-border-border-strong)" : 色
@@ -1470,8 +1473,10 @@ export function 画布(props: 画布Props): JSX.Element {
               const 形 = () => 形状(点.类型 ?? "")
               // 对象类别 > 类型→形状：事件不进那个映射（FR-056）。
               const 是事件 = () => 是事件节点(点)
-              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : "var(--v2-background-bg-layer-02)")
-              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : "var(--v2-border-border-strong)")
+              // FR-052：未选中节点用类型色浅底 + 类型色描边（`graph.tsx` 同一张映射）；
+              // 选中态保持品牌金（FR-053 精修延后）。
+              const 填充色 = () => (选中() ? "var(--v2-brand-gold)" : 填充(图节点样子(点)))
+              const 描边色 = () => (选中() ? "var(--v2-brand-gold-deep)" : 类型描边(图节点样子(点)))
               const 描边宽 = () => (选中() ? 3 : 1.5)
               const 虚线 = () => (点.锁定 === true ? "3 2" : undefined)
               return (

@@ -64,6 +64,11 @@ export interface 增结果 {
   readonly 版本: string
   readonly 映射: Record<string, string>
   readonly 复用: string[]
+  /**
+   * FR-005：复用了图上已有节点时的一行可读提示（MCP 工具结果直接呈现）。
+   * 没有复用 ⇒ 缺省（不写空串，避免模型把空提示当成信息）。
+   */
+  readonly 提示?: string
   readonly 新增: { 节点: number; 边: number }
   readonly 放置: { 临时id: string; x: number; y: number }[]
   readonly 重放: boolean
@@ -356,6 +361,8 @@ export async function graph_add(
     版本: 写.版本,
     映射: 写.结果.映射,
     复用: 写.结果.复用,
+    // FR-005：复用是语义合并，必须在结果里说一句，否则「加了张三」与「并到已有张三」看不出区别。
+    ...(写.结果.复用.length === 0 ? {} : { 提示: `已复用图上已有节点：${写.结果.复用.join("、")}` }),
     新增: { 节点: 写.结果.新增.节点, 边: 写.结果.新增.边 },
     放置: await 放置坐标(ctx, 路径, 写.结果.映射),
     重放: 写.重放,

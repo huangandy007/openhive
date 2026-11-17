@@ -53,6 +53,7 @@ import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 }
 import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 同内容 } from "./same-content"
+import { 下一个默认名 } from "./default-name"
 import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
@@ -1921,7 +1922,7 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
           节点: [
             {
               id,
-              名称: "新节点",
+              名称: 下一个默认名(文档()),
               类型: "未分类",
               来源: { kind: "手写" },
               时间: { 首: "", 末: "" },

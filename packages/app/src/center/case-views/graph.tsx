@@ -90,6 +90,19 @@ export function 填充(点: 图节点): string {
   return 默认节点填充
 }
 
+/**
+ * 类型色描边（FR-052）：与 `填充` **同一组已识别类型**（号码/账户/地点/组织）。
+ *
+ * hgraph 画布只消费这一份，不另抄色表（`#002-06`）。组织与未识别类型没有专属描边槽位，
+ * 回退 `border-strong`——「不得呈灰斑」按已识别类型解释，不新造调色板（设计 08 §4.3）。
+ */
+export function 类型描边(点: 图节点): string {
+  if (点.type === "号码") return "var(--v2-state-border-info)"
+  if (点.type === "账户") return "var(--v2-state-border-success)"
+  if (点.type === "地点") return "var(--v2-state-border-warning)"
+  return "var(--v2-border-border-strong)"
+}
+
 /** 需要再看一眼的两态。`已确认` 是可信态——把它也算进来，整张图会全是虚线圈。 */
 const 待复核 = new Set(["存疑", "已排除"])
 

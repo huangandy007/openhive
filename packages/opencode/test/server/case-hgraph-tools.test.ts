@@ -353,6 +353,8 @@ describe("graph_add", () => {
     expect(结果.版本).toMatch(/^[0-9a-f]{32}$/)
     expect(结果.映射).toEqual({ tmp1: "n1", tmp2: "n2", tmpE1: "e1" })
     expect(结果.复用).toEqual([])
+    // FR-005：没有复用时不出提示。
+    expect(结果.提示).toBeUndefined()
     expect(结果.新增).toEqual({ 节点: 2, 边: 1 })
     expect(结果.重放).toBe(false)
 
@@ -375,6 +377,8 @@ describe("graph_add", () => {
 
     const 次 = await graph_add(ctx(), { 路径: "add/复用.hgraph", 节点: [手写节点("张三", { 临时id: "tmp2" })] })
     expect(次.复用).toEqual(["张三"])
+    // FR-005：复用命中时必须有一行可见提示（MCP 工具结果直接呈现）。
+    expect(次.提示).toBe("已复用图上已有节点：张三")
     expect(次.映射).toEqual({ tmp2: "n1" })
     expect(次.新增).toEqual({ 节点: 0, 边: 0 })
     // 放置里也给出复用节点的实际坐标（读回文件里那一行）。

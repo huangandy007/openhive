@@ -197,6 +197,8 @@ function 挂选择器(选项: {
       host,
     ),
   )
+  // 前提（`#005-18` / `#013-12`）：选择器确实渲染出了元素，避免「整块没挂上」把缺失断言衬成假绿。
+  expect(host.firstElementChild !== null).toBe(true)
 
   return { list调用, profile调用, 加过, 绑定过, 关过: () => 关过 }
 }
@@ -322,7 +324,7 @@ describe("选择器 · 搜索", () => {
     await 落定()
 
     expect(文本("hgraph-picker-row-快1")).toContain("快结果")
-    expect(勾选框("慢1")).toBeNull()
+    expect(勾选框("慢1") === null).toBe(true)
     expect(行数()).toBe(1)
     expect(器.list调用.map((入参) => 入参.q)).toEqual(["", "慢", "快"])
   })
@@ -355,8 +357,8 @@ describe("选择器 · 类型筛选", () => {
     await flush()
 
     expect(行数()).toBe(2)
-    expect(勾选框("e1")).not.toBeNull()
-    expect(勾选框("e3")).toBeNull()
+    expect(勾选框("e1") !== null).toBe(true)
+    expect(勾选框("e3") === null).toBe(true)
     // 纯前端筛选：不改搜索条件、不再打接口。
     expect(器.list调用.length).toBe(搜索次数)
   })
@@ -572,8 +574,8 @@ describe("选择器 · 绑定模式", () => {
     const 器 = 挂选择器({ 模式: "绑定" })
     await 落定()
 
-    expect(绑定键()).not.toBeNull()
-    expect(取("[data-slot='hgraph-picker-add']")).toBeNull()
+    expect(绑定键() !== null).toBe(true)
+    expect(取("[data-slot='hgraph-picker-add']") === null).toBe(true)
     // 未选中：绑定按钮 disabled。
     expect(绑定键()!.disabled).toBe(true)
 
@@ -627,8 +629,8 @@ describe("选择器 · 绑定模式", () => {
     挂选择器()
     await 落定()
 
-    expect(取("[data-slot='hgraph-picker-add']")).not.toBeNull()
-    expect(绑定键()).toBeNull()
+    expect(取("[data-slot='hgraph-picker-add']") !== null).toBe(true)
+    expect(绑定键() === null).toBe(true)
   })
 })
 
@@ -886,8 +888,8 @@ describe("选择器 · 关系页", () => {
     expect(文本("hgraph-picker-error") ?? "").toContain("实体不存在")
     expect(关系行数()).toBe(0)
     // 不切页：实体页的搜索框还在，关系页标题不在。
-    expect(取("[data-slot='hgraph-picker-q']")).not.toBeNull()
-    expect(取("[data-slot='hgraph-picker-relation-title']")).toBeNull()
+    expect(取("[data-slot='hgraph-picker-q']") !== null).toBe(true)
+    expect(取("[data-slot='hgraph-picker-relation-title']") === null).toBe(true)
   })
 
   test("R-F8-7 本实体不在图上 ⇒ 同一批先补本实体快照（摆放 0）、再补对方（摆放 1）", async () => {
@@ -976,17 +978,17 @@ describe("选择器 · 关系页", () => {
     await flush()
 
     // 绑定模式没有页签，也不该被上一轮的「关系」页卡成空白：实体清单还在。
-    expect(页签("实体")).toBeNull()
+    expect(页签("实体") === null).toBe(true)
     expect(行数()).toBe(4)
-    expect(绑定键()).not.toBeNull()
+    expect(绑定键() !== null).toBe(true)
   })
 
   test("R-F8-9 未勾选关系 ⇒ 加入按钮 disabled；绑定模式无页签与「关系」按钮", async () => {
     挂选择器({ profile: 三档表 })
     await 落定()
 
-    expect(页签("实体")).not.toBeNull()
-    expect(页签("关系")).not.toBeNull()
+    expect(页签("实体") !== null).toBe(true)
+    expect(页签("关系") !== null).toBe(true)
     点页签("关系")
     await flush()
     expect(文本("hgraph-picker-relation-title")).toContain("先在「实体」页选一个实体")
@@ -995,8 +997,8 @@ describe("选择器 · 关系页", () => {
     document.body.innerHTML = ""
     挂选择器({ profile: 三档表, 模式: "绑定" })
     await 落定()
-    expect(页签("实体")).toBeNull()
-    expect(取("[data-slot='hgraph-picker-relations']")).toBeNull()
+    expect(页签("实体") === null).toBe(true)
+    expect(取("[data-slot='hgraph-picker-relations']") === null).toBe(true)
   })
 })
 
