@@ -773,7 +773,7 @@ describe("编辑器 · FR-007 冲突/超时先读盘", () => {
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
   })
 
-  test("超时读盘期间用户又改了一笔 ⇒ 不采纳、保留新编辑、不显示「已保存」（NF-1）", async () => {
+  test("超时读盘期间用户又改了一笔 ⇒ 不采纳、保留新编辑、可重试、不显示「已保存」（NF-1）", async () => {
     let 放行读!: (回: 读回) => void
     const 读闸 = new Promise<读回>((收) => (放行读 = 收))
     let 写次 = 0
@@ -802,9 +802,12 @@ describe("编辑器 · FR-007 冲突/超时先读盘", () => {
     expect(节点组("n1") !== null).toBe(true)
     expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
     expect(节点组("盘1") === null).toBe(true)
+    // NEW-3：可重试态与「重试」按钮都在；保留批**不**自动重发（写次仍是 1）。
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(false)
+    expect(写次).toBe(1)
   })
 
-  test("读盘慢于防抖、第二次发送已起飞 ⇒ 仍不采纳、不显示「已保存」（NF-1 变体二）", async () => {
+  test("读盘慢于防抖、第二次发送已起飞 ⇒ 不采纳；成功后旧批不重折、不自动重发（NF-1 变体二 / NEW-2）", async () => {
     let 放行读!: (回: 读回) => void
     const 读闸 = new Promise<读回>((收) => (放行读 = 收))
     let 放行第二次!: (回: 写应答) => void
@@ -828,16 +831,92 @@ describe("编辑器 · FR-007 冲突/超时先读盘", () => {
     expect(写们.length).toBe(2)
 
     放行读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } })
-    await 等到条件(() => 文案("hgraph-save-status")?.includes("没存上") === true)
-
-    expect(文案("hgraph-save-status")).not.toContain("已保存")
-    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    await flush()
+    // 采纳仍未发生：盘上 id 没进文档；编辑还在；在飞的写没落地前不能说「已保存」。
     expect(节点组("盘1") === null).toBe(true)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(文案("hgraph-save-status")).not.toContain("已保存")
 
     放行第二次(成功("v10"))
     await flush()
-    // 采纳仍未发生：盘上 id 没有进文档。
+    // NEW-2 终局：旧失败批被丢弃 ⇒ 坐标不回退、只写了 2 次、状态就是「已保存」。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(写们.length).toBe(2)
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(true)
     expect(节点组("盘1") === null).toBe(true)
+  })
+
+  test("读盘在第二次发送成功后才回来 ⇒ 不采纳（版本已推进），编辑不被换回旧内容（NEW-1）", async () => {
+    let 放行读!: (回: 读回) => void
+    const 读闸 = new Promise<读回>((收) => (放行读 = 收))
+    let 写次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        写次 += 1
+        return 写次 === 1 ? { kind: "error", message: "网络断了", code: "network" } : 成功("v10")
+      },
+      读: () => 读闸,
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    // 第二次编辑的发送**先成功**：版本推进到 v10、状态回「已保存」；第一次的读还挂着。
+    拖(节点组("n1")!, 180, 100, 240, 100)
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(文案("hgraph-save-status")).toBe("已保存")
+
+    放行读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } })
+    await flush()
+    await flush()
+
+    // 主判据：不采纳盘上旧内容（否则 n1 消失、盘1 出现、版本从 v10 回退 v9）。
+    expect(节点组("盘1") === null).toBe(true)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    // 版本没回退：下一次写的 CAS 基线仍是 v10。
+    拖(节点组("n1")!, 240, 100, 260, 100)
+    await 过防抖()
+    expect(写们.length).toBe(3)
+    expect(写们[2]!.版本).toBe("v10")
+  })
+
+  test("VERSION_CONFLICT 读盘期间用户又改了一笔 ⇒ 不采纳、保留新编辑（NEW-3 的 409 版）", async () => {
+    let 放行读!: (回: 读回) => void
+    const 读闸 = new Promise<读回>((收) => (放行读 = 收))
+    let 写次 = 0
+    const { api, 写们 } = 假api({
+      写: () => {
+        写次 += 1
+        return 写次 === 1
+          ? { kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: "v9" }
+          : 成功("v10")
+      },
+      读: () => 读闸,
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    // 409 的读盘还没回来：用户又拖了一笔（240）。
+    拖(节点组("n1")!, 180, 100, 240, 100)
+    await flush()
+    放行读({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } })
+    await 等到条件(() => 文案("hgraph-save-status")?.includes("被改过") === true)
+
+    // 不采纳盘上文档：盘上 id 没进来，新编辑还在。
+    expect(节点组("盘1") === null).toBe(true)
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    // 409 的既有语义：保留批自动重发一次（写次 2），成功后状态回「已保存」。
+    await 等到条件(() => 写们.length === 2)
+    await flush()
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(240 100)")
+    expect(写们.length).toBe(2)
   })
 })
 
