@@ -661,6 +661,118 @@ describe("编辑器 · 保存失败按 FR-049 分流（T019d）", () => {
 })
 
 // ---------------------------------------------------------------------------
+// FR-007：失败后先读盘，盘上 == 已存 + 本批 ⇒ 静默采纳
+// ---------------------------------------------------------------------------
+
+describe("编辑器 · FR-007 冲突/超时先读盘", () => {
+  /** 盘上 = 已存文档 + 本批（n1 拖到 180），但 id 全被服务端重分配。 */
+  function 盘上已含本批(): 图文件 {
+    const 图 = structuredClone(一份图())
+    图.节点[0]!.x = 180
+    图.节点 = 图.节点.map((点, 序) => ({ ...点, id: `盘${序 + 1}` }))
+    图.文字 = 图.文字.map((行) => ({ ...行, id: "盘文字1" }))
+    return 图
+  }
+
+  test("超时 + 读回「已存+本批」（id 全换）⇒ 静默采纳、不提示、版本推进", async () => {
+    let 解!: (回: 写应答) => void
+    const 闸 = new Promise<写应答>((收) => (解 = 收))
+    let 次 = 0
+    const { api, 写们, 取读数 } = 假api({
+      写: () => {
+        次 += 1
+        return 次 === 1 ? 闸 : 成功("v10")
+      },
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    expect(取读数()).toBe(0)
+
+    解({ kind: "error", message: "网络断了", code: "network" })
+    await 等到条件(() => 节点组("盘1") !== null)
+
+    // 主判据一：不报「没存上」/「被改过」，状态回「已存」。
+    expect(取读数()).toBe(1)
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(文案("hgraph-save-status")).not.toContain("没存上")
+    expect(文案("hgraph-save-status")).not.toContain("被改过")
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(true)
+    // 主判据二：文档就是盘上那份（含本批内容），不是旧文档。
+    expect(节点组("盘1")!.getAttribute("transform")).toBe("translate(180 100)")
+    // 主判据三：版本换成盘上的 v9——下一次写的 CAS 基线能证明。
+    拖(节点组("盘1")!, 180, 100, 240, 100)
+    await 过防抖()
+    expect(写们.length).toBe(2)
+    expect(写们[1]!.版本).toBe("v9")
+  })
+
+  test("VERSION_CONFLICT + 读回同样内容 ⇒ 不打开「询问重载」、不报「被改过」", async () => {
+    const { api } = 假api({
+      写: () => ({ kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: "v9" }),
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上已含本批()), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await 等到条件(() => 节点组("盘1") !== null)
+
+    expect(文案("hgraph-save-status")).toBe("已保存")
+    expect(文案("hgraph-save-status")).not.toContain("被改过")
+    expect(取("[data-slot='hgraph-reload-ask']") === null).toBe(true)
+    expect(节点组("盘1")!.getAttribute("transform")).toBe("translate(180 100)")
+  })
+
+  test("超时 + 盘上仍是旧文档 ⇒ 保留批、可重试、「没存上」", async () => {
+    let 解!: (回: 写应答) => void
+    const 闸 = new Promise<写应答>((收) => (解 = 收))
+    const { api, 取读数 } = 假api({
+      写: () => 闸,
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 一份图()), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    解({ kind: "error", message: "网络断了", code: "network" })
+    await 等到条件(() => 取读数() === 1)
+    await flush()
+
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(180 100)")
+    expect(文案("hgraph-save-status")).toContain("没存上")
+    expect(文案("hgraph-save-status")).not.toContain("被改过")
+    expect(取("[data-slot='hgraph-save-retry']") === null).toBe(false)
+  })
+
+  test("VERSION_CONFLICT + 盘上内容确实不同 ⇒ 仍提示「被改过」并打开询问条", async () => {
+    const 盘上 = structuredClone(一份图())
+    盘上.节点.push(造节点("n9", 600, 400))
+    const { api, 取读数 } = 假api({
+      写: () => ({ kind: "error", message: "文件已被改过", code: "VERSION_CONFLICT", 最新版本: "v9" }),
+      读: () => ({ kind: "ok", value: { 内容: 序列化图(undefined, 盘上), 版本: "v9" } }),
+    })
+    挂上(api)
+    await flush()
+
+    拖(节点组("n1")!, 100, 100, 180, 100)
+    await 过防抖()
+    await 等到条件(() => 取("[data-slot='hgraph-reload-ask']") !== null)
+
+    expect(取读数()).toBeGreaterThan(0)
+    expect(文案("hgraph-save-status")).toContain("被改过")
+    expect(取("[data-slot='hgraph-reload-ask']") === null).toBe(false)
+    // 回滚语义不变：本地收敛到已存值。
+    expect(节点组("n1")!.getAttribute("transform")).toBe("translate(100 100)")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 模式、选择、锁定
 // ---------------------------------------------------------------------------
 

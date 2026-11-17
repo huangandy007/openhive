@@ -52,6 +52,7 @@ import { 时间文本 } from "../format"
 import { 自动位置, 阶梯位置, 画布 as 布局画布, type 排列模式 } from "../graph-layout"
 import { 面板宽 } from "../graph"
 import { 解析图, 序列化图, 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 同内容 } from "./same-content"
 import { 画布, 画布宽, 画布高, type 坐标换算, type 画布动作, type 模式 } from "./canvas"
 import { 图例, 图例宽, 图例高, 图例收起宽, 图例收起高 } from "./legend"
 import { 选择器, 时间跨度 } from "./entity-picker"
@@ -967,9 +968,67 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     }
   }
 
-  /** 409 之后把盘上最新取回来填「待重载」，让现有「重新载入」按钮可用（R113 §2）。 */
-  const 取回最新版本 = async (代: number) => {
+  /**
+   * FR-007 / contracts/hgraph-write.md §冲突与超时：超时（可重试）与 409 失败后**先读一次盘**。
+   *
+   * 盘上规范化内容 == 「已存文档 + 本批」⇒ 服务端其实已经接受了这一批（超时应答丢了 / 同键
+   * 重放的另一种形态），静默采纳：文档、版本以盘上为准，清错误与询问条。比较忽略服务端重
+   * 分配的 id 与 `更新于`，见 `same-content.ts`。
+   *
+   * 返回 `true` = 已采纳；`false` = 调用方维持既有失败流程。读失败 / 应答过期 / 内容不同
+   * 一律 `false`（宁可多问一次，也不把不同内容当成自己的写）。
+   *
+   * **有未发的后续改动时不采纳**：整图重载会丢掉它们，且它们引用的临时 id 没有正式映射。
+   * 这种情形保留可重试批，让用户自己决定（丢失改动比多一次提示更贵）。
+   */
+  const 采纳盘上结果 = async (代: number, 批: readonly 操作[], 前: 图文件): Promise<boolean> => {
+    if (待发.length > 0) return false
+    let 读: Awaited<ReturnType<HgraphApi["读"]>>
     try {
+      读 = await props.api.读({ projectId: props.projectId, path: props.path })
+    } catch {
+      return false
+    }
+    // 期间被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
+    if (已卸载 || 代 !== 文档代 || 文件已不存在()) return false
+    if (读.kind !== "ok") return false
+    const 解析 = 解析图(读.value.内容)
+    if (!解析.ok) return false
+    if (!同内容(解析.文档, 批.reduce(应用本地, 前))) return false
+
+    // 采纳 = 整图重载口径（Ruling review-fix3 C1）：盘上为准，选中与撤销栈清空；
+    // 失败批已在盘上、不再保留，也不再可撤销。
+    文档代 += 1
+    clearTimeout(计时)
+    待发 = []
+    草稿逆操作 = []
+    草稿副本 = []
+    草稿仅撤销重做 = false
+    草稿弹出 = []
+    草稿含合并撤销 = false
+    待重载 = undefined
+    上次幂等 = undefined
+    set文档(解析.文档)
+    set已存文档(解析.文档)
+    set版本(读.value.版本)
+    set状态("已存")
+    set错误(undefined)
+    set最新版本(undefined)
+    set可重试(false)
+    set询问重载(false)
+    set撤销栈(清空(撤销栈()))
+    set选中([])
+    set重命名id(undefined)
+    set待确认布局(false)
+    set布局模式(undefined)
+    set待确认合并(undefined)
+    set合并保留(undefined)
+    set收起菜单((旧) => 旧 + 1)
+    return true
+  }
+
+  /** 409 之后把盘上最新取回来填「待重载」，让现有「重新载入」按钮可用（R113 §2）。 */
+  const 取回最新版本 = async (代: number) => {    try {
       const 读 = await props.api.读({ projectId: props.projectId, path: props.path })
       // 期间已被重载 / 卸载 / 进了终态 ⇒ 这份结果过期（R89 / `#005-03`）。
       if (已卸载 || 代 !== 文档代 || 文件已不存在()) return
@@ -1131,6 +1190,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
       // 还有没发出去的改动就不算「已保存」。
       set状态(待发.length > 0 ? "待发" : "已存")
     } else if (可重试失败(回)) {
+      // FR-007：先读盘。盘上已是「已存 + 本批」（超时应答丢了 / 服务端已写成功）⇒ 静默采纳。
+      if (await 采纳盘上结果(代, 批, 前)) return
       // R113 §1（FR-049）：可重试失败**保留改动**——文档 / 已存文档 / 版本都不回滚，
       // 整批放回待发**头部**（失败批在前，飞行中那批在后），草稿与弹出步一并向后接。
       // 顺序与 `应用` 同一口径：草稿是「后做的在前」，所以更早的批接在草稿**尾部**。
@@ -1156,6 +1217,8 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
     } else {
       // 非可重试失败：回滚到服务端已接受态；飞行中新增、从未发出的待发重折回来。
       上次幂等 = undefined
+      // FR-007：409 也先读盘；盘上内容与本批相同 ⇒ 静默采纳，不提示「被改过」。
+      if (回.code === "VERSION_CONFLICT" && (await 采纳盘上结果(代, 批, 前))) return
       回滚失败批({ 前, 快照id们, 批弹出 })
       set可重试(false)
       if (回.code === "VERSION_CONFLICT") {
