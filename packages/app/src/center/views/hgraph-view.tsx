@@ -61,11 +61,6 @@ async function 载入(api: HgraphApi, projectId: string | undefined, path: strin
   return { kind: "已载入", 文档: 解析.文档, 版本 }
 }
 
-/** 文件名（不含目录）——标题为空时兜底显示，别让顶上光秃秃。 */
-function 文件名(path: string): string {
-  return path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
-}
-
 /**
  * 出处串 `材料#工作表#行号` 的材料段是**材料 id**（`mat_x`），而材料页按**路径**取数
  * （`MaterialFacts` 用 `props.path`）。这里解析一次 id → 路径，再把路径交给打开通道。
@@ -197,9 +192,6 @@ export function 创建HgraphView(
 
             return (
               <>
-                <h2 data-slot="hgraph-title" class="text-14-medium text-v2-text-text-base">
-                  {s.文档.标题 || 文件名(props.path)}
-                </h2>
                 {/* 已载入 ⇒ 载入时项目 id 必然非空（否则 `载入` 已返回失败态）。 */}
                 <Show when={项目id}>
                   {(id) => (

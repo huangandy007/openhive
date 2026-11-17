@@ -106,7 +106,7 @@ describe("关系图视图（打开通道）", () => {
       { projectId: "p 1", path: "分析/张三资金流向.hgraph" },
     ])
     // 主判据二：渲染的是 **init 返回的那份内容**，不是空串。
-    expect(文案("hgraph-title")).toBe("张三资金流向")
+    expect(文案("hgraph-counts")).toContain("节点 2")
     expect(文案("hgraph-counts")).toContain("节点 2")
     expect(文案("hgraph-counts")).toContain("边 1")
     expect(文案("hgraph-counts")).toContain("文字 0")
@@ -118,7 +118,27 @@ describe("关系图视图（打开通道）", () => {
     await 挂上(api)
 
     expect(调用).toEqual(["读"])
-    expect(文案("hgraph-title")).toBe("张三资金流向")
+    expect(文案("hgraph-counts")).toContain("节点 2")
+  })
+
+  test("顶部不再显示标题 / 文件名一行", async () => {
+    const { api } = 假api({ 读: { kind: "ok", value: { 内容: 一份图, 版本: "v1" } } })
+
+    await 挂上(api)
+
+    // 布尔比较，不用 `toBeNull()`（`#013-12`：元素存在时它也通过过）。
+    expect(document.body.querySelector("[data-slot='hgraph-title']") === null).toBe(true)
+  })
+
+  test("标题为空 ⇒ 也不拿文件名兜底（顶行整行不渲染）", async () => {
+    const 无标题 = JSON.stringify({ ...JSON.parse(一份图), 标题: "" })
+    const { api } = 假api({ 读: { kind: "ok", value: { 内容: 无标题, 版本: "v1" } } })
+
+    await 挂上(api)
+
+    expect(document.body.querySelector("[data-slot='hgraph-title']") === null).toBe(true)
+    // 图本身照常渲染，别把「去掉一行」做成「打不开」。
+    expect(文案("hgraph-counts")).toContain("节点 2")
   })
 
   test("已载入 ⇒ 接上编辑器画布（不是只显示计数）", async () => {
