@@ -2903,13 +2903,16 @@ export async function list_source_profiles(
   })
   // 空列表不能回 `{ list: [] }`＋非 null 空原因：信封的「空」只认 `null` 与空数组
   // （`case-envelope.ts` 的 `数据为空`），对象不算空 ⇒ 服务端会折成 tool_failed。
+  // `空原因` 用 `无匹配行`：它是「任何记录都没命中」的兜底（`09` §3.5）；`对象未登记`
+  // 只属于 `query_timeline`（实体不在事件参与者集合里），借来用会让模型把「没有档案」
+  // 讲成「对象没登记」。
   const 空 = list.length === 0
   return {
     摘要: `本项目共有 ${list.length} 个数据源档案`,
     数据: 空 ? null : { list },
     口径: args.含撤销 === true ? "含已撤销" : "只看未撤销",
     缺口: [],
-    空原因: 空 ? "对象未登记" : null,
+    空原因: 空 ? "无匹配行" : null,
     出处: [],
     下一步: [],
   }
