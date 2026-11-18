@@ -1,7 +1,7 @@
 # 015-ai-explore-mcp-tools · 运行报告（TDD 实施)
 
 > 生成时间：2026-11-17 · 工作区：`.claude/worktrees/015-ai-explore-mcp-tools`（分支 `015-ai-explore-mcp-tools`）
-> base：`3677068021`（multi-tenant HEAD）· 20 个提交 + 1 轮 code review 修复（`1485e5879c`、`748c31b92f`）= 22 · 16 个计划任务 + 1 次终审修复 + 1 轮审查修复
+> base：`3677068021`（multi-tenant HEAD）· 25 个提交 + 1 个交付说明提交 = 26 · 16 个计划任务 + 1 次终审修复 + 1 轮审查修复
 > 本报告只写**实际跑过**的命令与**实得**输出；没跑 / 跑不动的逐条写进 §六 缺口表。
 
 ## 一、交付了什么
@@ -12,6 +12,41 @@
 | 收尾行（US4） | `session-ui/src/components/closing-stats.ts`（纯函数）、`closing-line.tsx`（组件 + story） | 回答末尾显示 `本轮回答查询 N 次 · 覆盖材料 M 份`、缺口摘要、12 次上限提示 |
 | 起手入口（US6） | `app/src/center/case-views/entity-profile.tsx`、`ask-ai.ts` | 「人」给「查个人」、「账户」给「查个账户」，以**替换**方式预填整句，不自动发送；`发到会话` 增可选 `方式` 参数 |
 | 工具错误引导（US7） | `session-ui/src/components/envelope-parse.ts`、`envelope-tool.tsx`、`ui/src/i18n/{zh,en}.ts` | 9 个错误码各一句人话引导（逐字取 `09` §8.3），未知码不渲染引导行 |
+| 工具描述可用性（FR-050） | `opencode/src/server/openhive/case-mcp-server.ts` | 14 个信封工具 description 补「什么时候用 / 什么时候别用 / 返回后照抄」三段；4 个探索原语共用固定开头 |
+
+### 实现详情（合并前定稿，2026-11-18）
+
+**1. 收尾行（前端新增，纯函数 + 组件 + 接线）**
+
+- `session-ui/src/components/closing-stats.ts`——`统计收尾` 从 part 数组算 `查询次数 / 覆盖材料数 / 缺口总项 / 首条缺口`；`收尾行文本` 生成文案；`收尾部件(消息们, 取部件)` 把「本轮全部 assistant 消息」的 parts 合并成一维。
+  - `查询次数` = `是信封工具键(part.tool)` 为真的 tool part 数（图工具不计，工具错误调用计入）。
+  - `覆盖材料数` = `出处[].代表` 中**含 `#`** 的去重前缀集合大小（实体 id / 账户号不是材料，`材料键` 无 `#` 返回 null）。
+  - `缺口总项` / `首条缺口` 排除以服务端 `预算上限缺口` 开头的条目（否则同一句话在收尾行与工具卡各出现一次）。
+  - `已达上限` = 任一信封 `缺口` 条目以服务端文案开头（前端**不**自数 12）。
+- `session-ui/src/components/closing-line.tsx`——组件 + 三态 story；i18n 键 `ui.closingLine.summary` / `.gaps` / `.budget`。
+- `session-ui/src/components/message-part.tsx:747`——在 `AssistantParts` 内以 `收尾部件(props.messages, (消息id) => …)` 取值；`:839` 挂 `<ClosingLine parts={收尾行部件()} />`。**不**在单条 `TextPartDisplay` 里统计（每步 LLM 调用各建一条消息，单条统计恒 0，终审 F1 根因）。
+
+**2. 起手入口（前端新增，两枚按钮）**
+
+- `app/src/center/case-views/entity-profile.tsx:505-527`——「查个人」/「查个账户」，按 `档().type` 显隐；点击走 `发到会话(整句, "替换")`，**只预填输入框不发送**；地点 / 号码 / 公司 / 其他类型两枚都不渲染。
+- `app/src/ai-session/send-to-session.ts:115`——`发送到会话(文本, 方式 = "追加")` 增可选参数，默认追加，保住会话输入唯一出口。
+
+**3. 工具错误引导（前端新增）**
+
+- `session-ui/src/components/envelope-parse.ts:57/73`——`错误码引导键` 表 + `Object.hasOwn` 守卫（`toString` 等原型链键返回 `undefined`）。
+- `session-ui/src/components/envelope-tool.tsx`——错误卡在消息下渲染一行引导；未知码不渲染。
+- `packages/ui/src/i18n/{zh,en}.ts`——9 条 `ui.envelopeTool.errorHint.<码>`，zh 逐字取 `09` §8.3。
+
+**4. 服务端（仅文案与描述，工具逻辑零改动）**
+
+- `opencode/src/server/openhive/case-mcp-server.ts:196`——新增导出常量 `探索原语摘要`；`:349/:376/:405/:431` 四个探索原语 description 以它开头。
+- 14 个信封工具 description 补三段式（「什么时候用 / 什么时候别用 / 返回后照抄」），`FR-050` 原先是 MUST 未实现，本轮补做。
+- 预算上限缺口常量 `预算上限缺口`（`:142`）与注入点（`:872` 图工具显式字段、`:882` 成功信封追加）**未改**。
+
+**5. 测试与文档**
+
+- 新增/加强用例落点：`opencode/test/server/openhive-case-{citation,explore-replay,explore,mcp-rows,mcp-tools,timeline,mcp-server}.test.ts`、`session-ui/src/components/{closing-stats,envelope-parse}.test.ts`、`app/src/center/case-views/entity-profile.test.tsx`。
+- 文档：`tasks.md`（FR→用例映射表 50 行：覆盖 30 / 缺口 17 / 部分 3）、`contracts/ui-card-contract.md` §3、`data-model.md` §5 已按最终行为改写；本报告 §六 为缺口表，§八 为 code review 复核记录。
 
 ## 二、TDD 与审查簿
 
