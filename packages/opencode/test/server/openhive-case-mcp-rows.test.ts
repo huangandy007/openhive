@@ -9,6 +9,7 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { createCaseMcpServer } from "../../src/server/openhive/case-mcp-server"
 import { query_rows, type 工具上下文, type 工具结果 } from "../../src/server/openhive/case-mcp-tools"
+import { 空原因枚举 } from "../../src/server/openhive/case-envelope"
 import { insertFactRows } from "../../src/server/openhive/case-store"
 import { 建材料 } from "./openhive-case-fact-fixture"
 
@@ -54,6 +55,47 @@ const ctx = (身份: typeof 身份行): 工具上下文 => ({ db: 库(), 身份 
 /** `数据` 就是行数组（R5：空 = null / 长度 0 的数组）；游标只在 `下一步` 里。 */
 type 明细行 = { 定位: string; 备注: string | null; 金额: string | null }
 const 数据 = (结果: 工具结果) => 结果.数据 as 明细行[]
+
+/**
+ * T003 的验收断言出口：七字段信封 + 30 KB 数据预算。
+ *
+ * 预算按规格值 `30720` 字节独立写成 `30 * 1024`（`09` §3.4），**不引用实现常量**——否则
+ * 常量被改小/改大时用例会跟着漂，等于自己验自己。
+ */
+const 数据预算字节上限 = 30 * 1024
+const 信封七字段 = ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const
+
+function 断七字段(结果: 工具结果): void {
+  const 记录 = 结果 as unknown as Record<string, unknown>
+  expect(信封七字段.filter((键) => !(键 in 记录) || 记录[键] === undefined)).toEqual([])
+  expect(typeof 结果.摘要).toBe("string")
+  expect(结果.摘要.length).toBeGreaterThan(0)
+  expect(typeof 结果.口径).toBe("string")
+  expect(结果.口径.length).toBeGreaterThan(0)
+  expect(Array.isArray(结果.缺口)).toBe(true)
+  expect(Array.isArray(结果.出处)).toBe(true)
+  expect(Array.isArray(结果.下一步)).toBe(true)
+  const 空 = 结果.数据 === null || (Array.isArray(结果.数据) && 结果.数据.length === 0)
+  expect(结果.空原因 === null).toBe(!空)
+  if (结果.空原因 !== null) expect(空原因枚举 as readonly string[]).toContain(结果.空原因)
+  for (const 条 of 结果.出处) {
+    expect(typeof 条.事实).toBe("string")
+    expect(typeof 条.代表).toBe("string")
+    expect(条.可下钻 === null || typeof 条.可下钻 === "string").toBe(true)
+  }
+  for (const 条 of 结果.下一步) {
+    expect(typeof 条.工具).toBe("string")
+    expect(条.参数 !== null && typeof 条.参数).toBe("object")
+    expect(typeof 条.为什么).toBe("string")
+  }
+}
+
+/** `数据` 的序列化字节必须 ≤ 30 KB；返回实得字节供报告对账。 */
+function 断数据字节(数据: unknown): number {
+  const 字节 = Buffer.byteLength(JSON.stringify(数据) ?? "")
+  expect(字节).toBeLessThanOrEqual(数据预算字节上限)
+  return 字节
+}
 
 /** 沙箱根：身份解析只做路径比较，不碰磁盘（同 `openhive-case-mcp-server.test.ts`）。 */
 const 沙箱根 = resolve(tmpdir(), "openhive-case-mcp-行工具沙箱")
@@ -335,4 +377,66 @@ test("query_rows 镜像不变式：数据非空 ⇔ 空原因 null（数组型�
   const 无 = await query_rows(ctx(身份行), { 账户: "13900000000" })
   expect(无.数据).toEqual([])
   expect(无.空原因).not.toBeNull()
+})
+
+test("T003 query_rows 真 MCP 握手：七字段齐全，数据 ≤ 30 KB", async () => {
+  const 结果 = await client.callTool({ name: "query_rows", arguments: { 材料: "m-行-甲1" }, _meta: 调用身份 })
+  expect(结果.isError).toBeFalsy()
+  // 走真 MCP 字符流：这里同时钉住服务端 `校验信封` 没有把合法结果折成 tool_failed。
+  const 体 = JSON.parse((结果.content as { text: string }[])[0]!.text) as 工具结果 & { 数据: 明细行[] }
+  断七字段(体)
+  expect(体.数据.map((行) => 行.定位)).toEqual([行1, 行2, 行3])
+  expect(断数据字节(体.数据)).toBeGreaterThan(0)
+})
+
+test("T003 query_rows 上限：未传限制按默认 50 截断，请求 999 按 200 封顶且 ≤ 30 KB", async () => {
+  // 独立项目 + 205 行：只有数据量超过 50 / 200 才能证明这两档真的生效（主项目只有 4 行，
+  // 任何「≤ 50」的断言都会被数据量本身满足，是假绿）。
+  const 项目 = "p-行-上限"
+  const 材料 = "m-行-上限"
+  const 身份上限 = { userId: 身份行.userId, projectId: 项目 }
+  await 建材料(库(), {
+    id: 材料,
+    projectId: 项目,
+    path: "上限/批量.xlsx",
+    kind: "资金",
+    parseStatus: "已解析",
+  })
+  await insertFactRows(
+    库(),
+    Array.from({ length: 205 }, (_, i) => ({
+      projectId: 项目,
+      materialId: 材料,
+      sheet: "Sheet1",
+      rowNo: i + 1,
+      startedAt: 10_000 + i,
+      amount: "1.00",
+      direction: i % 2 === 0 ? "收" : "付",
+      ownerAccount: "622200000001",
+      counterparty: "13800000001",
+      counterpartyName: "张三",
+      extras: {},
+    })),
+  )
+
+  // 未传限制 ⇒ 默认 50（不是 200、也不是全量 205）。
+  const 默认页 = await query_rows(ctx(身份上限), {})
+  断七字段(默认页)
+  const 默认数据 = 数据(默认页)
+  expect(默认数据).toHaveLength(50)
+  expect(默认页.缺口.join()).toContain("已取前 50 行，还有更多")
+  expect(默认页.摘要).toContain("还有下一页")
+  断数据字节(默认数据)
+
+  // 请求 999 ⇒ 先按上限 200 取，再按 30 KB 字节预算退让（夹具行长使 200 行必超预算）。
+  // 缺口里的「原请求 200 行」是上限生效的证据：999 没有原样透到取数层。
+  const 超限页 = await query_rows(ctx(身份上限), { 限制: 999 })
+  断七字段(超限页)
+  const 超限数据 = 数据(超限页)
+  expect(超限数据.length).toBeGreaterThan(0)
+  // 夹具行长使 200 行必然超 30 KB ⇒ 字节退让后交付行数严格少于 200，证明预算真的生效。
+  expect(超限数据.length).toBeLessThan(200)
+  expect(超限页.缺口.join()).toContain("原请求 200 行")
+  expect(超限页.缺口.join()).toContain("30 KB 上限")
+  断数据字节(超限数据)
 })

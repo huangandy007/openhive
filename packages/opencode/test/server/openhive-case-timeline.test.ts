@@ -4,6 +4,7 @@ import { migrate } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
 import { sql } from "drizzle-orm"
 import { query_rows, query_timeline, type 工具上下文 } from "../../src/server/openhive/case-mcp-tools"
+import { enqueueMaterial } from "../../src/server/openhive/case-ingest"
 import { 编码游标对象 } from "../../src/server/openhive/case-row-query"
 import type { Queryable } from "../../src/server/openhive/case-store"
 import { 种P3数据集, type P3数据集 } from "../fixtures/p3/dataset"
@@ -270,5 +271,35 @@ describe("参与者摘要剔除已排除（11 §7.1）", () => {
     const 数据 = 结果.数据 as { 事件们: { 参与者: string[] }[] } | null
     expect(数据!.事件们).toHaveLength(1)
     expect(数据!.事件们[0]!.参与者).toEqual(["参与者：回退丙"])
+  })
+})
+
+describe("query_rows 的材料闸（09 §3.5 空原因）", () => {
+  test("指定材料不在本项目 ⇒ 材料未入库，缺口提示按材料 id 查", async () => {
+    // `材料` 是材料 id 而非文件名：传一个本项目没有的 id，必须报「未入库」，
+    // 不能静默过滤成 0 行被读成「无匹配行」（那等于说「这份材料里没有流水」）。
+    const 结果 = await query_rows(ctx(), { 材料: "不是本项目的材料" })
+    expect(结果.空原因).toBe("材料未入库")
+    // 工具层 `数据` 是行数组（不是内核的 `{ 行们, 下一页游标 }`），空结果就是 `[]`。
+    expect(结果.数据).toEqual([])
+    expect(结果.缺口.join()).toContain("按材料 id 查，不是文件名")
+  })
+
+  test("材料在但未解析 ⇒ 该材料未解析，缺口写当前状态", async () => {
+    // 独立项目：入队后不跑作业，材料停在「排队中」——这是生产里最常见的中间态。
+    // 用独立项目而不是 p-p3，避免给别的用例添上「还有 1 份未解析材料」的缺口。
+    const 项目 = "p-时间线未解析"
+    const 入队 = await enqueueMaterial(db(), {
+      projectId: 项目,
+      path: "排队中流水.xlsx",
+      sourcePath: `${项目}/排队中流水.xlsx`,
+      fileName: "排队中流水.xlsx",
+      fingerprint: `fp-${项目}-排队中流水.xlsx`,
+    })
+    if (!入队.enqueued) throw new Error("材料没有入队")
+    const 结果 = await query_rows(ctx(db(), 项目), { 材料: 入队.materialId })
+    expect(结果.空原因).toBe("该材料未解析")
+    expect(结果.数据).toEqual([])
+    expect(结果.缺口.join()).toContain("当前状态：排队中")
   })
 })

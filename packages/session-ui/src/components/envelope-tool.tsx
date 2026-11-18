@@ -3,7 +3,7 @@ import { useI18n } from "@opencode-ai/ui/context/i18n"
 import { BasicTool, GenericTool } from "./basic-tool"
 // 解析层在 `envelope-parse.ts`：两个模块若同名（`envelope-tool.ts` / `envelope-tool.tsx`），
 // bun 的无扩展名解析偏好 `.tsx`、vite/tsc 偏好 `.ts`，同一个 import 会随运行时而漂。
-import { 工具名文本, 数据字节数, 数据行数, 解析工具输出, 是信封工具键 } from "./envelope-parse"
+import { 工具名文本, 数据字节数, 数据行数, 解析工具输出, 是信封工具键, 错误码引导键 } from "./envelope-parse"
 
 /** 渲染器收到的 props（`message-part.tsx` 的 `Dynamic` 传参）。 */
 export interface 信封卡属性 {
@@ -220,6 +220,14 @@ export function 信封错误卡(props: 错误卡属性) {
               <span class="text-text-on-warning-base">{i18n.t("ui.envelopeTool.errorCode")}：</span>
               <span>{值().错误码}</span>
               <div class="mt-0.5 whitespace-pre-wrap">{值().消息}</div>
+              {/* 引导行：只认 `错误码引导键` 表内的码；未知码返回 undefined ⇒ 整行不渲染（不留空行、不回退固定话术）。 */}
+              <Show when={错误码引导键(值().错误码)}>
+                {(键) => (
+                  <div data-slot="envelope-error-hint" class="mt-0.5 whitespace-pre-wrap">
+                    {i18n.t(键())}
+                  </div>
+                )}
+              </Show>
             </div>
           )}
         </Show>

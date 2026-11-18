@@ -10,7 +10,9 @@ import {
   find_crossings,
   解析实体,
   type 工具上下文,
+  type 工具结果,
 } from "../../src/server/openhive/case-mcp-tools"
+import { 空原因枚举 } from "../../src/server/openhive/case-envelope"
 import { 实体档案 } from "../../src/server/openhive/case-entity-list"
 import { 建材料, 建实体, 建事件批, 建关系批, 建引用批 } from "./openhive-case-fact-fixture"
 import {
@@ -68,6 +70,50 @@ function db(): Queryable {
 
 function ctx(projectId = 数据集.projectId): 工具上下文 {
   return { db: db(), 身份: { userId: 用户, projectId } }
+}
+
+/**
+ * T003 的验收断言出口：七字段信封 + 30 KB 数据预算。
+ *
+ * 预算按规格值 `30720` 字节独立写成 `30 * 1024`（`09` §3.4），**不引用实现常量**——否则
+ * 常量被改小/改大时用例会跟着漂，等于自己验自己。
+ */
+const 数据预算字节上限 = 30 * 1024
+const 信封七字段 = ["摘要", "数据", "口径", "缺口", "空原因", "出处", "下一步"] as const
+
+function 断七字段(结果: 工具结果): void {
+  const 记录 = 结果 as unknown as Record<string, unknown>
+  // 缺键与「键在但值是 undefined」是同一件事（`校验信封` 的判据）；失败信息直接列出缺哪几个。
+  expect(信封七字段.filter((键) => !(键 in 记录) || 记录[键] === undefined)).toEqual([])
+  expect(typeof 结果.摘要).toBe("string")
+  expect(结果.摘要.length).toBeGreaterThan(0)
+  expect(typeof 结果.口径).toBe("string")
+  expect(结果.口径.length).toBeGreaterThan(0)
+  expect(Array.isArray(结果.缺口)).toBe(true)
+  expect(Array.isArray(结果.出处)).toBe(true)
+  expect(Array.isArray(结果.下一步)).toBe(true)
+  // 双向镜像：数据空（null / 长度 0 的数组）⇔ 空原因非 null；非 null 的值必须来自 16 值枚举。
+  const 空 = 结果.数据 === null || (Array.isArray(结果.数据) && 结果.数据.length === 0)
+  expect(结果.空原因 === null).toBe(!空)
+  if (结果.空原因 !== null) expect(空原因枚举 as readonly string[]).toContain(结果.空原因)
+  // 出处 / 下一步的项形状（契约 §5）：只钉必需键，未知键按契约 §6 允许。
+  for (const 条 of 结果.出处) {
+    expect(typeof 条.事实).toBe("string")
+    expect(typeof 条.代表).toBe("string")
+    expect(条.可下钻 === null || typeof 条.可下钻 === "string").toBe(true)
+  }
+  for (const 条 of 结果.下一步) {
+    expect(typeof 条.工具).toBe("string")
+    expect(条.参数 !== null && typeof 条.参数).toBe("object")
+    expect(typeof 条.为什么).toBe("string")
+  }
+}
+
+/** `数据` 的序列化字节（与 `09` §3.4 同口径）必须 ≤ 30 KB。返回实得字节供报告对账。 */
+function 断数据字节(数据: unknown): number {
+  const 字节 = Buffer.byteLength(JSON.stringify(数据) ?? "")
+  expect(字节).toBeLessThanOrEqual(数据预算字节上限)
+  return 字节
 }
 
 async function 实体id(值: string): Promise<string> {
@@ -504,6 +550,48 @@ describe("档案截断：按实际交付条数写缺口，且不透传无关缺�
     expect(结果.缺口.join("\n")).not.toContain("人说的关系")
     expect(结果.缺口.join("\n")).not.toContain("事件只显示最近")
     expect(结果.缺口.join("\n")).not.toContain("出处只显示前")
+  })
+
+  test("T003：七字段齐全 + 未传限制按默认 10 条事件交付、数据 ≤ 30 KB", async () => {
+    const 结果 = await explore_entity(ctx(截断项目), { 实体: 主 })
+    断七字段(结果)
+    const 数据 = 结果.数据 as { 事件: unknown[]; 总数: { 事件总数: number } }
+    // 默认上限是 10（不是 `默认限制` 50）：档案 101 条事件只交付最近 10 条。
+    // 旧实现若把默认值当 50 或不过限，这里会红成 101 / 50。
+    expect(数据.事件).toHaveLength(10)
+    expect(数据.总数.事件总数).toBe(101)
+    expect(结果.缺口).toContain("事件只列最近 10 条，全量 101 条")
+    断数据字节(结果.数据)
+  })
+
+  test("T003：限制 3 ⇒ 事件条数 ≤ 3，数据 ≤ 30 KB", async () => {
+    const 结果 = await explore_entity(ctx(截断项目), { 实体: 主, 限制: 3 })
+    断七字段(结果)
+    const 数据 = 结果.数据 as { 事件: unknown[]; 总数: { 事件总数: number } }
+    expect(数据.事件.length).toBeLessThanOrEqual(3)
+    // 夹具里有 101 条事件，所以「≤ 3」不是靠数据本来就少蒙过去的。
+    expect(数据.事件).toHaveLength(3)
+    expect(数据.总数.事件总数).toBe(101)
+    断数据字节(结果.数据)
+  })
+})
+
+describe("T003：七字段信封 + 数据上限（aggregate_money / find_crossings）", () => {
+  test("aggregate_money：七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await aggregate_money(ctx(), { 账户: 数据集.账号.B })
+    断七字段(结果)
+    expect(结果.空原因).toBeNull()
+    expect(断数据字节(结果.数据)).toBeGreaterThan(0)
+  })
+
+  test("find_crossings：七字段齐全、数据 ≤ 30 KB", async () => {
+    const 结果 = await find_crossings(ctx(对齐交叉.项目), {
+      甲: 对齐交叉.账号.甲,
+      乙: 对齐交叉.账号.乙,
+    })
+    断七字段(结果)
+    expect(结果.空原因).toBeNull()
+    expect(断数据字节(结果.数据)).toBeGreaterThan(0)
   })
 })
 

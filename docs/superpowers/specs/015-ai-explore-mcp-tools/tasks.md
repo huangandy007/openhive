@@ -175,7 +175,63 @@ T013 → T014               ┘
 
 > 由 T002 填写；每条 FR 一行，用例列写「文件名 + 用例名」，无覆盖写「缺口 + 原因」。
 
+> 生成于 2026-11-17（T002）。用例名逐条取自 `packages/opencode/test/server/` 实际文件；
+> 标记「缺口」的行写明缺哪条断言。统计：覆盖 30 条 / 缺口 17 条 / 部分 3 条（共 50 条，覆盖 spec 的 FR-001～050）。
+>
+> 2026-11-17 code review 补记：初版只覆盖 FR-001～028、FR-035～048（42 行），漏了 FR-032/033/034/049/050；
+> 其中 FR-034、FR-049 其实已实现且有用例，FR-050 是**真的没做**，已在本轮修复（`748c31b9`）。
+> 备注：`openhive-case-explore-seed.test.ts`、`openhive-case-identity-resolve.test.ts`、
+> `openhive-case-row-query.test.ts`、`case-hgraph-tools.test.ts` 用例存在且可跑，但不在 T001 的 15 份点名文件内。
+
 | FR | 用例（文件::用例） | 状态 |
 |---|---|---|
-| FR-001 | （T002 填） | |
-| … | | |
+| FR-001 | `openhive-case-mcp-server.test.ts::tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图工具逐字一致`；`openhive-case-mcp-tools.test.ts::所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名`（14 个信封工具真实返回 + 七字段守卫）；`case-hgraph-tools.test.ts::图工具不套七字段信封：graph_list 原样返回 { 图 }（不折成 tool_failed）` | 覆盖 |
+| FR-002 | `openhive-case-mcp-envelope.test.ts::缺 摘要 ⇒ tool_failed（非工具错误，且不回显原文）`；`::缺 缺口 ⇒ tool_failed（缺字段）`；`::接线：缺 口径 的工具结果在 ④ 折成 tool_failed，且不回显违约原文` | 覆盖 |
+| FR-003 | `openhive-case-mcp-envelope.test.ts::空原因 非 null 但 数据 非空 ⇒ tool_failed（正向镜像）`；`::数据 为空但 空原因 为 null ⇒ tool_failed（反向镜像）`；`openhive-case-mcp-rows.test.ts::query_rows 镜像不变式：数据非空 ⇔ 空原因 null（数组型）` | 覆盖 |
+| FR-004 | `openhive-case-mcp-envelope.test.ts::空原因 不在枚举里 ⇒ tool_failed`；16 值字面分布在 `openhive-case-explore.test.ts`（无此实体/实体存在但无任何事实/材料未解析）、`openhive-case-empty-reason.test.ts`（资金四类）、`openhive-case-timeline.test.ts`（无事件/对象未登记/时间全部缺失）、`openhive-case-mcp-rows.test.ts`（材料未入库/该材料未解析/无匹配行）、`openhive-case-mcp-tools.test.ts`（能力未就绪/用途未结构化） | 覆盖 |
+| FR-005 | 缺口：无「一次返回只报一个、多个成立按总表取第一个、其余进缺口」的用例。仅有零散归属正反例：`openhive-case-empty-reason.test.ts::账户查关系查不到 ⇒ 兜底无匹配行（不冒充「没有交易」或「未出现」）`、`openhive-case-timeline.test.ts::对象存在但没有任何事件 ⇒ 对象未登记` | 缺口 |
+| FR-006 | `openhive-case-mcp-tools.test.ts::超上限截到 200 并在缺口里说清`；`::限制非整数 / 0 / 负数 ⇒ bad_input`；`::实得行数等于限制时缺口说「可能还有更多」` | 覆盖 |
+| FR-007 | `openhive-case-mcp-envelope.test.ts::数据 是 31 KB 数组 ⇒ 从尾部截断到 ≤ 30 KB、至少留 1 条、缺口写明截掉几条`；`::30 KB 按 Buffer.byteLength 算，不按字符数（中文 1 字符 3 字节）`；`::两条各约 20 KB（合计 > 30 KB）⇒ 只留 1 条、缺口写明截掉 1 条与摘要口径` | 覆盖 |
+| FR-008 | `openhive-case-mcp-envelope.test.ts::单条元素自身 > 30 KB ⇒ 原样留下同一条，但必须追加「无法按条截断」缺口`；`::多条数组里首条自身 > 30 KB ⇒ 原样返回同一引用，缺口说「首条记录自身即超限」`；`::非数组 数据 超预算（find_crossings 形状 ~50 KB）⇒ 不截，但缺口必须写明「数据非数组」` | 覆盖 |
+| FR-009 | `openhive-case-mcp-tools.test.ts::query_rows 大页按 30 KB 字节预算自限：摘要行数与数据一致、续页不漏行` | 覆盖 |
+| FR-010 | `openhive-case-mcp-server.test.ts::未列出的参数 ⇒ bad_input，message 列出可用参数`；`openhive-case-mcp-rows.test.ts::query_rows 传「备注关键词」⇒ bad_input（白名单 fail-closed，走真 MCP 握手）`；`case-hgraph-tools.test.ts::graph_list 也走 收参数：不认识的参数 ⇒ bad_input` | 覆盖 |
+| FR-011 | `openhive-case-explore.test.ts::B：档案 + 关系圈 + 事件 + 全量计数`；`::跳数=2：附 1～2 跳邻域`；`::限制只管事件条数：真截断才写缺口，并写实际交付条数` | 覆盖 |
+| FR-012 | `openhive-case-explore.test.ts::无此实体：空原因 + 引导，不抛错`；`::项目里有未解析材料 ⇒ 材料未解析（不是无此实体）`；`::实体存在但无任何事实` | 覆盖 |
+| FR-013 | `openhive-case-mcp-tools.test.ts::解析实体：同值「人/组织」两行 ⇒ 取后建的组织行，关系也取得到`；`::query_relations：按值查询合并同值多行的关系（旧/新行各挂一条）`；`openhive-case-identity-resolve.test.ts::aggregate_money 遇到多账户户名 ⇒ 同一 fail-closed（bad_input），不在聚合层挑一个` | 覆盖 |
+| FR-014 | `openhive-case-money-flow.test.ts::B：入 3 笔 35000、收支分列、首末、对手排行（含首末）、单笔最大、集中度`；`::人说的笔随方向透传；摘要报笔数；人说的笔不进单笔榜`；`::C2 对手过滤作用于汇总`（「条数」参数无专项用例，由分发层白名单统一拒） | 覆盖 |
+| FR-015 | `openhive-case-empty-reason.test.ts::第 1 条：账户有持有证据、窗内 0 笔转账 ⇒ 确实没有交易`；`::第 2/3/4 条` 各一条；`::全外币：空原因=外币行全部未计入、数据 null、缺口写外币行数、摘要不否认流水` | 覆盖 |
+| FR-016 | `openhive-case-money-flow.test.ts::与 aggregate_money 逐数相等（汇总 / 首末 / 对手方 / 外币行数同一口径）`；`::人说的笔与 aggregate_money 逐行相等（同一口径，不另算一份）` | 覆盖 |
+| FR-017 | 缺口：升序/游标/都不给 bad_input 有断言（`openhive-case-timeline.test.ts::第一页：时间升序、缺时间条数、续页游标`、`::游标翻页：三笔有时间事件，第二页仍有游标、第三页归 null`、`::实体与地点都不给 ⇒ bad_input`），但无「实体+地点双给 ⇒ bad_input」与「拒绝 offset」的用例 | 缺口 |
+| FR-018 | `openhive-case-timeline.test.ts::地点分支先拒答：能力未就绪，不返回空`；`::对象存在但事件全无时间 ⇒ 时间全部缺失`；`::对象存在但没有任何事件 ⇒ 对象未登记`；`::窗口内没有事件但对象有历史事件 ⇒ 无事件` | 覆盖 |
+| FR-019 | `openhive-case-mcp-rows.test.ts::query_rows 按材料 + 时间窗取明细，七字段齐全`（数据为行数组）；`::query_rows 游标翻页 ⇒ 第二页接上、无重复无遗漏`（游标只在下一步）；`openhive-case-row-query.test.ts::自造游标 ⇒ 明细入参错误` | 覆盖 |
+| FR-020 | `openhive-case-mcp-rows.test.ts::query_rows 指定不存在的材料 ⇒ 空原因=材料未入库`；`::query_rows 材料未解析 ⇒ 空原因=该材料未解析`；`::query_rows 条件无命中 ⇒ 空原因=无匹配行`；`::query_rows 不指定材料且项目零明细 ⇒ 无匹配行，缺口写明项目没有任何明细`；`::query_rows 传「备注关键词」⇒ bad_input` | 覆盖 |
+| FR-021 | `openhive-case-explore-replay.test.ts::[工具层] query_rows 账户只有外币行 ⇒ 空原因=外币行全部未计入、数据为空`；`::[工具层] query_rows 外币行分页：本页全外币也不算「全部未计入」`；`openhive-case-empty-reason.test.ts::混合币种：外币行数=2、余额走势只数人民币行（5 行）、缺口写明未计入` | 覆盖 |
+| FR-022 | 缺口：`openhive-case-mcp-server.test.ts::握手后 getInstructions() 逐条含八条纪律的检索关键词，且 1..8 编号都在` 只断言 8 条编号且显式断言「无第 9 条」；`09` 的「时间线优先」在实现里写成 `2b`（`case-mcp-server.ts:174`），没有任何用例断言它 | 缺口 |
+| FR-023 | 缺口：第 12 次注入、分发前计数、窗口重置、身份隔离均有断言（`openhive-case-mcp-server.test.ts::第 12 次工具调用起…`、`::计数在分发前：中间一次 bad_input 也占号…`、`::空闲超过窗口后重新计数…`、`::计数按 (userId, projectId) 隔离…`），但无「未知工具名不计数」的用例 | 缺口 |
+| FR-024 | `case-hgraph-tools.test.ts::第 12 次起图工具也带预算上限缺口（与查库工具同一预算出口，不套七字段信封）`（断言 `预算上限缺口` 显式字段） | 覆盖 |
+| FR-025 | 缺口：`openhive-case-mcp-server.test.ts::握手后 getInstructions()…` 断言「30 秒」「没有任何服务端闸」，「已达 12 次上限，未覆盖项见工具卡缺口」属回答层收尾行，T008/T009 已落地并经真栈复验通过（见 `run-report.md` §四），但 `test/server/` 与前端均无对应自动用例 | 缺口 |
+| FR-026 | 缺口：`test/server/` 下无「skill 作为全局资产发布到 `skills.paths`、不在仓库 `.opencode/skills/`」的用例；`grep -rl 资金研判` 仅命中 `packages/app/src/ai-session/capability-pipeline.test.tsx` 的分组名，不验资产位置 | 缺口 |
+| FR-027 | 缺口：无 skill 正文用例（只引用工具名、无 SQL、不复制返回结构、不重复全局纪律）；资产本体不在本仓库，`test/server/` 无可断言对象 | 缺口 |
+| FR-028 | 缺口：资金 4 条固定问题的 A/B 结果属真栈 + 真模型人工验收，`test/server/` 下无自动用例（tasks.md「明确不做的项」亦已列明） | 缺口 |
+| FR-035 | `openhive-case-mcp-tools.test.ts::一级与二级都能过滤，返回里带 purpose 与依据`；`::不认识的用途 fail-closed，并列出可用类`；`::用途传空串也 fail-closed，不能静默返回全量事件`；`::用途为空且全项目都没判过 ⇒ 空原因「用途未结构化」` | 覆盖 |
+| FR-036 | `openhive-case-mcp-template-filter.test.ts::query_events：默认隐藏未验证；含未验证=true 放行`；`::query_timeline：默认隐藏；含未验证=true 放行；统计口径一致`；`::query_timeline 统计侧：唯一事件是未验证卡 ⇒ 默认是「对象未登记」而不是「无事件」`；`::用途补判计数也过滤未验证`；`::可见条件每次直读库：转正后可见，清 verified_at 立即隐藏`；`::explore_entity / money_flow` 各一条 | 覆盖 |
+| FR-037 | `openhive-case-empty-reason.test.ts::全外币：空原因=外币行全部未计入、数据 null、缺口写外币行数`；`::混合币种：外币行数=2、余额走势只数人民币行（5 行）、缺口写明未计入`；`openhive-case-ingest-translate.test.ts::非人民币卡片单独计数，且币种按行落库`（认不出的币种不当人民币） | 覆盖 |
+| FR-038 | 缺口：无「按属性找实体不支持、且回答不把不支持说成没有」的用例；`query_entities` 关键词只匹配规范值/别名的描述与行为均无用例钉住 | 缺口 |
+| FR-039 | 缺口：无「回答把去解析/去检查材料放最显眼处、过程卡标明『这是数据没到位』」的用例；工具侧仅有摘要否定句防护（`openhive-case-empty-reason.test.ts::全外币…摘要不否认流水`）与下一步指向 `query_entities`（`openhive-case-explore.test.ts::无此实体：空原因 + 引导`） | 缺口 |
+| FR-040 | `openhive-case-mcp-server.test.ts::不带 _meta 调用 ⇒ isError + identity_required`；`::是身份但不是项目成员 ⇒ not_a_member`；`::未知工具名 + 不带 _meta ⇒ identity_required（身份门先于判名字）`；`::未知工具名 + 是身份但非成员 ⇒ not_a_member（成员门先于判名字）`；`::数据源档案写工具：普通成员 ⇒ forbidden` | 覆盖 |
+| FR-041 | `openhive-case-mcp-server.test.ts::数据源档案写工具：普通成员 ⇒ forbidden（build / revoke），list 仍允许`；`case-hgraph-tools.test.ts::普通成员带不存在路径调 graph_add ⇒ forbidden（授权先于「图在不在」）`；`::普通成员可以 graph_read（读工具不受属主门影响）` | 覆盖 |
+| FR-042 | 缺口：`openhive-case-mcp-server.test.ts::每次调用（成功与失败各一次）都出一条留痕` 只断言 `userId/projectId/工具/ok/错误码/错误原文`，未断言 `耗时毫秒` 与「不落业务值」；明文备注另由 `openhive-case-mcp-tools.test.ts::get_citation 明细行：材料定位取材料的项目内路径，extras 备注原样回显` 覆盖 | 缺口 |
+| FR-043 | `openhive-case-explore-replay.test.ts` 的 20 个固定问题用例（5 组 × 4，期望表驱动，含 `案件里叫张三的有几个`）；`openhive-case-explore-seed.test.ts::探索数据集 seed（09 §13.1）` 断言数据集内容；数据集经 `enqueueMaterial → claimNextJob → runJob` 生产出口种下（`test/fixtures/explore/dataset.ts`） | 覆盖 |
+| FR-044 | 缺口：无「平均工具调用数 ≤ 8」「p95 ≤ 30 秒」「资金汇总与人工核算完全一致」的用例；replay 只断言固定调用序列长度与字段值，文件头注明这些指标仍在 §13.5 缺口 | 缺口 |
+| FR-045 | `test/fixtures/explore/cases.ts` 的「案件里叫张三的有几个」+ `openhive-case-explore-replay.test.ts::[人] 案件里叫张三的有几个`：不断人数，只钉按全名命中的实体（`数据.length` 作漂移守卫） | 覆盖 |
+| FR-046 | 缺口：变异验证是过程证据（拆实现看红），`test/server/` 下无对应用例；本仓库的变异记录只在实现报告/LEARNINGS 中，未落成测试 | 缺口 |
+| FR-047 | 缺口：三层中只有工具层单测（本表各行）；真栈回放无自动化用例（`test/real-stack/` 仅有 `serve.ts`），数字一致性（复用 `01` 的 A4）未在本 feature 用例中落地 | 缺口 |
+| FR-048 | 缺口：缺口表属验收文档，`test/server/` 下无用例；本报告「缺口逐条列表」即为该条要求的人工产物 | 缺口 |
+| FR-029 | 部分：三处起手入口中两处已交付（实体档案「查个人」`entity-profile.test.tsx::点「查个人」…`、图谱节点「问 AI」既有实现）；「查一段时间」按 `plan.md` D5 后置，未进 `spec.md` 缺口表 | 部分 |
+| FR-030 | 部分：两枚新入口按钮的载荷是**实体规范值**而不是 `spec.md` 要求的「实体 id 或图文件路径」（`entity-profile.tsx:504/519`）；既有图谱「问 AI」载荷是节点值（`graph.tsx:1562`）。名称解析可兜住绝大多数情形，同形路径下无法唯一定位；**未修，记缺口**（终审 Minor 5） | 缺口 |
+| FR-031 | 缺口：三种需人裁决情形（同名多人 / 合并候选 / 推断升事实）的裁决按钮**本期未实现**（tasks.md 未派该任务，控制器 Ruling 11：不超范围实现），须产品排期 | 缺口 |
+| FR-032 | 部分：工具卡六块可见性由既有 `envelope-tool.tsx` 实现，本分支只在其上加错误引导行；**无组件四态用例**（`packages/session-ui` 无 DOM 测试基建，story 无断言且被 `tsconfig` 排除），真栈第 5 步人工验过「错误码 + 原因 + 引导」 | 部分 |
+| FR-033 | 部分：收尾行按**本轮全部 assistant 消息**的 parts 统计、措辞写「本轮回答」（`closing-stats.ts:62-89`、`i18n/zh.ts:243`）；与 spec 要求的「近 10 分钟窗口口径」有已知偏差（`research.md` D4、`run-report.md` §六）。另：只用图工具的一轮 `查询次数 === 0` ⇒ 整行不出现 | 部分 |
+| FR-034 | `envelope-parse.ts:57-70` 的 9 码映射 + `envelope-tool.tsx:217-233` 的引导行 + `i18n/{zh,en}.ts` 各 9 条；`envelope-parse.test.ts`（17 例，含原型链键 `toString` 用例）与 `closing-stats.test.ts` 的 9 句**逐字**断言。服务端第 10 码 `identity_required` 无文案（见缺口表） | 覆盖 |
+| FR-049 | 文本事实走 `原文切片`、行级事实走 `材料定位 {path, sheet, rowNo}` + `extras`，两分支共用切片/定位实现（`case-mcp-tools.ts`）。`openhive-case-mcp-tools.test.ts::get_citation 明细行：材料定位取材料的项目内路径，extras 备注原样回显`、`::…原文切片` 三条（`:1325`/`:1327`）、`::get_citation 材料没有正文：原文切片 null，缺口同一份材料只说一次`（`:1331`）、`::get_citation locator 越过正文：夹到末尾并在缺口里写明`（`:1339`）；locator 解析/压缩另由 `openhive-case-citation.test.ts` 15 例覆盖 | 覆盖 |
+| FR-050 | `openhive-case-mcp-server.test.ts`：① 遍历 tools/list 全部非 graph 工具，逐个断言描述含 `什么时候用：` / `什么时候别用：` / `返回后照抄：`；② 4 个原语（`query_rows`/`query_timeline`/`explore_entity`/`money_flow`）均以导出常量 `探索原语摘要`（`case-mcp-server.ts:196`）开头；③ 反向断言 `query_rows` 的「别用」段写明 `备注关键词` 会报参数错误。已知局限：常量被**逐字相同**地复制成字面量时行为不变，用例 2 抓不到（只有漂字才红） | 覆盖 |

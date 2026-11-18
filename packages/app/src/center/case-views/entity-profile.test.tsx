@@ -1438,4 +1438,86 @@ describe("实体档案", () => {
     await 等(() => host.querySelectorAll("[data-slot='entity-relation']").length === 2)
     expect(host.querySelector("[data-slot='entity-empty-hint']")).toBeNull()
   })
+
+  /**
+   * 015 US6 / T013（2026-11-17）：看到一个人点「查个人」、看到一个账户点「查个账户」，
+   * 整句以「替换」预填进右栏输入框，**不自动发送**（`contracts/ui-card-contract.md` §4）。
+   *
+   * 按**可见文字**找按钮，不绑 `data-slot`：用例钉的是「用户看得见、点得到这枚按钮」，
+   * 实现给节点取什么名不该进判据。预填句逐字钉整句（`toBe`），不用 `toContain` 代整句——
+   * 句子被截短 / 拼错也照样命中的子串断言是假绿（`#006-22`）。
+   */
+  function 找按钮(host: HTMLElement, 文字: string): HTMLButtonElement | undefined {
+    return [...host.querySelectorAll("button")].find((钮) => (钮.textContent ?? "").includes(文字)) as
+      | HTMLButtonElement
+      | undefined
+  }
+
+  const 查个人句 = (规范值: string) =>
+    `查一下「${规范值}」名下有哪些账户、与谁有资金往来，按时间窗给出结论和出处。`
+  const 查个账户句 = (规范值: string) =>
+    `查一下账户「${规范值}」的资金往来：笔数、合计、对手排行与大额明细，并给出出处。`
+
+  /** 指定类型的实体档案 ＋ 会话输入间谍（间谍必须在 mount 前登记，同下面的双击用例）。 */
+  async function 装档案(type: string, canonical_value: string) {
+    const 收到: Array<{ 文本: string; 方式: string }> = []
+    订阅会话输入((文本, 方式) => void 收到.push({ 文本, 方式 }))
+    const 实体: 实体档案 = { ...档, type, canonical_value }
+    const host = mount(() => (
+      <EntityProfile
+        projectId="p"
+        id="e-起手"
+        api={假api({ profile: async () => ({ kind: "ok", value: 实体 }) })}
+        onOpen={() => {}}
+      />
+    ))
+    await 等(() => host.querySelectorAll("[data-slot='entity-profile-title']").length === 1)
+    return { host, 收到 }
+  }
+
+  test("类型=人：有「查个人」按钮，没有「查个账户」", async () => {
+    const { host } = await 装档案("人", "张三")
+    expect(找按钮(host, "查个人") !== undefined).toBe(true)
+    // 两枚同时摆出来等于让用户猜哪一枚才是真的——显示条件必须互斥。
+    expect(找按钮(host, "查个账户") === undefined).toBe(true)
+  })
+
+  test("类型=账户：有「查个账户」按钮，没有「查个人」", async () => {
+    const { host } = await 装档案("账户", "6222****0001")
+    expect(找按钮(host, "查个账户") !== undefined).toBe(true)
+    expect(找按钮(host, "查个人") === undefined).toBe(true)
+  })
+
+  test("类型=地点：两枚起手都不在（地点没有对应的查询能力）", async () => {
+    const { host } = await 装档案("地点", "某小区")
+    // DOM「不存在」一律布尔比较：`toBeNull()` 在本仓出过元素明明在仍绿的假绿（`#013-12`）。
+    expect(找按钮(host, "查个人") === undefined).toBe(true)
+    expect(找按钮(host, "查个账户") === undefined).toBe(true)
+  })
+
+  test("点「查个人」⇒ 整句以「替换」进输入框，且只写一次", async () => {
+    const { host, 收到 } = await 装档案("人", "张三")
+    const 钮 = 找按钮(host, "查个人")
+    expect(钮 !== undefined).toBe(true)
+    钮!.click()
+
+    // 「只写一次」钉的是收件口调用次数：多写一次会覆盖成别的文本。
+    // **不自动发送**在本接缝观测不到——收件口只写输入框（`send-to-session.ts:115-121`），
+    // 发送是另一条出口；真正的证据是 `EntityProfile` 不 import 任何发送动作，
+    // 以及真栈第 2 步实测「输入框有原文、消息未提交」。不要在这条用例里假装能测到它。
+    expect(收到.length).toBe(1)
+    expect(收到[0]!.方式).toBe("替换")
+    expect(收到[0]!.文本).toBe(查个人句("张三"))
+  })
+
+  test("点「查个账户」⇒ 整句以「替换」进输入框，且只写一次", async () => {
+    const { host, 收到 } = await 装档案("账户", "6222****0001")
+    const 钮 = 找按钮(host, "查个账户")
+    expect(钮 !== undefined).toBe(true)
+    钮!.click()
+
+    expect(收到.length).toBe(1)
+    expect(收到[0]!.方式).toBe("替换")
+    expect(收到[0]!.文本).toBe(查个账户句("6222****0001"))
+  })
 })

@@ -6,18 +6,22 @@
  * 失败那句话由 `send-to-session` 给（`发送失败提示`），这里不另写一份。
  */
 
-import { 发送到会话, 发送失败提示 } from "@/ai-session/send-to-session"
+import { 发送到会话, 发送失败提示, type 写入方式 } from "@/ai-session/send-to-session"
 import { showToast } from "@/utils/toast"
 
 /**
- * 把一段文本送进右栏会话输入框（追加）。
+ * 把一段文本送进右栏会话输入框（默认**追加**）。
  *
  * 空文本**一个字都不送**：双击落在空行、拖选只选到空白时，塞个空串进去只会让光标跳一下，
  * 用户看不出刚刚发生了什么。这不是失败，故**不吭声**。
+ *
+ * `方式` 省略即追加（中栏拖 / 右键 / 双击的既有语义）；想「预填一整句」的入口传 `替换`
+ * （015 US6 的起手入口），否则会拼在用户已写的半句后面。语义与 009 T015 的
+ * 「▶ 让 AI 助手执行此 skill」一致：整句指令替换输入框内容。
  */
-export function 发到会话(文本: string): void {
+export function 发到会话(文本: string, 方式: 写入方式 = "追加"): void {
   const 正文 = 文本.trim()
   if (正文 === "") return
-  const 结果 = 发送到会话(正文)
+  const 结果 = 发送到会话(正文, 方式)
   if (!结果.ok) showToast(发送失败提示(结果.原因))
 }

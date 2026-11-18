@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 工具名文本, 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
+import { 错误码引导键, 工具名文本, 数据字节数, 数据行数, 信封工具名, 解析工具输出, 是信封工具键 } from "./envelope-parse"
 
 const 信封文本 = (值: unknown) => JSON.stringify(值)
 
@@ -134,5 +134,32 @@ describe("工具名文本", () => {
     const 译文表: Record<string, string> = { "ui.envelopeTool.tool.query_rows": "Query rows" }
     const t = (键: string) => 译文表[键] ?? 键
     expect(工具名文本(t, "query_rows")).toBe("Query rows")
+  })
+})
+
+describe("错误码引导键", () => {
+  test("九个错误码逐个映射到 ui.envelopeTool.errorHint.<码>", () => {
+    for (const 码 of [
+      "bad_input",
+      "not_found",
+      "not_a_member",
+      "forbidden",
+      "too_many",
+      "ambiguous_path",
+      "write_failed",
+      "tool_failed",
+      "unknown_tool",
+    ])
+      expect(错误码引导键(码)).toBe(`ui.envelopeTool.errorHint.${码}`)
+    expect(错误码引导键("bad_input")).toBe("ui.envelopeTool.errorHint.bad_input")
+  })
+
+  test("未知码给 undefined，不回退成固定话术", () => {
+    expect(错误码引导键("boom")).toBeUndefined()
+  })
+
+  test("原型链上的键也算未知码，给 undefined", () => {
+    expect(错误码引导键("toString")).toBeUndefined()
+    expect(错误码引导键("constructor")).toBeUndefined()
   })
 })

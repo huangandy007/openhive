@@ -494,6 +494,39 @@ export function EntityProfile(props: EntityProfileProps): JSX.Element {
             <Show when={档()}>
               {(档) => (
                 <div class="flex flex-wrap justify-end gap-1">
+                  {/* 015 US6：看到人 / 账户才给对应的那一枚起手入口——两枚同时摆出来等于让用户
+                      猜哪一枚才是真的，地点等没有查询能力的类型一枚都不给。只把整句**替换**进
+                      输入框（`发到会话(…, "替换")`），不发送、不跳路由、不弹 toast。 */}
+                  <Show when={档().type === "人"}>
+                    <button
+                      type="button"
+                      data-slot="entity-start-person"
+                      onClick={() =>
+                        发到会话(
+                          `查一下「${档().canonical_value}」名下有哪些账户、与谁有资金往来，按时间窗给出结论和出处。`,
+                          "替换",
+                        )
+                      }
+                      class={`h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                    >
+                      查个人
+                    </button>
+                  </Show>
+                  <Show when={档().type === "账户"}>
+                    <button
+                      type="button"
+                      data-slot="entity-start-account"
+                      onClick={() =>
+                        发到会话(
+                          `查一下账户「${档().canonical_value}」的资金往来：笔数、合计、对手排行与大额明细，并给出出处。`,
+                          "替换",
+                        )
+                      }
+                      class={`h-7 cursor-pointer rounded-[4px] bg-v2-background-bg-layer-02 px-2 text-[12px] text-v2-text-text-base transition-colors ${悬停叠层}`}
+                    >
+                      查个账户
+                    </button>
+                  </Show>
                   {/* 同一实体换视图：路径由 `CaseView` 拼（它手里有 projectId 与 id），标题在这里拼
                       （档案页手里有规范值，关系图 / 时间线只拿到 id）。 */}
                   <For each={[

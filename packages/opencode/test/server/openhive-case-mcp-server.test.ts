@@ -10,6 +10,7 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import {
   createCaseMcpServer,
   工具名,
+  探索原语摘要,
   新预算计数,
   预算上限缺口,
   type 调用留痕,
@@ -173,6 +174,57 @@ test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图
     "revoke_source_profile",
     "search_materials",
   ])
+})
+
+// ─────────────────────── 015 审查 FR-050：工具描述三段式 ───────────────────────
+//
+// 模型只读 `description` 决定调不调、调哪个：只写「返回什么」不够，必须写清
+// 「什么时候用 / 什么时候别用 / 返回后照抄哪些字段」。三段用**字面标记**、顺序固定，
+// 防止被改写成近义词后客户端解析 / 审阅都认不出。图工具不在本文件的 TOOLS 里，跳过。
+const 三段标记 = ["什么时候用：", "什么时候别用：", "返回后照抄："] as const
+/** 四个探索原语：描述必须以同一个固定摘要开头（常量在实现里只有一处）。 */
+const 探索原语名 = ["query_rows", "query_timeline", "explore_entity", "money_flow"] as const
+
+test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 / 返回后照抄，且顺序固定", async () => {
+  const tools = (await client.listTools()).tools.filter((条) => !条.name.startsWith("graph_"))
+  // 19 个工具里 5 个图工具不在本文件：剩下 14 个信封工具，一个都不能漏。
+  expect(tools).toHaveLength(14)
+  for (const 工具 of tools) {
+    const 描述 = 工具.description ?? ""
+    const 位置 = 三段标记.map((标记) => 描述.indexOf(标记))
+    // 失败时把工具名与缺的段一起打出来：只报「false」看不出是谁缺。
+    expect({ 工具: 工具.name, 缺段: 三段标记.filter((_, 序) => 位置[序] < 0) }).toEqual({
+      工具: 工具.name,
+      缺段: [],
+    })
+    // 顺序必须固定（升序且互不重叠由 indexOf 唯一出现保证：段名各出现一次）。
+    expect({ 工具: 工具.name, 位置 }).toEqual({
+      工具: 工具.name,
+      位置: [...位置].sort((甲, 乙) => 甲 - 乙),
+    })
+    expect(三段标记.map((标记) => 描述.split(标记).length - 1)).toEqual([1, 1, 1])
+  }
+})
+
+test("四个探索原语的描述都以同一个固定摘要开头", async () => {
+  const tools = (await client.listTools()).tools
+  for (const 名 of 探索原语名) {
+    const 工具 = tools.find((条) => 条.name === 名)
+    // 用 startsWith 而不是 toContain：摘要必须是开头，藏在中间等于没写。
+    expect({ 工具: 名, 开头: 工具?.description?.startsWith(探索原语摘要) }).toEqual({ 工具: 名, 开头: true })
+  }
+})
+
+// 反向断言：三段要写实内容，不能是空壳。`query_rows` 明确拒绝 `备注关键词`
+// （分发表白名单里没有它 ⇒ 收参数抛 bad_input，case-mcp-server.ts 的 分发表）。
+test("query_rows 的「什么时候别用」写明它真实会拒的参数（备注关键词）", async () => {
+  const 描述 = (await client.listTools()).tools.find((条) => 条.name === "query_rows")?.description ?? ""
+  const 起 = 描述.indexOf("什么时候别用：")
+  const 止 = 描述.indexOf("返回后照抄：")
+  expect(起).toBeGreaterThanOrEqual(0)
+  expect(止).toBeGreaterThan(起)
+  const 段 = 描述.slice(起, 止)
+  expect(段).toContain("备注关键词")
 })
 
 // Task 5 A5：`工具名` 与 `TOOLS` 不同步的**运行时**分支（`校验必填` 找不到声明 ⇒ 内部契约

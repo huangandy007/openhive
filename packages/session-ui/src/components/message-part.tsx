@@ -40,6 +40,8 @@ import { BasicTool, GenericTool } from "./basic-tool"
 // 否则 bun（偏好 `.tsx`）与 vite/tsc（偏好 `.ts`）对同一个无扩展名 import 解析到不同文件。
 import { 信封错误卡, 信封渲染兜底 } from "./envelope-tool"
 import { 是信封工具键 } from "./envelope-parse"
+import { ClosingLine } from "./closing-line"
+import { 收尾部件 } from "./closing-stats"
 import { Accordion } from "@opencode-ai/ui/accordion"
 import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
@@ -739,6 +741,13 @@ export function AssistantParts(props: {
   const emptyParts: PartType[] = []
   const emptyTools: ToolPart[] = []
   const msgs = createMemo(() => index(props.messages))
+  // 收尾行吃**本轮全部** assistant 消息的 parts：tool part 挂在当步消息上，
+  // 最终回答是另一条无 tool 的消息（F1，接线纯函数见 `closing-stats.ts`）。
+  const 收尾行部件 = createMemo(() =>
+    收尾部件(props.messages, (消息id) =>
+      list(data.store.part?.[消息id], emptyParts).filter((part): part is ToolPart => part.type === "tool"),
+    ),
+  )
   const part = createMemo(
     () =>
       new Map(
@@ -765,7 +774,8 @@ export function AssistantParts(props: {
   const last = createMemo(() => grouped().at(-1)?.key)
 
   return (
-    <Index each={grouped()}>
+    <>
+      <Index each={grouped()}>
       {(entryAccessor) => {
         const entryType = createMemo(() => entryAccessor().type)
 
@@ -825,7 +835,9 @@ export function AssistantParts(props: {
           </Switch>
         )
       }}
-    </Index>
+      </Index>
+      <ClosingLine parts={收尾行部件()} />
+    </>
   )
 }
 
