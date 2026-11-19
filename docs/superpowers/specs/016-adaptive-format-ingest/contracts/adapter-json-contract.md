@@ -34,7 +34,7 @@
 | `id` | ✅ | 全项目唯一；字母数字与 `-` / `_`；**并列决胜的字典序键** |
 | `name` | ✅ | 展示名 |
 | `version` | ✅ | 语义版本；变更必须重跑 `test/`（FR-064） |
-| `kind` | ✅ | 闭集 `"rowRules"` \| `"converter"`：`rowRules` 由内核按 `rowRules` 直接执行（不起子进程，FR-011）；`converter` 走子进程执行器（FR-012） |
+| `kind` | ✅ | 闭集 `"rowRules"` \| `"converter"`：`rowRules` 由内核按 `rowRules` 直接执行（不起子进程，FR-011）；`converter` 走子进程执行器（FR-012）（**本期落地状态 2026-11-19**：只做结构接受，内核未实现规则解释器，执行期按「未识别」处理，Ruling F/I。） |
 | `materialType` | ✅ | ∈ `资金` / `话单` / `其他` |
 | `attributeKeys` | ✅ | 形如 `<归属>:<键>`；归属 ∈ `对方` / `本方`；键必须在受控词表内（发布期 fail-closed）；无属性列写 `[]` |
 | `match.requiredHeaders` | ✅ | 全含才命中（fail-closed，FR-018） |

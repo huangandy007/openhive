@@ -65,7 +65,7 @@
 
 ## D6 · 执行器：照 `governance-mcp-supervisor.ts` 的子进程形状
 
-**Decision**: `case-converter-runner.ts` 用 `node:child_process` 的 `spawn`（既有先例 `governance-mcp-supervisor.ts:1`）；`cwd` = 已启用技能目录（`作业项目目录/.opencode/skill/<assetId>`）；命令来自 `adapter.json` 的 `entry.command`（只允许白名单前缀：`bun run` / `node`）；输入只读原件路径（由内核复制 / 只读挂载不必要——直接给原件绝对路径，子进程只读）；输出写技能目录内 `output.file`（技能包是共享资产：运行前已存在即拒，只删本次新建的输出）；超时（默认 60 秒，可按作业覆盖）；环境变量**剔除 `PG_*` 与数据库连接串**，只给 `PATH` / `HOME` / 临时目录等最小集。`kind` 闭集 `{"rowRules","converter"}`：`rowRules` 由内核按声明的规则执行（FR-011，不起子进程）；`converter` 走本执行器，`rowRules` 字段在 `converter` 包里仅作评审与回归说明，不执行。
+**Decision**: `case-converter-runner.ts` 用 `node:child_process` 的 `spawn`（既有先例 `governance-mcp-supervisor.ts:1`）；`cwd` = 已启用技能目录（`作业项目目录/.opencode/skill/<assetId>`）；命令来自 `adapter.json` 的 `entry.command`（只允许白名单前缀：`bun run` / `node`）；输入只读原件路径（由内核复制 / 只读挂载不必要——直接给原件绝对路径，子进程只读）；输出写技能目录内 `output.file`（技能包是共享资产：运行前已存在即拒，只删本次新建的输出）；超时（默认 60 秒，可按作业覆盖）；环境变量**剔除 `PG_*` 与数据库连接串**，只给 `PATH` / `HOME` / 临时目录等最小集。`kind` 闭集 `{"rowRules","converter"}`：`rowRules` 本期不执行（Ruling F：需求只给一条无语法示例字符串；注册表/发布闸只接受结构，执行期按「未识别」处理）；`converter` 走本执行器，`rowRules` 字段在 `converter` 包里仅作评审与回归说明，不执行。
 
 **Rationale**: 需求 §7.2 要求「不注入 PG 凭据、只读输入、只写临时输出、有超时」；本设计按 Ruling AS 落成「只写本次新建的输出文件（技能包是共享资产：运行前已存在即拒，不覆盖、不删除既有文件）」，崩溃残留由运行标记自愈（Ruling BJ）；既有 supervisor 已把 spawn / 环境白名单 / 超时的坑踩过一遍，照形状写比重新发明安全。`kind` 必须区分，否则 FR-011 与 FR-012 无法分别验证。
 
