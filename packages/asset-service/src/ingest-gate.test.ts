@@ -264,15 +264,67 @@ describe("识别卡校验（M10）", () => {
     expect(阈值问题.problems.some((项) => 项.includes("admission.thresholds"))).toBe(true)
   })
 
-  test("F6c. admission.checks 必须 ⊆ thresholds 键集", async () => {
-    const dir = await 造包({
+  test("F6c. `其余` 是兜底键：既有显式键或 `其余` ⇒ 放行；两者都没有才拒（Ruling V）", async () => {
+    // 只有「其余」兜底 ⇒ 绿（契约 `admission.thresholds`：`其余` 为兜底键）。
+    const 兜底 = await 造包({
       adapter: {
         ...合法识别卡(),
         admission: { checks: ["金额可解析", "时间可解析"], thresholds: { 金额可解析: 0.99, 其余: 1 } },
       },
     })
-    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir, 词汇: 词表, 已占用id: [] }))
+    expect(await 校验入库包({ assetType: "skill", dir: 兜底, 词汇: 词表, 已占用id: [] })).toEqual({ ok: true })
+
+    // 既无显式键、也无「其余」⇒ 红。
+    const 无兜底 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        admission: { checks: ["金额可解析", "时间可解析"], thresholds: { 金额可解析: 0.99 } },
+      },
+    })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir: 无兜底, 词汇: 词表, 已占用id: [] }))
     expect(problems.some((项) => 项.includes("时间可解析"))).toBe(true)
+  })
+
+  test("F6d. 契约示例原样（7 checks / 2 个显式阈值 + `其余`）⇒ 绿", async () => {
+    const dir = await 造包({
+      adapter: {
+        id: "wechat-wallet-statement",
+        name: "微信账户流水预处理",
+        version: "1.0.0",
+        kind: "converter",
+        materialType: "资金",
+        attributeKeys: ["对方:开户行", "对方:银行卡号", "对方:证件号"],
+        match: {
+          requiredHeaders: [
+            "查询账号",
+            "付款方支付帐号",
+            "收款方支付帐号",
+            "借贷标志",
+            "交易金额",
+            "交易余额",
+            "交易时间",
+          ],
+          optionalHeaders: ["收款方的商户号", "收款方的商户名称", "付款方银行卡号", "收款方银行卡号"],
+          priority: 100,
+        },
+        admission: {
+          checks: [
+            "查询账号非空",
+            "借贷标志合法",
+            "金额可解析",
+            "时间可解析",
+            "方向与本方一致",
+            "卡行成对",
+            "开户人可分类",
+          ],
+          thresholds: { 时间可解析: 0.99, 方向与本方一致: 0.98, 其余: 1.0 },
+        },
+        rowRules: ["本方方 = 借贷=='借' ? 付款方 : 收款方", "对方方 = 借贷=='借' ? 收款方 : 付款方"],
+        entry: { command: "bun run convert.ts", input: "xlsx", output: "json" },
+        output: { file: "result.json" },
+      },
+    })
+    expect(await 校验入库包({ assetType: "skill", dir, 词汇: 词表, 已占用id: [] })).toEqual({ ok: true })
   })
 
   test("F7. 包内 `..` 开头的合法文件名不误判为越界；真越界仍拒", async () => {

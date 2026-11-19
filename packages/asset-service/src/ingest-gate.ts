@@ -21,9 +21,10 @@
  *
  * ## 只做结构判断
  *
- * 不查库、不跑转换器、不校验字段目录里的识别字段值（那是 N1 注册表 / 探测闸的事）。
- * A 类档案的 `mapping` 只判「键是表头原文、值非空」——`值为字段目录内识别字段`需要
- * 字段目录，本层拿不到。
+ * 不查库、不跑转换器；N1 注册表 / 探测闸的字段值校验不在本层。唯一涉及字段目录的是
+ * A 类档案的 `mapping`：由导出的纯函数 `校验档案映射()` 校验，字段目录判定由调用方
+ * （`opencode` 侧）以 `是识别字段` 谓词注入。判据：键是表头原文（无首尾空白）、值非空
+ * 且在字段目录内、`requiredHeaders` 非空、`type ∈ ('资金','话单','其他')`。
  */
 
 import { readFile, readdir, stat } from "node:fs/promises"
@@ -215,12 +216,18 @@ export async function 校验入库包(input: IngestGateInput): Promise<IngestGat
         )
       }
       if (Array.isArray(checks)) {
+        // 每个 check 要有**显式阈值键**或由 `其余` 兜底（契约 `admission.thresholds`：
+        // `其余` 为兜底键）。用 `Object.hasOwn` 而非 `thresholds[项] === undefined`：
+        // `"toString"` / `"__proto__"` 不能因原型链被误判成「已定义」（T002 修复轮 2 · I1）。
         const 缺阈值 = checks.filter(
-          (项): 项 is string => typeof 项 === "string" && thresholds[项] === undefined,
+          (项): 项 is string =>
+            typeof 项 === "string" &&
+            !Object.hasOwn(thresholds, 项) &&
+            !Object.hasOwn(thresholds, "其余"),
         )
         if (缺阈值.length > 0) {
           problems.push(
-            `${识别卡}：admission.checks 含 thresholds 未定义的检查项 ${缺阈值.map((项) => JSON.stringify(项)).join("、")}`,
+            `${识别卡}：admission.checks 的检查项既没有显式阈值键、也没有「其余」兜底 ${缺阈值.map((项) => JSON.stringify(项)).join("、")}`,
           )
         }
       }
