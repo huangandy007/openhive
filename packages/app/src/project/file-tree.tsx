@@ -334,6 +334,14 @@ export interface FileTreeProps {
   onReviewParse?: (path: string) => void
 
   /**
+   * 树顶解析汇总旁的「扫描 / 重跑」入口（016 T021 挂载）。
+   *
+   * 本组件**不认识** `CaseRerunDialog`：它只把「用户要打开它」这个事实交出去，弹窗由
+   * 接线方（`workspace-entry.tsx`）挂。省略 ⇒ 不画这颗钮（未接线不放假入口）。
+   */
+  on打开重跑?: () => void
+
+  /**
    * 从**桌面**拖一批文件进来（设计 §6.3 拖拽 A 的「拖回」那一半；§6.2 里「上传」的替代入口）。
    *
    * `dir` 与 `onUpload` 同一套规则（目录 ⇒ 它自己、文件 ⇒ 它所在的目录、空白 ⇒ 根）。
@@ -1079,6 +1087,17 @@ export function FileTree(props: FileTreeProps) {
           >
             {`已解析 ${总().已解析} / ${总().总数}`}
             <Show when={总().有问题 > 0}>{` · ${总().有问题} 个有问题`}</Show>
+            {/* 016 T021：未接入口时这颗钮**不存在**（不是置灰的假按钮）。 */}
+            <Show when={props.on打开重跑}>
+              <button
+                type="button"
+                data-slot="file-tree-open-rerun"
+                class="ml-2 rounded-[4px] px-1 text-[12px] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                onClick={() => props.on打开重跑?.()}
+              >
+                扫描 / 重跑
+              </button>
+            </Show>
           </div>
         )}
       </Show>

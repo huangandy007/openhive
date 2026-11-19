@@ -22,6 +22,9 @@ import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { 入库并提交, 提交审核 } from "@/project/capability-action-api"
 import { CapabilityPanel } from "@/project/capability-panel"
 import { CapabilitySubmitDialog } from "@/project/capability-submit-dialog"
+import { CaseIngestSettings } from "@/project/case-ingest-settings"
+import { CaseRerunDialog } from "@/project/case-rerun-dialog"
+import { SourceProfileView } from "@/project/source-profile-view"
 import type { CaseMaterials } from "@/project/case-materials-state"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
@@ -359,6 +362,14 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 还是**上下两棵树**，所以同样只能落在共同祖先。
    */
   const [dualOpen, setDualOpen] = createSignal(false)
+  /**
+   * 016 T021：文件 pane 里两块 016 组件的开合。
+   *
+   * - `重跑开`：「扫描 / 重跑」弹窗（由树顶那颗钮打开）。
+   * - `档案开`：数据源档案，**默认收起**——收起态不挂载组件，展开才发第一次请求。
+   */
+  const [重跑开, set重跑开] = createSignal(false)
+  const [档案开, set档案开] = createSignal(false)
 
   /**
    * 右栏（AI 会话）开没开（2026-10-10 用户下达：图标栏那颗「AI 会话」是它的乒乓开关）。
@@ -1234,6 +1245,17 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
    * 不并进本条（登记在 `005/state.md`）。
    */
   const 有项目 = () => currentProject()?.id !== undefined
+
+  /**
+   * 016 T021：「一键重跑」的权限口径 = **项目成员**（属主也算），契约见
+   * `ingest-api-contract.md` §3。判据只有既有的 `projectList()`——清单里该项目的
+   * `role` 有值即可；清单还没取到 / 项目不在清单里 ⇒ false（fail-closed，服务端仍会 403）。
+   */
+  const 能重跑 = () => {
+    const id = currentProject()?.id
+    if (id === undefined) return false
+    return projectList()?.find((项目) => 项目.id === id)?.role !== undefined
+  }
 
   /** 右键「上传」：先记下落点，再开系统文件选择器。落点由**树**给（它判的类型），本层不重判一遍。 */
   function 选文件(dir: string) {
@@ -2133,6 +2155,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                   // ③ 能力 pane（2026-10-27）：与另外两个 pane 同款注入。面板不认识
                   // 「当前是哪个项目」也不认识取数——都从 `props.enablement` 与 `有项目()` 拿。
                   capability={
+                    <>
                     <CapabilityPanel
                       hasProject={() => 有项目()}
                       enabled={() => props.enablement?.enabled() ?? new Set<string>()}
@@ -2213,6 +2236,18 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         })
                       }}
                     />
+                    {/* 016 T021（K3）：项目入库开关，与能力面板同 pane 并排。
+                        没有项目时不渲染（组件要求 `projectId: string`）。
+                        不传 `api`：组件内部自建 `createCaseIngestApi`（brief A）。 */}
+                    <Show when={currentProject()?.id}>
+                      {(id) => (
+                        <CaseIngestSettings
+                          projectId={id()}
+                          canManage={props.enablement?.canManage() ?? false}
+                        />
+                      )}
+                    </Show>
+                    </>
                   }
                   // `undefined` = 还没取到 ⇒ tab 上不写 0（`#002-02`）。
                   // 用 `enabled().size` 而不是合并后的条数：两者按定义相等（设计 §6），
@@ -2244,6 +2279,45 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           `onRefresh`（T020+，2026-10-10）：把「再取一次清单」那枚代次交给用户手拨
                           ——AI 写盘这类**外部改动**今天没有回调可挂，只能手点。与建/改名/删一样
                           **要有项目**才接线（没有项目时没有什么可刷的）。 */}
+                      {/* 016 T021（K3）：数据源档案 —— 默认收起，展开才挂载（收起态不发请求）。
+                          属于「文件」pane，与文件树并存。 */}
+                      <Show when={currentProject()?.id}>
+                        {(id) => (
+                          <div data-slot="source-profile-section" class="w-full min-w-0">
+                            <button
+                              type="button"
+                              data-slot="source-profile-toggle"
+                              class="w-full rounded-[4px] px-1 text-left text-[12px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+                              onClick={() => set档案开(!档案开())}
+                            >
+                              {档案开() ? "收起数据源档案" : "查看数据源档案"}
+                            </button>
+                            <Show when={档案开()}>
+                              <SourceProfileView
+                                projectId={id()}
+                                是属主={props.enablement?.canManage() ?? false}
+                                材料们={
+                                  props.caseMaterials
+                                    ?.rows()
+                                    .filter((行) => 行.status === "已解析")
+                                    .map((行) => ({ id: 行.id, path: 行.path })) ?? []
+                                }
+                              />
+                            </Show>
+                          </div>
+                        )}
+                      </Show>
+                      {/* 016 T021（K3）：扫描数量 + 一键重跑，由树顶那颗「扫描 / 重跑」打开。
+                          收起态不挂载 ⇒ 打开前一次请求都不发。 */}
+                      <Show when={重跑开() && currentProject()?.id}>
+                        {(id) => (
+                          <CaseRerunDialog
+                            projectId={id()}
+                            能重跑={能重跑()}
+                            onClose={() => set重跑开(false)}
+                          />
+                        )}
+                      </Show>
                       <DualFileTree
                         paths={projectFiles()}
                         // 「正在取 / 取不到」两句话（2026-10-21）：`paths` 的 `undefined` 自己也
@@ -2260,6 +2334,8 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         onRetry={有项目() ? 拨清单重取 : undefined}
                         // 计划 3：材料状态整份交给树（它只读；动作成功后自己 reload）。
                         caseMaterials={props.caseMaterials}
+                        // 016 T021：树顶「扫描 / 重跑」→ 打开上面的重跑弹窗。
+                        on打开重跑={() => set重跑开(true)}
                         // 计划 7：「查看解析结果」→ 中栏的材料抽取结果页。
                         // 必须用 `case://` 伪路径而不是原始文件路径：按扩展名路由会把它交给
                         // **表格视图**（`.csv` 被 `SheetView` 认领，`center/views/index.ts:40-45`），
