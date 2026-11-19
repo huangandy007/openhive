@@ -195,11 +195,17 @@ export type TransitionErrorCode =
   | "mcp_probe_failed"
   /** MCP 资产没有连接规格（不该出现：建草稿时必然写入）。 */
   | "mcp_connection_missing"
+  // 【保留的定制 · 016】入库包识别卡校验未过（M10）：四件套缺件 / adapter.json 字段不过 /
+  // 词表外键 / adapter id 与本项目已启用包冲突。逐条问题项走 `AssetTransitionError.problems`，
+  // **不为每个问题项各加一个码**。
+  | "ingest_gate_failed"
 
 export class AssetTransitionError extends Error {
   constructor(
     readonly code: TransitionErrorCode,
     message: string,
+    /** 仅 `ingest_gate_failed` 携带：识别卡校验的逐条问题项，出口原样列给用户。 */
+    readonly problems?: readonly string[],
   ) {
     super(message)
     this.name = "AssetTransitionError"

@@ -92,6 +92,7 @@ import { sql } from "drizzle-orm"
 import { Effect, Option, Result } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { OpenhiveAudit } from "./audit"
+import { 属性归属们, 属性键们 } from "./case-attribute-registry"
 import { GovernanceAuthz } from "./governance-authz"
 import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhiveMcpConfigSync } from "./mcp-config-sync"
@@ -186,7 +187,11 @@ function ok(value: unknown, status = 200) {
   return HttpServerResponse.jsonUnsafe(value, { status })
 }
 
-function fail(status: number, message: string, field?: string) {
+function fail(status: number, message: string, field?: string, problems?: readonly string[]) {
+  // 【保留的定制 · 016】识别卡校验失败的响应带 `code` ＋ 逐条 `problems`（`ingest_gate_failed`）。
+  if (problems !== undefined) {
+    return HttpServerResponse.jsonUnsafe({ error: message, code: "ingest_gate_failed", problems }, { status })
+  }
   return field === undefined
     ? HttpServerResponse.jsonUnsafe({ error: message }, { status })
     : HttpServerResponse.jsonUnsafe({ error: message, field }, { status })
@@ -223,9 +228,10 @@ function 失败(
   message: string,
   field?: string,
   extra?: Record<string, unknown>,
+  problems?: readonly string[],
 ) {
   return 记账.记失败(deps, userId, base, { status, message, ...(field === undefined ? {} : { field }) }, extra).pipe(
-    Effect.as(fail(status, message, field)),
+    Effect.as(fail(status, message, field, problems)),
   )
 }
 
@@ -529,6 +535,13 @@ function handleTransition(request: HttpServerRequest.HttpServerRequest, deps: De
             workspaceRoot: workspaceRoot(process.env),
             ...(reason === undefined ? {} : { reason }),
             ...(范围 === undefined ? {} : { visibility: 范围 }),
+            // 【保留的定制 · 016】入库包识别卡校验（M10）：词表由本侧注入（asset-service
+            // 不依赖 opencode）。发布没有项目作用域 ⇒ 已占用 id 为空；id 唯一在
+            // 「本项目已启用包」内判（启用闸，`project-assets.ts`）。
+            ingestGate: {
+              词汇: { 归属: 属性归属们, 键: 属性键们 },
+              已占用id: [],
+            },
           }),
         catch: (error) => error,
       }),
@@ -815,7 +828,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function 映射错误(
   error: unknown,
-): { readonly status: number; readonly message: string; readonly field?: string } | undefined {
+):
+  | {
+      readonly status: number
+      readonly message: string
+      readonly field?: string
+      /** 【保留的定制 · 016】`ingest_gate_failed` 的逐条问题项，出口原样列给用户。 */
+      readonly problems?: readonly string[]
+    }
+  | undefined {
   if (error instanceof AssetTransitionError) {
     switch (error.code) {
       case "asset_not_found":
@@ -844,6 +865,9 @@ export function 映射错误(
       case "mcp_probe_failed":
       case "mcp_connection_missing":
         return { status: CONFLICT, message: error.message }
+      // 【保留的定制 · 016】入库包识别卡校验未过（M10）：发布前提不成立，409 ＋ 逐条问题项。
+      case "ingest_gate_failed":
+        return { status: CONFLICT, message: error.message, problems: error.problems ?? [] }
       default: {
         // 编译期闸门（与作者出口 `assets.ts` 的 `失败()` 同款）：`TransitionErrorCode` 新增了
         // 码却没在上面归类 ⇒ `error.code` 不是 `never` ⇒ typecheck 红。没有这道闸，漏映射的码
@@ -876,6 +900,6 @@ function 翻译(
   extra?: Record<string, unknown>,
 ) {
   const mapped = 映射错误(error)
-  if (mapped) return 失败(deps, userId, base, mapped.status, mapped.message, mapped.field, extra)
+  if (mapped) return 失败(deps, userId, base, mapped.status, mapped.message, mapped.field, extra, mapped.problems)
   return Effect.die(error)
 }

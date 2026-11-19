@@ -1016,6 +1016,9 @@ function 失败(error: unknown) {
       // 【保留的定制 · 同步上游时不要丢】MCP 发布闸门（2026-11-02 设计 §5.4）。
       case "mcp_probe_failed":
       case "mcp_connection_missing":
+      // 【保留的定制 · 016】入库包识别卡校验（M10）。本出口只做草稿 / 提交 / 迭代动作，
+      // 走不到发布闸；留着是给编译期闸门一个出口（缺席 ⇒ `never` 赋值红）。
+      case "ingest_gate_failed":
         return fail(CONFLICT, error.message)
       default: {
         const 未覆盖: never = error.code

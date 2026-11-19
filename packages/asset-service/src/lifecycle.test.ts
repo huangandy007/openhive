@@ -226,4 +226,10 @@ describe("Skill 7 状态机（FR-004 / D0-7）", () => {
       expect(isAssetUsable(status)).toBe(false)
     }
   })
+
+  test("入库包识别卡校验拒绝码已登记，且逐条问题项随错误携带（016 T002）", () => {
+    const 错误 = new AssetTransitionError("ingest_gate_failed", "入库包识别卡校验未过", ["缺少四件套：test/"])
+    expect(错误.code).toBe("ingest_gate_failed")
+    expect(错误.problems).toEqual(["缺少四件套：test/"])
+  })
 })

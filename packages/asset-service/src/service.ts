@@ -13,6 +13,7 @@ import { retargetAssetLinksAcrossWorkspaces } from "./asset-link-fanout"
 import { setAssetReaders, type AssetViewer } from "./authorization"
 import { isEnabledCategory } from "./category-store"
 import type { AssetStatus, AssetVisibility } from "./metadata"
+import { 校验入库包, type IngestGateInput } from "./ingest-gate"
 import {
   AssetTransitionError,
   applySkillTransition,
@@ -610,6 +611,13 @@ export interface TransitionAssetInput {
   readonly projectId?: string
   /** 试连实现（测试注入用）。缺省 = `probeMcpConnection`。 */
   readonly probe?: McpProbe
+  /**
+   * 【保留的定制 · 016】入库包识别卡校验（M10）的注入输入。
+   *
+   * `词汇` / `已占用id` 的权威在 opencode 侧（`case-attribute-registry.ts` 与本项目启用行），
+   * `asset-service` 不依赖它 ⇒ 由出口拼好传进来。发布闸只认这一份校验（`ingest-gate.ts`）。
+   */
+  readonly ingestGate?: Pick<IngestGateInput, "词汇" | "已占用id">
 }
 
 /** 一次已落地的文件步骤；`commit` 清理备份，`rollback` 把文件退回原样。 */
@@ -710,6 +718,31 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
     // `asset.status` 是**本次流转发起时**读到的状态：快照写入用它做条件，防止试连期间
     // 被 abort / 他人流转抢先（终审 I-2）。
     await prepareMcpPublish(db, asset.id, input.probe ?? probeMcpConnection, now, asset.status)
+  }
+  // 【保留的定制 · 016】入库包识别卡校验（M10）：发布 / 迭代发布前先过同一份校验。
+  // 位置与 MCP 试连同一层（文件步骤之前）：不过关就一个文件都不搬（`#004-09`）。
+  // 目录不存在时不在这里判——交给 `prepareStorageStep` 的既有错误
+  // （`iteration_not_submitted` / 缺源目录），否则「没提交就发布」会被翻成识别卡问题，
+  // 改变既有出口码。普通 skill 没有 `adapter.json`，校验器直接放行。
+  if (asset.type === "skill" && (applied.action === "publish_tech" || applied.action === "publish_iteration")) {
+    const 待发布目录 = pendingDirectory(root, asset.id)
+    if (await directoryExists(待发布目录)) {
+      const 校验 = await 校验入库包({
+        assetType: asset.type,
+        dir: 待发布目录,
+        词汇: input.ingestGate?.词汇 ?? { 归属: [], 键: [] },
+        已占用id: input.ingestGate?.已占用id ?? [],
+      })
+      if (!校验.ok) {
+        // 词表缺省只影响含 `attributeKeys` 的包：没有注入就按「词表外键」拒绝（fail-closed），
+        // 不会因为漏接线而悄悄放行。发布 / 启用两个正式出口都注入了真实词表。
+        throw new AssetTransitionError(
+          "ingest_gate_failed",
+          `入库包识别卡校验未过：${校验.problems.join("；")}`,
+          校验.problems,
+        )
+      }
+    }
   }
   // 【保留的定制 · 同步上游时不要丢】放弃迭代 = 回到线上快照（设计 §3.1.4）。
   if (asset.type === "mcp" && applied.action === "abort_iteration") {
