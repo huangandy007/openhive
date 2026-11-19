@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { render } from "solid-js/web"
-import type { JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { CaseRerunDialog } from "./case-rerun-dialog"
 import { createCaseIngestApi } from "./case-ingest-api"
 
@@ -34,13 +34,16 @@ const 回 = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
 const 扫描行 = {
-  合计: 5,
+  合计: 2,
   候选: {
-    目录独有: [{ path: "资料/新.xlsx" }],
-    未入队: [{ materialId: "m1", path: "资料/旧.xlsx" }],
-    未识别: [{ materialId: "m2", path: "资料/怪.xlsx", 原因码: "未识别:无匹配适配器" }],
+    目录独有: [],
+    未入队: [
+      { materialId: "m1", path: "资料/旧1.xlsx" },
+      { materialId: "m2", path: "资料/旧2.xlsx" },
+    ],
+    未识别: [],
   },
-  样本: ["资料/新.xlsx"],
+  样本: ["资料/旧1.xlsx"],
   截断: false,
 }
 
@@ -65,10 +68,10 @@ describe("重跑弹窗", () => {
     const host = mount(() => <CaseRerunDialog projectId="p1" 是属主={true} api={api} />)
 
     await 等(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
-    expect(host.querySelector("[data-slot='case-rerun-total']")!.textContent).toContain("合计 5 个候选")
-    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("目录独有 1")
-    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("未入队 1")
-    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("未识别 1")
+    expect(host.querySelector("[data-slot='case-rerun-total']")!.textContent).toContain("合计 2 个候选")
+    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("目录独有 0")
+    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("未入队 2")
+    expect(host.querySelector("[data-slot='case-rerun-counts']")!.textContent).toContain("未识别 0")
     expect(host.querySelector("[data-slot='case-rerun-truncated']") === null).toBe(true)
 
     const 按钮 = host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!
@@ -77,9 +80,10 @@ describe("重跑弹窗", () => {
     await 等(() => host.querySelector("[data-slot='case-rerun-result']") !== null)
 
     const 重跑请求 = 记.请求.find((项) => 项.url.includes("/rerun"))
+    // 空类不提交：本案只有「未入队」非空 ⇒ 范围恰为一项（删掉非空过滤这条会红）。
     expect(重跑请求?.body).toEqual({
       projectId: "p1",
-      范围: ["目录独有", "未入队", "未识别"],
+      范围: ["未入队"],
     })
     expect(host.querySelector("[data-slot='case-rerun-result']")!.textContent).toContain("已入队 4")
     expect(host.querySelector("[data-slot='case-rerun-result']")!.textContent).toContain("跳过 1")
@@ -110,5 +114,48 @@ describe("重跑弹窗", () => {
     // 布尔比较：没有发出重跑请求（`#013-12`）。
     expect(记.次数 === 点前).toBe(true)
     expect(记.请求.length === 0).toBe(true)
+  })
+
+  test("切项目后，切走前发出的重跑晚到 ⇒ 旧回包不回写（#010-05）", async () => {
+    let 放行重跑: (() => void) | undefined
+    const 重跑闸 = new Promise<void>((resolve) => {
+      放行重跑 = resolve
+    })
+    let 重跑已发 = false
+    const send = async (url: string) => {
+      if (url.includes("/scan")) {
+        if (url.includes("projectId=p1")) return 回(扫描行)
+        return 回({
+          合计: 0,
+          候选: { 目录独有: [], 未入队: [], 未识别: [] },
+          样本: [],
+          截断: false,
+        })
+      }
+      if (url.includes("/rerun")) {
+        重跑已发 = true
+        await 重跑闸
+        return 回({ 已入队: 4, 跳过: [], 失败: [] })
+      }
+      return 回({ error: "未知路径", code: "not_found" }, 404)
+    }
+    const api = createCaseIngestApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => <CaseRerunDialog projectId={项目()} 是属主={true} api={api} />)
+
+    await 等(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 重跑已发)
+
+    set项目("p2")
+    await 等(() => host.querySelector("[data-slot='case-rerun-total']")?.textContent?.includes("合计 0") === true)
+    放行重跑!()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // 布尔比较：切项目后，旧项目的重跑结果不得出现（`#013-12`）。
+    const 有旧结果 = host.querySelector("[data-slot='case-rerun-result']") !== null
+    expect(有旧结果).toBe(false)
   })
 })

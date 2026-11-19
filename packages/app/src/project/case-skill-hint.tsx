@@ -3,10 +3,10 @@ import { createSignal, Show, type JSX } from "solid-js"
 /**
  * 016 T017 · 三时刻技能提醒（`未识别` / `旁路` / `白名单`）。
  *
- * ## 判据由调用方给
+ * ## 判据：纯函数 `该提醒`
  *
- * 「此刻该不该弹」是业务判断（材料列表里有没有未识别、报告准入是不是旁路、白名单刚不刚更新），
- * 本组件不猜——调用方用 `开启` 告诉它。本组件只负责「同一时刻被「稍后」过就不再弹」。
+ * 「此刻该不该弹」是业务判断，落成纯函数（三条判据逐字见 `该提醒`），调用方把结果传给
+ * `开启`。组件自身不取数、不猜业务；它只负责「同一时刻被「稍后」过就不再弹」。
  *
  * ## 状态存 `localStorage`
  *
@@ -16,6 +16,40 @@ import { createSignal, Show, type JSX } from "solid-js"
 export const 技能提示键前缀 = "openhive.case.skill-hint.snoozed."
 
 export type 技能提示时刻 = "未识别" | "旁路" | "白名单"
+
+/** 与 `技能提示时刻` 同集；`该提醒` 的入参名按 brief。 */
+export type 提醒时刻 = 技能提示时刻
+
+export interface 提醒输入 {
+  /** 材料列表里未识别的份数。 */
+  readonly 未识别份数?: number
+  /** 项目里已启用的 case 类技能数。 */
+  readonly 已启用案件技能数?: number
+  /** 本次转换报告的准入结论。 */
+  readonly 报告结论?: "准入" | "旁路" | null
+  /** 白名单本次新增的条数。 */
+  readonly 白名单新增数?: number
+}
+
+/**
+ * 三条判据（逐字）：
+ * - `未识别`：`未识别份数 > 0 && 已启用案件技能数 === 0`；
+ * - `旁路`：`报告结论 === "旁路"`；
+ * - `白名单`：`白名单新增数 > 0`。
+ *
+ * 缺省字段按「条件不成立」处理（宁可少弹，不凭未知数弹）。
+ */
+export function 该提醒(时刻: 提醒时刻, 输入: 提醒输入): boolean {
+  switch (时刻) {
+    case "未识别":
+      return 输入.未识别份数 !== undefined && 输入.未识别份数 > 0 && 输入.已启用案件技能数 === 0
+    case "旁路":
+      return 输入.报告结论 === "旁路"
+    case "白名单":
+      return 输入.白名单新增数 !== undefined && 输入.白名单新增数 > 0
+  }
+  return false
+}
 
 export interface 技能提示存储 {
   getItem(key: string): string | null

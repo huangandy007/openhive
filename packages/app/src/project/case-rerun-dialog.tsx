@@ -39,9 +39,16 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
   const [重跑错误, set重跑错误] = createSignal<string>()
   const [忙, set忙] = createSignal(false)
 
+  /**
+   * 项目代：切项目（effect 重跑）即加一。切走前发出的重跑回包晚到时，
+   * 代已变 ⇒ 丢弃，不回写到新项目的界面上（`#010-05`）。
+   */
+  let 请求代 = 0
+
   createEffect(() => {
     const 项目 = props.projectId
     const 客户端 = api()
+    请求代 += 1
     set扫描(undefined)
     set扫描错误(undefined)
     set重跑(undefined)
@@ -77,10 +84,14 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
   async function 执行重跑() {
     // 权限闸在**绑定处**（成员分支根本没有 handler），这里只防重入。
     if (忙()) return
+    const 代 = 请求代
+    const 项目 = props.projectId
     set忙(true)
     set重跑错误(undefined)
     try {
-      const 结果 = await api().rerun({ projectId: props.projectId, 范围: 范围() })
+      const 结果 = await api().rerun({ projectId: 项目, 范围: 范围() })
+      // 切走前发出的请求：代一变就丢弃回包，不把旧项目的结果写进新项目（`#010-05`）。
+      if (代 !== 请求代) return
       if (结果.kind === "ok") {
         set重跑(结果.value)
         return
@@ -88,7 +99,7 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
       set重跑错误(结果.message)
     } catch {
       // 注入的 api 不该抛；兜底成一句话，不把异常抛回事件系统。
-      set重跑错误("操作没办成，请重试")
+      if (代 === 请求代) set重跑错误("操作没办成，请重试")
     } finally {
       set忙(false)
     }

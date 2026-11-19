@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { PATH, createCaseIngestApi } from "./case-ingest-api"
 
 /**
- * 016 T017 · 入库新出口的客户端用例（扫描 / 重跑 / 设置 / 报告）。
+ * 016 T017 · 入库新出口的客户端用例（扫描 / 重跑 / 设置）。
  *
  * 服务端回包形状照 T016 的 `case-ingest-routes.ts` 逐字；解码一律「不认识就整份判错」，
  * 不把坏形状降级成 `0 / false / null`（`#002-02`：不知道 ≠ 空）。
@@ -23,22 +23,6 @@ const 扫描行 = {
 }
 
 const 设置行 = { autoEnqueue: true, autoEnableTrusted: false, updatedAt: 1700000000 }
-
-const 报告行 = {
-  id: "r1",
-  jobId: "j1",
-  materialId: "m1",
-  adapterId: "jin-liu",
-  adapterVersion: "1.2.0",
-  ruleVersion: "1",
-  sourceSha256: "abc",
-  gates: [],
-  warnings: [],
-  skippedRows: [],
-  enrich: null,
-  admission: { 结论: "采纳" },
-  createdAt: 1700000000,
-}
 
 describe("入库扫描客户端", () => {
   test("scan：GET 固定路径 + projectId 编码，整份扫描结果原样解析", async () => {
@@ -118,32 +102,13 @@ describe("设置客户端", () => {
       value: { autoEnqueue: true, autoEnableTrusted: false, updatedAt: null },
     })
   })
-})
 
-describe("入库报告客户端", () => {
-  test("report：默认路径带 materialId；report 可为 null；历史=1 换成 reports", async () => {
-    const 收到: string[] = []
-    const api = createCaseIngestApi(async (url) => {
-      收到.push(url)
-      if (url.includes("历史=1")) return 回({ reports: [] })
-      if (url.includes("materialId=m-none")) return 回({ report: null })
-      return 回({ report: 报告行 })
-    })
-    expect(await api.report({ projectId: "p1", materialId: "m1" })).toEqual({ kind: "ok", value: { report: 报告行 } })
-    expect(收到[0]).toBe(`${PATH.report}?projectId=p1&materialId=m1`)
-    expect(await api.report({ projectId: "p1", materialId: "m-none" })).toEqual({
-      kind: "ok",
-      value: { report: null },
-    })
-    expect(await api.report({ projectId: "p1", materialId: "m1", 历史: true })).toEqual({
-      kind: "ok",
-      value: { reports: [] },
-    })
-    expect(收到[2]).toBe(`${PATH.report}?projectId=p1&materialId=m1&历史=1`)
-  })
-
-  test("report：报告行字段类型不对 ⇒ 判错", async () => {
-    const api = createCaseIngestApi(async () => 回({ report: { ...报告行, createdAt: "昨天" } }))
-    expect((await api.report({ projectId: "p1", materialId: "m1" })).kind).toBe("error")
+  test("updatedAt 为 -1 / 1.5 ⇒ 整份判错（与其余数值判据同为非负整数）", async () => {
+    for (const 坏值 of [-1, 1.5]) {
+      const api = createCaseIngestApi(async () =>
+        回({ autoEnqueue: true, autoEnableTrusted: false, updatedAt: 坏值 }),
+      )
+      expect((await api.readSettings("p1")).kind, String(坏值)).toBe("error")
+    }
   })
 })

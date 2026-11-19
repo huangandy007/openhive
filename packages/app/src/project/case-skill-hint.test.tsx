@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { JSX } from "solid-js"
 import { render } from "solid-js/web"
-import { CaseSkillHint, 技能提示键前缀 } from "./case-skill-hint"
+import { CaseSkillHint, 技能提示键前缀, 该提醒 } from "./case-skill-hint"
 
 /**
  * 016 T017 · 三时刻技能提醒。
@@ -29,6 +29,25 @@ beforeEach(() => {
 afterEach(() => {
   卸载当前()
   document.body.innerHTML = ""
+})
+
+describe("三时刻判据（该提醒）", () => {
+  test("未识别：份数 > 0 且已启用案件技能数 === 0 才提醒", () => {
+    expect(该提醒("未识别", { 未识别份数: 2, 已启用案件技能数: 0 })).toBe(true)
+    expect(该提醒("未识别", { 未识别份数: 0, 已启用案件技能数: 0 })).toBe(false)
+    expect(该提醒("未识别", { 未识别份数: 2, 已启用案件技能数: 1 })).toBe(false)
+  })
+
+  test("旁路：报告结论恰为「旁路」才提醒", () => {
+    expect(该提醒("旁路", { 报告结论: "旁路" })).toBe(true)
+    expect(该提醒("旁路", { 报告结论: null })).toBe(false)
+    expect(该提醒("旁路", { 报告结论: "准入" })).toBe(false)
+  })
+
+  test("白名单：新增数 > 0 才提醒", () => {
+    expect(该提醒("白名单", { 白名单新增数: 1 })).toBe(true)
+    expect(该提醒("白名单", { 白名单新增数: 0 })).toBe(false)
+  })
 })
 
 describe("三时刻技能提醒", () => {

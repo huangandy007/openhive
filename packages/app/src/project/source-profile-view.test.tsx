@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import type { JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { createSourceProfileApi } from "./source-profile-api"
 import { SourceProfileView } from "./source-profile-view"
@@ -127,6 +127,18 @@ describe("数据源档案视图", () => {
     expect(host.querySelector("[data-slot='source-profile-revoke']") === null).toBe(true)
     expect(host.textContent).toContain("只有项目属主能维护数据源档案")
 
+    // 非属主：建档表单四项都不可用（选择 / 名称 / 工作表 / 覆盖）。
+    for (const 槽 of [
+      "source-profile-material",
+      "source-profile-name",
+      "source-profile-sheet",
+      "source-profile-overwrite",
+    ]) {
+      const 控件 = host.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-slot='${槽}']`)
+      expect(控件 !== null, 槽).toBe(true)
+      expect(控件!.disabled, 槽).toBe(true)
+    }
+
     const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
     选择.value = "m1"
     选择.dispatchEvent(new Event("change", { bubbles: true }))
@@ -136,5 +148,40 @@ describe("数据源档案视图", () => {
     提交.dispatchEvent(new MouseEvent("click", { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(host.textContent).not.toContain("金额 缺单位")
+  })
+
+  test("切项目后，切走前发出的重拉晚到 ⇒ 不回写旧项目列表（#010-05）", async () => {
+    let 放行慢读: ((response: Response) => void) | undefined
+    const 慢读 = new Promise<Response>((resolve) => {
+      放行慢读 = resolve
+    })
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      if (url.includes("/source-profile/build")) return 回({ id: "s9", created: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      if (列表次数 === 2) return 慢读
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => <SourceProfileView projectId={项目()} 是属主={true} api={api} />)
+
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-revoke']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 列表次数 === 2)
+
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+    放行慢读!(回({ list: [{ ...档案行, id: "s1", name: "一号项目旧档案" }] }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    const 有旧 = (host.textContent ?? "").includes("一号项目旧档案")
+    const 有新 = (host.textContent ?? "").includes("二号项目档案")
+    expect(有旧).toBe(false)
+    expect(有新).toBe(true)
   })
 })

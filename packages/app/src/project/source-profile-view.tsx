@@ -40,8 +40,16 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
   const [覆盖, set覆盖] = createSignal(false)
   const [忙, set忙] = createSignal(false)
 
+  /**
+   * 列表代：切项目（effect 重跑）或发出新的重拉即加一。切走前/被后发请求顶掉的
+   * 旧回包晚到时直接丢弃，不回写（`#010-05`）。
+   */
+  let 列表代 = 0
+
   const 取清单 = async (客户端: SourceProfileApi, 项目: string) => {
+    const 代 = ++列表代
     const 结果 = await 客户端.list({ projectId: 项目, 含撤销: true })
+    if (代 !== 列表代) return
     if (结果.kind === "error") {
       set错误(结果.message)
       return
@@ -52,6 +60,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
   createEffect(() => {
     const 项目 = props.projectId
     const 客户端 = api()
+    列表代 += 1
     set档案们(undefined)
     set错误(undefined)
     let 作废 = false
@@ -181,6 +190,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
             data-slot="source-profile-material"
             class="h-6 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-base px-1 text-[13px]"
             value={选中材料()}
+            disabled={!props.是属主}
             onChange={(e) => set选中材料(e.currentTarget.value)}
           >
             <option value="">选择材料</option>
@@ -192,6 +202,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
             placeholder="档案名（可空）"
             class="h-6 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-base px-1 text-[13px]"
             value={名称()}
+            disabled={!props.是属主}
             onInput={(e) => set名称(e.currentTarget.value)}
           />
           <input
@@ -200,6 +211,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
             placeholder="工作表（可空）"
             class="h-6 rounded-[4px] border border-v2-border-border-muted bg-v2-background-bg-base px-1 text-[13px]"
             value={工作表()}
+            disabled={!props.是属主}
             onInput={(e) => set工作表(e.currentTarget.value)}
           />
           <label class="flex items-center gap-1 text-[12px]">
@@ -207,6 +219,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
               type="checkbox"
               data-slot="source-profile-overwrite"
               checked={覆盖()}
+              disabled={!props.是属主}
               onChange={(e) => set覆盖(e.currentTarget.checked)}
             />
             覆盖相似档案
