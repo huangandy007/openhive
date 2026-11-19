@@ -46,6 +46,10 @@ process.env["OPENCODE_EXPERIMENTAL_WORKSPACES"] = "true"
 // 需要真跑消费的用例：设 `process.env.OPENHIVE_CASE_INGEST_WORKER = "1"`，并用仓库
 // `restorePoint` 口径恢复，别裸 `delete`——忘记恢复会把「worker 开」泄漏给同进程后续用例。
 process.env["OPENHIVE_CASE_INGEST_WORKER"] = "0"
+// 016 T016 起探测 worker 也挂进了 `httpapi/server.ts`：同样的理由（`startProductionDb` 会写
+// `PG_*`，它就会认领测试库里的「排队中」材料并写 `probe`，用例读到的可能是「探测中」）。
+// 需要真跑它的用例用 `restorePoint` 改成 "1"，用完恢复。
+process.env["OPENHIVE_CASE_PROBE_WORKER"] = "0"
 
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills

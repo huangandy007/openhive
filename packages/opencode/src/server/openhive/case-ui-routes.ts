@@ -78,7 +78,7 @@ export const PATH = {
   cardTemplateRestore: `${PREFIX}/card-template/restore`,
 } as const
 
-interface Deps {
+export interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   /** 「这项目是我的吗」有一道来源在每用户库（老项目属主），见 `project-actor.ts`。 */
   readonly database: Database.Interface
@@ -158,7 +158,7 @@ function 是合法段(value: unknown): value is string {
  * `已知身份` 让写口先自己查一次身份（401 必须在读体之前回，R51），再把结果传进来——
  * 判据仍只在这一个出口，同时避免每个请求查两次 `身份`。
  */
-function 过门(
+export function 过门(
   deps: Deps,
   projectId: string | null,
   选项: { readonly 要属主?: boolean; readonly 已知身份?: User.Info; readonly 属主拒绝文案?: string } = {},

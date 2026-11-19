@@ -146,6 +146,9 @@ import { OpenhiveGovernanceDataSource } from "@/server/openhive/governance-data-
 import { OpenhiveGovernanceMcp } from "@/server/openhive/governance-mcp-supervisor"
 import { OpenhiveCaseMcp } from "@/server/openhive/case-mcp-supervisor"
 import { OpenhiveCaseIngestWorker } from "@/server/openhive/case-ingest-worker"
+import { OpenhiveCaseIngestRoutes } from "@/server/openhive/case-ingest-routes"
+import { OpenhiveCaseProbeWorker } from "@/server/openhive/case-probe-worker"
+import { OpenhiveGovernanceTrustedSkill } from "@/server/openhive/governance-trusted-skill"
 import { OpenhiveMcpConfigSync } from "@/server/openhive/mcp-config-sync"
 import { OpenhiveGovernanceOrg } from "@/server/openhive/governance-org"
 import { OpenhiveGovernanceProjects } from "@/server/openhive/governance-projects"
@@ -438,6 +441,18 @@ export function createRoutes(
     // 时间线与资金**复用计划 6 的取数函数**，不复制 SQL。
     // 【保留的定制 · 同步上游时不要丢】—— openhive 案件知识与情报体系（计划 7）。
     OpenhiveCaseUiRoutes.routes.pipe(Layer.provide(OpenhivePg.layer)),
+    // openhive 入库新出口（016 T016）：扫描 / 重跑 / 设置 / 报告。权限全在服务端（`过门`）。
+    // 扫描要读项目树：沙箱根与成员判据复用同一套依赖；`LocationServiceMap` / `FSUtil` 由外层
+    // `locationServiceMapV2` 与 app 组供上（同 `OpenhiveProjectTree`，不在本块重复 provide）。
+    // 【保留的定制 · 同步上游时不要丢】—— 案件知识与情报体系（016）。
+    OpenhiveCaseIngestRoutes.routes.pipe(
+      Layer.provide(AnchorWorkspace.Config.layer),
+      Layer.provide(OpenhivePg.layer),
+    ),
+    // openhive 平台级可信技能白名单出口（016 T016）：管理员 `is_admin` 总开关口径；
+    // 只读写业务 PG（审计由 T014 写函数负责）。
+    // 【保留的定制 · 同步上游时不要丢】—— 案件知识与情报体系（016）。
+    OpenhiveGovernanceTrustedSkill.routes.pipe(Layer.provide(OpenhivePg.layer)),
     // openhive 关系图出口（012 T006）：读 / 初始化 / 操作（`.hgraph` 的**唯一写入者**）/ 导出许可。
     // 沙箱根复用同一个 `AnchorWorkspace.Config`（项目目录恒为 `{root}/{属主}/{projectId}`）；
     // 业务 PG 读成员名册与项目名，`Database.Service`（老项目回落）由 `app` 组供上。
@@ -549,6 +564,14 @@ export function createRoutes(
     // `case_ingest_job` 里的表格作业。沙箱根与文件出口共用 `AnchorWorkspace.Config`。
     // 【保留的定制 · 同步上游时不要丢】—— 案件知识与情报体系（计划 2）。
     OpenhiveCaseIngestWorker.layer.pipe(
+      Layer.provide(OpenhivePg.layer),
+      Layer.provide(AnchorWorkspace.Config.layer),
+    ),
+    // openhive 案件材料探测消费（016 T006）：每 500ms 认领「待探测」材料，按适配器注册表
+    // 写回 `case_material.probe`。与入队 worker 同一套依赖（业务 PG ＋ 沙箱根）。
+    // `OPENHIVE_CASE_PROBE_WORKER=0` 或未配 PG 时是无操作。
+    // 【保留的定制 · 同步上游时不要丢】—— 案件知识与情报体系（016）。
+    OpenhiveCaseProbeWorker.layer.pipe(
       Layer.provide(OpenhivePg.layer),
       Layer.provide(AnchorWorkspace.Config.layer),
     ),
