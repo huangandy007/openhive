@@ -2251,7 +2251,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                     />
                     {/* 016 T021（K3）：项目入库开关，与能力面板同 pane 并排。
                         没有项目时不渲染（组件要求 `projectId: string`）。
-                        不传 `api`：组件内部自建 `createCaseIngestApi`（brief A）。 */}
+                        传注入缝；生产不传时组件自建（Ruling BX）。 */}
                     <Show when={currentProject()?.id}>
                       {(id) => (
                         <CaseIngestSettings
@@ -2329,6 +2329,11 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           <CaseRerunDialog
                             projectId={id()}
                             能重跑={能重跑()}
+                            // 清单还没取到 ⇒ 连「是不是成员」都还不知道，不能说「需要项目成员」
+                            // （`#002-02`：不知道 ≠ 空）。
+                            不能重跑原因={
+                              projectList() === undefined ? "项目清单还没取到，请稍后重试" : undefined
+                            }
                             api={props.caseIngestApi}
                             onClose={() => set重跑开(false)}
                           />

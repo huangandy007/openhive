@@ -6945,6 +6945,7 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
  */
 describe("016 组件接进工作台（T021 / R3b 注入缝）", () => {
   beforeEach(() => {
+    setProjectList(undefined)
     setCurrentProject(undefined)
     setProjectFiles(undefined)
   })
@@ -7022,6 +7023,69 @@ describe("016 组件接进工作台（T021 / R3b 注入缝）", () => {
       expect(fetch次数).toBe(0)
     } finally {
       globalThis.fetch = 原fetch
+    }
+  })
+
+  /**
+   * R3c：`能重跑 === false` 有两种原因——「清单没取到，不知道你是不是成员」与
+   * 「清单里没有你的 role，确实不是成员」。工作台知道是哪种，必须把它们分开说
+   * （`#002-02`：不知道 ≠ 空），否则用户会看到一句错误的结论。
+   */
+  test("重跑置灰原因：清单未取到 ⇒ 明说「还没取到」；清单里该项目有 role ⇒ 按钮可点、两句都不出现", async () => {
+    const 设置桩: CaseIngestApi = {
+      readSettings: async () => ({
+        kind: "ok",
+        value: { autoEnqueue: false, autoEnableTrusted: false, updatedAt: null },
+      }),
+      writeSettings: async () => ({ kind: "error", message: "本用例不写设置" }),
+      scan: async () => ({
+        kind: "ok",
+        value: {
+          合计: 1,
+          候选: {
+            目录独有: [],
+            未入队: [],
+            未识别: [{ materialId: "m1", path: "资料/待识别.xlsx", 原因码: "unknown" }],
+          },
+          样本: ["资料/待识别.xlsx"],
+          截断: false,
+        },
+      }),
+      rerun: async () => ({ kind: "ok", value: { 已入队: 0, 跳过: [], 失败: [] } }),
+    }
+    const 材料 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+    const host = mount(() => (
+      <WorkspaceEntry caseIngestApi={设置桩} caseMaterials={材料.状态}>
+        中栏
+      </WorkspaceEntry>
+    ))
+
+    try {
+      // 挂载之后再写接入缝（`onMount` 会清一次，同本文件既有注释）。
+      setCurrentProject({ id: "p1", name: "甲" })
+      setProjectFiles(["a.csv"])
+      await 冲一遍()
+
+      host.querySelector<HTMLButtonElement>("[data-slot='file-tree-open-rerun']")!.click()
+      await 等到(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
+
+      // 默认 `projectList = undefined`：清单还没取到。
+      const 原因 = host.querySelector("[data-slot='case-rerun-reason']")?.textContent ?? ""
+      expect(原因).toContain("项目清单还没取到")
+      // 布尔比较（`#013-12`）：不知情时不能断言「需要项目成员」。
+      expect((host.textContent ?? "").includes("需要项目成员")).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(true)
+
+      // 清单到了，且该项目带 role（＝成员）⇒ 能重跑：原因整段消失，按钮可点。
+      setProjectList([{ ...私有("p1", "甲", 1), role: "member" }])
+      await 等到(() => host.querySelector("[data-slot='case-rerun-reason']") === null)
+      expect(host.querySelector("[data-slot='case-rerun-reason']") === null).toBe(true)
+      expect((host.textContent ?? "").includes("项目清单还没取到")).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(false)
+    } finally {
+      setProjectList(undefined)
+      setCurrentProject(undefined)
+      setProjectFiles(undefined)
     }
   })
 })

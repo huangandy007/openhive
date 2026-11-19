@@ -97,6 +97,27 @@ describe("数据源档案视图", () => {
     await 等(() => 记.列表 === 列表次数 + 1)
   })
 
+  test("材料候选为空 ⇒ 显示「暂无已解析材料」；非空 ⇒ 不显示（布尔比较）", async () => {
+    const api = createSourceProfileApi(async () => 回({ list: [] }))
+
+    const 空 = mount(() => <SourceProfileView projectId="p1" 是属主={true} api={api} 材料们={[]} />)
+    await 等(() => (空.textContent ?? "").includes("还没有数据源档案"))
+    const 空提示 = 空.querySelector("[data-slot='source-profile-empty-materials']")
+    expect(空提示 === null).toBe(false)
+    expect(空提示!.textContent).toContain("暂无已解析材料")
+
+    const 非空 = mount(() => (
+      <SourceProfileView
+        projectId="p1"
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => (非空.textContent ?? "").includes("还没有数据源档案"))
+    expect(非空.querySelector("[data-slot='source-profile-empty-materials']") === null).toBe(true)
+  })
+
   test("撤销按钮发往 revoke 口", async () => {
     const { 记, api } = 假服务()
     const host = mount(() => <SourceProfileView projectId="p1" 是属主={true} api={api} />)

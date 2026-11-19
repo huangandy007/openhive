@@ -40,6 +40,9 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
   const [覆盖, set覆盖] = createSignal(false)
   const [忙, set忙] = createSignal(false)
 
+  /** 建档下拉的候选；`undefined` 与空数组同义（调用方没给 = 没有可建档的材料）。 */
+  const 材料们 = () => props.材料们 ?? []
+
   /**
    * 列表代：切项目（effect 重跑）或发出新的重拉即加一。切走前/被后发请求顶掉的
    * 旧回包晚到时直接丢弃，不回写（`#010-05`）。
@@ -211,8 +214,14 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
             onChange={(e) => set选中材料(e.currentTarget.value)}
           >
             <option value="">选择材料</option>
-            <For each={props.材料们 ?? []}>{(材料) => <option value={材料.id}>{材料.path}</option>}</For>
+            <For each={材料们()}>{(材料) => <option value={材料.id}>{材料.path}</option>}</For>
           </select>
+          {/* 下拉里只有「选择材料」一项时，用户不知道是没得选还是加载坏了：明说没有候选。 */}
+          <Show when={材料们().length === 0}>
+            <span data-slot="source-profile-empty-materials" class="text-[12px] text-v2-text-text-muted">
+              暂无已解析材料
+            </span>
+          </Show>
           <input
             type="text"
             data-slot="source-profile-name"

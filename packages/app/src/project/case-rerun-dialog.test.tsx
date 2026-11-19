@@ -117,6 +117,29 @@ describe("重跑弹窗", () => {
     expect(记.请求.length === 0).toBe(true)
   })
 
+  test("不能重跑原因：传了就用传的（不知情 ≠ 非成员）；没传沿用「需要项目成员」（#002-02）", async () => {
+    const { api } = 假服务()
+
+    const 自定义 = mount(() => (
+      <CaseRerunDialog
+        projectId="p1"
+        能重跑={false}
+        不能重跑原因="项目清单还没取到，请稍后重试"
+        api={api}
+      />
+    ))
+    await 等(() => 自定义.querySelector("[data-slot='case-rerun-total']") !== null)
+    expect(自定义.querySelector("[data-slot='case-rerun-reason']")!.textContent).toContain(
+      "项目清单还没取到",
+    )
+    // 布尔比较（`#013-12`）：不知情时不能再说「需要项目成员」。
+    expect((自定义.textContent ?? "").includes("需要项目成员")).toBe(false)
+
+    const 默认 = mount(() => <CaseRerunDialog projectId="p1" 能重跑={false} api={api} />)
+    await 等(() => 默认.querySelector("[data-slot='case-rerun-total']") !== null)
+    expect(默认.querySelector("[data-slot='case-rerun-reason']")!.textContent).toContain("需要项目成员")
+  })
+
   test("切项目复位「忙」：旧项目重跑在途时切到 B，按钮不再说「正在重跑」（B5）", async () => {
     let 放行重跑: (() => void) | undefined
     const 重跑闸 = new Promise<void>((resolve) => {

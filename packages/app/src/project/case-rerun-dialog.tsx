@@ -28,6 +28,13 @@ export interface CaseRerunDialogProps {
    * 不是属主。非成员置灰并显示原因；服务端仍会 403（前端只是体验，`#005-24`）。
    */
   readonly 能重跑: boolean
+  /**
+   * `能重跑 === false` 时显示的原因。省略 ⇒ 沿用「需要项目成员才能一键重跑」。
+   *
+   * 调用方知道得更多时用它把两种「不能重跑」分开（`#002-02`：不知道 ≠ 空）——
+   * 例如项目清单还没取到，此时连「你是不是成员」都还不知道，不能断言「需要项目成员」。
+   */
+  readonly 不能重跑原因?: string
   readonly api?: CaseIngestApi
   readonly onClose?: () => void
 }
@@ -140,7 +147,7 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
 
       <Show when={!props.能重跑}>
         <p data-slot="case-rerun-reason" class="text-v2-text-text-muted">
-          需要项目成员才能一键重跑
+          {props.不能重跑原因 ?? "需要项目成员才能一键重跑"}
         </p>
       </Show>
 
