@@ -38,13 +38,37 @@ export interface 材料视图行 {
   factCount: number
   numberCount: number
   parseable: boolean
+  /** 最近作业实际采用的适配器（规则型 / 四层链为空）。缺值一律 `null`，不发 undefined。 */
+  adapterId: string | null
+  adapterVersion: string | null
+  /** 最近作业的结构化原因码（六值闭集之一或 null），「未识别」按它的前缀筛。 */
+  reasonCode: string | null
+  progress: unknown
+  probe: unknown
 }
 
-export async function 材料视图(db: Queryable, projectId: string): Promise<材料视图行[]> {
+export interface 材料视图选项 {
+  /** `true` ⇒ 只返回最近作业 `reason_code` 以 `未识别:` 开头的材料（FR-038）。 */
+  未识别?: boolean
+}
+
+/** jsonb 经驱动回来可能是字符串（同 `detail` 的处理），缺值统一落 `null`。 */
+const 结构 = (value: unknown) => (typeof value === "string" ? JSON.parse(value) : (value ?? null))
+
+/** text 列缺值落 `null`；非字符串值与缺值同义（不发 `[object Object]`）。 */
+const 文本 = (value: unknown) => (typeof value === "string" ? value : null)
+
+export async function 材料视图(
+  db: Queryable,
+  projectId: string,
+  options: 材料视图选项 = {},
+): Promise<材料视图行[]> {
+  // 只认 `未识别=1`；其余取值由 `case-parse.ts` 收窄成 false，这里按「不带」处理。
+  const 只看未识别 = options.未识别 === true ? sql`where rj.reason_code like ${"未识别:%"}` : sql``
   const rows = rowsOf(
     await db.execute(sql`
       with latest as (
-        select distinct on (path) id, path, kind, parse_status, parse_detail
+        select distinct on (path) id, path, kind, parse_status, parse_detail, probe
           from auth.case_material
          where project_id = ${projectId}
          order by path, created_at desc, id desc
@@ -99,8 +123,17 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
             on j.status = '排队中'
            and (j.queued_at, j.id) < (f.queued_at, f.id)
          group by f.material_id
+      ),
+      recent_job as (
+        -- 取消只把作业置「已取消」、行保留；置顶重来得把 queued_at 回填得更小 ⇒ 不排除它
+        -- 就会选中那条取消掉的作业（原因码为空），「未识别」永远筛不出来。
+        select distinct on (material_id) material_id, reason_code, progress, adapter_id, adapter_version
+          from auth.case_ingest_job
+         where project_id = ${projectId} and status <> '已取消'
+         order by material_id, queued_at desc, id desc
       )
-      select l.id, l.path, l.kind, l.parse_status, l.parse_detail,
+      select l.id, l.path, l.kind, l.parse_status, l.parse_detail, l.probe,
+             rj.adapter_id, rj.adapter_version, rj.reason_code, rj.progress,
              coalesce(a.n, 0) as queue_ahead,
              coalesce(f.n, 0) + coalesce(cd.n, 0) as fact_count,
              coalesce(n.n, 0) + coalesce(cn.n, 0) as number_count
@@ -110,6 +143,8 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
         left join numbers n on n.material_id = l.id
         left join cited cd on cd.material_id = l.id
         left join cited_numbers cn on cn.material_id = l.id
+        left join recent_job rj on rj.material_id = l.id
+        ${只看未识别}
        order by l.path, l.id
     `),
   )
@@ -119,10 +154,15 @@ export async function 材料视图(db: Queryable, projectId: string): Promise<�
     path: String(row.path),
     kind: String(row.kind) as MaterialKind,
     status: String(row.parse_status) as ParseStatus,
-    detail: typeof row.parse_detail === "string" ? JSON.parse(row.parse_detail) : (row.parse_detail ?? null),
+    detail: 结构(row.parse_detail),
     queueAhead: Number(row.queue_ahead ?? 0),
     factCount: Number(row.fact_count ?? 0),
     numberCount: Number(row.number_count ?? 0),
     parseable: 解析方式(String(row.path)) !== undefined,
+    adapterId: 文本(row.adapter_id),
+    adapterVersion: 文本(row.adapter_version),
+    reasonCode: 文本(row.reason_code),
+    progress: 结构(row.progress),
+    probe: 结构(row.probe),
   }))
 }

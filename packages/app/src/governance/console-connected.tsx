@@ -22,6 +22,7 @@ import { createDataSourceApi } from "./data-source-api"
 import { createOrgApi } from "./org-api"
 import { createProjectApi } from "./project-api"
 import { createTemplateApi } from "./template-api"
+import { createTrustedSkillApi } from "./trusted-skill-api"
 import { createUsageApi } from "./usage-cost-api"
 
 export interface GovernanceConsoleConnectedProps {
@@ -73,6 +74,9 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
   /** 数据源配置接口（T012）：同上，无状态薄壳，模块内建一次。 */
   const 数据源接口 = createDataSourceApi()
 
+  /** 可信技能白名单接口（016 T021）：同上，无状态薄壳，模块内建一次。 */
+  const 可信技能接口 = createTrustedSkillApi()
+
   return (
     <GovernanceConsoleHost
       open={props.open}
@@ -87,6 +91,8 @@ export function GovernanceConsoleConnected(props: GovernanceConsoleConnectedProp
       auditApi={审计接口}
       templateApi={模板接口}
       dataSourceApi={数据源接口}
+      trustedSkillApi={可信技能接口}
+      isAdmin={会话?.identity?.isAdmin === true}
       selfId={会话?.identity?.id}
     >
       {props.children}

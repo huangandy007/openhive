@@ -35,6 +35,29 @@ export interface 材料问题 {
   readonly slices?: readonly 问题切片[]
 }
 
+export const 作业阶段们 = ["读表", "探测", "转换", "写入", "富化"] as const
+export type 作业阶段 = (typeof 作业阶段们)[number]
+
+/** 入库作业的结构化进度（`progress`）；`已处理` / `总数` 可能缺（阶段切分不按行计）。 */
+export interface 作业进度 {
+  readonly 阶段: 作业阶段
+  readonly 已处理?: number
+  readonly 总数?: number
+  readonly 更新时间: number
+}
+
+export const 探测状态们 = ["探测中", "已识别", "未识别"] as const
+export type 探测状态 = (typeof 探测状态们)[number]
+
+/** 探测结论（`probe`）的闭集形状；`已识别` 带适配器、`未识别` 带原因码。 */
+export interface 探测结论 {
+  readonly 状态: 探测状态
+  readonly 适配器id?: string
+  readonly 版本?: string
+  readonly 原因码?: string
+  readonly 完成秒?: number
+}
+
 export interface 材料视图 {
   readonly id: string
   readonly path: string
@@ -45,6 +68,13 @@ export interface 材料视图 {
   readonly factCount: number
   readonly numberCount: number
   readonly parseable: boolean
+  /** 016：最近作业用的适配器；没有作业 ⇒ null。 */
+  readonly adapterId: string | null
+  readonly adapterVersion: string | null
+  /** 最近作业的结构化原因码（`未识别:` 前缀可按它筛）。 */
+  readonly reasonCode: string | null
+  readonly progress: 作业进度 | null
+  readonly probe: 探测结论 | null
 }
 
 export interface 材料清单 {
@@ -63,7 +93,8 @@ export type 解析结果 =
 export type CaseMaterialsFetch = (input: string, init?: RequestInit) => Promise<Response>
 
 export interface CaseMaterialsApi {
-  readonly read: (projectId: string) => Promise<材料清单结果>
+  /** `未识别 === true` ⇒ URL 追加 `&未识别=1`（只认字面 `1`，其余不带）。 */
+  readonly read: (projectId: string, 未识别?: boolean) => Promise<材料清单结果>
   readonly parse: (input: {
     readonly projectId: string
     readonly path: string
@@ -115,6 +146,62 @@ function 解析问题(value: unknown): 材料问题 | null | undefined {
   }
 }
 
+/** 新增字段的三种状态：缺省 / `null` ⇒ `null`；类型不对 ⇒ `undefined`（整份判错）；对 ⇒ 值。 */
+function 可空文本(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null
+  return typeof value === "string" ? value : undefined
+}
+
+const 是非负整数 = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0
+
+const 是作业阶段 = (value: unknown): value is 作业阶段 =>
+  typeof value === "string" && 作业阶段们.some((项) => 项 === value)
+
+const 是探测状态 = (value: unknown): value is 探测状态 =>
+  typeof value === "string" && 探测状态们.some((项) => 项 === value)
+
+function 解析进度(value: unknown): 作业进度 | null | undefined {
+  if (value === undefined || value === null) return null
+  if (!isRecord(value)) return undefined
+  const 阶段 = value["阶段"]
+  if (!是作业阶段(阶段)) return undefined
+  const 时间 = value["更新时间"]
+  if (!是非负整数(时间)) return undefined
+  const 已处理 = value["已处理"]
+  const 总数 = value["总数"]
+  if (已处理 !== undefined && !是非负整数(已处理)) return undefined
+  if (总数 !== undefined && !是非负整数(总数)) return undefined
+  return {
+    阶段,
+    ...(已处理 === undefined ? {} : { 已处理 }),
+    ...(总数 === undefined ? {} : { 总数 }),
+    更新时间: 时间,
+  }
+}
+
+function 解析探测(value: unknown): 探测结论 | null | undefined {
+  if (value === undefined || value === null) return null
+  if (!isRecord(value)) return undefined
+  const 状态 = value["状态"]
+  if (!是探测状态(状态)) return undefined
+  const 适配器id = value["适配器id"]
+  const 版本 = value["版本"]
+  const 原因码 = value["原因码"]
+  const 完成秒 = value["完成秒"]
+  if (适配器id !== undefined && typeof 适配器id !== "string") return undefined
+  if (版本 !== undefined && typeof 版本 !== "string") return undefined
+  if (原因码 !== undefined && typeof 原因码 !== "string") return undefined
+  if (完成秒 !== undefined && !是非负整数(完成秒)) return undefined
+  return {
+    状态,
+    ...(适配器id === undefined ? {} : { 适配器id }),
+    ...(版本 === undefined ? {} : { 版本 }),
+    ...(原因码 === undefined ? {} : { 原因码 }),
+    ...(完成秒 === undefined ? {} : { 完成秒 }),
+  }
+}
+
 function 解析清单(body: unknown): 材料清单 | undefined {
   if (!isRecord(body)) return undefined
   const 原 = body["materials"]
@@ -133,6 +220,13 @@ function 解析清单(body: unknown): 材料清单 | undefined {
       if (typeof 项[key] !== "number" || !Number.isInteger(项[key]) || 项[key] < 0) return undefined
     }
     if (typeof 项["parseable"] !== "boolean") return undefined
+    const adapterId = 可空文本(项["adapterId"])
+    const adapterVersion = 可空文本(项["adapterVersion"])
+    const reasonCode = 可空文本(项["reasonCode"])
+    if (adapterId === undefined || adapterVersion === undefined || reasonCode === undefined) return undefined
+    const progress = 解析进度(项["progress"])
+    const probe = 解析探测(项["probe"])
+    if (progress === undefined || probe === undefined) return undefined
     行们.push({
       id: 项["id"],
       path: 项["path"],
@@ -143,6 +237,11 @@ function 解析清单(body: unknown): 材料清单 | undefined {
       factCount: 项["factCount"] as number,
       numberCount: 项["numberCount"] as number,
       parseable: 项["parseable"],
+      adapterId,
+      adapterVersion,
+      reasonCode,
+      progress,
+      probe,
     })
   }
   return { materials: 行们, parseableExtensions: 扩展名 }
@@ -156,10 +255,11 @@ async function 读错误(response: Response, body: unknown): Promise<{ message: 
 }
 
 export function createCaseMaterialsApi(send: CaseMaterialsFetch = 默认发送): CaseMaterialsApi {
-  const 读 = async (projectId: string): Promise<材料清单结果> => {
+  const 读 = async (projectId: string, 未识别?: boolean): Promise<材料清单结果> => {
     let response: Response
     try {
-      response = await send(`${PATH.materials}?projectId=${encodeURIComponent(projectId)}`)
+      const 查询 = `${PATH.materials}?projectId=${encodeURIComponent(projectId)}${未识别 === true ? "&未识别=1" : ""}`
+      response = await send(查询)
     } catch (error) {
       return { kind: "error", message: error instanceof Error ? error.message : "网络请求失败" }
     }

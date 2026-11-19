@@ -1,21 +1,34 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
+import { PgDialect } from "drizzle-orm/pg-core"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb } from "@opencode-ai/auth/test-support"
-import { claimNextJob, enqueueMaterial, runJob, 作业项目目录, 沙箱内路径 } from "../../src/server/openhive/case-ingest"
+import {
+  claimNextJob,
+  enqueueMaterial,
+  runJob,
+  作业项目目录,
+  沙箱内路径,
+  type RunDeps,
+} from "../../src/server/openhive/case-ingest"
+import type { 适配器 } from "../../src/server/openhive/case-adapter-registry"
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { 读别名上下文 } from "../../src/server/openhive/case-field-alias"
 import { readSheets } from "../../src/server/openhive/case-sheet"
-import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
+import { applyParseAction, countFactRows, getMaterial, type Queryable } from "../../src/server/openhive/case-store"
 import type { 材料识别 } from "../../src/server/openhive/case-recognize"
 import { 表格材料们 } from "../../script/openhive-case-stage0"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 建实体 } from "./openhive-case-fact-fixture"
+import { 建参考库, type 参考库 } from "../../src/server/openhive/case-reference-store"
+import { 最新报告 } from "../../src/server/openhive/case-material-report"
+import { 造作业适配器读者 } from "../../src/server/openhive/case-ingest-worker"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -1995,12 +2008,18 @@ describe("数据源档案接入", () => {
     ],
   })
 
-  async function 种档案(projectId: string, header: string[], mapping: Record<string, string>) {
+  async function 种档案(
+    projectId: string,
+    header: string[],
+    mapping: Record<string, string>,
+    ruleVersion: string | null = null,
+  ) {
     await db().execute(sql`
       insert into auth.case_source_profile
-        (id, project_id, name, type, header_set, mapping, hit_count, created_at, updated_at)
+        (id, project_id, name, type, header_set, mapping, rule_version, hit_count, created_at, updated_at)
       values (${`sp-${projectId}`}, ${projectId}, '测试档案', '资金',
-              ${JSON.stringify(header)}::text::jsonb, ${JSON.stringify(mapping)}::text::jsonb, 0, 0, 0)
+              ${JSON.stringify(header)}::text::jsonb, ${JSON.stringify(mapping)}::text::jsonb,
+              ${ruleVersion}, 0, 0, 0)
     `)
   }
 
@@ -2014,6 +2033,31 @@ describe("数据源档案接入", () => {
     )
     return 行们[0]
   }
+
+  test("A8：命中档案 ⇒ 报告 ruleVersion 取档案的 rule_version；未命中 ⇒ null", async () => {
+    await 种档案(
+      "p-档案规则版",
+      原表头,
+      { 交易时间: "startedAt", 交易金额: "amount", 对方户名: "counterpartyName" },
+      "r7",
+    )
+    文件.set("p-档案规则版/乱序.xlsx", 乱序)
+    const 命中入队 = await 入队("p-档案规则版", "乱序.xlsx", Hash.sha256("p-档案规则版-乱序"))
+    await 跑下一条()
+
+    const 命中报告 = await 最新报告(db(), "p-档案规则版", 命中入队.materialId)
+    if (命中报告 === undefined) throw new Error("档案命中却没有报告")
+    expect(命中报告.adapterId).toBeNull()
+    expect(命中报告.ruleVersion).toBe("r7")
+
+    // 对照：同一份表、没有档案的项目 ⇒ 四层普通识别，ruleVersion 为 null。
+    文件.set("p-档案规则版对照/乱序.xlsx", 乱序)
+    const 对照入队 = await 入队("p-档案规则版对照", "乱序.xlsx", Hash.sha256("p-档案规则版对照-乱序"))
+    await 跑下一条()
+    const 对照报告 = await 最新报告(db(), "p-档案规则版对照", 对照入队.materialId)
+    if (对照报告 === undefined) throw new Error("四层识别却没有报告")
+    expect(对照报告.ruleVersion).toBeNull()
+  })
 
   test("列顺序打乱 ⇒ 档案命中：parse_detail.档案 有值、方法为档案、hit_count +1", async () => {
     await 种档案("p-档案", 原表头, {
@@ -2152,5 +2196,674 @@ describe("数据源档案接入", () => {
       throw new Error("parse_detail 形状不对")
     }
     expect(detail["mapping"]["工作表"]["Sheet1"]["档案"]).toBeUndefined()
+  })
+})
+
+/**
+ * 016 T008 · M2 作业链接入（Ruling H/I/J）：适配器先于档案，命中即走转换器通路。
+ *
+ * 夹具按 brief 造真技能目录：`adapter.json` ＋ `convert.ts`，转换器由 `跑转换器` 起真子进程。
+ * `读适配器` 由用例注入（Ruling J）——注册表本身的可见性判定不在这里测（T005 的用例守）。
+ * 模型入口注入「一被调用就抛错」的桩：适配器命中却碰了模型，用例必须红。
+ */
+describe("适配器通路", () => {
+  const 表头 = ["交易时间", "交易金额", "对方户名"]
+  let 根目录 = ""
+
+  beforeEach(async () => {
+    // `claimNextJob` 是全局 FIFO：别组留下的排队行会盖住本组判据（同 `#005-34` 的污染）。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+  })
+
+  afterEach(async () => {
+    if (根目录 !== "") await rm(根目录, { recursive: true, force: true })
+    根目录 = ""
+  })
+
+  /** 转换器契约里的最小事实行（`case-converter-runner.ts` 会校验 rowNo/amount/direction）。 */
+  const 成功脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收",
+      ownerAccount: "6222000000000001", counterparty: "6222000000000002", counterpartyName: "张三",
+      currency: "CNY", extras: { "属性:对方:开户行": "招商银行" } },
+    { sheet: "Sheet1", rowNo: 3, startedAt: 1767225660, amount: "200.00", direction: "付",
+      ownerAccount: "6222000000000001", counterparty: "6222000000000003", counterpartyName: "李四",
+      currency: "CNY", extras: { "属性:对方:开户行": "建设银行" } }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+
+  /**
+   * 造一套夹具：技能目录（adapter.json ＋ convert.ts）、沙箱根下同字节的原件、
+   * 以及内存 `文件` 里给 `readFile` 的那一份。
+   */
+  async function 备料(代号: string, 脚本: string) {
+    根目录 = await mkdtemp(join(tmpdir(), `openhive-016-t08-${代号}-`))
+    const 技能目录 = join(根目录, `skill-${crypto.randomUUID()}`)
+    await mkdir(技能目录, { recursive: true })
+    await writeFile(
+      join(技能目录, "adapter.json"),
+      JSON.stringify({
+        id: "adapter-流水转换",
+        name: "流水转换器",
+        version: "1.2.3",
+        kind: "converter",
+        materialType: "资金",
+        attributeKeys: ["属性:对方:开户行"],
+        match: { requiredHeaders: 表头, optionalHeaders: [], priority: 100 },
+        admission: { checks: [], thresholds: {} },
+        rowRules: [],
+        entry: { command: "bun run convert.ts", input: "path", output: "json" },
+        output: { file: "result.json" },
+      }),
+    )
+    await writeFile(join(技能目录, "convert.ts"), 脚本)
+
+    const projectId = `p-适配器-${代号}`
+    const 文件名 = "流水.xlsx"
+    const 工作簿 = 造工作簿({
+      Sheet1: [[...表头], ["2026-01-02 03:04:05", "100.00", "张三"], ["2026-01-02 03:05:06", "200.00", "李四"]],
+    })
+    文件.set(`${projectId}/${文件名}`, 工作簿)
+    await mkdir(join(根目录, projectId), { recursive: true })
+    await writeFile(join(根目录, projectId, 文件名), 工作簿)
+    return { projectId, 文件名, 技能目录 }
+  }
+
+  function 卡(目录: string): 适配器 {
+    return {
+      id: "adapter-流水转换",
+      name: "流水转换器",
+      version: "1.2.3",
+      kind: "converter",
+      materialType: "资金",
+      attributeKeys: ["属性:对方:开户行"],
+      match: { requiredHeaders: 表头, optionalHeaders: [], priority: 100 },
+      admission: { checks: [], thresholds: {} },
+      rowRules: [],
+      entry: { command: "bun run convert.ts", input: "path", output: "json" },
+      output: { file: "result.json" },
+      目录,
+    }
+  }
+
+  function 装依赖(适配器们: 适配器[], 识别器被调用: { n: number }, 跳过: { id: string; 原因: string }[] = []) {
+    return {
+      readFile: deps.readFile,
+      根目录,
+      读适配器: async () => ({ 适配器: 适配器们, 跳过 }),
+      建表头识别器: async () => {
+        识别器被调用.n += 1
+        throw new Error("适配器命中时不许构造表头识别器")
+      },
+    }
+  }
+
+  async function 跑一条(依赖: RunDeps) {
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的：上一条用例把作业留在了别的状态？")
+    return { 作业, 结果: await runJob(db(), 依赖, 作业) }
+  }
+
+  async function 读作业列(jobId: string) {
+    const 行们 = rowsOf(
+      await db().execute(sql`
+        select status, adapter_id, adapter_version from auth.case_ingest_job where id = ${jobId}
+      `),
+    )
+    return 行们[0]
+  }
+
+  /** 取成功路径的 `parse_detail.mapping`；形状不对直接说出来，别让断言在 `undefined` 上静默通过。 */
+  function 取映射(详情: unknown): Record<string, unknown> {
+    if (!是对象(详情) || !是对象(详情["mapping"])) throw new Error("parse_detail.mapping 形状不对")
+    return 详情["mapping"]
+  }
+
+  test("命中转换器 ⇒ 跳过四层：事实行来自转换器、两列落库、模型零调用", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("命中", 成功脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-命中`))
+
+    const 识别器被调用 = { n: 0 }
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], 识别器被调用))
+    expect(结果).toBe("完成")
+
+    // 适配器命中 ⇒ 不构造表头识别器（模型不可用的夹具也能绿）。
+    expect(识别器被调用.n).toBe(0)
+
+    const 明细 = rowsOf(
+      await db().execute(sql`
+        select row_no, counterparty, counterparty_name, direction, amount, extras
+          from auth.case_fact_row
+         where project_id = ${projectId}
+         order by row_no
+      `),
+    )
+    expect(明细).toHaveLength(2)
+    expect(明细[0]).toMatchObject({
+      row_no: 2,
+      counterparty: "6222000000000002",
+      counterparty_name: "张三",
+      direction: "收",
+    })
+    expect(Number(明细[0]?.amount)).toBe(100)
+    expect(明细[1]).toMatchObject({ row_no: 3, counterparty: "6222000000000003", direction: "付" })
+    const 原始属性 = 明细[0]?.extras
+    const 属性 = typeof 原始属性 === "string" ? JSON.parse(原始属性) : 原始属性
+    expect(属性).toEqual({ "属性:对方:开户行": "招商银行" })
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const mapping = 取映射(材料?.parseDetail)
+    expect(mapping["模型"]).toEqual({ 调用: 0 })
+    expect(mapping["适配器"]).toEqual({ id: "adapter-流水转换", version: "1.2.3" })
+    expect(mapping["工作表"]).toEqual({})
+
+    expect(await 读作业列(作业.jobId)).toMatchObject({
+      status: "完成",
+      adapter_id: "adapter-流水转换",
+      adapter_version: "1.2.3",
+    })
+  })
+
+  test("转换器失败 ⇒ 材料有问题、作业失败，不回退四层", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("失败", "process.exit(3)\n")
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-失败`))
+
+    const 识别器被调用 = { n: 0 }
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], 识别器被调用))
+    expect(结果).toBe("失败")
+    // 不回退的唯一判据：四层一次都没跑（识别器没被构造）。
+    expect(识别器被调用.n).toBe(0)
+    expect(await countFactRows(db(), projectId)).toBe(0)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    expect(是对象(详情)).toBe(true)
+    if (!是对象(详情)) return
+    expect(详情["mapping"]).toBeUndefined()
+    expect(详情["工作表"]).toBeUndefined()
+    const 原因 = 详情["reason"]
+    expect(typeof 原因).toBe("string")
+    if (typeof 原因 !== "string") return
+    // 没有报告 ⇒ 走 `失败:转换器异常`；不许被值闸映射冒领。
+    expect(原因.startsWith("未识别:值闸不过:")).toBe(false)
+    expect(原因).toContain("失败:转换器异常")
+
+    // 快照列在失败时也必须已经落盘（先落盘再跑转换器）。
+    expect(await 读作业列(作业.jobId)).toMatchObject({
+      status: "失败",
+      adapter_id: "adapter-流水转换",
+      adapter_version: "1.2.3",
+    })
+  })
+
+  test("A5：退出码 0 但报告有失败闸 ⇒ 未识别:值闸不过:<检查项>，且不写事实行", async () => {
+    // 转换器自认成功（退出码 0），但报告里的值闸明确不过 —— 成功路径也必须判（Ruling X 后半句）。
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [{ sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" }],
+  report: {
+    adapterId: "adapter-流水转换",
+    gates: [{ 检查项: "金额可解析", 分母: 1, 命中: 0, 通过率: 0, 阈值: 0.99 }]
+  }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("值闸成功路径", 脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-值闸成功路径`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("失败")
+    expect(await countFactRows(db(), projectId)).toBe(0)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情)) throw new Error("parse_detail 形状不对")
+    expect(详情["reason"]).toBe("未识别:值闸不过:金额可解析")
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, reason_code from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )[0]
+    expect(作业行?.status).toBe("失败")
+    expect(作业行?.reason_code).toBe("未识别:值闸不过:金额可解析")
+  })
+
+  test("A3：两个适配器都过表头闸 ⇒ 报告 matches 含落选者，按 priority desc, id asc", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("多命中", 成功脚本)
+    const 底卡 = 卡(技能目录)
+    const 低: 适配器 = {
+      ...底卡,
+      id: "z-低优先",
+      version: "1.0.0",
+      match: { ...底卡.match, priority: 100 },
+    }
+    const 高: 适配器 = {
+      ...底卡,
+      id: "a-高优先",
+      version: "2.0.0",
+      match: { ...底卡.match, priority: 200 },
+    }
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-多命中`))
+    const { 结果 } = await 跑一条(装依赖([低, 高], { n: 0 }))
+    expect(结果).toBe("完成")
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.adapterId).toBe("a-高优先")
+    expect(报告.matches).toEqual([
+      { id: "a-高优先", version: "2.0.0", priority: 200 },
+      { id: "z-低优先", version: "1.0.0", priority: 100 },
+    ])
+  })
+
+  test("A6：转换器报告的 warnings / skippedRows 原样并入报告", async () => {
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" },
+    { sheet: "Sheet1", rowNo: 3, startedAt: 1767225660, amount: "200.00", direction: "付" }
+  ],
+  report: {
+    adapterId: "adapter-流水转换",
+    gates: [],
+    warnings: [{ code: "词表外键", 键: "对方:交易摘要" }],
+    skippedRows: [{ sheet: "Sheet1", rowNo: 5, 原因: "坏行" }]
+  }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("告警合并", 脚本)
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-告警合并`))
+    const { 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("完成")
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.warnings).toContainEqual({ code: "词表外键", 键: "对方:交易摘要" })
+    expect(报告.skippedRows).toContainEqual({ sheet: "Sheet1", rowNo: 5, 原因: "坏行" })
+
+    // A7：转换行数 = 本次实际产生的事实行数。
+    expect(报告.convertedRows).toBe(2)
+    // A3：报告列全部表头闸命中项（单卡夹具 ⇒ 一条）。
+    expect(报告.matches).toEqual([{ id: "adapter-流水转换", version: "1.2.3", priority: 100 }])
+  })
+
+  test("转换行数 = 实际写入数：批内重复 (sheet,rowNo) 只落一条，另记告警（变异：改回待写.length ⇒ 本条红）", async () => {
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" },
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225660, amount: "200.00", direction: "付" }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("批内重复", 脚本)
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-批内重复`))
+    const { 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    // 重复行不是整份失败：能写多少写多少，另外如实告警。
+    expect(结果).toBe("完成")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.convertedRows).toBe(1)
+    expect(报告.warnings).toContainEqual(expect.stringContaining("批内重复行 1 条未写入"))
+  })
+
+  test("值闸不过 ⇒ 原因码取第一个失败闸（Ruling X）", async () => {
+    const 闸脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [],
+  report: {
+    gates: [
+      { 检查项: "时间可解析", 通过率: 0.4, 阈值: 0.99 },
+      { 检查项: "金额可解析", 通过率: 0.1, 阈值: 0.99 }
+    ]
+  }
+}))
+process.exit(3)
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("值闸", 闸脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-值闸`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("失败")
+    expect(await countFactRows(db(), projectId)).toBe(0)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || typeof 详情["reason"] !== "string") throw new Error("parse_detail.reason 形状不对")
+    const 原因 = 详情["reason"]
+    expect(原因.startsWith("未识别:值闸不过:")).toBe(true)
+    expect(原因).toContain("时间可解析")
+    // 报告里第二个闸也失败；取第一个失败闸，不是最后一个。
+    expect(原因).not.toContain("金额可解析")
+  })
+
+  test("档案与适配器同时命中 ⇒ 适配器为准，档案只记入 parse_detail.档案也命中", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("档案同中", 成功脚本)
+    await db().execute(sql`
+      insert into auth.case_source_profile
+        (id, project_id, name, type, header_set, mapping, hit_count, created_at, updated_at)
+      values (${`sp-${projectId}`}, ${projectId}, '测试档案', '资金',
+              ${JSON.stringify(表头)}::text::jsonb,
+              ${JSON.stringify({ 交易时间: "startedAt", 交易金额: "amount", 对方户名: "counterpartyName" })}::text::jsonb,
+              0, 0, 0)
+    `)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-档案同中`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("完成")
+
+    // 事实行来自转换器（四层/档案映射不会产这个对手账号）。
+    const 明细 = rowsOf(
+      await db().execute(sql`
+        select counterparty from auth.case_fact_row where project_id = ${projectId} order by row_no
+      `),
+    )
+    expect(明细.map((行) => 行.counterparty)).toEqual(["6222000000000002", "6222000000000003"])
+
+    const mapping = 取映射((await getMaterial(db(), projectId, 作业.materialId))?.parseDetail)
+    expect(mapping["适配器"]).toEqual({ id: "adapter-流水转换", version: "1.2.3" })
+    expect(mapping["档案也命中"]).toEqual([{ 工作表: "Sheet1", id: `sp-${projectId}`, name: "测试档案" }])
+
+    // 档案只做记录：不参与决策 ⇒ hit_count 不动。
+    const 档案行 = rowsOf(
+      await db().execute(sql`
+        select hit_count from auth.case_source_profile where project_id = ${projectId}
+      `),
+    )
+    expect(Number(档案行[0]?.hit_count)).toBe(0)
+  })
+
+  test("空注册表 ⇒ 原路径一字不改（与未注入 读适配器 的事实行逐字段一致）", async () => {
+    const { projectId, 文件名 } = await 备料("空注册表", 成功脚本)
+    // 两侧喂**同一份**话单（`备料` 的流水表只用于给适配器开目录，这里不用它）。
+    文件.set(`${projectId}/${文件名}`, 话单)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-空注册表`))
+
+    const 空注册表 = await 跑一条(装依赖([], { n: 0 }))
+    expect(空注册表.结果).toBe("完成")
+
+    // 对照：完全不注入 `读适配器` / `根目录`（既有调用方形状）。
+    const 对照项目 = `${projectId}-对照`
+    文件.set(`${对照项目}/${文件名}`, 话单)
+    await 入队(对照项目, 文件名, Hash.sha256(`${对照项目}-空注册表`))
+    const 对照 = await 跑一条({ readFile: deps.readFile })
+    expect(对照.结果).toBe("完成")
+
+    const 取行 = async (项目: string) =>
+      rowsOf(
+        await db().execute(sql`
+          select sheet, row_no, caller, callee, started_at, amount, counterparty, extras
+            from auth.case_fact_row
+           where project_id = ${项目}
+           order by sheet, row_no
+        `),
+      )
+    const 适配侧 = await 取行(projectId)
+    const 对照侧 = await 取行(对照项目)
+    expect(适配侧.length).toBeGreaterThan(0)
+    expect(适配侧).toEqual(对照侧)
+  })
+
+  test("转换行 startedAt 存在但不是有限数字（字符串）⇒ 失败:转换器异常，0 条事实行（K4①）", async () => {
+    // 契约校验（`case-converter-runner.ts` 的 `校验输出`）不检查 startedAt：字符串能过 runner，
+    // 旧实现在 `转换行` 里静默收成 null —— 材料照样「已解析」，时间却没了。
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: "1767225600", amount: "100.00", direction: "收",
+      counterparty: "6222000000000002", extras: {} }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("时间字符串", 脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-时间字符串`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("失败")
+    expect(await countFactRows(db(), projectId)).toBe(0)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || typeof 详情["reason"] !== "string") throw new Error("parse_detail.reason 形状不对")
+    expect(详情["reason"]).toContain("startedAt")
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, reason_code from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )[0]
+    expect(作业行?.status).toBe("失败")
+    expect(作业行?.reason_code).toBe("失败:转换器异常")
+  })
+
+  test("转换行 startedAt 为 null ⇒ 合法：材料已解析、该行 started_at 为 NULL（K4① 合法路径）", async () => {
+    // 缺省 / null 是「没有时间列」的合法数据，不许被上一条守卫误伤。
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: null, amount: "100.00", direction: "收",
+      counterparty: "6222000000000002", extras: {} }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("时间空值", 脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-时间空值`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("完成")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select started_at from auth.case_fact_row
+         where project_id = ${projectId} and sheet = 'Sheet1' and row_no = 2
+      `),
+    )
+    expect(行).toHaveLength(1)
+    expect(行[0]?.started_at === null).toBe(true)
+  })
+
+  test("适配器通路 0 行 ⇒ 判失败且不删既有事实（K4②）", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("空行重跑", 成功脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-空行重跑`))
+    const 首跑 = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(首跑.结果).toBe("完成")
+    expect(await countFactRows(db(), projectId)).toBe(2)
+
+    // 第二次：同一个技能包换成「rows: []、report.gates 为空」的转换器。
+    // R14：「有问题」可重排（这里直接改状态，模拟用户已看见问题再点重新解析）。
+    await writeFile(
+      join(技能目录, "convert.ts"),
+      `
+await Bun.write("result.json", JSON.stringify({
+  rows: [],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`,
+    )
+    await db().execute(sql`
+      update auth.case_material set parse_status = '有问题'
+       where project_id = ${projectId} and id = ${首跑.作业.materialId}
+    `)
+    const 再入队 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-空行重跑`))
+    expect(再入队.materialId).toBe(首跑.作业.materialId)
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    // 0 行不是「成功导入 0 条」，而是转换器违约：不许顶着一份空结果删掉旧事实。
+    expect(结果).toBe("失败")
+    expect(await countFactRows(db(), projectId)).toBe(2)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || typeof 详情["reason"] !== "string") throw new Error("parse_detail.reason 形状不对")
+    expect(详情["reason"]).toContain("rows 为空")
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, reason_code from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )[0]
+    expect(作业行?.status).toBe("失败")
+    expect(作业行?.reason_code).toBe("失败:转换器异常")
+  })
+
+  test("worker 注入的注册表 viewer = 落点属主，不是入队人（A9 轮 2；变异：改回 queuedBy ⇒ 本条红）", async () => {
+    await 备料("属主读者", 成功脚本)
+    // 共享项目：成员入队、属主拥有适配器。
+    const 属主适配器 = 卡(join(根目录, "skill-属主独有"))
+    const 看到的属主们: string[] = []
+    const 读适配器 = 造作业适配器读者(
+      () => db(),
+      根目录,
+      async (_db, viewer) => {
+        看到的属主们.push(viewer.userId)
+        // 模拟可见性：这张卡只有落点属主读得到。viewer 用了入队人 ⇒ 空注册表。
+        return viewer.userId === "属主用户"
+          ? { 适配器: [属主适配器], 跳过: [] }
+          : { 适配器: [], 跳过: [] }
+      },
+    )
+
+    const 注册表 = await 读适配器({
+      projectId: "p-属主判定",
+      jobId: "job-属主判定",
+      materialId: "m-属主判定",
+      sourcePath: "属主用户/p-属主判定/流水.xlsx",
+      queuedBy: "成员用户",
+    })
+
+    expect(看到的属主们).toEqual(["属主用户"])
+    expect(注册表.适配器.map((项) => 项.id)).toEqual(["adapter-流水转换"])
+  })
+})
+
+/**
+ * 016 T012 · 富化接入（Ruling B：`翻译资金` 之后、事务之前；Ruling L：只接资金材料）。
+ *
+ * 钉两件事：① 富化的属性观察**经唯一写入口**（`写入翻译结果`）落到 `case_entity.attrs`，
+ * 出处是 `<materialId>#<sheet>#<rowNo>`；② 参考库查不到**不影响入库**——材料仍「已解析」、
+ * 事实行照旧，只在 `parse_detail.富化.未补全数` 里留痕（FR-052：参考类不阻塞）。
+ */
+describe("富化接入", () => {
+  const 本方账号 = "6217001234567896514"
+  const 对方账号 = "6222021234567890123"
+  const 资金表 = 造工作簿({
+    Sheet1: [
+      ["交易时间", "交易金额", "本方账号", "对方账号", "对方户名", "收付标志"],
+      ["2026-02-01 10:00:00", "100.00", 本方账号, 对方账号, "李四", "付"],
+    ],
+  })
+
+  beforeEach(async () => {
+    // `claimNextJob` 是全局 FIFO：别组留下的排队行会盖住本组判据（`#005-34` 的污染）。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+  })
+
+  /** 入队一份资金表并认领 → 在基线 `deps` 上叠加注入项跑完。 */
+  async function 跑资金(projectId: string, depsOver: { 参考库?: 参考库 }) {
+    const 文件名 = "流水.xlsx"
+    文件.set(`${projectId}/${文件名}`, 资金表)
+    const 入 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-富化`))
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的")
+    const 结果 = await runJob(db(), { ...deps, ...depsOver }, 作业)
+    return { 入, 结果 }
+  }
+
+  /** jsonb 读回：PGlite 给 JSON 文本，别的驱动可能给对象（既有用例同口径）。 */
+  function 解析属性(原始: unknown): Record<string, unknown> | undefined {
+    const 值 = typeof 原始 === "string" ? JSON.parse(原始) : 原始
+    return 是对象(值) ? 值 : undefined
+  }
+
+  test("用例 9 · 参考类命中：开户行经 attrs 落库，parse_detail.富化 有统计", async () => {
+    const projectId = "p-富化命中"
+    const 参考库 = 建参考库(async () => ({
+      版本: "ref-v1",
+      条目: [{ 类别: "开户行" as const, 值: 本方账号, 结果: "招商银行" }],
+    }))
+    const { 入, 结果 } = await 跑资金(projectId, { 参考库 })
+    expect(结果).toBe("完成")
+
+    const 实体们 = rowsOf(
+      await db().execute(sql`
+        select canonical_value, attrs from auth.case_entity
+         where project_id = ${projectId} and type = '账户' and canonical_value = ${本方账号}
+      `),
+    )
+    expect(实体们).toHaveLength(1)
+    const attrs = 解析属性(实体们[0]?.attrs)
+    if (attrs === undefined) throw new Error("attrs 形状不对")
+    expect(attrs["开户行"]).toEqual([{ 值: "招商银行", 出处: `${入.materialId}#Sheet1#2` }])
+
+    const 材料 = await getMaterial(db(), projectId, 入.materialId)
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || !是对象(详情["富化"])) throw new Error("parse_detail.富化 形状不对")
+    expect(Number(详情["富化"]["补全数"])).toBeGreaterThan(0)
+    expect(详情["富化"]["参考库版本"]).toBe("ref-v1")
+  })
+
+  test("用例 10 · 参考类未命中不影响入库：仍已解析、事实行照旧，未补全数 > 0", async () => {
+    const projectId = "p-富化空库"
+    const 参考库 = 建参考库(async () => ({ 版本: "内置-空", 条目: [] }))
+    const { 入, 结果 } = await 跑资金(projectId, { 参考库 })
+    expect(结果).toBe("完成")
+
+    const 材料 = await getMaterial(db(), projectId, 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || !是对象(详情["富化"])) throw new Error("parse_detail.富化 形状不对")
+    expect(Number(详情["富化"]["未补全数"])).toBeGreaterThan(0)
+    expect(详情["富化"]["参考库版本"]).toBe("内置-空")
+  })
+
+  test("用例 11 · 富化失败不写「富化完成」进度，作业仍完成（M9）", async () => {
+    const projectId = "p-富化失败"
+    文件.set(`${projectId}/流水.xlsx`, 资金表)
+    const 入 = await 入队(projectId, "流水.xlsx", Hash.sha256(`${projectId}-富化失败`))
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的")
+
+    // 进度写在事务外，只拦顶层 `execute` 即可；事务能力原样交给真库。
+    const 方言 = new PgDialect()
+    const 真 = db()
+    const 富化进度们: { 已处理: number; 总数: number }[] = []
+    const 记录库 = {
+      execute: async (query: SQL) => {
+        for (const 参数 of 方言.sqlToQuery(query).params) {
+          if (typeof 参数 !== "string" || !参数.includes('"富化"')) continue
+          const 解析 = JSON.parse(参数) as { 已处理?: number; 总数?: number }
+          富化进度们.push({ 已处理: Number(解析.已处理), 总数: Number(解析.总数) })
+        }
+        return 真.execute(query)
+      },
+      transaction: (fn: (tx: Queryable) => Promise<unknown>) => 真.transaction((tx) => fn(tx)),
+    }
+
+    const 结果 = await runJob(
+      记录库,
+      { ...deps, 参考库: 建参考库(async () => {
+        throw new Error("参考库载入失败")
+      }) },
+      作业,
+    )
+    expect(结果).toBe("完成")
+    // 进入时的「富化 0/N」可以有；失败后不得再写「富化 N/N」。
+    expect(富化进度们.length).toBeGreaterThanOrEqual(1)
+    expect(富化进度们.every((p) => p.已处理 < p.总数)).toBe(true)
   })
 })

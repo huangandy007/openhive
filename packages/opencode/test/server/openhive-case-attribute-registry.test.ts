@@ -56,3 +56,33 @@ describe("属性列识别（05 §4.3）", () => {
     expect(row?.extras).toEqual({ "属性:对方:开户行": "招商银行" })
   })
 })
+
+describe("裸属性副本不认成账号列（FR-032 / M8）", () => {
+  // 真行原文（`#013-07`）：带受控属性键（`属性键们`）却没有 `属性:` 前缀的表头，是属性副本的
+  // 疑似写法。认成账号会造出错误实体、属性也无处可挂（05 §4.4）⇒ 落未知列，交「未认出」。
+  test("交易对方银行卡号：不映射成 counterparty，进未知列", () => {
+    const r = detectMapping(["交易对方银行卡号"], [["6214830012345678"]])
+    expect(r.columns).toEqual({})
+    expect(Object.values(r.columns)).not.toContain("counterparty")
+    expect(r.unknownColumns).toEqual([0])
+  })
+
+  test("本方银行卡号：不映射成 ownerAccount，进未知列", () => {
+    const r = detectMapping(["本方银行卡号"], [["6222999"]])
+    expect(r.columns).toEqual({})
+    expect(Object.values(r.columns)).not.toContain("ownerAccount")
+    expect(r.unknownColumns).toEqual([0])
+  })
+
+  test("守卫：不含受控属性键的既有写法仍走原判据", () => {
+    // 「对方卡号」是 counterparty 的整串同义词；「查询账号」是 ownerAccount 的整串同义词。
+    expect(detectMapping(["对方卡号"], [["6222001"]]).columns).toEqual({ 0: "counterparty" })
+    expect(detectMapping(["查询账号"], [["6222999"]]).columns).toEqual({ 0: "ownerAccount" })
+  })
+
+  test("守卫：带 `属性:` 前缀的规范属性列仍不产生标准字段映射", () => {
+    const r = detectMapping(["属性:对方:银行卡号"], [["6222020202020202020"]])
+    expect(r.columns).toEqual({})
+    expect(r.unknownColumns).toEqual([])
+  })
+})

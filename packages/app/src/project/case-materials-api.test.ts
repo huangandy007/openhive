@@ -25,6 +25,27 @@ const 视图行 = {
   factCount: 12,
   numberCount: 3,
   parseable: true,
+  adapterId: "jin-liu" as string | null,
+  adapterVersion: "1.2.0" as string | null,
+  reasonCode: "未识别:无匹配适配器" as string | null,
+  progress: {
+    阶段: "转换" as const,
+    已处理: 300,
+    总数: 1200,
+    更新时间: 1700000000,
+  } as { 阶段: "读表" | "探测" | "转换" | "写入" | "富化"; 已处理?: number; 总数?: number; 更新时间: number } | null,
+  probe: {
+    状态: "已识别" as const,
+    适配器id: "jin-liu",
+    版本: "1.2.0",
+    完成秒: 1700000001,
+  } as {
+    状态: "探测中" | "已识别" | "未识别"
+    适配器id?: string
+    版本?: string
+    原因码?: string
+    完成秒?: number
+  } | null,
 }
 
 const 回 = (body: unknown, status = 200) =>
@@ -108,6 +129,64 @@ describe("材料状态客户端", () => {
       path: "资料/话单.xlsx",
       action: "入队",
     })
+  })
+
+  test("read：+5 字段原样解析；缺省 / null 一律 null，不猜", async () => {
+    const 缺省 = {
+      id: "m2",
+      path: "资料/流水.xlsx",
+      kind: "资金",
+      status: "未入队" as const,
+      detail: null,
+      queueAhead: 0,
+      factCount: 0,
+      numberCount: 0,
+      parseable: true,
+    }
+    const api = createCaseMaterialsApi(async () =>
+      回({ materials: [视图行, 缺省], parseableExtensions: [".xlsx"] }),
+    )
+    const 结果 = await api.read("p1")
+    expect(结果.kind).toBe("ok")
+    if (结果.kind !== "ok") return
+    expect(结果.value.materials[0]).toEqual(视图行)
+    expect(结果.value.materials[1]).toEqual({
+      ...缺省,
+      adapterId: null,
+      adapterVersion: null,
+      reasonCode: null,
+      progress: null,
+      probe: null,
+    })
+  })
+
+  test("read：progress 阶段 / probe 状态不在闭集，或字段类型不对 ⇒ 整份判错（不知道 ≠ null）", async () => {
+    const 坏 = [
+      { ...视图行, progress: { ...视图行.progress, 阶段: "解码" } },
+      { ...视图行, progress: { ...视图行.progress, 已处理: "300" } },
+      { ...视图行, progress: { ...视图行.progress, 总数: -1 } },
+      { ...视图行, probe: { 状态: "已完成" } },
+      { ...视图行, probe: { 状态: "未识别", 原因码: 7 } },
+      { ...视图行, adapterId: 7 },
+      { ...视图行, probe: "已识别" },
+    ]
+    for (const 行 of 坏) {
+      const api = createCaseMaterialsApi(async () => 回({ materials: [行], parseableExtensions: [".xlsx"] }))
+      const 结果 = await api.read("p1")
+      expect(结果.kind, JSON.stringify(行)).toBe("error")
+    }
+  })
+
+  test("read：未识别 可选参数 ⇒ URL 追加 &未识别=1；不传时行为不变", async () => {
+    const 收到: string[] = []
+    const api = createCaseMaterialsApi(async (url) => {
+      收到.push(url)
+      return 回({ materials: [], parseableExtensions: [] })
+    })
+    await api.read("p1", true)
+    await api.read("p1")
+    expect(收到[0]).toBe(`${PATH.materials}?projectId=p1&未识别=1`)
+    expect(收到[1]).toBe(`${PATH.materials}?projectId=p1`)
   })
 
   test("parse：ok 不是 true / status 不认识 ⇒ 形状错误；错误回包带 code", async () => {

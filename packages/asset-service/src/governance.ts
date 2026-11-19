@@ -12,6 +12,7 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import { AssetMetadataError, assetById, type AssetTarget } from "./asset"
 import type { AssetViewer } from "./authorization"
 import { ASSET_CATEGORY_SEED } from "./categories"
+import type { IngestGateInput } from "./ingest-gate"
 import { AssetTransitionError, type SkillAction } from "./lifecycle"
 import { ASSET_VISIBILITIES, type AssetVisibility } from "./metadata"
 import { AssetNotificationError } from "./notify"
@@ -188,6 +189,41 @@ export interface GovernanceDeps {
   readonly root: string
   /** 沙箱根的上级（`workspaceRoot(process.env)`，默认 `/workspaces`）：`<workspaceRoot>/<userId>/…` 之内才收。 */
   readonly workspaceRoot: string
+  /**
+   * 【保留的定制 · 016】M10 识别卡校验的注入输入（词表 / 已占用 id）。
+   *
+   * 本进程不 import opencode 的 `case-attribute-registry.ts`，词表由内核 spawn 时经
+   * `INGEST_GATE_VOCAB_ENV` 跨进程传进来（见 `ingestGateFromEnv`）。缺席时发布含
+   * `adapter.json` 的包会 fail-closed 并显式报「校验闸未注入词表」，不会悄悄放行。
+   */
+  readonly ingestGate?: Pick<IngestGateInput, "词汇" | "已占用id">
+}
+
+/**
+ * 【保留的定制 · 016】词表环境变量名：内核 `governance-mcp-supervisor.ts` 写，本进程读。
+ * 值 = `{"归属":["对方","本方"],"键":["开户行",…]}`。
+ */
+export const INGEST_GATE_VOCAB_ENV = "OPENHIVE_INGEST_GATE_VOCAB"
+
+/** 从环境变量解析词表；缺失 / 坏 JSON / 形状不对 ⇒ `undefined`（fail-closed，由校验器报「未注入」）。 */
+export function ingestGateFromEnv(
+  env: Record<string, string | undefined>,
+): Pick<IngestGateInput, "词汇" | "已占用id"> | undefined {
+  const 原文 = env[INGEST_GATE_VOCAB_ENV]
+  if (原文 === undefined || 原文.trim() === "") return undefined
+  let 值: unknown
+  try {
+    值 = JSON.parse(原文)
+  } catch {
+    // 有意吞掉：解析失败等价于「没注入」，发布闸会显式拒绝含 attributeKeys 的包。
+    return undefined
+  }
+  if (typeof 值 !== "object" || 值 === null || Array.isArray(值)) return undefined
+  const 归属 = Reflect.get(值, "归属")
+  const 键 = Reflect.get(值, "键")
+  if (!Array.isArray(归属) || !归属.every((项) => typeof 项 === "string")) return undefined
+  if (!Array.isArray(键) || !键.every((项) => typeof 项 === "string")) return undefined
+  return { 词汇: { 归属, 键 }, 已占用id: [] }
 }
 
 function textResult(payload: Record<string, unknown>): CallToolResult {
@@ -403,6 +439,8 @@ async function runTool(
       // 这条 MCP 出口也是发布入口，不传就只删草稿副本、链接留在已被删掉的旧目标上。
       workspaceRoot: deps.workspaceRoot,
       ...(visibility === undefined ? {} : { visibility }),
+      // 【保留的定制 · 016】M10：MCP 也是一条发布出口，词表由进程入口注入。
+      ...(deps.ingestGate === undefined ? {} : { ingestGate: deps.ingestGate }),
     })
     return textResult({
       ok: true,

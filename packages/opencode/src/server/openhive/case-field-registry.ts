@@ -45,9 +45,22 @@ export interface 字段定义 {
 const 两位小数 = (v: string) => /^-?\d+\.\d{2}$/.test(v.trim())
 const 时间形状 = (v: string) => /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$/.test(v.trim())
 const 手机号 = (v: string) => /^1[3-9]\d{9}$/.test(v.replace(/[\s+]/g, "").replace(/^86/, ""))
-const 账号形状 = (v: string) => /^\d{6,32}$/.test(v.replace(/[\s-]/g, ""))
 /**
- * 账号形状（`^\d{6,32}$`）。
+ * 账号形状：纯数字（`^\d{6,32}$`），或**已知支付后缀**的账号（FR-030）。
+ *
+ * 支付后缀只放宽 `@wx.tenpay.com` 这一个：tenpay（微信支付）导出里「查询账号」是
+ * `wxid_xxx@wx.tenpay.com` 这类地址，收窄成纯数字会让整表的账户实体都建不出来。
+ * **不泛化任意邮箱**：`abc@example.com`、`abc@wx.tenpay.com.evil.com`、`@wx.tenpay.com`
+ * （无本地部分）一律 false。新增已知后缀 = 改这一处 + 补 `openhive-case-account-shape.test.ts`
+ * 的用例，别在调用侧另写一条正则。
+ */
+const 账号形状 = (v: string) =>
+  /^\d{6,32}$/.test(v.replace(/[\s-]/g, "")) ||
+  // 判邮箱前只剥空白（不剥连字符：本地部分可能带 `-`）：本地部分至少一个字符、整串以
+  // 该后缀结尾（多一段 `.evil.com` 不中）。
+  /^[^@\s]+@wx\.tenpay\.com$/i.test(v.replace(/\s/g, ""))
+/**
+ * 账号形状（纯数字 `^\d{6,32}$`，或 `@wx.tenpay.com` 后缀账号，见上）。
  *
  * 两处共用同一份（`#002-06`）：识别层判「是不是账号列」用 `账号形状`；翻译层判
  * 「能不能建账户实体」也用这一条（§4.0.5 坑 1：含 `*` 或位数不足 ⇒ 只留 mention_text）。

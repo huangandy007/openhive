@@ -23,8 +23,13 @@ import {
 } from "./case-mapping"
 import { 候选字段集, 是无信息列, 是识别字段, type 识别字段 } from "./case-field-registry"
 import { 识别材料, type 材料识别 } from "./case-recognize"
+import { 按优先与id, type 适配器, type 适配器注册表 } from "./case-adapter-registry"
+import { 探测, type 探测结论, type 探测命中 } from "./case-adapter-probe"
+import { 跑转换器 } from "./case-converter-runner"
 import { 匹配数据源档案, type 档案命中 } from "./case-source-profile"
 import { 记档案命中, 读活跃档案 } from "./case-source-profile-store"
+import { 判准入 } from "./case-ingest-admission"
+import { 写报告, 最新报告 } from "./case-material-report"
 import { 读别名上下文, 记别名命中 } from "./case-field-alias"
 import type { 表头识别器 } from "./case-header-ai"
 import { toFactRows } from "./case-rows"
@@ -51,8 +56,10 @@ import {
   upsertEntity,
   删除本材料的事实,
 } from "./case-fact-store"
-import { 翻译资金, 跳过原因们, type 翻译结果 } from "./case-translate"
+import { 翻译资金, 跳过原因们, type 属性观察, type 翻译结果 } from "./case-translate"
 import { 清本材料翻译, 写入翻译结果, 重建关系, 本材料转账对, type 关系对 } from "./case-translate-store"
+import { 富化, 查案件库账号, type 富化结果 } from "./case-enrich"
+import { 建参考库, type 参考库, type 外部核验服务 } from "./case-reference-store"
 import { 确保内置模板, 是用户模板id, 建议模板, 资金模板id, type 模板行 } from "./case-card-template"
 import { 记模板命中, 读模板行, 列出模板 } from "./case-card-template-store"
 import { 翻译模板 } from "./case-template-translate"
@@ -75,6 +82,49 @@ import type { ParseAction, ParseStatus } from "./case-status"
  * 映射修正、解析器升级之后要让改动生效，必须真的把旧行删掉——`do nothing` 只会
  * 把老行原样留下，「重放成功」于是成了静默的空操作。
  */
+/**
+ * 016 T011 · M3 作业原因码（六值闭集，字面值即契约：`contracts/reason-code-contract.md`）。
+ *
+ * 为什么用类而不是「按 message 文案反推」：`失败:转换器异常` 的详情是人写的自由文本
+ * （退出码 / 契约第几条），文案改一个字，按文案匹配的映射就静默失效。码只从异常对象上取；
+ * 未带码的错误写 NULL，**不编造**。
+ */
+type 原因码 =
+  | "未识别:无匹配适配器"
+  | `未识别:缺必需列:${string}`
+  | `未识别:值闸不过:${string}`
+  | "失败:读文件"
+  | "失败:转换器异常"
+  | "失败:入库异常"
+
+class 原因码错误 extends Error {
+  constructor(
+    readonly 原因码: 原因码,
+    详情: string,
+  ) {
+    super(详情)
+    this.name = "原因码错误"
+  }
+}
+
+/** `探测结论.原因码` 在类型层是 `string`：跨模块边界只认闭集里的字面值。 */
+function 是原因码(码: unknown): 码 is 原因码 {
+  if (typeof 码 !== "string") return false
+  if (码 === "未识别:无匹配适配器") return true
+  if (码 === "失败:读文件" || 码 === "失败:转换器异常" || 码 === "失败:入库异常") return true
+  if (码.startsWith("未识别:缺必需列:") && 码.length > "未识别:缺必需列:".length) return true
+  return 码.startsWith("未识别:值闸不过:") && 码.length > "未识别:值闸不过:".length
+}
+
+/**
+ * 边界包装：已带码的原样交回（别把内层的码改写成外层码），否则按给定码包一层。
+ * 详情只取原 message——码存 `reason_code`，文案存 `parse_detail.reason`，两者分开。
+ */
+function 转原因码错误(error: unknown, 码: 原因码): 原因码错误 {
+  if (error instanceof 原因码错误) return error
+  return new 原因码错误(码, error instanceof Error ? error.message : String(error))
+}
+
 export interface EnqueueInput {
   projectId: string
   /** 项目内路径（落 `case_material.path`，界面用）。 */
@@ -178,6 +228,8 @@ export interface ClaimedJob {
   sourcePath: string
   /** 入队时人工指定的卡片模板（§9.5）；缺省 = 按表自动建议。 */
   templateId?: string
+  /** 入队人（`case_ingest_job.queued_by`）。仅留痕；注册表可见性按**落点属主**判，不读它（A9）。 */
+  queuedBy?: string
 }
 
 /**
@@ -200,7 +252,7 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
           limit 1
        )
          and status = '排队中'
-      returning project_id, id, material_id, source_path, template_id
+      returning project_id, id, material_id, source_path, template_id, queued_by
     `),
   )
   const row = rows[0]
@@ -213,6 +265,7 @@ export async function claimNextJob(db: Queryable): Promise<ClaimedJob | undefine
     ...(row.template_id === null || row.template_id === undefined
       ? {}
       : { templateId: String(row.template_id) }),
+    ...(typeof row.queued_by === "string" ? { queuedBy: row.queued_by } : {}),
   }
 }
 
@@ -251,6 +304,23 @@ export interface RunDeps {
    * 生产在 worker 层与 `建抽取器` 共用「取语言」；测试注入假识别器。
    */
   建表头识别器?: (job: ClaimedJob) => Promise<表头识别器>
+  /**
+   * 沙箱根：适配器通路要原件绝对路径喂给转换器。不注入 ⇒ 适配器命中时抛错
+   * （**不静默走四层**——那会把「转换器没配好」变成一份看起来正常的四层结果）。
+   */
+  根目录?: string
+  /**
+   * 读本项目已启用适配器注册表（生产由 worker 注入）。不注入 ⇒ 视为空注册表，
+   * 原四层逻辑一字不改（既有调用方与用例零改动）。
+   */
+  读适配器?: (job: ClaimedJob) => Promise<适配器注册表>
+  /**
+   * 富化参考库（T012）。不注入 ⇒ 每次作业建一个「内置-空」库：参考类全部走「查不到 +
+   * 告警」的兜底（FR-052 不阻塞入库），行为与「没有数据源」一致。
+   */
+  参考库?: 参考库
+  /** 外部核验服务（T012）。不注入 ⇒ 身份类键一律进「待确认」。 */
+  外部服务?: 外部核验服务
 }
 
 /** `runJob` 的运行选项（单次调用，不是部署配置）。 */
@@ -389,13 +459,15 @@ export async function runJob(
     // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
     // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
     const 原因 = error instanceof Error ? error.message : String(error)
+    // 只认**显式带码**的异常（`原因码错误`）；未带码的错误写 NULL，不按文案猜（契约：码是闭集）。
+    const 码: 原因码 | null = error instanceof 原因码错误 ? error.原因码 : null
     await applyParseAction(db, {
       projectId: job.projectId,
       materialId: job.materialId,
       action: "出问题",
       detail: { reason: 原因 },
     }).catch(() => undefined)
-    await 收尾(db, job, "失败", 原因).catch(() => undefined)
+    await 收尾(db, job, "失败", 原因, 码).catch(() => undefined)
     return "失败"
   }
 }
@@ -407,6 +479,21 @@ function 合并翻译结果(结果们: readonly 翻译结果[]): 翻译结果 {
     别名们: 结果们.flatMap((结果) => 结果.别名们),
     属性们: 结果们.flatMap((结果) => 结果.属性们),
     跳过们: 结果们.flatMap((结果) => 结果.跳过们),
+  }
+}
+
+/**
+ * 把富化产出的属性观察并入翻译结果（T012）。**仍在唯一写入口之前**——事务里不另写一份
+ * attrs（`#002-06`）。按 `(归属,键,值,出处)` 去重：既有的属性观察先到先得。
+ */
+function 并入属性观察(翻译: 翻译结果, 属性们: readonly 属性观察[]): void {
+  const 键 = (a: 属性观察) => `${a.归属}\u0000${a.键}\u0000${a.值}\u0000${a.出处}`
+  const 已见 = new Set(翻译.属性们.map(键))
+  for (const a of 属性们) {
+    const k = 键(a)
+    if (已见.has(k)) continue
+    已见.add(k)
+    翻译.属性们.push(a)
   }
 }
 
@@ -425,19 +512,51 @@ function 合并翻译结果(结果们: readonly 翻译结果[]): 翻译结果 {
  * 不写明细、不写材料状态，识别结果从 `收集` 交出去。
  */
 async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: RunOptions): Promise<void> {
+  /**
+   * 进度写点（T011）：阶段切换必写；`dryRun` 一律不写（R18）。
+   * 写失败由 `写进度` 吞掉并记 WARN——进度不是账本，不该把作业打失败。
+   */
+  const 报进度 = async (
+    阶段: "读表" | "探测" | "转换" | "写入",
+    数字: { 已处理?: number; 总数?: number } = {},
+  ): Promise<void> => {
+    if (选项.dryRun === true) return
+    await 写进度(db, job, { 阶段, ...数字 })
+  }
+
+  await 报进度("读表")
+
   // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
   // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
   // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
-  const { sheets, skippedSheets, truncatedSheets } = readSheets(await deps.readFile(job.sourcePath))
-  if (skippedSheets.length > 0 || truncatedSheets.length > 0) {
-    const 缘由 = [
-      skippedSheets.length > 0 ? `工作表超过上限，未解析：${skippedSheets.join("、")}` : "",
-      truncatedSheets.length > 0 ? `行数超过上限，已截断：${truncatedSheets.join("、")}` : "",
-    ]
-      .filter((s) => s !== "")
-      .join("；")
-    throw new Error(缘由)
+  const 读表 = async (): Promise<{ 结果: ReturnType<typeof readSheets>; 字节: Uint8Array }> => {
+    try {
+      const 字节 = await deps.readFile(job.sourcePath)
+      const 结果 = readSheets(字节)
+      if (结果.skippedSheets.length > 0 || 结果.truncatedSheets.length > 0) {
+        const 缘由 = [
+          结果.skippedSheets.length > 0
+            ? `工作表超过上限，未解析：${结果.skippedSheets.join("、")}`
+            : "",
+          结果.truncatedSheets.length > 0
+            ? `行数超过上限，已截断：${结果.truncatedSheets.join("、")}`
+            : "",
+        ]
+          .filter((s) => s !== "")
+          .join("；")
+        throw new Error(缘由)
+      }
+      return { 结果, 字节 }
+    } catch (error) {
+      // 读盘 / 面积闸 / 编码 / 超限拒绝都属于「这份文件读不进来」⇒ `失败:读文件`。
+      throw 转原因码错误(error, "失败:读文件")
+    }
   }
+  const { 结果: 读取结果, 字节: 原件字节 } = await 读表()
+  const { sheets } = 读取结果
+  // 报告的 `source_sha256` 与材料指纹同一口径（`case-parse.ts:281` 的 `Hash.sha256(文件字节)`）：
+  // 一次作业只读一次盘，字节留着算指纹，别重读。
+  const 原件sha256 = Hash.sha256(Buffer.from(原件字节))
 
   // 别名库一个任务只读一次（设计 §4.2-4），指纹的版本号也用它。
   const 别名 = await 读别名上下文(db)
@@ -450,57 +569,21 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // 档案先于指纹缓存（设计 §6）。dryRun 是离线基线：不读档案，也不写 hit_count。
   const 活跃档案 = 选项.dryRun === true ? [] : await 读活跃档案(db, job.projectId)
 
-  // 先查档案、再查缓存（R18）：命中任一层的表都不跑四层、不参与模型。
-  const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
-  const 档案们: (档案命中 | undefined)[] = []
-  const 命中档案id = new Set<string>()
-  for (let i = 0; i < sheets.length; i++) {
-    const 档案 =
-      选项.dryRun === true
-        ? undefined
-        : // `匹配数据源档案` 未命中给 `null`（纯函数口径）；本链路统一用 `undefined` 表示「没有档案」。
-          (匹配数据源档案({ 表头: 表头们[i] ?? [], 档案们: 活跃档案 }) ?? undefined)
-    档案们.push(档案)
-    if (档案 !== undefined) {
-      命中档案id.add(档案.id)
-      缓存们.push(undefined)
-      continue
-    }
-    缓存们.push(await 读格式(db, job.projectId, 指纹们[i]!))
-  }
+  // ── 016 T008 · Ruling H：适配器先于档案（FR-006）──
+  // 匹配是材料级、只跑一次：每张表都过同一个 `探测`（只跑表头闸；值闸归转换器自报），
+  // 再从所有「已识别」里按 `priority desc → id asc` 决胜——不靠表顺序（与探测同一比较器）。
+  const 注册表: 适配器注册表 =
+    选项.dryRun === true || deps.读适配器 === undefined
+      ? { 适配器: [], 跳过: [] }
+      : await deps.读适配器(job)
+  const 结论们 = sheets.map((_, i) =>
+    探测({ 表头: 表头们[i] ?? [], projectId: job.projectId }, 注册表.适配器),
+  )
+  const 适配 = 选适配器(结论们, 注册表.适配器)
+  await 报进度("探测")
 
-  // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32/R57）。
-  // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
-  //
-  // 构造失败只降级为「没有模型兜底」，**不抛**：四层＋别名本就能解析，worker 的 `取语言`
-  // 走 `Effect.die`（defect），放它出去会把整条表格作业打成「失败」——为了一个可选的
-  // 兜底层丢掉能解析的结果，显然不划算（R32）。但**必须留痕**（R52）：下面把原因补进
-  // `识别.模型.失败`，随 `parse_detail.mapping` 落库——裸 `catch {}` 是 `#006-28` 的盲区。
-  const 需要识别器 = sheets.some((_, i) => 档案们[i] === undefined && 缓存们[i] === undefined)
-  let 识别器: 表头识别器 | undefined
-  let 构造失败: string | undefined
-  if (选项.dryRun !== true && 需要识别器 && deps.建表头识别器 !== undefined) {
-    try {
-      识别器 = await deps.建表头识别器(job)
-    } catch (error) {
-      识别器 = undefined
-      构造失败 = error instanceof Error ? `${error.name}: ${error.message}` : "未知错误"
-    }
-  }
-
-  const 识别 = await 识别材料({
-    sheets,
-    别名,
-    缓存: 缓存们,
-    档案: 档案们,
-    ...(识别器 === undefined ? {} : { 识别器 }),
-  })
-  // 构造失败没有经历模型调用（`识别材料` 只会给出 `{调用:0}`），原因在这里补上；
-  // `收集` 与 `parse_detail.mapping.模型.失败` 都会看到它（R52）。
-  if (构造失败 !== undefined) 识别.模型.失败 = `识别器构造失败（${构造失败}）`
-  选项.收集?.(识别)
-  if (选项.dryRun === true) return
-
+  // 两条通路共用的落地骨架：适配器通路跳过四层，但翻译 / 写入 / 按材料清理零改动。
+  let 识别: 材料识别
   const 待写: FactRowInput[] = []
   /**
    * 只喂给翻译层的行（I3）：材料级 `识别.类型` 与逐表类型不是同一个前提。
@@ -508,136 +591,262 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
    */
   const 资金行: FactRowInput[] = []
   /**
-   * 没被翻译的表及原因（I3）：`parse_detail` 根级落库，让「钱/卡会静默少」变成看得见的话。
-   * 不塞进 `翻译` 键——非资金材料本来就不该出现 `翻译`（既有话单用例守着）。
+   * 没被翻译的表及原因（I3）：`parse_detail` 根级落库。适配器通路保持空
+   * （转换器给的是事实行，没有「未翻译表」这个概念）。
    */
   const 未翻译表: { sheet: string; 原因: string }[] = []
-  /** 逐表模板候选（§9.1）：行源 + 识别出的字段集（打分用）。资金表不进。 */
+  /** 逐表模板候选（§9.1）：适配器通路没有列映射，保持空。 */
   const 模板候选表: { sheet: string; rows: FactRowInput[]; 映射字段集: Set<识别字段> }[] = []
   /** 资金表的表名（`卡片模板` 里记为「代码规则」）。 */
   const 资金表们: string[] = []
   let 认出列数 = 0
   /**
    * 每张表「没认出来的列」明细，随 `parse_detail` 落库（人工确认弹窗的唯一数据源）。
-   *
-   * 只收**有非空表头**的列：别名库的键就是表头原文，空表头写不了别名 —— 摆出来等于给一个
-   * 点了必然 400 的按钮（`material-facts.tsx` 的 `表头 === null` 分支同理）。
-   * `候选字段` 用同一份 `候选字段集`（`#002-06`）：弹窗只许选本表能生效的字段，否则写进去的
-   * 别名下次解析会变成「别名跨字段集」待确认。
+   * 适配器通路保持空：没有列映射可判。
    */
   const 未认出们: (
     | { 候选字段: string[]; 列们: { 列号: number; 表头: string; 样例: string[] }[] }
     | undefined
   )[] = []
-  /** 时间列守卫要用的每表产物（守卫在整份组装完之后统一判，见下）。 */
+  /** 时间列守卫要用的每表产物（守卫在整份组装完之后统一判）。适配器通路为空。 */
   const 守卫们: {
     sheet: RawSheet
     表头: (string | null)[]
     列: Record<number, 识别字段>
     行: FactRowInput[]
   }[] = []
+  const 命中档案id = new Set<string>()
+  /** 四层通路里**第一份**命中档案（报告 `ruleVersion` 的取数口，A8）。 */
+  let 首个档案命中: 档案命中 | undefined
+  /** 适配器通路下同时命中的数据源档案：只记录、不参与决策（FR-006，Ruling H）。 */
+  const 档案也命中: { 工作表: string; id: string; name: string }[] = []
+  /**
+   * 转换器自报的报告（Ruling X：值闸的权威是转换器）。只有适配器通路有；
+   * 事务里原样写进 `case_material_report.gates`，这里不改写、不解析语义。
+   */
+  let 转换器报告: unknown = undefined
 
-  for (let i = 0; i < sheets.length; i++) {
-    const sheet = sheets[i]
-    const 表 = 识别.工作表[i]
-    if (sheet === undefined || 表 === undefined) continue
-    const header = 表.表头
-    const 指纹 = 指纹们[i] ?? ""
-
-    if (档案们[i] !== undefined) {
-      // 档案命中：不重写格式缓存（设计 §4）。hit_count 在成功事务里记。
-    } else if (表.命中) {
-      // 命中的表只记账：不重跑四层、不参与模型、不重写格式。
-      await db.execute(sql`
-        update auth.case_table_format
-           set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
-         where project_id = ${job.projectId} and fingerprint = ${指纹}
-      `)
-    } else {
-      // 「档案」不该走到这里（档案命中的表在上一个分支就跳过了）。收窄给 TS 看：
-      // 缓存表的 `method` 只有四值（`case_table_format_method` 的 CHECK 也不收「档案」）。
-      if (!是格式方法(表.方法)) throw new Error(`档案命中的表不该写格式缓存：${表.sheet}`)
-      await 写格式(db, job.projectId, 指纹, header, 表.列, {
-        来源: 表.来源,
-        待确认: 表.待确认,
-        方法: 表.方法,
-        未知列: 表.未知列,
-      })
-    }
-
-    // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
-    // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
-    认出列数 += Object.keys(表.列).filter((k) => {
-      const 列号 = Number(k)
-      return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
-    }).length
-    const 已认列 = new Set(
-      Object.keys(表.列)
-        .map((k) => Number(k))
-        .filter((列号) => Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length),
-    )
-    未认出们[i] = {
-      候选字段: [
-        ...候选字段集(
-          header,
-          sheet.rows.slice(0, 20).map((行) => 行.cells.map((单元格) => 单元格.text)),
-        ),
-      ],
-      列们: header.flatMap((单元格, 列号) => {
-        const 名 = (单元格 ?? "").trim()
-        if (是无信息列(名) || 已认列.has(列号) || 是属性列(名)) return []
-        const 样例 = sheet.rows
-          .map((行) => (行.cells[列号]?.text ?? "").trim())
-          .filter((值) => 值 !== "")
-          .slice(0, 3)
-          .map((值) => (值.length > 60 ? `${值.slice(0, 60)}…` : 值))
-        return [{ 列号, 表头: 名, 样例 }]
-      }),
-    }
-    const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 表.列 })
-    待写.push(...行)
-    守卫们.push({ sheet, 表头: header, 列: 表.列, 行 })
-
-    // 逐表类型：与 `识别材料` 的材料级判定**同一份** `classifyMaterialType`（`#002-06`）。
-    const 表类型 = classifyMaterialType(表.列)
-    if (表类型 === "资金") {
-      if (识别.类型 === "资金") {
-        资金行.push(...行)
-        资金表们.push(sheet.name)
-      } else {
-        未翻译表.push({ sheet: sheet.name, 原因: `材料类型=${识别.类型}，本期只翻译资金材料` })
+  if (适配 !== undefined) {
+    // ① 先落作业快照列：转换器失败时这两列也必须已经落盘。
+    await db.execute(sql`
+      update auth.case_ingest_job set adapter_id = ${适配.id}, adapter_version = ${适配.version}
+       where project_id = ${job.projectId} and id = ${job.jobId}
+    `)
+    // ② 原件绝对路径：拿不到就失败，**不许**降级走四层。
+    const 原件 = deps.根目录 === undefined ? undefined : 沙箱内路径(deps.根目录, job.sourcePath)
+    if (原件 === undefined) throw new Error("拿不到原件路径（根目录/落点不合法）")
+    // ③ 起转换器。同一技能目录的并发已由 runner 进程内串行（T007，Ruling AH），这里不再加锁。
+    await 报进度("转换")
+    const 结果 = await 跑转换器({ 适配器: 适配, 原件 })
+    if (!结果.ok) {
+      // 值闸映射（Ruling X）：非零退出后 runner 仍会带上报告；取报告顺序里**第一个**失败闸。
+      // 判定**直接看 `结果.报告`**，不按 detail 文案反推（自由文本永远不可作判据）。
+      const 失败闸 = 第一个失败闸(结果.报告)
+      if (失败闸 !== undefined) {
+        throw new 原因码错误(`未识别:值闸不过:${失败闸.检查项}`, `未识别:值闸不过:${失败闸.检查项}`)
       }
-    } else {
-      // 非资金表：一律成为模板候选（§9.1）。材料判资金时同样收——混合材料的非资金表
-      // 以前被静默丢弃，模板正是给它一条通路。
-      模板候选表.push({
-        sheet: sheet.name,
-        rows: 行,
-        映射字段集: new Set(Object.values(表.列).filter(是识别字段)),
-      })
+      throw new 原因码错误("失败:转换器异常", `失败:转换器异常：${结果.detail}`)
     }
-  }
-
-  // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
-  // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
-  // 按表判，用合并后的 `表.列` 找 `startedAt`；放在 `待写` 组装之后、事务之前。
-  // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
-  for (const 守卫 of 守卫们) {
-    const 时间列 = Object.keys(守卫.列).find((k) => 守卫.列[Number(k)] === "startedAt")
-    if (时间列 === undefined) continue
-    const 非空原文数 = 守卫.sheet.rows.filter(
-      (r) => (r.cells[Number(时间列)]?.text ?? null) !== null,
-    ).length
-    if (非空原文数 > 0 && !守卫.行.some((r) => r.startedAt !== null)) {
-      throw new Error(
-        `「${守卫.sheet.name}」的时间列（${守卫.表头[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
+    // 成功路径也要判值闸（Ruling X 后半句，A5）：转换器自认成功（退出码 0）但报告里有
+    // `通过率 < 阈值` 的闸 ⇒ 同样是「未识别:值闸不过:<检查项>」，不写事实行。
+    // 探测（T006）仍只跑表头闸；值闸的权威证据只有转换器报告。
+    const 成功路径失败闸 = 第一个失败闸(结果.report)
+    if (成功路径失败闸 !== undefined) {
+      throw new 原因码错误(
+        `未识别:值闸不过:${成功路径失败闸.检查项}`,
+        `未识别:值闸不过:${成功路径失败闸.检查项}`,
       )
     }
-  }
+    // ④ 保留报告：T013 把它原样写进 `case_material_report.gates`（Ruling X）。
+    // 本处不写库、不解析它的内容（语义归报告读侧，取数在成功事务里）。
+    转换器报告 = 结果.report
+    // 0 行守卫（同四层通路的 `认出列数 === 0`）：必须在**任何删旧行之前**抛。
+    // 空 rows 不是「成功导入 0 条」——放它过去会先删掉既有事实、再写 0 行，
+    // 材料还报「已解析」：既丢数据又说谎。
+    if (结果.rows.length === 0) {
+      throw new 原因码错误("失败:转换器异常", "转换器没有产出任何事实行（rows 为空）")
+    }
+    // ⑤ 事实行搬运：T007 已做契约校验，这里只补内核侧的 projectId / materialId。
+    for (const 行 of 结果.rows) 待写.push(转换行(行, job))
+    // ⑥ 合成与 `识别材料` 同形状的结论。`工作表: []` 是刻意的：转换器给的是事实行不是列映射，
+    // 伪造工作表识别会把假映射写进 `parse_detail`。
+    识别 = { 工作表: [], 类型: 适配.materialType, 模型: { 调用: 0 } }
+    选项.收集?.(识别)
+    if (识别.类型 === "资金") 资金行.push(...待写)
+    for (const 行 of 待写) if (!资金表们.includes(行.sheet)) 资金表们.push(行.sheet)
+    // ⑦ 档案只记入报告：同一份材料档案也命中时，只用它留痕（Ruling H）。
+    // **不**计 `hit_count`（不进 `命中档案id`）：档案没有参与决策，计数涨了就是谎报使用。
+    for (let i = 0; i < sheets.length; i++) {
+      const 档案 = 匹配数据源档案({ 表头: 表头们[i] ?? [], 档案们: 活跃档案 }) ?? undefined
+      if (档案 === undefined) continue
+      档案也命中.push({ 工作表: sheets[i].name, id: 档案.id, name: 档案.name })
+    }
+  } else {
+    // 先查档案、再查缓存（R18）：命中任一层的表都不跑四层、不参与模型。
+    const 缓存们: Awaited<ReturnType<typeof 读格式>>[] = []
+    const 档案们: (档案命中 | undefined)[] = []
+    for (let i = 0; i < sheets.length; i++) {
+      const 档案 =
+        选项.dryRun === true
+          ? undefined
+          : // `匹配数据源档案` 未命中给 `null`（纯函数口径）；本链路统一用 `undefined` 表示「没有档案」。
+            (匹配数据源档案({ 表头: 表头们[i] ?? [], 档案们: 活跃档案 }) ?? undefined)
+      档案们.push(档案)
+      if (档案 !== undefined) {
+        首个档案命中 ??= 档案
+        命中档案id.add(档案.id)
+        缓存们.push(undefined)
+        continue
+      }
+      缓存们.push(await 读格式(db, job.projectId, 指纹们[i]!))
+    }
 
-  // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
-  // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
-  if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
+    // 只在**真的有未命中的表**时才构造识别器：全命中就不该碰 provider（R32/R57）。
+    // dryRun 是离线基线：不调模型，也**不构造**识别器——别为一次不会用到的调用去解析 provider。
+    //
+    // 构造失败只降级为「没有模型兜底」，**不抛**：四层＋别名本就能解析，worker 的 `取语言`
+    // 走 `Effect.die`（defect），放它出去会把整条表格作业打成「失败」——为了一个可选的
+    // 兜底层丢掉能解析的结果，显然不划算（R32）。但**必须留痕**（R52）：下面把原因补进
+    // `识别.模型.失败`，随 `parse_detail.mapping` 落库——裸 `catch {}` 是 `#006-28` 的盲区。
+    const 需要识别器 = sheets.some((_, i) => 档案们[i] === undefined && 缓存们[i] === undefined)
+    let 识别器: 表头识别器 | undefined
+    let 构造失败: string | undefined
+    if (选项.dryRun !== true && 需要识别器 && deps.建表头识别器 !== undefined) {
+      try {
+        识别器 = await deps.建表头识别器(job)
+      } catch (error) {
+        识别器 = undefined
+        构造失败 = error instanceof Error ? `${error.name}: ${error.message}` : "未知错误"
+      }
+    }
+
+    识别 = await 识别材料({
+      sheets,
+      别名,
+      缓存: 缓存们,
+      档案: 档案们,
+      ...(识别器 === undefined ? {} : { 识别器 }),
+    })
+    // 构造失败没有经历模型调用（`识别材料` 只会给出 `{调用:0}`），原因在这里补上；
+    // `收集` 与 `parse_detail.mapping.模型.失败` 都会看到它（R52）。
+    if (构造失败 !== undefined) 识别.模型.失败 = `识别器构造失败（${构造失败}）`
+    选项.收集?.(识别)
+    if (选项.dryRun === true) return
+
+    for (let i = 0; i < sheets.length; i++) {
+      const sheet = sheets[i]
+      const 表 = 识别.工作表[i]
+      if (sheet === undefined || 表 === undefined) continue
+      const header = 表.表头
+      const 指纹 = 指纹们[i] ?? ""
+
+      if (档案们[i] !== undefined) {
+        // 档案命中：不重写格式缓存（设计 §4）。hit_count 在成功事务里记。
+      } else if (表.命中) {
+        // 命中的表只记账：不重跑四层、不参与模型、不重写格式。
+        await db.execute(sql`
+          update auth.case_table_format
+             set hit_count = hit_count + 1, updated_at = ${nowSeconds()}
+           where project_id = ${job.projectId} and fingerprint = ${指纹}
+        `)
+      } else {
+        // 「档案」不该走到这里（档案命中的表在上一个分支就跳过了）。收窄给 TS 看：
+        // 缓存表的 `method` 只有四值（`case_table_format_method` 的 CHECK 也不收「档案」）。
+        if (!是格式方法(表.方法)) throw new Error(`档案命中的表不该写格式缓存：${表.sheet}`)
+        await 写格式(db, job.projectId, 指纹, header, 表.列, {
+          来源: 表.来源,
+          待确认: 表.待确认,
+          方法: 表.方法,
+          未知列: 表.未知列,
+        })
+      }
+
+      // 只计 **header 范围内的合法列号**（I3 收口）：缓存对内容不做校验，脏行里可能有
+      // 越界 / 非整数的键。只数键的个数会把它们当成「认出了一列」，放过下面的零列闸。
+      认出列数 += Object.keys(表.列).filter((k) => {
+        const 列号 = Number(k)
+        return Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length
+      }).length
+      const 已认列 = new Set(
+        Object.keys(表.列)
+          .map((k) => Number(k))
+          .filter((列号) => Number.isInteger(列号) && 列号 >= 0 && 列号 < header.length),
+      )
+      未认出们[i] = {
+        候选字段: [
+          ...候选字段集(
+            header,
+            sheet.rows.slice(0, 20).map((行) => 行.cells.map((单元格) => 单元格.text)),
+          ),
+        ],
+        列们: header.flatMap((单元格, 列号) => {
+          const 名 = (单元格 ?? "").trim()
+          if (是无信息列(名) || 已认列.has(列号) || 是属性列(名)) return []
+          const 样例 = sheet.rows
+            .map((行) => (行.cells[列号]?.text ?? "").trim())
+            .filter((值) => 值 !== "")
+            .slice(0, 3)
+            .map((值) => (值.length > 60 ? `${值.slice(0, 60)}…` : 值))
+          return [{ 列号, 表头: 名, 样例 }]
+        }),
+      }
+      const 行 = toFactRows({ projectId: job.projectId, materialId: job.materialId, sheet, mapping: 表.列 })
+      待写.push(...行)
+      守卫们.push({ sheet, 表头: header, 列: 表.列, 行 })
+
+      // 逐表类型：与 `识别材料` 的材料级判定**同一份** `classifyMaterialType`（`#002-06`）。
+      const 表类型 = classifyMaterialType(表.列)
+      if (表类型 === "资金") {
+        if (识别.类型 === "资金") {
+          资金行.push(...行)
+          资金表们.push(sheet.name)
+        } else {
+          未翻译表.push({ sheet: sheet.name, 原因: `材料类型=${识别.类型}，本期只翻译资金材料` })
+        }
+      } else {
+        // 非资金表：一律成为模板候选（§9.1）。材料判资金时同样收——混合材料的非资金表
+        // 以前被静默丢弃，模板正是给它一条通路。
+        模板候选表.push({
+          sheet: sheet.name,
+          rows: 行,
+          映射字段集: new Set(Object.values(表.列).filter(是识别字段)),
+        })
+      }
+    }
+
+    // 「已解析」不许说谎（I2）：映射了时间列、该列有非空原文，却**一个都没解析出来**
+    // ⇒ 说明时间格式不认识（典型是 Excel 默认 `m/d/yy`，已由 `dateText` 兜住）。
+    // 按表判，用合并后的 `表.列` 找 `startedAt`；放在 `待写` 组装之后、事务之前。
+    // 走失败路径落「有问题」，让用户看得见；空列是合法数据，不拦。
+    for (const 守卫 of 守卫们) {
+      const 时间列 = Object.keys(守卫.列).find((k) => 守卫.列[Number(k)] === "startedAt")
+      if (时间列 === undefined) continue
+      const 非空原文数 = 守卫.sheet.rows.filter(
+        (r) => (r.cells[Number(时间列)]?.text ?? null) !== null,
+      ).length
+      if (非空原文数 > 0 && !守卫.行.some((r) => r.startedAt !== null)) {
+        throw new Error(
+          `「${守卫.sheet.name}」的时间列（${守卫.表头[Number(时间列)] ?? "未命名"}）有 ${非空原文数} 个非空值，但一个都没解析出来；请确认时间格式`,
+        )
+      }
+    }
+
+    // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
+    // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
+    //
+    // 016 T011：`未识别:*` 由探测结论显式给出（不靠文案匹配）。走到这里说明没有适配器命中，
+    // 结论只可能带 `未识别:无匹配适配器` / `未识别:缺必需列:<列名>`；取**最先命中**的字面值。
+    if (认出列数 === 0) {
+      let 码: 原因码 = "未识别:无匹配适配器"
+      for (const 结论 of 结论们) {
+        if (结论.状态 === "未识别" && 是原因码(结论.原因码)) {
+          码 = 结论.原因码
+          break
+        }
+      }
+      throw new 原因码错误(码, "一列都没认出来（表头可能是标题行）")
+    }
+  }
 
   // ── 选模板（§9.2）：显式指定优先，否则按表自动建议；资金表只走资金通路（§4 偏差 3）──
   const 指定id = job.templateId
@@ -675,6 +884,36 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     翻译模板({ projectId: job.projectId, materialId: job.materialId, template: 套.模板, rows: 套.表.rows }),
   )
   const 资金翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 资金行 }) : undefined
+
+  /**
+   * 016 T012 · 富化（Ruling B：`翻译资金` 之后、事务之前；Ruling L：只接资金材料）。
+   *
+   * 富化失败**不拖垮作业**：参考库 / 外部服务是增强通道，不是入库必经环节（FR-052）。
+   * 但异常必须留痕（`#006-28`），不写裸 catch。属性观察并入 `资金翻译` 后仍由
+   * `写入翻译结果` 这一条写入口落库——事务里不另写一份 attrs。
+   */
+  let 富化结果: 富化结果 | undefined
+  if (识别.类型 === "资金" && 资金行.length > 0) {
+    if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 0, 总数: 资金行.length })
+    try {
+      富化结果 = await 富化(
+        { projectId: job.projectId, materialId: job.materialId, rows: 资金行 },
+        {
+          参考库: deps.参考库 ?? 建参考库(async () => ({ 版本: "内置-空", 条目: [] })),
+          ...(deps.外部服务 === undefined ? {} : { 外部服务: deps.外部服务 }),
+          案件库: (值们) => 查案件库账号(db, job.projectId, 值们),
+        },
+      )
+      if (资金翻译 !== undefined) 并入属性观察(资金翻译, 富化结果.属性们)
+      // 收尾进度只在富化**成功后**写；失败保留进入时的「富化 0/N」（M9）。
+      if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 资金行.length, 总数: 资金行.length })
+    } catch (error) {
+      console.warn(
+        `[openhive-case-ingest] 富化失败（不影响作业）：${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
   const 翻译 = 资金翻译 === undefined && 模板翻译们.length === 0 ? undefined : 合并翻译结果([
     ...(资金翻译 === undefined ? [] : [资金翻译]),
     ...模板翻译们,
@@ -711,17 +950,55 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       })),
   ]
 
+  /**
+   * `parse_detail.mapping` 的两副形状。
+   *
+   * 四层通路照旧；适配器通路**没有列映射可写**（转换器给的是事实行），所以 `工作表` 留空、
+   * 另记 `适配器` 与「档案也命中」（Ruling H：档案只记录、不参与决策）。两副都写 `模型.调用`，
+   * 让下游能区分这次材料到底调没调模型。
+   */
+  const 映射详情 =
+    适配 === undefined
+      ? {
+          模型: 识别.模型,
+          工作表: Object.fromEntries(
+            识别.工作表.map((s, i) => [
+              s.sheet,
+              {
+                来源: s.来源,
+                待确认: s.待确认,
+                未知列: s.未知列,
+                方法: s.方法,
+                未认出: 未认出们[i]?.列们 ?? [],
+                候选字段: 未认出们[i]?.候选字段 ?? [],
+                // 预览要按原映射重建行（§10.3）；老材料没有这个键 ⇒ 预览 409 `material_not_ready`。
+                列: s.列,
+                ...(s.档案 === undefined ? {} : { 档案: s.档案 }),
+              },
+            ]),
+          ),
+        }
+      : {
+          模型: { 调用: 0 },
+          适配器: { id: 适配.id, version: 适配.version },
+          ...(档案也命中.length === 0 ? {} : { 档案也命中 }),
+          工作表: {},
+        }
+
   // 重放落地：先删后写。放在这里（而不是函数开头）—— 上面任何一步抛错时旧行还在。
   //
   // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
   // 「旧行已删、只有前 500 行」——材料标成「有问题」，数据却成了半份，比失败更糟。
   // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
-  await inTransaction(db, async (tx) => {
+  //
+  // 016 T011：**只包事务这一段**（别把事务外的读 / 翻译失败误标成「入库异常」）。
+  try {
+    await inTransaction(db, async (tx) => {
     await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
     // 重放清理必须早于写入，且顺序固定（Global Constraints 8）。表格路径以前不写事实，
     // 这两句对老材料是空操作；不写的话，第二次解析会在库里叠出第二份卡片。
     await 清本材料翻译(tx, job.projectId, job.materialId)
-    await insertFactRows(tx, 待写)
+    const 实写行数 = await insertFactRows(tx, 待写)
     const 翻译回执 =
       翻译 === undefined
         ? undefined
@@ -740,28 +1017,12 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       materialId: job.materialId,
       action: "完成",
       detail: {
-        mapping: {
-          模型: 识别.模型,
-          工作表: Object.fromEntries(
-            识别.工作表.map((s, i) => [
-              s.sheet,
-              {
-                来源: s.来源,
-                待确认: s.待确认,
-                未知列: s.未知列,
-                方法: s.方法,
-                未认出: 未认出们[i]?.列们 ?? [],
-                候选字段: 未认出们[i]?.候选字段 ?? [],
-                // 预览要按原映射重建行（§10.3）；老材料没有这个键 ⇒ 预览 409 `material_not_ready`。
-                列: s.列,
-                ...(s.档案 === undefined ? {} : { 档案: s.档案 }),
-              },
-            ]),
-          ),
-        },
+        mapping: 映射详情,
         // 根级（不进 `翻译`）：非资金材料也要能说清「哪张表为什么不产卡片」（I3 / G4）。
         ...(未翻译表.length === 0 ? {} : { 未翻译表 }),
         ...(卡片模板明细.length === 0 ? {} : { 卡片模板: 卡片模板明细 }),
+        // T012 富化：统计给报告五要素用；补全明细（依据 / 置信度 / 版本）供 T013 取样。
+        ...(富化结果 === undefined ? {} : { 富化: 富化结果.统计, 补全明细们: 富化结果.补全明细们 }),
         ...(翻译回执 === undefined || 翻译 === undefined
           ? {}
           : {
@@ -781,22 +1042,245 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     await setMaterialFormatFingerprints(tx, {
       projectId: job.projectId,
       materialId: job.materialId,
-      指纹们: sheets.flatMap((sheet, i) => {
-        const 指纹 = 指纹们[i]
-        return 指纹 === undefined || 指纹 === "" ? [] : [{ 工作表: sheet.name, 指纹 }]
-      }),
+      // 适配器通路没有列映射 ⇒ 不写格式指纹（写进去就是假缓存）。
+      指纹们:
+        适配 === undefined
+          ? sheets.flatMap((sheet, i) => {
+              const 指纹 = 指纹们[i]
+              return 指纹 === undefined || 指纹 === "" ? [] : [{ 工作表: sheet.name, 指纹 }]
+            })
+          : [],
     })
     // 只记来源为「别名库」的表头（设计 §4.3：一份材料同一个别名只 +1，由 `记别名命中` 去重）。
     await 记别名命中(
       tx,
-      识别.工作表.flatMap((s) =>
-        Object.keys(s.来源)
-          .filter((k) => s.来源[Number(k)] === "别名库")
-          .map((k) => s.表头[Number(k)] ?? ""),
-      ),
+      适配 === undefined
+        ? 识别.工作表.flatMap((s) =>
+            Object.keys(s.来源)
+              .filter((k) => s.来源[Number(k)] === "别名库")
+              .map((k) => s.表头[Number(k)] ?? ""),
+          )
+        : [],
     )
+    // ── 016 T013 · N8：入库报告与准入结论（一次作业一行，与事实同一事务，Ruling O）──
+    // 五要素取数不编造：值闸只有转换器自报一条权威（Ruling X），没有就写空并告警。
+    const 报告值闸们: unknown[] = []
+    const 报告警告们: unknown[] = []
+    if (适配 === undefined) {
+      报告警告们.push("无适配器（四层识别），未执行适配器闸")
+    } else if (是对象(转换器报告) && Array.isArray(转换器报告["gates"])) {
+      报告值闸们.push(...转换器报告["gates"])
+    } else {
+      报告警告们.push("转换器未报告值闸结果")
+    }
+    // A6：转换器自报的 warnings 原样并入（不编造前缀、不改形状）。
+    if (是对象(转换器报告) && Array.isArray(转换器报告["warnings"])) {
+      报告警告们.push(...转换器报告["warnings"])
+    }
+    // A7 轮 2：`insertFactRows` 的 `on conflict do nothing` 会吃掉批内重复的
+    // `(sheet,rowNo)`——报告写实际写入数，差额如实告警（重复行不是整份失败）。
+    const 批内重复行数 = 待写.length - 实写行数
+    if (批内重复行数 > 0) 报告警告们.push(`批内重复行 ${批内重复行数} 条未写入`)
+    const 未认出列数 = 未认出们.reduce((合计, 项) => 合计 + (项?.列们.length ?? 0), 0)
+    if (未认出列数 > 0) 报告警告们.push(`未认出列 ${未认出列数} 个`)
+    // T012 审查 M4：待确认只算不落，报告是它唯一的持久化出口（FR-052「交人看」）。
+    for (const 告警 of 富化结果?.告警们 ?? []) 报告警告们.push(告警)
+    for (const 待确认 of 富化结果?.待确认们 ?? []) 报告警告们.push(待确认)
+    const 本轮适配器 = 适配 === undefined ? undefined : { id: 适配.id, version: 适配.version }
+    const 历史报告 = await 最新报告(tx, job.projectId, job.materialId)
+    const 准入 = 判准入({
+      ...(本轮适配器 === undefined ? {} : { 本轮适配器 }),
+      本轮原因码: null,
+      原件sha256,
+      ...(历史报告 === undefined
+        ? {}
+        : { 历史报告: { adapterId: 历史报告.adapterId, sourceSha256: 历史报告.sourceSha256 } }),
+    })
+    // 失败**不吞**（报告是入库的一部分）：冲突 / 写不进都会抛，由 T011 的包裹落
+    // `失败:入库异常` 并整笔回滚。
+    await 写报告(tx, {
+      projectId: job.projectId,
+      jobId: job.jobId,
+      materialId: job.materialId,
+      adapterId: 本轮适配器?.id ?? null,
+      adapterVersion: 本轮适配器?.version ?? null,
+      // FR-058：适配器与档案各自有版本。适配器通路记适配版本；四层通路命中档案时记
+      // 档案的 `rule_version`（迁移 0046 真有这一列），没命中 / 没填 ⇒ null。
+      ruleVersion:
+        本轮适配器 === undefined ? (首个档案命中?.ruleVersion ?? null) : 本轮适配器.version,
+      sourceSha256: 原件sha256,
+      gates: 报告值闸们,
+      warnings: 报告警告们,
+      // A6：两类跳过行都保留——翻译层的 `{行号,原因}` 与转换器自报的 `{sheet,rowNo,原因}`。
+      skippedRows: [
+        ...(翻译?.跳过们 ?? []).map((跳过) => ({ 行号: 跳过.rowNo, 原因: 跳过.原因 })),
+        ...(是对象(转换器报告) && Array.isArray(转换器报告["skippedRows"])
+          ? 转换器报告["skippedRows"]
+          : []),
+      ],
+      // A3：报告列全部表头闸命中项（跨表去重，`priority desc, id asc`）。
+      matches: 合并命中们(结论们),
+      // A7：本次实际写出的事实行数（两条通路同一口径，不写真值以外的东西）。
+      convertedRows: 实写行数,
+      enrich: 富化结果 === undefined ? null : 富化结果.统计,
+      admission: 准入,
+    })
     await 收尾(tx, job, "完成", null)
+    })
+  } catch (error) {
+    throw 转原因码错误(error, "失败:入库异常")
+  }
+  // 批处理每批写一次（不承诺逐行）。放在事务**提交之后**：事务内写进度一旦失败会带崩整笔事务，
+  // 而进度只是回显，不该有这种权力。
+  await 报进度("写入", { 已处理: 待写.length, 总数: 待写.length })
+}
+
+type 转换器 = Extract<适配器, { kind: "converter" }>
+
+/**
+ * 材料级决胜：所有「已识别」结论里，按适配器的 `priority desc → id asc` 取第一个。
+ *
+ * `kind` 收窄只为 TS：`探测` 已经过滤掉 `rowRules`（Ruling I），这里**不是**第二道功能闸；
+ * 比较器直接复用注册表导出的 `按优先与id`（`#002-06`）。
+ */
+function 选适配器(结论们: readonly 探测结论[], 适配器们: readonly 适配器[]): 转换器 | undefined {
+  const 命中 = 结论们.flatMap((结论) => {
+    if (结论.状态 !== "已识别" || 结论.适配器id === undefined) return []
+    const 项 = 适配器们.find(
+      (候选): 候选 is 转换器 => 候选.kind === "converter" && 候选.id === 结论.适配器id,
+    )
+    return 项 === undefined ? [] : [项]
   })
+  return 命中.toSorted(按优先与id)[0]
+}
+
+/**
+ * 本作业所有表（结论们）的命中项去重合并，按 `priority desc, id asc`（FR-009 报告列全部命中项）。
+ *
+ * 同一适配器可能同时过两张表的表头闸 ⇒ 按 id 去重（一份作业在报告里只出现一次）。
+ */
+function 合并命中们(结论们: readonly 探测结论[]): 探测命中[] {
+  const 表 = new Map<string, 探测命中>()
+  for (const 结论 of 结论们) for (const 项 of 结论.命中们 ?? []) if (!表.has(项.id)) 表.set(项.id, 项)
+  return [...表.values()].toSorted(按优先与id)
+}
+
+/**
+ * 转换器报告里**第一个**失败闸（报告原顺序）：`通过率 < 阈值` 且 `检查项` 是非空字符串。
+ *
+ * 形状不符 / 没有 gates ⇒ `undefined`——那种情况走「转换器异常」，不许冒领值闸原因码。
+ * 值闸的权威证据是转换器自己的报告（Ruling X），这里只做映射，不求值。
+ */
+function 第一个失败闸(报告: unknown): { 检查项: string } | undefined {
+  if (!是对象(报告)) return undefined
+  const gates = 报告["gates"]
+  if (!Array.isArray(gates)) return undefined
+  for (const 闸 of gates) {
+    if (!是对象(闸)) continue
+    const 检查项 = 闸["检查项"]
+    const 通过率 = 闸["通过率"]
+    const 阈值 = 闸["阈值"]
+    if (typeof 检查项 !== "string" || 检查项.trim() === "") continue
+    if (typeof 通过率 !== "number" || !Number.isFinite(通过率)) continue
+    if (typeof 阈值 !== "number" || !Number.isFinite(阈值)) continue
+    if (通过率 >= 阈值) continue
+    return { 检查项 }
+  }
+  return undefined
+}
+
+/**
+ * 事实行搬运：T007 已按契约校验 `rowNo` / `amount` / `direction` / `extras`，
+ * 这里只把 JSON 值收成 `FactRowInput` 的字段类型，不另发明一套校验。
+ */
+function 转换行(原: unknown, job: ClaimedJob): FactRowInput {
+  if (!是对象(原)) throw new 原因码错误("失败:转换器异常", "事实行必须是对象")
+  const sheet = 原["sheet"]
+  const rowNo = 原["rowNo"]
+  if (typeof sheet !== "string" || typeof rowNo !== "number") {
+    throw new 原因码错误("失败:转换器异常", "事实行缺少 sheet / rowNo")
+  }
+  const extras = 原["extras"]
+  const direction = 原["direction"]
+  // `startedAt` 缺省 / null 合法（没有时间列）；存在但不是有限数字则是转换器违约。
+  // 契约校验（`case-converter-runner.ts`）不查这个字段，这里再静默收成 null 就等于
+  // 「材料已解析、时间却凭空没了」——必须显式失败。
+  const startedAt原 = 原["startedAt"]
+  let startedAt: number | null = null
+  if (startedAt原 !== undefined && startedAt原 !== null) {
+    if (typeof startedAt原 !== "number" || !Number.isFinite(startedAt原)) {
+      throw new 原因码错误(
+        "失败:转换器异常",
+        `事实行的 startedAt 必须是数字时间戳（实得 ${实得值(startedAt原)}）`,
+      )
+    }
+    startedAt = startedAt原
+  }
+  return {
+    projectId: job.projectId,
+    materialId: job.materialId,
+    sheet,
+    rowNo,
+    startedAt,
+    startedRaw: 文或空(原["startedRaw"]),
+    precision: 精度(原["precision"]),
+    timeType: 时间类型(原["timeType"]),
+    amount: 金额文本(原["amount"]),
+    balance: 文或空(原["balance"]),
+    counterparty: 文或空(原["counterparty"]),
+    counterpartyName: 文或空(原["counterpartyName"]),
+    ownerAccount: 文或空(原["ownerAccount"]),
+    ownerAccountRaw: 文或空(原["ownerAccountRaw"]),
+    counterpartyRaw: 文或空(原["counterpartyRaw"]),
+    direction: direction === "收" || direction === "付" ? direction : null,
+    currency: 文或空(原["currency"]),
+    extras: 是对象(extras) ? extras : {},
+  }
+}
+
+function 文或空(值: unknown): string | null {
+  return typeof 值 === "string" ? 值 : null
+}
+
+/**
+ * 违约值的单值呈现：对象只报类型名（`String(obj)` 得到的是无信息量的 `[object Object]`），
+ * 别把整行 JSON 化塞进 reason。
+ */
+function 实得值(值: unknown): string {
+  switch (typeof 值) {
+    case "string":
+      return `字符串 ${值}`
+    case "number":
+      return `数字 ${值}`
+    case "boolean":
+      return `布尔 ${值}`
+    case "bigint":
+      return `大整数 ${值}`
+    case "symbol":
+      return "symbol"
+    case "function":
+      return "函数"
+    case "undefined":
+      return "undefined"
+    default:
+      if (值 === null) return "null"
+      return Array.isArray(值) ? "数组" : "对象"
+  }
+}
+
+/** `amount` 契约里是字符串；runner 也接受数字 ⇒ 按原文优先搬运，不改写数值。 */
+function 金额文本(值: unknown): string | null {
+  if (typeof 值 === "string") return 值
+  if (typeof 值 === "number" && Number.isFinite(值)) return String(值)
+  return null
+}
+
+function 精度(值: unknown): "到日" | "到分" | "到秒" | null {
+  return 值 === "到日" || 值 === "到分" || 值 === "到秒" ? 值 : null
+}
+
+function 时间类型(值: unknown): "发生" | "记录" | "入库" | null {
+  return 值 === "发生" || 值 === "记录" || 值 === "入库" ? 值 : null
 }
 
 /**
@@ -830,8 +1314,15 @@ async function 跑文本(
 ): Promise<"完成" | "失败"> {
   if (!deps.建抽取器) throw new Error("这份部署没有配置抽取模型（缺少抽取器）")
 
-  const bytes = await deps.readFile(job.sourcePath)
-  const { text } = 抽取文本(bytes, material.path)
+  const 读文本 = async (): Promise<string> => {
+    try {
+      return 抽取文本(await deps.readFile(job.sourcePath), material.path).text
+    } catch (error) {
+      // 读盘 / 编码闸（严格 UTF-8、UTF-16 拒绝）都属于「这份文件读不进来」⇒ `失败:读文件`。
+      throw 转原因码错误(error, "失败:读文件")
+    }
+  }
+  const text = await 读文本()
   const 抽取器 = await deps.建抽取器(job)
 
   const 输出 = await 抽取材料(
@@ -896,7 +1387,9 @@ async function 跑文本(
   // 这条判断保留的是「同一份输出只写一次」的语义，不是事务安全的兜底。
   const 已写事实 = new Set<string>()
 
-  await inTransaction(db, async (tx) => {
+  // 016 T011：只包写入事务这一段 ⇒ 任何写入失败都记 `失败:入库异常`（读盘已在上面单独赋码）。
+  try {
+    await inTransaction(db, async (tx) => {
     // 关系对迁移（#013-02 同型）：本材料上一次贡献的 human 转账对必须在删事实之前取出，
     // 否则重放换对手后，旧对没有卡片支持、却没人传进 `重建关系`，会留一笔聚合了已删事件的转账。
     // 取的是**对齐后**的账户对（`本材料转账对` 内部完成），否则删不到真正的机器行。
@@ -1067,7 +1560,10 @@ async function 跑文本(
       全部片失败 ? "失败" : "完成",
       全部片失败 ? `全部 ${输出.片们.length} 段都没抽干净：${问题片[0]?.问题[0] ?? ""}` : null,
     )
-  })
+    })
+  } catch (error) {
+    throw 转原因码错误(error, "失败:入库异常")
+  }
 
   return 全部片失败 ? "失败" : "完成"
 }
@@ -1284,10 +1780,47 @@ async function 归还认领(db: Queryable, job: ClaimedJob): Promise<void> {
   `)
 }
 
-async function 收尾(db: Queryable, job: ClaimedJob, status: "完成" | "失败", error: string | null) {
+/**
+ * 016 T011 · 进度写入（`progress` 形状见 data-model §3）。
+ *
+ * **失败吞掉只记 WARN**：进度不是账本，写不进去不该把作业打失败。但**不许空 catch**
+ * （`#006-28`）：吞掉的东西必须留一条能检索的痕迹。
+ *
+ * `dryRun` 的判断在调用方（`跑表格` 的 `报进度`）：这里的入参没有运行选项。
+ */
+async function 写进度(
+  db: Queryable,
+  job: ClaimedJob,
+  进度: { 阶段: "读表" | "探测" | "转换" | "写入" | "富化"; 已处理?: number; 总数?: number },
+): Promise<void> {
+  try {
+    await db.execute(sql`
+      update auth.case_ingest_job
+         set progress = ${JSON.stringify({ ...进度, 更新时间: nowSeconds() })}::jsonb
+       where project_id = ${job.projectId} and id = ${job.jobId}
+    `)
+  } catch (error) {
+    console.warn(
+      `[openhive-case-ingest] 写进度失败（不影响作业）：${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+/**
+ * 作业收尾：状态 / 错误自由文本 / 结构化原因码。
+ *
+ * `reasonCode` 缺省 `null`：成功路径与未带码的失败都写 NULL（**不编造**，契约「写入规则」）。
+ */
+async function 收尾(
+  db: Queryable,
+  job: ClaimedJob,
+  status: "完成" | "失败",
+  error: string | null,
+  reasonCode: string | null = null,
+) {
   await db.execute(sql`
     update auth.case_ingest_job
-       set status = ${status}, finished_at = ${nowSeconds()}, error = ${error}
+       set status = ${status}, finished_at = ${nowSeconds()}, error = ${error}, reason_code = ${reasonCode}
      where project_id = ${job.projectId} and id = ${job.jobId}
   `)
 }

@@ -4,7 +4,7 @@ import { connect } from "@opencode-ai/auth/db"
 import { followParentDeath } from "@opencode-ai/auth/parent-watch"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
 import type { AssetTarget } from "./asset"
-import { createGovernanceServer } from "./governance"
+import { createGovernanceServer, ingestGateFromEnv, type GovernanceDeps } from "./governance"
 import { assetsRoot } from "./storage"
 
 /**
@@ -34,6 +34,8 @@ export interface GovernanceHttpDeps {
   readonly db: AssetTarget
   readonly root: string
   readonly workspaceRoot: string
+  /** 【保留的定制 · 016】M10 词表；生产由 `ingestGateFromEnv(process.env)` 给。 */
+  readonly ingestGate?: GovernanceDeps["ingestGate"]
 }
 
 export interface GovernanceHttpServer {
@@ -180,7 +182,12 @@ export function startGovernanceHttp(
 
 if (import.meta.main) {
   const server = startGovernanceHttp(
-    { db: connect(process.env), root: assetsRoot(process.env), workspaceRoot: workspaceRoot(process.env) },
+    {
+      db: connect(process.env),
+      root: assetsRoot(process.env),
+      workspaceRoot: workspaceRoot(process.env),
+      ingestGate: ingestGateFromEnv(process.env),
+    },
     { port: Number(process.env[PORT_ENV] ?? 0) },
   )
   process.stdout.write(`${readyLine(server.port)}\n`)

@@ -36,6 +36,8 @@ function 挂上(props: Parameters<typeof GovernanceConsole>[0] = {}) {
           usageApi={props.usageApi}
           templateApi={props.templateApi}
           dataSourceApi={props.dataSourceApi}
+          trustedSkillApi={props.trustedSkillApi}
+          isAdmin={props.isAdmin}
           selfId={props.selfId}
         />
       ),
@@ -167,6 +169,34 @@ describe("治理后台 · 全屏骨架", () => {
 
     expect(读列表).toBe(1)
     expect(root.querySelector('[data-slot="asset-row"][data-id="a1"]')).not.toBeNull()
+  })
+
+  test("接了可信技能接口 ⇒ 资产治理板块渲染白名单区（016 T021 接线）", async () => {
+    let 读次数 = 0
+    const root = 挂上({
+      capabilities: new Set(["asset-governance"]),
+      isAdmin: true,
+      trustedSkillApi: {
+        list: async () => {
+          读次数 += 1
+          return { kind: "ok", value: [] }
+        },
+        add: async () => ({ kind: "ok" }),
+        revoke: async () => ({ kind: "ok" }),
+      },
+    })
+    await flush()
+    await flush()
+
+    expect(读次数).toBe(1)
+    expect(root.querySelector("[data-slot='trusted-skill-manage']") === null).toBe(false)
+  })
+
+  test("没接可信技能接口 ⇒ 资产治理板块不画白名单区（未接线不放假块）", async () => {
+    const root = 挂上({ capabilities: new Set(["asset-governance"]) })
+    await flush()
+
+    expect(root.querySelector("[data-slot='trusted-skill-manage']") === null).toBe(true)
   })
 
   test("接了数据项目接口 ⇒「数据项目权限」页是真的项目表，不是占位（T008 接线）", async () => {

@@ -77,6 +77,7 @@ import {
   enablementOf,
   ENABLEMENT_LIMIT,
 } from "@opencode-ai/asset-service/enablement"
+import { 读入库包id, 校验入库包 } from "@opencode-ai/asset-service/ingest-gate"
 import {
   linkSkill,
   reconcileSkillLinks,
@@ -100,6 +101,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { readdir, stat } from "node:fs/promises"
 import nodePath, { join } from "node:path"
 import { 记治理 } from "./audit"
+import { 属性归属们, 属性键们 } from "./case-attribute-registry"
 import { disposeInstanceDirectory } from "./instance-cache"
 import { OpenhivePg } from "./pg"
 import { 成员角色 as 成员角色共享, 项目属主 } from "./project-actor"
@@ -223,6 +225,14 @@ interface Deps {
   readonly skill: Option.Option<Skill.Interface>
 }
 
+/**
+ * 一次「完整启用」需要的依赖（2026-11-19，016 review R2）。
+ *
+ * 比 `Deps` 窄：`完整启用` 不读每用户 SQLite、也不碰内核技能服务，只有它要的三样。
+ * 上传链（`file.ts`）拿得到 `pg` / `root`，拿不到 `InstanceStore`，按这个形状才接得上。
+ */
+export type 启用依赖 = Pick<Deps, "pg" | "root" | "store">
+
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
@@ -246,8 +256,12 @@ function ok(value: unknown) {
   return HttpServerResponse.jsonUnsafe(value, { status: 200 })
 }
 
-function fail(status: number, error: string, code?: string) {
-  return HttpServerResponse.jsonUnsafe(code === undefined ? { error } : { error, code }, { status })
+function fail(status: number, error: string, code?: string, problems?: readonly string[]) {
+  // 【保留的定制 · 016】识别卡校验失败带逐条 `problems`（`ingest_gate_failed`）。
+  const 体: Record<string, unknown> = { error }
+  if (code !== undefined) 体.code = code
+  if (problems !== undefined) 体.problems = problems
+  return HttpServerResponse.jsonUnsafe(体, { status })
 }
 
 const 身份 = Effect.serviceOption(User.Service)
@@ -277,12 +291,12 @@ function 读体(request: HttpServerRequest.HttpServerRequest) {
   )
 }
 
-function 项目目录(deps: Deps, userId: string, projectId: string): string {
+function 项目目录(deps: 启用依赖, userId: string, projectId: string): string {
   return projectDirectory(deps.root, userId, projectId)
 }
 
 /** 丢掉该项目的实例缓存：让下一次请求重扫 skill 目录（见文件头「丢缓存」）。 */
-function 丢缓存(deps: Deps, directory: string) {
+function 丢缓存(deps: 启用依赖, directory: string) {
   return disposeInstanceDirectory(deps.store, directory, "实例层缺席，跳过缓存丢弃；启用在重启前不生效")
 }
 
@@ -597,7 +611,7 @@ function 找被覆盖(
 }
 
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */
-function 取部门(deps: Deps, userId: string) {
+function 取部门(deps: 启用依赖, userId: string) {
   return Effect.promise(async (): Promise<string> => {
     const rows = rowsOf(await deps.pg().execute(sql`select dept from auth.user where id = ${userId}`))
     const 部门 = rows[0]?.["dept"]
@@ -882,6 +896,148 @@ function handleAutoDelivery(request: HttpServerRequest.HttpServerRequest, deps: 
   })
 }
 
+/** 启用内核的失败：形状直接喂给出口的 `fail(status, error, code, problems)`。 */
+type 启用内核失败 = {
+  readonly ok: false
+  readonly status: number
+  readonly error: string
+  readonly code?: string
+  readonly problems?: readonly string[]
+}
+
+function 内核失败(status: number, error: string, code?: string, problems?: readonly string[]): 启用内核失败 {
+  return {
+    ok: false,
+    status,
+    error,
+    ...(code === undefined ? {} : { code }),
+    ...(problems === undefined ? {} : { problems }),
+  }
+}
+
+/**
+ * 启用前置内核（2026-11-19 从 `handleToggle` 原样抽出，行为零变化）。
+ *
+ * 只判「这份资产能不能装进项目」：成员与属主仍在出口判（权限先于一切副作用，`#004-09`），
+ * 上限与写库 / 建链接也留在出口。末尾追加 M10 识别卡校验（016）：坏包不进项目，
+ * `problems` 原样交给出口逐条列出。
+ */
+export function 启用内核(deps: 启用依赖, userId: string, projectId: string, assetId: string) {
+  return Effect.gen(function* () {
+    const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
+    if (asset === undefined) return 内核失败(404, "资产不存在", "not_found")
+    if (asset.type !== "skill") return 内核失败(409, "只有 skill 能装进项目", "asset_not_skill")
+    if (asset.status !== "published") return 内核失败(409, "只有已发布的 skill 能启用", "asset_not_published")
+    // 个人空间的资产**留在作者沙箱**，没有共享发布目录：`publishDirectory` 对 personal 直接抛
+    // `PersonalAssetDirectoryError`（`storage.ts:98-100`）。不在这里拦住，就会以 500 收场，
+    // 而产品口径要的是可读的 409。等「个人资产也进共享卷」那天再放开。
+    if (asset.visibility === "personal")
+      return 内核失败(409, "个人空间的 skill 还不能装进项目，请先发布到部门或全局", "personal_not_linkable")
+
+    const 部门 = yield* 取部门(deps, userId)
+    const viewer = { userId, department: 部门 }
+    // R6：授权组必须进可见性判定（否则「列表看得见、启用 403」）。判据仍只有
+    // `canReadAsset()` 一份，`对账并读` 那边传的是同一批 grant。
+    const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
+    if (!canReadAsset(viewer, asset, grants)) return 内核失败(403, "无权使用该资产", "forbidden")
+
+    const target = skillLinkTarget(assetsRoot(process.env), asset)
+    if (!(yield* Effect.promise(() => 路径存在(target))))
+      return 内核失败(409, "资产文件缺失，请重新发布", "asset_files_missing")
+
+    // 同名拦截：以 SKILL.md 的 frontmatter name 为准（内核也按它去重）
+    const 新名 = yield* 读名字(target)
+    const 已启用 = yield* Effect.promise(() => enabledAssetIds(deps.pg(), projectId))
+    // 本项目已启用包里的 adapter id（判「同 id 装两份」的唯一性）。读不到 id 的包不占位。
+    const 已占用id: string[] = []
+    for (const 已有 of 已启用) {
+      if (已有 === assetId) continue
+      const 另一份 = yield* Effect.promise(() => assetById(deps.pg(), 已有))
+      if (另一份 === undefined || 另一份.visibility === "personal") continue
+      const 另一目标 = skillLinkTarget(assetsRoot(process.env), 另一份)
+      // 同名拦截仍按可见性：读不到的不拿来比名（R6：不能把无权读者看不到的资产名回显给他）。
+      if (新名 !== undefined && canReadAsset(viewer, 另一份, grants)) {
+        const 另一名 = yield* 读名字(另一目标)
+        if (新名 === 另一名) return 内核失败(409, `项目里已启用同名 skill：${新名}`, "duplicate_skill_name")
+      }
+      // A11：adapter id 占位**不看可见性**——同项目已启用即占位。过滤掉看不见的包，内核里
+      // 就会同时装进两份同 id 适配器（启用者看不到另一份，不等于它不在这个项目里）。
+      const 占用 = yield* Effect.promise(() => 读入库包id(另一目标))
+      if (占用 !== undefined) 已占用id.push(占用)
+    }
+
+    // 【保留的定制 · 016】M10：入库包识别卡校验（词表由 opencode 侧注入，见 `ingest-gate.ts`）。
+    const 校验 = yield* Effect.promise(() =>
+      校验入库包({ assetType: asset.type, dir: target, 词汇: { 归属: 属性归属们, 键: 属性键们 }, 已占用id }),
+    )
+    if (!校验.ok) {
+      return 内核失败(409, `入库包识别卡校验未过：${校验.problems.join("；")}`, "ingest_gate_failed", 校验.problems)
+    }
+
+    return { ok: true as const, target }
+  })
+}
+
+export type 完整启用结果 =
+  | { readonly ok: true; readonly 结果: "enabled" | "already_enabled"; readonly target: string }
+  | { readonly ok: false; readonly status: number; readonly error: string; readonly code?: string; readonly problems?: readonly string[] }
+
+/**
+ * 「启用」的**唯一一份实现**（2026-11-19，016 review R2，`#002-06`）。
+ *
+ * 人工启用（`handleToggle`）与上传链的自动启用（`file.ts` 的 `自动启用尽力`）都走这里，
+ * 顺序是：校验（`启用内核`）⇒ 写启用行（20 上限在库层）⇒ 建链接 ⇒ 丢缓存 ⇒ 审计。
+ *
+ * **审计只记 `enabled`（Ruling BV，2026-11-19 控制器裁定）**：`already_enabled` 仍补链接
+ * （幂等修复缺失链接）与丢缓存，但**不**再记 `asset.enable`。理由是上传链每次都会把全部
+ * 白名单资产重走一遍：无条件记的话，每次成员上传都产出「属主启用了某资产」的假记录，而
+ * `detail` 只有 `{projectId}`，没有任何字段能区分「真启用」与「幂等重跑」。
+ *
+ * 权限（成员 / 属主）**不在这里**：那是出口的事（`#004-09` 权限先于一切副作用），
+ * 调用方自己判完再把属主身份交进来。
+ */
+export function 完整启用(
+  deps: 启用依赖,
+  userId: string,
+  projectId: string,
+  assetId: string,
+): Effect.Effect<完整启用结果> {
+  return Effect.gen(function* () {
+    const 内核 = yield* 启用内核(deps, userId, projectId, assetId)
+    if (!内核.ok) return 内核
+
+    // 上限是 `ENABLEMENT_LIMIT` 常量，由库层自己带（`enablement.ts`），这里不传
+    const 结果 = yield* Effect.promise(() => enableAsset(deps.pg(), { projectId, assetId, userId }))
+    if (结果 === "limit_reached")
+      return {
+        ok: false as const,
+        status: 409,
+        error: `每个项目最多启用 ${ENABLEMENT_LIMIT} 个 skill，请先停用一个`,
+        code: "enablement_limit",
+      }
+
+    const 目录 = 项目目录(deps, userId, projectId)
+    yield* Effect.promise(() => linkSkill(目录, assetId, 内核.target)).pipe(
+      Effect.catchCause((cause) => Effect.logError("链接失败，等待下一次对账修复", { projectId, assetId, cause })),
+    )
+    yield* 丢缓存(deps, 目录)
+    // Ruling BV（2026-11-19 控制器裁定，修正 brief §1.3 的「无论哪种都记治理」）：
+    // `already_enabled` 只补链接/丢缓存，不记审计——否则每次成员上传都会伪造一条
+    // 「属主启用了该资产」的记录，且 `detail` 无法区分真启用与幂等重跑。
+    if (结果 === "enabled") {
+      yield* 记治理(deps, userId, {
+        board: BOARD,
+        action: "asset.enable",
+        targetType: "asset",
+        targetId: assetId,
+        result: "ok",
+        detail: { projectId },
+      })
+    }
+    return { ok: true as const, 结果, target: 内核.target }
+  })
+}
+
 function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 动作: "enable" | "disable") {
   return Effect.gen(function* () {
     const user = yield* 身份
@@ -902,59 +1058,16 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
       return fail(403, "只有项目属主能启用或停用技能", "forbidden")
 
     if (动作 === "enable") {
-      const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
-      if (asset === undefined) return fail(404, "资产不存在", "not_found")
-      if (asset.type !== "skill") return fail(409, "只有 skill 能装进项目", "asset_not_skill")
-      if (asset.status !== "published") return fail(409, "只有已发布的 skill 能启用", "asset_not_published")
-      // 个人空间的资产**留在作者沙箱**，没有共享发布目录：`publishDirectory` 对 personal 直接抛
-      // `PersonalAssetDirectoryError`（`storage.ts:98-100`）。不在这里拦住，就会以 500 收场，
-      // 而产品口径要的是可读的 409。等「个人资产也进共享卷」那天再放开。
-      if (asset.visibility === "personal")
-        return fail(409, "个人空间的 skill 还不能装进项目，请先发布到部门或全局", "personal_not_linkable")
-
-      const 部门 = yield* 取部门(deps, userId)
-      const viewer = { userId, department: 部门 }
-      // R6：授权组必须进可见性判定（否则「列表看得见、启用 403」）。判据仍只有
-      // `canReadAsset()` 一份，`对账并读` 那边传的是同一批 grant。
-      const grants = yield* Effect.promise(() => grantsFor(deps.pg(), userId))
-      if (!canReadAsset(viewer, asset, grants)) return fail(403, "无权使用该资产", "forbidden")
-
-      const target = skillLinkTarget(assetsRoot(process.env), asset)
-      if (!(yield* Effect.promise(() => 路径存在(target))))
-        return fail(409, "资产文件缺失，请重新发布", "asset_files_missing")
-
-      // 同名拦截：以 SKILL.md 的 frontmatter name 为准（内核也按它去重）
-      const 新名 = yield* 读名字(target)
-      const 已启用 = yield* Effect.promise(() => enabledAssetIds(deps.pg(), projectId))
-      for (const 已有 of 已启用) {
-        if (已有 === assetId) continue
-        const 另一份 = yield* Effect.promise(() => assetById(deps.pg(), 已有))
-        if (另一份 === undefined || 另一份.visibility === "personal") continue
-        // R6：读不到的不拿来比名——否则会把无权读者看不到的资产名回显给他。
-        if (!canReadAsset(viewer, 另一份, grants)) continue
-        const 另一名 = yield* 读名字(skillLinkTarget(assetsRoot(process.env), 另一份))
-        if (新名 !== undefined && 新名 === 另一名)
-          return fail(409, `项目里已启用同名 skill：${新名}`, "duplicate_skill_name")
-      }
-
-      // 上限是 `ENABLEMENT_LIMIT` 常量，由库层自己带（`enablement.ts`），这里不传
-      const 结果 = yield* Effect.promise(() => enableAsset(deps.pg(), { projectId, assetId, userId }))
-      if (结果 === "limit_reached")
-        return fail(409, `每个项目最多启用 ${ENABLEMENT_LIMIT} 个 skill，请先停用一个`, "enablement_limit")
-
-      const 目录 = 项目目录(deps, userId, projectId)
-      yield* Effect.promise(() => linkSkill(目录, assetId, target)).pipe(
-        Effect.catchCause((cause) => Effect.logError("链接失败，等待下一次对账修复", { projectId, assetId, cause })),
-      )
-      yield* 丢缓存(deps, 目录)
-      yield* 记治理(deps, userId, {
-        board: BOARD,
-        action: "asset.enable",
-        targetType: "asset",
-        targetId: assetId,
-        result: "ok",
-        detail: { projectId },
-      })
+      // 【保留的定制 · 016】成员 / 属主由本出口判；「能不能装 + 写库 + 建链接 + 缓存 + 审计」
+      // 只有 `完整启用()` 一份（上传链的自动启用也走它）。
+      //
+      // Ruling BV（R2c）：重复启用（`already_enabled`）只补链接 + 丢缓存，**不**再记
+      // `asset.enable`——上传链每次都把白名单重走一遍，若重记就会给每次成员上传伪造一条
+      // 「属主启用了该资产」（detail 只有 projectId、actor 却是属主）。这与下面停用侧
+      // 「幽灵 id 也留痕」的方向**刻意相反**：停用留痕是为了追「谁按了什么」，启用留痕
+      // 只在事实真的新增时才有意义。停用行为不动。
+      const 结果 = yield* 完整启用(deps, userId, projectId, assetId)
+      if (!结果.ok) return fail(结果.status, 结果.error, 结果.code, 结果.problems)
     } else {
       // 停用对「库里没有这条」的 assetId 也回 200 + 审计，这是刻意的幂等：用户连点两次、
       // 或两台机器同时点，不该第二次报错。幽灵 id 也留一条审计，便于追「谁按了什么」。

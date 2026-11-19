@@ -6,8 +6,11 @@ const 档案 = (over: Partial<档案候选> = {}): 档案候选 => ({
   name: "微信流水",
   type: "资金",
   mapping: { 交易时间: "startedAt", 交易金额: "amount", 对方户名: "counterpartyName" },
+  optionalHeaders: [],
+  priority: 100,
   hitCount: 0,
   updatedAt: 1,
+  ruleVersion: null,
   ...over,
 })
 
@@ -21,6 +24,7 @@ describe("匹配数据源档案", () => {
       id: "sp-1",
       name: "微信流水",
       columns: { 0: "counterpartyName", 1: "amount", 2: "startedAt" },
+      ruleVersion: null,
     })
   })
 
@@ -61,7 +65,7 @@ describe("匹配数据源档案", () => {
         表头: [" 交易时间 ", "交易金额", null],
         档案们: [档案({ mapping: { 交易时间: "startedAt", 交易金额: "amount" } })],
       }),
-    ).toEqual({ id: "sp-1", name: "微信流水", columns: { 0: "startedAt", 1: "amount" } })
+    ).toEqual({ id: "sp-1", name: "微信流水", columns: { 0: "startedAt", 1: "amount" }, ruleVersion: null })
   })
 
   test("多候选：映射列数多者优先", () => {
@@ -90,5 +94,26 @@ describe("匹配数据源档案", () => {
 
   test("空候选 ⇒ null（撤销由调用方过滤）", () => {
     expect(匹配数据源档案({ 表头: ["交易时间", "交易金额"], 档案们: [] })).toBeNull()
+  })
+
+  test("有效列数与 hitCount 相同：priority 高者优先（不靠 id / 数组顺序）", () => {
+    const 低 = 档案({ id: "sp-低", priority: 100 })
+    const 高 = 档案({ id: "sp-高", priority: 200 })
+
+    expect(匹配数据源档案({ 表头: ["交易时间", "交易金额", "对方户名"], 档案们: [低, 高] })?.id).toBe("sp-高")
+    // 数组顺序反过来，结论不变。
+    expect(匹配数据源档案({ 表头: ["交易时间", "交易金额", "对方户名"], 档案们: [高, 低] })?.id).toBe("sp-高")
+  })
+
+  test("optional_headers 不参与命中：只有可选头不同的两份档案，结论与都不带时一致", () => {
+    const 甲 = 档案({ id: "sp-甲", optionalHeaders: ["备注"] })
+    const 乙 = 档案({ id: "sp-乙", optionalHeaders: ["摘要", "柜员"] })
+
+    const 表头 = ["交易时间", "交易金额", "对方户名"]
+    const 带可选头 = 匹配数据源档案({ 表头, 档案们: [甲, 乙] })
+    const 不带可选头 = 匹配数据源档案({ 表头, 档案们: [档案({ id: "sp-甲" }), 档案({ id: "sp-乙" })] })
+
+    expect(带可选头?.id).toBe(不带可选头?.id)
+    expect(带可选头?.columns).toEqual(不带可选头?.columns)
   })
 })

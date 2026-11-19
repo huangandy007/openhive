@@ -94,4 +94,38 @@ describe("治理后台 · 外壳", () => {
     expect(覆盖层()).toBeNull()
     expect(工作区盒(root).hasAttribute("inert")).toBe(false)
   })
+
+  test("trustedSkillApi 从外壳透传到治理台（016 T021 / R3c）：接了才画白名单区", async () => {
+    const root = document.createElement("div")
+    document.body.appendChild(root)
+    let 读次数 = 0
+    挂过的.push(
+      render(
+        () => (
+          <GovernanceConsoleHost
+            open={true}
+            capabilities={new Set(["asset-governance"])}
+            isAdmin={true}
+            trustedSkillApi={{
+              list: async () => {
+                读次数 += 1
+                return { kind: "ok", value: [] }
+              },
+              add: async () => ({ kind: "ok" }),
+              revoke: async () => ({ kind: "ok" }),
+            }}
+          >
+            <div>工作区</div>
+          </GovernanceConsoleHost>
+        ),
+        root,
+      ),
+    )
+    await flush()
+    await flush()
+
+    expect(读次数).toBeGreaterThanOrEqual(1)
+    // 布尔比较（`#013-12`）：白名单区确实画出来了（= 外壳没有把 prop 截在半路）。
+    expect(document.querySelector("[data-slot='trusted-skill-manage']") === null).toBe(false)
+  })
 })

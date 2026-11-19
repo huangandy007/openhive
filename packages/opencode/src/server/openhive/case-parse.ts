@@ -79,12 +79,16 @@ function handleMaterials(request: HttpServerRequest.HttpServerRequest, deps: Dep
     const user = yield* 身份
     if (Option.isNone(user)) return HttpServerResponse.empty({ status: 401 })
 
-    const projectId = new URL(request.url, "http://localhost").searchParams.get("projectId")
+    const 查询 = new URL(request.url, "http://localhost").searchParams
+    const projectId = 查询.get("projectId")
     if (!是合法段(projectId)) return fail(400, "projectId 非法", "bad_request")
     if ((yield* 成员角色(deps, user.value.id, projectId)) === undefined)
       return fail(403, "不是该项目成员", "forbidden")
 
-    const materials = yield* Effect.promise(() => 材料视图(deps.pg(), projectId))
+    // 「未识别」筛选只认 `=1`（其余取值按不带处理，不报错）。
+    const materials = yield* Effect.promise(() =>
+      材料视图(deps.pg(), projectId, { 未识别: 查询.get("未识别") === "1" }),
+    )
     return ok({ materials, parseableExtensions: [...可解析扩展名] })
   })
 }

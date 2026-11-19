@@ -1,0 +1,323 @@
+import { afterEach, describe, expect, test } from "bun:test"
+import { createSignal, type JSX } from "solid-js"
+import { render } from "solid-js/web"
+import { createSourceProfileApi } from "./source-profile-api"
+import { SourceProfileView } from "./source-profile-view"
+
+/**
+ * 016 T017 · 数据源档案视图（列表 + 建档 + 撤销）。
+ *
+ * 用**真客户端 + 计数替身**：既验证视图把服务端的蛇形行画出来，也验证动作发往既有三出口。
+ */
+
+async function 等(条件: () => boolean) {
+  for (let i = 0; i < 100; i += 1) {
+    if (条件()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error("等超时：条件始终没成立")
+}
+function mount(element: () => JSX.Element) {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  render(element, host)
+  return host
+}
+afterEach(() => {
+  document.body.innerHTML = ""
+})
+
+const 回 = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+const 档案行 = {
+  id: "s1",
+  name: "八月流水平安",
+  type: "资金",
+  header_set: ["交易时间", "金额"],
+  mapping: { 金额: "金额" },
+  hit_count: 3,
+  created_at: 1700000000,
+  updated_at: 1700000100,
+  revoked_at: null,
+}
+
+function 假服务() {
+  const 记 = { 建: [] as unknown[], 撤: [] as unknown[], 列表: 0 }
+  const send = async (url: string, init?: RequestInit) => {
+    if (url.includes("/source-profile/build")) {
+      记.建.push(JSON.parse(String(init?.body)))
+      return 回({ id: "s2", created: true })
+    }
+    if (url.includes("/source-profile/revoke")) {
+      记.撤.push(JSON.parse(String(init?.body)))
+      return 回({ ok: true })
+    }
+    记.列表 += 1
+    return 回({ list: [档案行] })
+  }
+  return { 记, api: createSourceProfileApi(send) }
+}
+
+describe("数据源档案视图", () => {
+  test("列表把蛇形行画出来；已撤销的行有标记", async () => {
+    const api = createSourceProfileApi(async () => 回({ list: [{ ...档案行, revoked_at: 1700000200 }] }))
+    const host = mount(() => <SourceProfileView projectId="p1" 是属主={true} api={api} />)
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+    expect(host.textContent).toContain("八月流水平安")
+    expect(host.textContent).toContain("资金")
+    expect(host.textContent).toContain("已撤销")
+  })
+
+  test("属主选材料提交 ⇒ 调 build（只带选中的 materialId）；成功后重拉列表", async () => {
+    const { 记, api } = 假服务()
+    const host = mount(() => (
+      <SourceProfileView
+        projectId="p1"
+        是属主={true}
+        api={api}
+        材料们={[
+          { id: "m1", path: "资料/流水.xlsx" },
+          { id: "m2", path: "资料/话单.xlsx" },
+        ]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+    const 列表次数 = 记.列表
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m2"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 记.建.length === 1)
+
+    expect(记.建[0]).toEqual({ projectId: "p1", materialId: "m2" })
+    await 等(() => 记.列表 === 列表次数 + 1)
+  })
+
+  test("材料候选为空 ⇒ 显示「暂无已解析材料」；非空 ⇒ 不显示（布尔比较）", async () => {
+    const api = createSourceProfileApi(async () => 回({ list: [] }))
+
+    const 空 = mount(() => <SourceProfileView projectId="p1" 是属主={true} api={api} 材料们={[]} />)
+    await 等(() => (空.textContent ?? "").includes("还没有数据源档案"))
+    const 空提示 = 空.querySelector("[data-slot='source-profile-empty-materials']")
+    expect(空提示 === null).toBe(false)
+    expect(空提示!.textContent).toContain("暂无已解析材料")
+
+    const 非空 = mount(() => (
+      <SourceProfileView
+        projectId="p1"
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => (非空.textContent ?? "").includes("还没有数据源档案"))
+    expect(非空.querySelector("[data-slot='source-profile-empty-materials']") === null).toBe(true)
+  })
+
+  test("撤销按钮发往 revoke 口", async () => {
+    const { 记, api } = 假服务()
+    const host = mount(() => <SourceProfileView projectId="p1" 是属主={true} api={api} />)
+    await 等(() => host.querySelector("[data-slot='source-profile-revoke']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-revoke']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 记.撤.length === 1)
+    expect(记.撤[0]).toEqual({ projectId: "p1", id: "s1" })
+  })
+
+  test("建档失败带 problems ⇒ 逐条显示；成员看到「只有项目属主」且不渲染撤销", async () => {
+    const api = createSourceProfileApi(async (url) => {
+      if (url.includes("/source-profile/build")) {
+        return 回({ error: "映射不合法", code: "mapping_invalid", problems: ["金额 缺单位"] }, 400)
+      }
+      return 回({ list: [档案行] })
+    })
+    const host = mount(() => (
+      <SourceProfileView
+        projectId="p1"
+        是属主={false}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+    expect(host.querySelector("[data-slot='source-profile-revoke']") === null).toBe(true)
+    expect(host.textContent).toContain("只有项目属主能维护数据源档案")
+
+    // 非属主：建档表单四项都不可用（选择 / 名称 / 工作表 / 覆盖）。
+    for (const 槽 of [
+      "source-profile-material",
+      "source-profile-name",
+      "source-profile-sheet",
+      "source-profile-overwrite",
+    ]) {
+      const 控件 = host.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-slot='${槽}']`)
+      expect(控件 !== null, 槽).toBe(true)
+      expect(控件!.disabled, 槽).toBe(true)
+    }
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m1"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    // 成员提交键也置灰、且不绑 handler（服务端仍会 403，前端只是体验）。
+    const 提交 = host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!
+    expect(提交.disabled).toBe(true)
+    提交.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(host.textContent).not.toContain("金额 缺单位")
+  })
+
+  test("切项目后，切走前发出的建档回包晚到 ⇒ 错误/问题项不写进新项目（B5）", async () => {
+    let 放行建档: ((response: Response) => void) | undefined
+    const 建档闸 = new Promise<Response>((resolve) => {
+      放行建档 = resolve
+    })
+    let 建档次数 = 0
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/build")) {
+        建档次数 += 1
+        return 建档闸
+      }
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => (
+      <SourceProfileView
+        projectId={项目()}
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m1"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 建档次数 === 1)
+
+    // A 的建档还挂着；切到 B，B 的列表已到齐。
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+
+    // A 的回包（失败带问题项）晚到——不得写到 B 的界面上。
+    放行建档!(回({ error: "映射不合法", code: "mapping_invalid", problems: ["金额 缺单位"] }, 400))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // 布尔比较（`#013-12`）：旧项目的错误与问题项都不在新项目上出现。
+    const 有旧错误 = (host.textContent ?? "").includes("映射不合法")
+    const 有旧问题 = (host.textContent ?? "").includes("金额 缺单位")
+    expect(有旧错误).toBe(false)
+    expect(有旧问题).toBe(false)
+    expect(host.querySelector("[data-slot='source-profile-problems']") === null).toBe(true)
+  })
+
+  test("A 建档在途时切到 B 并建档：A 的回包不清 B 的「忙」（轮 2 finding 4；变异：finally 不守卫 ⇒ 本条红）", async () => {
+    let 放行A: ((response: Response) => void) | undefined
+    let 放行B: ((response: Response) => void) | undefined
+    const 闸A = new Promise<Response>((resolve) => {
+      放行A = resolve
+    })
+    const 闸B = new Promise<Response>((resolve) => {
+      放行B = resolve
+    })
+    let 建档次数 = 0
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/build")) {
+        建档次数 += 1
+        return 建档次数 === 1 ? 闸A : 闸B
+      }
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => (
+      <SourceProfileView
+        projectId={项目()}
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m1"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    const 提交 = () => host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!
+    提交().dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await 等(() => 建档次数 === 1)
+    expect(提交().disabled).toBe(true)
+
+    // 切到 B：切项目要复位「忙」，否则 B 永远点不了建档。
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+    expect(提交().disabled).toBe(false)
+
+    // 在 B 发起第二次建档（此时 B 才是在途的那一个）。
+    提交().dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await 等(() => 建档次数 === 2)
+    expect(提交().textContent).toContain("正在建档")
+
+    // A 的回包晚到：既不能写错误，也不能把 B 的「忙」清掉。
+    放行A!(回({ error: "映射不合法", code: "mapping_invalid", problems: ["金额 缺单位"] }, 400))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(提交().textContent).toContain("正在建档")
+    expect(提交().disabled).toBe(true)
+    expect((host.textContent ?? "").includes("金额 缺单位")).toBe(false)
+
+    放行B!(回({ id: "s3", created: true }))
+    await 等(() => 提交().disabled === false)
+  })
+
+  test("切项目后，切走前发出的重拉晚到 ⇒ 不回写旧项目列表（#010-05）", async () => {
+    let 放行慢读: ((response: Response) => void) | undefined
+    const 慢读 = new Promise<Response>((resolve) => {
+      放行慢读 = resolve
+    })
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      if (url.includes("/source-profile/build")) return 回({ id: "s9", created: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      if (列表次数 === 2) return 慢读
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => <SourceProfileView projectId={项目()} 是属主={true} api={api} />)
+
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-revoke']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 列表次数 === 2)
+
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+    放行慢读!(回({ list: [{ ...档案行, id: "s1", name: "一号项目旧档案" }] }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    const 有旧 = (host.textContent ?? "").includes("一号项目旧档案")
+    const 有新 = (host.textContent ?? "").includes("二号项目档案")
+    expect(有旧).toBe(false)
+    expect(有新).toBe(true)
+  })
+})

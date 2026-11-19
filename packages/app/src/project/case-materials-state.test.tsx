@@ -13,6 +13,11 @@ const 行 = (path: string, status: "未入队" | "排队中" | "已解析" = "�
   factCount: 1,
   numberCount: 1,
   parseable: true,
+  adapterId: null,
+  adapterVersion: null,
+  reasonCode: null,
+  progress: null,
+  probe: null,
 })
 
 const 好 = (rows: ReturnType<typeof 行>[]): 材料清单结果 => ({

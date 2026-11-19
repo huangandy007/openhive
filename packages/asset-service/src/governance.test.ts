@@ -10,7 +10,12 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { startProductionDb, type ProductionDb } from "@opencode-ai/auth/test-support"
 import { insertAsset } from "./asset"
 import { createCategory, updateCategory } from "./category-store"
-import { createGovernanceServer, GOVERNANCE_TOOL_NAMES } from "./governance"
+import {
+  createGovernanceServer,
+  GOVERNANCE_TOOL_NAMES,
+  INGEST_GATE_VOCAB_ENV,
+  ingestGateFromEnv,
+} from "./governance"
 import type { AssetMetadata } from "./metadata"
 
 /**
@@ -27,6 +32,29 @@ import type { AssetMetadata } from "./metadata"
 const databases: ProductionDb[] = []
 const closers: Array<() => Promise<void>> = []
 const tempDirs: string[] = []
+
+/** 016 T002：往 `pending/<id>` 写一个合法入库包（converter 四件套齐全）。 */
+async function 写好入库包(root: string, assetId: string, attributeKeys: string[]): Promise<void> {
+  const dir = join(root, "pending", assetId)
+  await mkdir(join(dir, "test"), { recursive: true })
+  await writeFile(join(dir, "SKILL.md"), "# 资金流水分析\n")
+  await writeFile(join(dir, "convert.ts"), "// 转换器\n")
+  await writeFile(
+    join(dir, "adapter.json"),
+    JSON.stringify({
+      id: "mcp-inject-demo",
+      name: "MCP 词表注入演示",
+      version: "1.0.0",
+      kind: "converter",
+      materialType: "资金",
+      attributeKeys,
+      match: { requiredHeaders: ["交易时间"], optionalHeaders: [], priority: 100 },
+      admission: { checks: ["金额可解析"], thresholds: { 金额可解析: 0.99, 其余: 1 } },
+      entry: { command: "bun run convert.ts", input: "xlsx", output: "json" },
+      output: { file: "result.json" },
+    }),
+  )
+}
 
 afterEach(async () => {
   await Promise.all(closers.splice(0).map((close) => close()))
@@ -116,7 +144,11 @@ interface Harness {
   readonly client: Client
 }
 
-async function harness(options: { sourceRoot?: string } = {}): Promise<Harness> {
+/** 016 T002：MCP 发布闸的词表（与 `case-attribute-registry.ts` 的闭集 / 键逐字一致）。 */
+const 词表 = { 归属: ["对方", "本方"] as const, 键: ["开户行", "银行卡号", "证件号"] as const }
+const 发布闸 = { 词汇: { 归属: 词表.归属, 键: 词表.键 }, 已占用id: [] }
+
+async function harness(options: { sourceRoot?: string; 不注入词表?: boolean } = {}): Promise<Harness> {
   const db = await freshDb()
   const root = await tempDir("gov-assets-")
   const workspaceRoot = await tempDir("gov-workspace-")
@@ -124,7 +156,12 @@ async function harness(options: { sourceRoot?: string } = {}): Promise<Harness> 
   const sourceRoot = options.sourceRoot ?? join(workspaceRoot, "u1")
   await mkdir(sourceRoot, { recursive: true })
 
-  const server = createGovernanceServer({ db, root, workspaceRoot })
+  const server = createGovernanceServer({
+    db,
+    root,
+    workspaceRoot,
+    ...(options.不注入词表 === true ? {} : { ingestGate: 发布闸 }),
+  })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "test-client", version: "0" }, { capabilities: {} })
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
@@ -800,5 +837,44 @@ describe("publish_skill", () => {
 
     expect(result.isError).toBe(true)
     expect(result.text).toContain("invalid_arguments")
+  })
+
+  test("F1. 非空 attributeKeys 的合法包经 MCP 发布成功（词表真的被用来校验）", async () => {
+    const { db, root, client } = await harness()
+    await insertAsset(db, metadata({ status: "pending_tech" }))
+    await 写好入库包(root, "asset_1", ["对方:开户行"])
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(false)
+    expect(JSON.parse(result.text)).toMatchObject({ ok: true, status: "published" })
+    expect(await statusOf(db)).toBe("published")
+  })
+
+  test("F1 防线. 包里有 adapter.json 但进程没注入词表 ⇒ 显式「校验闸未注入词表」（fail-closed）", async () => {
+    const { db, root, client } = await harness({ 不注入词表: true })
+    await insertAsset(db, metadata({ status: "pending_tech" }))
+    await 写好入库包(root, "asset_1", ["对方:开户行"])
+    await grant(db, "u2", "admin")
+
+    const result = await call(client, "publish_skill", { assetId: "asset_1" }, "u2")
+
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("校验闸未注入词表")
+    expect(await statusOf(db)).toBe("pending_tech")
+  })
+})
+
+describe("ingestGateFromEnv（016 F1）", () => {
+  test("合法 JSON ⇒ 词表；缺失 / 坏 JSON / 形状不对 ⇒ undefined（fail-closed）", () => {
+    expect(
+      ingestGateFromEnv({
+        [INGEST_GATE_VOCAB_ENV]: JSON.stringify({ 归属: ["对方", "本方"], 键: ["开户行"] }),
+      }),
+    ).toEqual({ 词汇: { 归属: ["对方", "本方"], 键: ["开户行"] }, 已占用id: [] })
+    expect(ingestGateFromEnv({})).toBeUndefined()
+    expect(ingestGateFromEnv({ [INGEST_GATE_VOCAB_ENV]: "{" })).toBeUndefined()
+    expect(ingestGateFromEnv({ [INGEST_GATE_VOCAB_ENV]: JSON.stringify({ 归属: "对方", 键: [] }) })).toBeUndefined()
   })
 })

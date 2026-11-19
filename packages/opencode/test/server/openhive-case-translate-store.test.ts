@@ -270,6 +270,36 @@ describe("写入翻译结果", () => {
     // 出处：两条参与者都指向同一张卡片的引用行，且能回过 `case_citation`。
     expect(参与.every((p) => p.citation_id === 引用[0]?.id)).toBe(true)
   })
+
+  test("tenpay 账号（FR-030）：建账户实体、挂户名别名与开户行属性", async () => {
+    const 账号 = "abc@wx.tenpay.com"
+    await 写("tp1", [
+      行({
+        materialId: "tp1",
+        ownerAccount: 账号,
+        extras: { ownerName: "张三", "属性:本方:开户行": "招商银行" },
+      }),
+    ])
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select id, attrs from auth.case_entity
+         where project_id = ${项目} and type = '账户' and canonical_value = ${账号}
+      `),
+    )
+    expect(实体).toHaveLength(1)
+    const 别名 = rowsOf(
+      await db().execute(sql`
+        select kind, value, revoked_at from auth.case_entity_alias
+         where project_id = ${项目} and entity_id = ${String(实体[0]?.id)}
+      `),
+    )
+    expect(别名).toHaveLength(1)
+    expect(别名[0]).toMatchObject({ kind: "户名", value: "张三", revoked_at: null })
+    // 属性按实体存 `auth.case_entity.attrs`（没有单独的属性表）；jsonb 两种读法都认。
+    const 原始属性 = 实体[0]?.attrs
+    const 属性 = typeof 原始属性 === "string" ? JSON.parse(原始属性) : 原始属性
+    expect(属性).toEqual({ 开户行: [{ 值: "招商银行", 出处: "tp1#Sheet1#2" }] })
+  })
 })
 
 const 模板项目 = "prj-tpl"
@@ -558,8 +588,10 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
       (s) => s.includes("from auth.case_event e") && s.includes("from auth.case_event_participant"),
     )
     // ② 事件取数 + ④ 聚合：一条都不能漏（逐行实现时这里是 0 条带 materialized）。
+    // 钉**这一条** CTE 名：语句内嵌的 `资金对基` 自带 `as materialized`，只匹配裸子串
+    // 会让「事件对 改回普通 CTE」照样绿（`#006-22` 的假绿）。
     expect(取数语句.length).toBeGreaterThanOrEqual(2)
-    for (const s of 取数语句) expect(s).toContain("as materialized")
+    for (const s of 取数语句) expect(s).toContain("事件对 as materialized")
 
     // ① human 转账关系同族：过滤列是 `coalesce(对齐代表, id)`，同样会把对过滤下推到
     // 单列再逐行算第二列（事务内临时改 source_kind 实测 926ms；物化后 68ms）。
@@ -567,7 +599,7 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
       (s) => s.includes("from auth.case_relation r") && s.includes("auth.case_entity_alias"),
     )
     expect(关系取数.length).toBeGreaterThanOrEqual(1)
-    for (const s of 关系取数) expect(s).toContain("as materialized")
+    for (const s of 关系取数) expect(s).toContain("人类转账关系 as materialized")
   })
 })
 

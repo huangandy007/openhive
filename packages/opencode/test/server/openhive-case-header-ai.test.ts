@@ -290,6 +290,37 @@ describe("模型结果合并", () => {
     expect(合并模型结果(h, r, 基础, { 1: "counterparty" }).columns[1]).toBeUndefined()
   })
 
+  test("裸属性副本：模型建议 counterparty 不被采纳，列留在未知（FR-032）", () => {
+    // 规则层已按 FR-032 挡下（T010），模型层也必须过同一判据（`#002-06`）：
+    // 否则模型一条 `{0:"counterparty"}` 就把属性值当账号造出错误实体。
+    const h = ["交易对方银行卡号", "交易时间", "交易金额"]
+    const r = [
+      ["62220012001", "2026-01-02 03:04:05", "1.00"],
+      ["62229999999", "2026-01-03 04:05:06", "2.00"],
+    ]
+    const 基础 = detectMapping(h, r)
+    expect(基础.columns[0]).toBeUndefined()
+    const 合并 = 合并模型结果(h, r, 基础, { 0: "counterparty" })
+    expect(合并.columns[0]).toBeUndefined()
+    expect(合并.来源[0]).toBeUndefined()
+    expect(合并.unknownColumns).toContain(0)
+  })
+
+  test("对照：带对手修饰但不含受控属性键 ⇒ 模型建议照常采纳", () => {
+    // 「对方卡号」是词典同义词，规则层已认领、走不到模型层；这里用同为对手修饰、
+    // 同为账号形状、但词典与合成候选都不认的「对方联行号」，钉模型层不过度拦截。
+    const h = ["对方联行号", "交易时间", "交易金额"]
+    const r = [
+      ["102290000013", "2026-01-02 03:04:05", "1.00"],
+      ["102290000014", "2026-01-03 04:05:06", "2.00"],
+    ]
+    const 基础 = detectMapping(h, r)
+    expect(基础.columns[0]).toBeUndefined()
+    const 合并 = 合并模型结果(h, r, 基础, { 0: "counterparty" })
+    expect(合并.columns[0]).toBe("counterparty")
+    expect(合并.来源[0]).toBe("模型")
+  })
+
   test("属性列不被模型认领，也不算未认出列（detectMapping 与合并层同一前提）", () => {
     const h = ["查询账号", "属性:对方:银行卡号", "属性:本方:银行卡号"]
     const r = [

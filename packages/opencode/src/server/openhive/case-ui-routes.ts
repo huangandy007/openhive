@@ -78,7 +78,7 @@ export const PATH = {
   cardTemplateRestore: `${PREFIX}/card-template/restore`,
 } as const
 
-interface Deps {
+export interface Deps {
   readonly pg: OpenhivePg.Interface["pg"]
   /** 「这项目是我的吗」有一道来源在每用户库（老项目属主），见 `project-actor.ts`。 */
   readonly database: Database.Interface
@@ -120,8 +120,12 @@ function ok(value: unknown) {
   return HttpServerResponse.jsonUnsafe(value, { status: 200 })
 }
 
-function fail(status: number, error: string, code?: string) {
-  return HttpServerResponse.jsonUnsafe(code === undefined ? { error } : { error, code }, { status })
+function fail(status: number, error: string, code?: string, problems?: readonly string[]) {
+  // 【保留的定制 · 016】A 类档案映射校验失败带逐条 `problems`（`mapping_invalid`）。
+  const 体: Record<string, unknown> = { error }
+  if (code !== undefined) 体.code = code
+  if (problems !== undefined) 体.problems = problems
+  return HttpServerResponse.jsonUnsafe(体, { status })
 }
 
 const 身份 = Effect.serviceOption(User.Service)
@@ -154,7 +158,7 @@ function 是合法段(value: unknown): value is string {
  * `已知身份` 让写口先自己查一次身份（401 必须在读体之前回，R51），再把结果传进来——
  * 判据仍只在这一个出口，同时避免每个请求查两次 `身份`。
  */
-function 过门(
+export function 过门(
   deps: Deps,
   projectId: string | null,
   选项: { readonly 要属主?: boolean; readonly 已知身份?: User.Info; readonly 属主拒绝文案?: string } = {},
@@ -597,6 +601,9 @@ function 翻档案错误(错误: 档案错误) {
   if (错误.code === "material_not_found") return fail(404, 错误.message, "not_found")
   if (错误.code === "no_fingerprints") return fail(409, 错误.message, "conflict")
   if (错误.code === "conflict") return fail(409, 错误.message, "conflict")
+  if (错误.code === "mapping_invalid") {
+    return fail(400, 错误.message, "mapping_invalid", 错误.problems ?? [])
+  }
   return fail(400, 错误.message, "bad_request")
 }
 

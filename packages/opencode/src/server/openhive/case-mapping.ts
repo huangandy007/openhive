@@ -1,7 +1,7 @@
 export * as OpenhiveCaseMapping from "./case-mapping"
 
 import { Hash } from "@opencode-ai/core/util/hash"
-import { 是属性列 } from "./case-attribute-registry"
+import { 属性键们, 是属性列 } from "./case-attribute-registry"
 import {
   候选字段集,
   规范化,
@@ -139,7 +139,25 @@ function 需修饰裁决(field: 识别字段): boolean {
   return field === "counterparty" || field === "counterpartyName" || field === "ownerAccount"
 }
 
+/**
+ * 疑似属性副本：`<对手/本方修饰> + 受控属性键`，但没有 `属性:` 前缀（FR-032 / 05 §4.4）。
+ *
+ * 这不是「卡号不能是账号」，而是：带受控属性键（`属性键们`）的**裸**表头是属性列的疑似写法，
+ * 错误认领会把属性值当账号造出错误实体，属性本身也无处可挂。规范写法 `属性:对方:银行卡号`
+ * 已由 `是属性列` 在四层召回之前排除；这里挡的是没有前缀的副本，让它落未知列交人确认。
+ *
+ * `h` 在两个调用点都已 `规范化`（小写、去空白）；`属性键们` 是中文键，不受大小写影响。
+ *
+ * 别名层（`detectMapping` ①）是对已登记判断的既有豁免，不在此判据内：用户下发的别名是
+ * **显式**指定的字段归属，不是对表头形状的猜测（材料里 `属性:` 前缀才是规范写法）。
+ */
+export function 是裸属性副本(h: string): boolean {
+  return (对手修饰.test(h) || 本方修饰.test(h)) && 属性键们.some((键) => h.includes(键))
+}
+
 function 修饰语放行(field: 识别字段, h: string): boolean {
+  // FR-032：裸属性副本不许被修饰语放行——否则「交易对方银行卡号」会走合成候选认成账号。
+  if (是裸属性副本(h)) return false
   if (对手修饰.test(h)) {
     const 允许: readonly 识别字段[] = 户名词尾.test(h)
       ? ["counterpartyName"]
@@ -161,6 +179,8 @@ function 修饰语放行(field: 识别字段, h: string): boolean {
  * 合成；不做无修饰的通用词尾猜测，否则「账号」「卡号」这类通用词会到处乱认。
  */
 function 合成词长(field: 识别字段, h: string): number | undefined {
+  // FR-032：与 `修饰语放行` 同一条判据（`#002-06`）——这里的合成也不许认领裸属性副本。
+  if (是裸属性副本(h)) return undefined
   if (field === "counterparty" || field === "counterpartyName") {
     if (!对手修饰.test(h)) return undefined
     return (field === "counterparty" ? 账号词尾 : 户名词尾).exec(h)?.[0].length
@@ -446,8 +466,9 @@ function 列形状(values: (string | null)[][]): string[] {
  * "8"：资金表补 `currency` 字段（09 §4.5 第 2 条）；旧缓存里没有币种列映射，必须重识别。
  * "9"：属性列退出表类型投票、候选字段集与模型合并（05 §4.3）；旧缓存可能把属性列认成标准字段。
  * "10"：direction 词典补「收/付」斜杠写法；旧缓存里该列仍是未认出（整表「方向不明」被跳过）。
+ * "11"：016 账号形状放宽 @wx.tenpay.com（FR-030）＋ 裸属性副本不认（FR-032）；旧格式缓存失效。
  */
-const 识别版本 = "10"
+export const 识别版本 = "11"
 
 /**
  * 格式指纹：**识别版本 ＋ 别名库版本 ＋ 表头 ＋ 每列的数据形状**，与具体取值无关（设计 §6.2）。

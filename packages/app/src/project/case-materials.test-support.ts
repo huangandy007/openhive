@@ -22,6 +22,11 @@ export function 视图行(部分: Partial<材料视图> & { path: string }): 材
     factCount: 0,
     numberCount: 0,
     parseable: true,
+    adapterId: null,
+    adapterVersion: null,
+    reasonCode: null,
+    progress: null,
+    probe: null,
     ...部分,
   }
 }

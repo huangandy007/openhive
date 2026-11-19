@@ -3862,6 +3862,28 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(无槽(host, "file-tree-parse-summary")).toBe(true)
       expect(标记(host, "a.csv") === null).toBe(true)
     })
+
+    /**
+     * 016 T021（K3）：树顶汇总旁的「扫描 / 重跑」入口。
+     *
+     * 两颗钮**只在接了 `on打开重跑` 时存在**——没接线就没有它，不画一颗点了没反应的假钮。
+     * 「不存在」用布尔比较（`#013-12`）。
+     */
+    test("扫描 / 重跑入口：接了 prop 才出现，点一次调一次；没接就不存在", () => {
+      const 假 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+      let 次数 = 0
+      const host = mount(() => (
+        <FileTree paths={["a.csv"]} caseMaterials={假.状态} on打开重跑={() => void (次数 += 1)} />
+      ))
+
+      const 钮 = 按钮(host, "file-tree-open-rerun")
+      expect(钮 === null).toBe(false)
+      钮!.click()
+      expect(次数).toBe(1)
+
+      const 未接 = mount(() => <FileTree paths={["a.csv"]} caseMaterials={假.状态} />)
+      expect(无槽(未接, "file-tree-open-rerun")).toBe(true)
+    })
   })
 
   /**

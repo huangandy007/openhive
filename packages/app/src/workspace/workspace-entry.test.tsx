@@ -16,7 +16,9 @@ import { useCenterTabs } from "@/center/tab-context"
 import { type ContentTab } from "@/center/tab-store"
 import { 取草稿, 开始编辑 } from "@/center/views/richtext/draft-store"
 import { currentProject, setCurrentProject } from "@/project/current-project"
+import type { CaseIngestApi } from "@/project/case-ingest-api"
 import type { CaseMaterials } from "@/project/case-materials-state"
+import type { SourceProfileApi } from "@/project/source-profile-api"
 import { 假材料状态, 视图行 } from "@/project/case-materials.test-support"
 import type { MemberEntry } from "@/project/member-panel"
 import {
@@ -6926,6 +6928,222 @@ describe("AI 资产中栏（009 T006 / T007）", () => {
     } finally {
       setProjectList(undefined)
       setCurrentProject(undefined)
+    }
+  })
+})
+
+/**
+ * 016 T021 / R3b（Ruling BX）：016 三件套接进工作台的**注入缝**。
+ *
+ * 组件自己会 `??=` 自建客户端，生产里没问题；但本文件是**裸挂**、按纪律离线
+ * （`enablement` / `caseMaterials` 同一条纪律）。这一节钉两件事：
+ *
+ * 1. 传了 `caseIngestApi` / `sourceProfileApi` ⇒ 面板读的是**桩**（入库开关的选中态 =
+ *    桩返回值；「扫描 / 重跑」也走同一个桩）。把接线处的 `api={props.caseIngestApi}` 删掉，
+ *    第 1 条断言必须红。
+ * 2. 两个面板都走桩 ⇒ **一次 `fetch` 都不发**（把 `globalThis.fetch` 换成会计数的拒绝桩）。
+ */
+describe("016 组件接进工作台（T021 / R3b 注入缝）", () => {
+  beforeEach(() => {
+    setProjectList(undefined)
+    setCurrentProject(undefined)
+    setProjectFiles(undefined)
+  })
+
+  test("注入 caseIngestApi/sourceProfileApi ⇒ 面板读桩、扫描走桩、零真网络", async () => {
+    const 设置记 = { 读: 0, 扫描: 0 }
+    const 设置桩: CaseIngestApi = {
+      readSettings: async () => {
+        设置记.读 += 1
+        return { kind: "ok", value: { autoEnqueue: true, autoEnableTrusted: false, updatedAt: null } }
+      },
+      writeSettings: async () => ({ kind: "error", message: "本用例不写设置" }),
+      scan: async () => {
+        设置记.扫描 += 1
+        return {
+          kind: "ok",
+          value: { 合计: 0, 候选: { 目录独有: [], 未入队: [], 未识别: [] }, 样本: [], 截断: false },
+        }
+      },
+      rerun: async () => ({ kind: "ok", value: { 已入队: 0, 跳过: [], 失败: [] } }),
+    }
+    const 档案记 = { 列: 0 }
+    const 档案桩: SourceProfileApi = {
+      list: async () => {
+        档案记.列 += 1
+        return { kind: "ok", value: [] }
+      },
+      build: async () => ({ kind: "error", message: "本用例不建档" }),
+      revoke: async () => ({ kind: "error", message: "本用例不撤销" }),
+    }
+
+    const 原fetch = globalThis.fetch
+    let fetch次数 = 0
+    globalThis.fetch = (() => {
+      fetch次数 += 1
+      return Promise.reject(new Error("本用例不该发网络请求"))
+    }) as unknown as typeof fetch
+
+    try {
+      const 材料 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+      const host = mount(() => (
+        <WorkspaceEntry caseIngestApi={设置桩} sourceProfileApi={档案桩} caseMaterials={材料.状态}>
+          中栏
+        </WorkspaceEntry>
+      ))
+      // ⚠️ 挂载**之后**再写接入缝（没有 `projectData` 时 `onMount` 会清一次，同本文件既有注释）。
+      setCurrentProject({ id: "p1", name: "甲" })
+      setProjectFiles(["a.csv"])
+      await new Promise((r) => setTimeout(r, 0))
+
+      // 1) 入库设置面板显示的是**桩**的返回值：true / false（不是默认的 false / false）。
+      const 自动入队 = tabpane(host, "capability")?.querySelector<HTMLInputElement>(
+        "[data-slot='case-ingest-auto-enqueue']",
+      )
+      const 自动可信 = tabpane(host, "capability")?.querySelector<HTMLInputElement>(
+        "[data-slot='case-ingest-auto-trusted']",
+      )
+      expect(设置记.读).toBeGreaterThanOrEqual(1)
+      expect(自动入队?.checked).toBe(true)
+      expect(自动可信?.checked).toBe(false)
+
+      // 2) 树顶「扫描 / 重跑」→ 弹窗与设置面板共用同一个 `caseIngestApi`。
+      host.querySelector<HTMLButtonElement>("[data-slot='file-tree-open-rerun']")?.click()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(设置记.扫描).toBeGreaterThanOrEqual(1)
+      expect(host.querySelector("[data-slot='case-rerun-dialog']") === null).toBe(false)
+
+      // 3) 展开数据源档案 → 列表也走桩。
+      host.querySelector<HTMLButtonElement>("[data-slot='source-profile-toggle']")?.click()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(档案记.列).toBeGreaterThanOrEqual(1)
+      expect(host.querySelector("[data-slot='source-profile-view']") === null).toBe(false)
+
+      // 4) 以上全部走桩 ⇒ 一次真网络请求都没有。
+      expect(fetch次数).toBe(0)
+    } finally {
+      globalThis.fetch = 原fetch
+    }
+  })
+
+  /**
+   * R3c：`能重跑 === false` 有两种原因——「清单没取到，不知道你是不是成员」与
+   * 「清单里没有你的 role，确实不是成员」。工作台知道是哪种，必须把它们分开说
+   * （`#002-02`：不知道 ≠ 空），否则用户会看到一句错误的结论。
+   */
+  test("重跑置灰原因：清单未取到 ⇒ 明说「还没取到」；清单里该项目有 role ⇒ 按钮可点、两句都不出现", async () => {
+    const 设置桩: CaseIngestApi = {
+      readSettings: async () => ({
+        kind: "ok",
+        value: { autoEnqueue: false, autoEnableTrusted: false, updatedAt: null },
+      }),
+      writeSettings: async () => ({ kind: "error", message: "本用例不写设置" }),
+      scan: async () => ({
+        kind: "ok",
+        value: {
+          合计: 1,
+          候选: {
+            目录独有: [],
+            未入队: [],
+            未识别: [{ materialId: "m1", path: "资料/待识别.xlsx", 原因码: "unknown" }],
+          },
+          样本: ["资料/待识别.xlsx"],
+          截断: false,
+        },
+      }),
+      rerun: async () => ({ kind: "ok", value: { 已入队: 0, 跳过: [], 失败: [] } }),
+    }
+    const 材料 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+    const host = mount(() => (
+      <WorkspaceEntry caseIngestApi={设置桩} caseMaterials={材料.状态}>
+        中栏
+      </WorkspaceEntry>
+    ))
+
+    try {
+      // 挂载之后再写接入缝（`onMount` 会清一次，同本文件既有注释）。
+      setCurrentProject({ id: "p1", name: "甲" })
+      setProjectFiles(["a.csv"])
+      await 冲一遍()
+
+      host.querySelector<HTMLButtonElement>("[data-slot='file-tree-open-rerun']")!.click()
+      await 等到(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
+
+      // 默认 `projectList = undefined`：清单还没取到。
+      const 原因 = host.querySelector("[data-slot='case-rerun-reason']")?.textContent ?? ""
+      expect(原因).toContain("项目清单还没取到")
+      // 布尔比较（`#013-12`）：不知情时不能断言「需要项目成员」。
+      expect((host.textContent ?? "").includes("需要项目成员")).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(true)
+
+      // 清单到了，且该项目带 role（＝成员）⇒ 能重跑：原因整段消失，按钮可点。
+      setProjectList([{ ...私有("p1", "甲", 1), role: "member" }])
+      await 等到(() => host.querySelector("[data-slot='case-rerun-reason']") === null)
+      expect(host.querySelector("[data-slot='case-rerun-reason']") === null).toBe(true)
+      expect((host.textContent ?? "").includes("项目清单还没取到")).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(false)
+    } finally {
+      setProjectList(undefined)
+      setCurrentProject(undefined)
+      setProjectFiles(undefined)
+    }
+  })
+
+  /**
+   * R3d：清单**到了**、但没有这个项目的 `role`（＝确实不是成员）——与「清单还没取到」
+   * 是两种语义，必须仍置灰且说默认那句。缺这条时，把 `能重跑` 写成
+   * `projectList() !== undefined`（有清单就当成员）也全绿。
+   */
+  test("清单已到但项目无 role ⇒ 仍置灰、用「需要项目成员」、不说「还没取到」", async () => {
+    const 设置桩: CaseIngestApi = {
+      readSettings: async () => ({
+        kind: "ok",
+        value: { autoEnqueue: false, autoEnableTrusted: false, updatedAt: null },
+      }),
+      writeSettings: async () => ({ kind: "error", message: "本用例不写设置" }),
+      scan: async () => ({
+        kind: "ok",
+        value: {
+          合计: 1,
+          候选: {
+            目录独有: [],
+            未入队: [],
+            未识别: [{ materialId: "m1", path: "资料/待识别.xlsx", 原因码: "unknown" }],
+          },
+          样本: ["资料/待识别.xlsx"],
+          截断: false,
+        },
+      }),
+      rerun: async () => ({ kind: "ok", value: { 已入队: 0, 跳过: [], 失败: [] } }),
+    }
+    const 材料 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+    const host = mount(() => (
+      <WorkspaceEntry caseIngestApi={设置桩} caseMaterials={材料.状态}>
+        中栏
+      </WorkspaceEntry>
+    ))
+
+    try {
+      setCurrentProject({ id: "p1", name: "甲" })
+      setProjectFiles(["a.csv"])
+      // 清单已到：有这一行，但**没有 `role`**（缺键 = 不是成员）。
+      setProjectList([私有("p1", "甲", 1)])
+      await 冲一遍()
+
+      host.querySelector<HTMLButtonElement>("[data-slot='file-tree-open-rerun']")!.click()
+      await 等到(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
+
+      // 扫描回 1 个候选 ⇒ 范围非空，按钮若只被「忙 / 范围」挡住就会暴露成可点。
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(true)
+      expect(host.querySelector("[data-slot='case-rerun-reason']")?.textContent?.trim()).toBe(
+        "需要项目成员才能一键重跑",
+      )
+      // 布尔比较（`#013-12`）：清单明明到了，不能说「还没取到」。
+      expect((host.textContent ?? "").includes("项目清单还没取到")).toBe(false)
+    } finally {
+      setProjectList(undefined)
+      setCurrentProject(undefined)
+      setProjectFiles(undefined)
     }
   })
 })

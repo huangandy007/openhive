@@ -186,7 +186,16 @@ async function harness(who: { readonly id?: string | undefined; readonly perm?: 
     }
   }
 
-  const server = createGovernanceServer({ db, root, workspaceRoot })
+  const server = createGovernanceServer({
+    db,
+    root,
+    workspaceRoot,
+    // 016 T002：发布出口的 M10 词表（生产由内核经环境变量注入）。
+    ingestGate: {
+      词汇: { 归属: ["对方", "本方"], 键: ["开户行", "银行卡号", "证件号"] },
+      已占用id: [],
+    },
+  })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: "matrix-client", version: "0" }, { capabilities: {} })
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])

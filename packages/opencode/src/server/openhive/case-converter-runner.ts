@@ -1,0 +1,461 @@
+import { spawn, type ChildProcess } from "node:child_process"
+import { access, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { basename, join } from "node:path"
+import { createTreeStopper } from "./governance-mcp-supervisor"
+
+/**
+ * 016 T007 · N3 转换器执行器。
+ *
+ * 一个识别卡声明了 `kind: "converter"` 时，内核**起子进程**跑技能目录里的转换脚本：
+ * `cwd` = 技能目录（契约第 3 章 / 契约输出第 7 条：输出是一个 JSON 文件），
+ * 原件绝对路径以**两条通道**同时给出——spawn 的第一个脚本参数（`process.argv[2]`）
+ * 与 `OPENHIVE_INPUT_PATH`；adapter 作者用哪个都行。**T017 之前的文档口径以本注释为准。**
+ *
+ * ## 环境白名单
+ *
+ * 只给子进程 `PATH`/`HOME`/临时目录等运行必需键，**不整体透传 `process.env`**：
+ * 转换器是技能资产里的第三方脚本，库凭据（`PG_*`）以及父进程其它秘密一概不给。
+ * 另加一层防御性剔除（`剔除库凭据`）：将来若有人往环境里拼了 `process.env`，`PG_*` 也不会漏。
+ *
+ * ## 失败语义（只交事实，不做映射）
+ *
+ * 退出码非零 / 超时 / 启动失败 / 输出不合契约 ⇒ `{ok:false, detail}`；`detail` 写明退出码、
+ * 超时毫秒、第几条契约、哪个字段。Ruling X 的配套：**非零退出后仍尝试读** `output.file`，
+ * 能解析出 `{report: …}` 就放进 `报告` 字段（值闸不过时转换器以退出码 3 收尾只写报告）；
+ * 「退出码 3 + 有失败闸 ⇒ `未识别:值闸不过:<检查项>`」的映射在作业链（T008），不在这里。
+ *
+ * 收尾：读完输出即删（它在技能目录里不该留），删除失败只记 WARN。超时 / 内核退出时
+ * 按 `spawnGovernanceMcp` 的同一套收尾杀**整棵进程树**（`bun` 在 win32 是包装器，脚本在孙进程）。
+ *
+ * ## 崩溃残留自愈
+ *
+ * 执行前在技能目录写 `.<output.file>.openhive-running`（内容=开始时间），正常路径连同输出一起删。
+ * 下次见到「输出 + 标记」= 上次被 OOM / SIGKILL 打断的异常残留，清掉重跑；只有输出没有标记
+ * ⇒ 仍是共享包里的既有文件，拒绝覆盖并提示手动清理。跨进程并发由 Ruling AH（单摄入 worker）收敛。
+ */
+
+/** 默认超时；转换器可能跑大表，给 60s。 */
+export const 默认超时ms = 60_000
+/** 原件绝对路径的第二条通道（第一条是脚本的第一个参数）。 */
+export const 输入路径环境名 = "OPENHIVE_INPUT_PATH"
+/**
+ * 只允许内核镜像里可信的运行时前缀，别的解释器一律不起。
+ *
+ * **与发布闸（`asset-service/src/ingest-gate.ts` 的 `匹配命令前缀`）同一口径**：
+ * `bun` 必须带 `run` 子命令（`bun install` / `bun add` 会联网装包，不是转换器），`node` 直跑脚本。
+ */
+const 命令白名单 = ["bun run", "node"] as const
+/** 子进程运行必需的环境键；刻意**不含**任何数据库 / 云厂商凭据。 */
+const 允许的环境键 = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "SystemRoot",
+  "PATHEXT",
+  "APPDATA",
+  "LOCALAPPDATA",
+] as const
+const 告警标签 = "[openhive-case-converter-runner]"
+
+/** 适配器只给执行器需要的字段（不 import 整个判别联合、不再断言 kind）。 */
+export interface 转换器输入 {
+  readonly 适配器: {
+    readonly id: string
+    readonly version: string
+    readonly entry: { readonly command: string; readonly input: string; readonly output: "json" }
+    readonly output: { readonly file: string }
+    /** 技能目录绝对路径（cwd，也是 `output.file` 的相对根）。 */
+    readonly 目录: string
+  }
+  /** 原件绝对路径（只读）。 */
+  readonly 原件: string
+  /** 超时毫秒，默认 60_000。 */
+  readonly 超时ms?: number
+}
+
+export type 转换器结果 =
+  | { readonly ok: true; readonly rows: unknown[]; readonly report: unknown }
+  | { readonly ok: false; readonly detail: string; readonly 报告?: unknown }
+
+export async function 跑转换器(输入: 转换器输入): Promise<转换器结果> {
+  const 命令 = 输入.适配器.entry.command.trim().split(/\s+/).filter((项) => 项 !== "")
+  const 命令文本 = 命令.join(" ")
+  // 前缀必须是「整词 + 空格」：`bun run` 匹配 `bun run convert.ts`，不匹配 `bunrunner`；
+  // `node` 匹配 `node convert.js`，不匹配 `node_modules/...`（后者本就不会作为命令出现）。
+  const 前缀 = 命令白名单.find((允许) => 命令文本.startsWith(`${允许} `))
+  if (前缀 === undefined) {
+    return {
+      ok: false,
+      detail: `命令前缀不在白名单（只允许 bun run / node）：${命令[0] ?? "空命令"}`,
+    }
+  }
+
+  const 目录 = 输入.适配器.目录
+  // 整个执行体（检查 → 快照 → spawn → 读输出 → 清理）都必须在同一目录的锁内：输出路径固定且读后即删。
+  return 串行化(目录, async () => {
+    const 输出名 = basename(输入.适配器.output.file)
+    const 输出路径 = join(目录, 输入.适配器.output.file)
+    // 运行标记：执行前写入开始时间；正常路径随输出一起清掉。若进程被 OOM / SIGKILL 打断，
+    // 标记与输出会一起留在共享技能包目录里——下一次见到「输出 + 标记」就知道是异常残留，
+    // 可以安全清掉重跑（跨进程并发已由 Ruling AH 收敛到单摄入 worker，不需要额外锁）。
+    const 标记路径 = join(目录, `.${输出名}.openhive-running`)
+    // 技能包是**共享资产**：output.file 若已存在且**没有**运行标记，只能是别人放进包里的文件，
+    // 既不能覆盖（会改坏共享包），也不能删（「读完即删」只适用于本次新建的输出），所以拒绝执行。
+    if (await 输出已存在(输出路径)) {
+      if (await 输出已存在(标记路径)) {
+        console.warn(`${告警标签} 检出自上次异常中断的残留（输出 + 运行标记），清掉后重跑：${输出名}`)
+        await 清理输出(输出路径)
+        await 清理标记(标记路径)
+      } else {
+        return {
+          ok: false,
+          detail: `输出文件已存在，拒绝覆盖共享技能包：${输出名}；若不是上次执行残留，请手动删除该文件后重试`,
+        }
+      }
+    } else if (await 输出已存在(标记路径)) {
+      // 上次在写输出前就被打断：只剩标记，同样是残留。
+      await 清理标记(标记路径)
+    }
+    if (!(await 写标记(标记路径))) {
+      return { ok: false, detail: `无法写运行标记，拒绝执行：${输出名}` }
+    }
+    const 超时ms = 输入.超时ms ?? 默认超时ms
+    const 运行前JSON = await 列出后缀(目录, ".json")
+    const 运行前xlsx = await 列出后缀(目录, ".xlsx")
+
+    try {
+      const 执行 = await 执行子进程({
+        命令,
+        参数: [输入.原件],
+        cwd: 目录,
+        env: 子进程环境(输入.原件),
+        超时ms,
+      })
+
+      if (执行.超时 || 执行.启动错误 !== undefined || 执行.退出码 !== 0) {
+        const 报告 = await 尝试读报告(输出路径)
+        await 清理输出(输出路径)
+        const detail = 执行.超时
+          ? `超时 ${超时ms}ms`
+          : 执行.启动错误 !== undefined
+            ? `无法启动转换器：${消息(执行.启动错误)}`
+            : 执行.退出码 === null
+              ? `转换器被信号终止：${执行.信号 ?? "未知"}`
+              : `转换器退出码 ${执行.退出码}`
+        return 报告 === undefined ? { ok: false, detail } : { ok: false, detail, 报告 }
+      }
+
+      // 契约第 7 条：输出只能是 output.file 这一个 JSON；期间新冒出来的 .json 视为校验失败。
+      const 多出JSON = 新增文件(运行前JSON, await 列出后缀(目录, ".json"), 输出名)
+      // 契约第 6 条：产出 xlsx 视为多余输出，**不采用**（不据此失败，只记 WARN）。
+      const 多出xlsx = 新增文件(运行前xlsx, await 列出后缀(目录, ".xlsx"), 输出名)
+      for (const 名 of 多出xlsx) {
+        console.warn(`${告警标签} 告警（契约第 6 条）：产出 .xlsx 视为多余输出，不采用：${名}`)
+      }
+
+      const 读取 = await 读输出(输出路径)
+      await 清理输出(输出路径)
+
+      if (多出JSON.length > 0) {
+        return { ok: false, detail: `契约第 7 条：输出目录多出 JSON 文件：${多出JSON.join("、")}` }
+      }
+      if (!读取.ok) return { ok: false, detail: 读取.detail }
+
+      return 校验输出(读取.值)
+    } finally {
+      await 清理标记(标记路径)
+    }
+  })
+}
+
+/**
+ * 进程内按技能目录互斥。
+ *
+ * 输出路径恒为 `join(目录, output.file)`、执行器又读后即删 ⇒ 两个并发执行**同一适配器**
+ * 会读到 / 删掉对方刚写的文件（契约钉死 cwd + 相对输出，改不了）。跨进程并发不在本层
+ * 解决：两个内核进程同时跑同一技能目录仍会互踩。
+ */
+const 目录锁 = new Map<string, Promise<void>>()
+
+/** 同一技能目录串行执行；任务自身的结果 / 错误原样交回调用方。 */
+async function 串行化<T>(目录: string, 任务: () => Promise<T>): Promise<T> {
+  const 前驱 = 目录锁.get(目录) ?? Promise.resolve()
+  let 放行: () => void = () => {}
+  const 轮到我了 = new Promise<void>((解析) => {
+    放行 = 解析
+  })
+  // 链尾只表示「本次执行结束」，从不 reject ⇒ 一次失败不会污染后来者（错误走任务自己的返回路径）。
+  const 链尾 = 前驱.then(() => 轮到我了)
+  目录锁.set(目录, 链尾)
+  try {
+    await 前驱
+    return await 任务()
+  } finally {
+    放行()
+    if (目录锁.get(目录) === 链尾) 目录锁.delete(目录)
+  }
+}
+
+/**
+ * 子进程环境：只从父进程挑白名单键，再防御性剔除 `PG_*`，最后补上第二条输入通道。
+ * 导出给测试 / 后续文档核对用。
+ */
+export function 子进程环境(原件: string, 来源: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const 环境: Record<string, string> = {}
+  for (const 键 of 允许的环境键) {
+    const 值 = 来源[键]
+    if (值 !== undefined) 环境[键] = 值
+  }
+  剔除库凭据(环境)
+  环境[输入路径环境名] = 原件
+  return 环境
+}
+
+/**
+ * 防御性一层：任何以 `PG_` 开头的键（大小写不敏感）都不交给子进程。
+ * 正向白名单（`允许的环境键`）为主；这是将来有人往环境里拼 `process.env` 时的防御层。
+ */
+function 剔除库凭据(环境: Record<string, string>): void {
+  for (const 键 of Object.keys(环境)) {
+    if (键.toUpperCase().startsWith("PG_")) delete 环境[键]
+  }
+}
+
+interface 执行参数 {
+  readonly 命令: readonly string[]
+  readonly 参数: readonly string[]
+  readonly cwd: string
+  readonly env: Record<string, string>
+  readonly 超时ms: number
+}
+
+interface 执行结果 {
+  readonly 退出码: number | null
+  readonly 信号: NodeJS.Signals | null
+  readonly 超时: boolean
+  readonly 启动错误?: Error
+}
+
+function 执行子进程(项: 执行参数): Promise<执行结果> {
+  return new Promise((resolve) => {
+    let 已结算 = false
+    let 超时 = false
+    let 启动错误: Error | undefined
+
+    let child: ChildProcess
+    try {
+      child = spawn(项.命令[0], [...项.命令.slice(1), ...项.参数], {
+        cwd: 项.cwd,
+        env: 项.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // POSIX：子进程当进程组组长，超时才能 `kill(-pid)` 打整组（同 `spawnGovernanceMcp`）。
+        detached: process.platform !== "win32",
+      })
+    } catch (error) {
+      resolve({ 退出码: null, 信号: null, 超时: false, 启动错误: toError(error) })
+      return
+    }
+
+    const 收尾 = createTreeStopper(child.pid)
+    // 内核顶层无条件 `process.exit()`：作用域 finalizer 不保证跑完，这里同步兜底强杀整棵树（同 `spawnGovernanceMcp`）。
+    const 内核退出收尾 = () => 收尾.force()
+    process.once("exit", 内核退出收尾)
+    const timer = setTimeout(() => {
+      超时 = true
+      收尾.force()
+    }, 项.超时ms)
+
+    const 结算 = (退出码: number | null, 信号: NodeJS.Signals | null) => {
+      if (已结算) return
+      已结算 = true
+      clearTimeout(timer)
+      收尾.cancel()
+      // 必须与注册时是**同一个函数引用**，否则 off 无效、监听器随每次执行累积。
+      process.off("exit", 内核退出收尾)
+      resolve({ 退出码, 信号, 超时, 启动错误 })
+    }
+
+    child.stdin?.end()
+    child.stdout?.setEncoding("utf8")
+    child.stdout?.on("data", (chunk: string) => process.stdout.write(chunk))
+    child.stderr?.setEncoding("utf8")
+    child.stderr?.on("data", (chunk: string) => process.stderr.write(chunk))
+
+    // spawn 失败（命令不存在 / cwd 写错）只发 `error`，不发 `exit`（同模板）。
+    child.on("error", (error) => {
+      启动错误 = toError(error)
+      结算(null, null)
+    })
+    child.once("close", (退出码, 信号) => 结算(退出码, 信号))
+  })
+}
+
+type 读取输出 =
+  | { readonly ok: true; readonly 值: unknown }
+  | { readonly ok: false; readonly detail: string }
+
+async function 读输出(路径: string): Promise<读取输出> {
+  let 原文: string
+  try {
+    原文 = await readFile(路径, "utf8")
+  } catch (error) {
+    // 缺文件不属于契约第 7 条（#7 是「输出目录里只能有一个 JSON 文件」），如实写原因。
+    if (codeOf(error) === "ENOENT") return { ok: false, detail: `未产出输出文件 ${basename(路径)}` }
+    return { ok: false, detail: `读不到输出文件 ${basename(路径)}：${消息(error)}` }
+  }
+  try {
+    return { ok: true, 值: JSON.parse(原文) }
+  } catch (error) {
+    return { ok: false, detail: `输出文件不是合法 JSON：${消息(error)}` }
+  }
+}
+
+/**
+ * 契约七条里执行器能自证的部分：
+ * 第 1 条 `rowNo` 是源文件行号、第 2 条金额正数且方向 ∈ {收,付}、第 3 条 extras 键前缀
+ * （非 `属性:` 前缀**只告警不失败**）、第 4 条 rows/report 同文件各占一段。
+ * 第 5 条（报告不进事实行表）是写入侧约束——执行器只把 `rows` / `report` **分开**交回，不混合；
+ * 第 6 条「不写库、不连库」靠环境白名单兜底（`PG_*` 不给），无法替代写入侧鉴权。
+ */
+function 校验输出(值: unknown): 转换器结果 {
+  if (!是对象(值)) return { ok: false, detail: "契约第 4 条：顶层必须是对象" }
+  const rows原文 = 值["rows"]
+  const report = 值["report"]
+  if (rows原文 === undefined) return { ok: false, detail: "契约第 4 条：顶层缺 rows" }
+  if (report === undefined) return { ok: false, detail: "契约第 4 条：顶层缺 report" }
+  if (!Array.isArray(rows原文)) return { ok: false, detail: "契约第 4 条：rows 必须是数组" }
+  if (!是对象(report)) return { ok: false, detail: "契约第 4 条：report 必须是对象" }
+
+  const rows: readonly unknown[] = rows原文
+  for (let 序 = 0; 序 < rows.length; 序++) {
+    const 行 = rows[序]
+    if (!是对象(行)) return { ok: false, detail: `契约第 1 条：rows[${序}] 必须是对象` }
+
+    const rowNo = 行["rowNo"]
+    if (typeof rowNo !== "number" || !Number.isFinite(rowNo)) {
+      return { ok: false, detail: `契约第 1 条：rows[${序}].rowNo 必须是数字（源文件行号）` }
+    }
+
+    const 金额 = 金额数值(行["amount"])
+    if (金额 === undefined) return { ok: false, detail: `契约第 2 条：rows[${序}].amount 必须是正数` }
+
+    const direction = 行["direction"]
+    if (direction !== "收" && direction !== "付") {
+      return { ok: false, detail: `契约第 2 条：rows[${序}].direction 必须是 收 / 付（实得 ${String(direction)}）` }
+    }
+
+    const extras = 行["extras"]
+    if (extras !== undefined) {
+      if (!是对象(extras)) return { ok: false, detail: `契约第 3 条：rows[${序}].extras 必须是对象` }
+      for (const 键 of Object.keys(extras)) {
+        if (!键.startsWith("属性:")) {
+          // 契约第 3 条：非属性键**进告警、不算失败**。
+          console.warn(`${告警标签} 告警（契约第 3 条）：rows[${序}].extras 键不是 属性: 前缀：${键}`)
+        }
+      }
+    }
+  }
+
+  return { ok: true, rows: [...rows], report }
+}
+
+/** 金额接受数字或数字字符串；非有限 / 非正 ⇒ undefined。 */
+function 金额数值(值: unknown): number | undefined {
+  const 数 =
+    typeof 值 === "number" ? 值 : typeof 值 === "string" && 值.trim() !== "" ? Number(值) : Number.NaN
+  return Number.isFinite(数) && 数 > 0 ? 数 : undefined
+}
+
+/** 非零退出后仍尝试读 `report`（Ruling X 配套）；文件不在 / 不是 JSON / 没有 report ⇒ undefined。 */
+async function 尝试读报告(路径: string): Promise<unknown> {
+  let 原文: string
+  try {
+    原文 = await readFile(路径, "utf8")
+  } catch {
+    return undefined
+  }
+  let 值: unknown
+  try {
+    值 = JSON.parse(原文)
+  } catch {
+    return undefined
+  }
+  if (!是对象(值) || !("report" in 值)) return undefined
+  return 值["report"]
+}
+
+/**
+ * `output.file` 是否已存在。`ENOENT` ⇒ 不存在；其它错误（权限 / 路径怪）按**存在**处理：
+ * 宁可拒绝执行、让用户看见原因，也不能冒覆盖/删除共享技能包里既有文件的险。
+ */
+async function 输出已存在(路径: string): Promise<boolean> {
+  try {
+    await access(路径)
+    return true
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return false
+    console.warn(`${告警标签} 检查输出文件失败，按已存在处理：${路径}：${消息(error)}`)
+    return true
+  }
+}
+
+async function 清理输出(路径: string): Promise<void> {
+  try {
+    await rm(路径, { force: true })
+  } catch (error) {
+    console.warn(`${告警标签} 删除输出失败（不影响结果）：${路径}：${消息(error)}`)
+  }
+}
+
+/** 写运行标记（内容 = 开始时间毫秒）；写不进就不执行，避免崩溃后无法自愈。 */
+async function 写标记(路径: string): Promise<boolean> {
+  try {
+    await writeFile(路径, String(Date.now()), "utf8")
+    return true
+  } catch (error) {
+    console.warn(`${告警标签} 写运行标记失败：${路径}：${消息(error)}`)
+    return false
+  }
+}
+
+async function 清理标记(路径: string): Promise<void> {
+  try {
+    await rm(路径, { force: true })
+  } catch (error) {
+    console.warn(`${告警标签} 删除运行标记失败（不影响结果）：${路径}：${消息(error)}`)
+  }
+}
+
+async function 列出后缀(目录: string, 后缀: string): Promise<readonly string[]> {
+  try {
+    const 名单 = await readdir(目录)
+    return 名单.filter((名) => 名.toLowerCase().endsWith(后缀))
+  } catch {
+    return []
+  }
+}
+
+function 新增文件(之前: readonly string[], 之后: readonly string[], 输出名: string): readonly string[] {
+  const 旧 = new Set(之前)
+  return 之后.filter((名) => !旧.has(名) && 名 !== 输出名)
+}
+
+function 是对象(值: unknown): 值 is Record<string, unknown> {
+  return typeof 值 === "object" && 值 !== null && !Array.isArray(值)
+}
+
+function codeOf(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined
+  const code = Reflect.get(error, "code")
+  return typeof code === "string" ? code : undefined
+}
+
+function 消息(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
+}

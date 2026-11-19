@@ -6,9 +6,12 @@ import { Config as CoreConfig } from "@/config/config"
 import { InstanceStore } from "@/project/instance-store"
 import { Provider } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { 读适配器注册表, 落点属主读者, type 适配器注册表 } from "./case-adapter-registry"
 import { 建调用模型 } from "./case-extract-ai"
 import { 建表头识别器 as 建表头识别器AI } from "./case-header-ai"
 import { claimNextJob, runJob, 作业项目目录, 沙箱内路径, type ClaimedJob } from "./case-ingest"
+import type { AssetViewer } from "@opencode-ai/asset-service/readable-sql"
+import type { Queryable } from "./case-store"
 import { 解析启动模型 } from "./model-resolve"
 import { OpenhivePg } from "./pg"
 
@@ -33,6 +36,8 @@ import { OpenhivePg } from "./pg"
  */
 export const 轮询间隔ms = 500
 
+const 告警标签 = "[openhive-case-ingest-worker]"
+
 /** `connect(env)` 拼连接串要的变量。缺任一 ⇒ 这台部署不接业务 PG。 */
 const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const
 
@@ -49,6 +54,41 @@ export const 消费开关ENV = "OPENHIVE_CASE_INGEST_WORKER"
  * 只保留一条启动 WARN，见 `model-resolve.ts` 的 `解析启动模型`。模型统一在
  * `opencode.jsonc` 的 `task_model` / `model` 里声明，改完重启生效。
  */
+
+/** 注入点：默认就是真注册表；用例换成记录 viewer 的桩（A9 轮 2）。 */
+export type 读注册表 = (db: Queryable, viewer: AssetViewer, 项目目录: string) => Promise<适配器注册表>
+
+/**
+ * 作业的 `读适配器` 读口（Ruling J）。
+ *
+ * viewer 恒用**落点属主**（`source_path` 第一段），不是 `queued_by`（操作人）：共享项目里
+ * 成员入队的作业，可见性要按属主判（A9）。选 viewer 这件事只在 `落点属主读者` 一处判；
+ * 本函数只负责「作业 → 项目目录 → 注册表」的拼装，导出给用例把选择钉住。
+ */
+export function 造作业适配器读者(
+  db: () => Queryable,
+  根目录: string,
+  取注册表: 读注册表 = 读适配器注册表,
+): (job: ClaimedJob) => Promise<适配器注册表> {
+  return async (job) => {
+    const 项目目录 = 作业项目目录(根目录, job.sourcePath, job.projectId)
+    if (项目目录 === undefined) {
+      console.warn(`${告警标签} 作业落点不合法，适配器注册表按空处理：${job.sourcePath}`)
+      return { 适配器: [], 跳过: [] }
+    }
+    const viewer = await 落点属主读者(db(), job.sourcePath)
+    const 注册表 = await 取注册表(db(), viewer, 项目目录)
+    // Ruling AB：`跳过` 是 `global` 档适配器（默认不在项目目录建链接）唯一的排障线索。
+    if (注册表.跳过.length > 0) {
+      console.warn(
+        `${告警标签} 适配器注册表跳过（不放行）：${注册表.跳过
+          .map((项) => `${项.id}: ${项.原因}`)
+          .join("；")}`,
+      )
+    }
+    return 注册表
+  }
+}
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -155,6 +195,9 @@ export const layer = Layer.effectDiscard(
             },
             建抽取器,
             建表头识别器,
+            根目录: config.root,
+            // Ruling J：注册表由 worker 注入；可见性判定一律走 `读适配器注册表`，这里不重写。
+            读适配器: 造作业适配器读者(() => db, config.root),
           },
           job,
         )
