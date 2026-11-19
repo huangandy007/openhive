@@ -144,6 +144,14 @@ describe("识别卡校验（M10）", () => {
     expect(problems.some((项) => 项.includes("entry.command"))).toBe(true)
   })
 
+  test("6b. output.file 不得指向包内既有文件（adapter.json / SKILL.md / entry.command 的脚本）", async () => {
+    for (const 文件 of ["adapter.json", "SKILL.md", "convert.ts"]) {
+      const dir = await 造包({ adapter: { ...合法识别卡(), output: { file: 文件 } } })
+      const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir, 词汇: 词表, 已占用id: [] }))
+      expect(problems.some((项) => 项.includes("output.file"))).toBe(true)
+    }
+  })
+
   test("7a. kind=rowRules 无 rowRules ⇒ 红；7b. 有 rowRules 且无 convert.ts ⇒ 绿", async () => {
     const 无规则 = await 造包({
       adapter: {

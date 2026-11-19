@@ -7,7 +7,7 @@ import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import type { AssetViewer } from "@opencode-ai/asset-service/readable-sql"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
-import { 读适配器注册表, type 适配器 } from "./case-adapter-registry"
+import { 读适配器注册表, 落点属主读者, type 适配器 } from "./case-adapter-registry"
 import { 探测, type 探测结论 } from "./case-adapter-probe"
 import { 文本数组 } from "./case-fact-store"
 import { 作业项目目录, 沙箱内路径 } from "./case-ingest"
@@ -78,8 +78,6 @@ export interface 待探测材料 {
    * 记的是**操作人**——共享项目里成员入队的材料反推出来必然 ENOENT。无作业行 ⇒ `null`。
    */
   readonly sourcePath: string | null
-  /** 入队人部门（`AssetViewer` 判同部门可见性要用）。 */
-  readonly 部门: string
 }
 
 /**
@@ -124,8 +122,7 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
                    from auth.case_ingest_job j
                   where j.project_id = m.project_id and j.material_id = m.id
                   order by j.queued_at desc, j.id desc
-                  limit 1) as source_path,
-                (select dept from auth.user u where u.id = m.queued_by) as dept
+                  limit 1) as source_path
     `),
   )
   const row = rows[0]
@@ -136,7 +133,6 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
     path: String(row.path),
     queuedBy: typeof row.queued_by === "string" ? row.queued_by : null,
     sourcePath: typeof row.source_path === "string" ? row.source_path : null,
-    部门: typeof row.dept === "string" ? row.dept : "",
   }
 }
 
@@ -172,13 +168,19 @@ export async function 探测材料(db: Queryable, deps: 探测依赖, 一份: �
     if (首表 === undefined) throw new Error("没有可探测的工作表")
     const 表头 = 首表.header.map((cell) => cell.text)
 
-    const 注册表 = await deps.读注册表(目录, {
-      userId: 一份.queuedBy ?? "",
-      department: 一份.部门,
-    })
-    const 结论 = 探测({ 表头 }, 注册表)
+    // viewer 用**落点属主**（source_path 第一段），不是 `queued_by`（操作人）：共享项目里
+    // 成员入队的材料，可见性要按属主判，才看得到属主的部门定向适配器（A9）。
+    const 注册表 = await deps.读注册表(目录, await 落点属主读者(db, sourcePath))
+    const 结论 = 探测({ 表头, projectId: 一份.projectId }, 注册表)
 
-    await 写结论(db, 一份, { ...结论, 完成秒: nowSeconds() })
+    // 只落文档字段：`命中们` 进报告 `matches`，不进 `case_material.probe`（A3）。
+    await 写结论(db, 一份, {
+      状态: 结论.状态,
+      ...(结论.适配器id === undefined ? {} : { 适配器id: 结论.适配器id }),
+      ...(结论.版本 === undefined ? {} : { 版本: 结论.版本 }),
+      ...(结论.原因码 === undefined ? {} : { 原因码: 结论.原因码 }),
+      完成秒: nowSeconds(),
+    })
     失败表.delete(失败键(一份))
   } catch (error) {
     失败表.set(失败键(一份), Date.now() + 失败冷却ms)

@@ -25,6 +25,8 @@ export interface 档案候选 {
   priority: number
   hitCount: number
   updatedAt: number
+  /** 档案的规则版本（迁移 0046 的 `rule_version`）；没填 ⇒ `null`，报告原样记 null。 */
+  ruleVersion: string | null
 }
 
 export interface 档案命中 {
@@ -32,6 +34,8 @@ export interface 档案命中 {
   name: string
   /** 还原成**当前**列下标。 */
   columns: Record<number, 识别字段>
+  /** 与候选同一个值：入库报告 `ruleVersion` 的取数口（A8 / FR-058）。 */
+  ruleVersion: string | null
 }
 
 interface 合格候选 {
@@ -134,5 +138,10 @@ export function 匹配数据源档案(输入: {
     return null
   }
 
-  return { id: 第一.档案.id, name: 第一.档案.name, columns: 第一.columns }
+  return {
+    id: 第一.档案.id,
+    name: 第一.档案.name,
+    columns: 第一.columns,
+    ruleVersion: 第一.档案.ruleVersion,
+  }
 }

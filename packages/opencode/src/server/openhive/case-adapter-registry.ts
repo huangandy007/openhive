@@ -2,6 +2,8 @@ export * as OpenhiveCaseAdapterRegistry from "./case-adapter-registry"
 
 import { readFile, realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { sql } from "drizzle-orm"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import { skillLinkPath } from "@opencode-ai/asset-service/project-skill-link"
 import type { AssetViewer } from "@opencode-ai/asset-service/readable-sql"
 import type { Queryable } from "./case-store"
@@ -313,6 +315,28 @@ function 按id(a: { readonly id: string }, b: { readonly id: string }): number {
 export function 按优先与id(a: 适配器, b: 适配器): number {
   const 差 = b.match.priority - a.match.priority
   return 差 !== 0 ? 差 : 按id(a, b)
+}
+
+/**
+ * 落点属主 = 作业 `source_path` 的**第一段**（沙箱落点恒为项目属主目录，与 `作业项目目录`
+ * 同一口径）。不要把 `queued_by` 当属主：共享项目里它是**操作人**。
+ */
+export function 落点属主(sourcePath: string): string {
+  return sourcePath.split("/")[0] ?? ""
+}
+
+/**
+ * 落点属主的读者（`AssetViewer`）：`userId` = 第一段，`department` 查 `auth.user`。
+ *
+ * 探测 / 入库两个 worker 的注册表 viewer 都用它（`#002-06` 同一前提单一出处）：
+ * 可见性该按**落点属主**判，才能看到属主自己的部门定向适配器（A9）。
+ */
+export async function 落点属主读者(db: Queryable, sourcePath: string): Promise<AssetViewer> {
+  const userId = 落点属主(sourcePath)
+  // 同一取法照 `access.ts` 的 `departmentOf`；读不到 ⇒ 空串（只剩全局那一支）。
+  const rows = rowsOf(await db.execute(sql`select dept from auth.user where id = ${userId}`))
+  const 部门 = rows[0]?.["dept"]
+  return { userId, department: typeof 部门 === "string" ? 部门 : "" }
 }
 
 function 是对象(值: unknown): 值 is Record<string, unknown> {

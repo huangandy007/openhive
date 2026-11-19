@@ -24,7 +24,7 @@ import {
 import { 候选字段集, 是无信息列, 是识别字段, type 识别字段 } from "./case-field-registry"
 import { 识别材料, type 材料识别 } from "./case-recognize"
 import { 按优先与id, type 适配器, type 适配器注册表 } from "./case-adapter-registry"
-import { 探测, type 探测结论 } from "./case-adapter-probe"
+import { 探测, type 探测结论, type 探测命中 } from "./case-adapter-probe"
 import { 跑转换器 } from "./case-converter-runner"
 import { 匹配数据源档案, type 档案命中 } from "./case-source-profile"
 import { 记档案命中, 读活跃档案 } from "./case-source-profile-store"
@@ -576,7 +576,9 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     选项.dryRun === true || deps.读适配器 === undefined
       ? { 适配器: [], 跳过: [] }
       : await deps.读适配器(job)
-  const 结论们 = sheets.map((_, i) => 探测({ 表头: 表头们[i] ?? [] }, 注册表.适配器))
+  const 结论们 = sheets.map((_, i) =>
+    探测({ 表头: 表头们[i] ?? [], projectId: job.projectId }, 注册表.适配器),
+  )
   const 适配 = 选适配器(结论们, 注册表.适配器)
   await 报进度("探测")
 
@@ -614,6 +616,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     行: FactRowInput[]
   }[] = []
   const 命中档案id = new Set<string>()
+  /** 四层通路里**第一份**命中档案（报告 `ruleVersion` 的取数口，A8）。 */
+  let 首个档案命中: 档案命中 | undefined
   /** 适配器通路下同时命中的数据源档案：只记录、不参与决策（FR-006，Ruling H）。 */
   const 档案也命中: { 工作表: string; id: string; name: string }[] = []
   /**
@@ -642,6 +646,16 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         throw new 原因码错误(`未识别:值闸不过:${失败闸.检查项}`, `未识别:值闸不过:${失败闸.检查项}`)
       }
       throw new 原因码错误("失败:转换器异常", `失败:转换器异常：${结果.detail}`)
+    }
+    // 成功路径也要判值闸（Ruling X 后半句，A5）：转换器自认成功（退出码 0）但报告里有
+    // `通过率 < 阈值` 的闸 ⇒ 同样是「未识别:值闸不过:<检查项>」，不写事实行。
+    // 探测（T006）仍只跑表头闸；值闸的权威证据只有转换器报告。
+    const 成功路径失败闸 = 第一个失败闸(结果.report)
+    if (成功路径失败闸 !== undefined) {
+      throw new 原因码错误(
+        `未识别:值闸不过:${成功路径失败闸.检查项}`,
+        `未识别:值闸不过:${成功路径失败闸.检查项}`,
+      )
     }
     // ④ 保留报告：T013 把它原样写进 `case_material_report.gates`（Ruling X）。
     // 本处不写库、不解析它的内容（语义归报告读侧，取数在成功事务里）。
@@ -673,6 +687,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
             (匹配数据源档案({ 表头: 表头们[i] ?? [], 档案们: 活跃档案 }) ?? undefined)
       档案们.push(档案)
       if (档案 !== undefined) {
+        首个档案命中 ??= 档案
         命中档案id.add(档案.id)
         缓存们.push(undefined)
         continue
@@ -1052,6 +1067,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     } else {
       报告警告们.push("转换器未报告值闸结果")
     }
+    // A6：转换器自报的 warnings 原样并入（不编造前缀、不改形状）。
+    if (是对象(转换器报告) && Array.isArray(转换器报告["warnings"])) {
+      报告警告们.push(...转换器报告["warnings"])
+    }
     const 未认出列数 = 未认出们.reduce((合计, 项) => 合计 + (项?.列们.length ?? 0), 0)
     if (未认出列数 > 0) 报告警告们.push(`未认出列 ${未认出列数} 个`)
     // T012 审查 M4：待确认只算不落，报告是它唯一的持久化出口（FR-052「交人看」）。
@@ -1075,13 +1094,24 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       materialId: job.materialId,
       adapterId: 本轮适配器?.id ?? null,
       adapterVersion: 本轮适配器?.version ?? null,
-      // Ruling AO：`case_source_profile` 没有 `rule_version` 列 ⇒ 四层/档案通路恒 null；
-      // 适配器通路记适配版本（FR-058）。不为它加迁移或编造值。
-      ruleVersion: 本轮适配器?.version ?? null,
+      // FR-058：适配器与档案各自有版本。适配器通路记适配版本；四层通路命中档案时记
+      // 档案的 `rule_version`（迁移 0046 真有这一列），没命中 / 没填 ⇒ null。
+      ruleVersion:
+        本轮适配器 === undefined ? (首个档案命中?.ruleVersion ?? null) : 本轮适配器.version,
       sourceSha256: 原件sha256,
       gates: 报告值闸们,
       warnings: 报告警告们,
-      skippedRows: (翻译?.跳过们 ?? []).map((跳过) => ({ 行号: 跳过.rowNo, 原因: 跳过.原因 })),
+      // A6：两类跳过行都保留——翻译层的 `{行号,原因}` 与转换器自报的 `{sheet,rowNo,原因}`。
+      skippedRows: [
+        ...(翻译?.跳过们 ?? []).map((跳过) => ({ 行号: 跳过.rowNo, 原因: 跳过.原因 })),
+        ...(是对象(转换器报告) && Array.isArray(转换器报告["skippedRows"])
+          ? 转换器报告["skippedRows"]
+          : []),
+      ],
+      // A3：报告列全部表头闸命中项（跨表去重，`priority desc, id asc`）。
+      matches: 合并命中们(结论们),
+      // A7：本次实际写出的事实行数（两条通路同一口径，不写真值以外的东西）。
+      convertedRows: 待写.length,
       enrich: 富化结果 === undefined ? null : 富化结果.统计,
       admission: 准入,
     })
@@ -1112,6 +1142,21 @@ function 选适配器(结论们: readonly 探测结论[], 适配器们: readonly
     return 项 === undefined ? [] : [项]
   })
   return 命中.toSorted(按优先与id)[0]
+}
+
+/**
+ * 本作业所有表（结论们）的命中项去重合并，按 `priority desc, id asc`（FR-009 报告列全部命中项）。
+ *
+ * 同一适配器可能同时过两张表的表头闸 ⇒ 按 id 去重（一份作业在报告里只出现一次）。
+ */
+function 合并命中们(结论们: readonly 探测结论[]): 探测命中[] {
+  const 表 = new Map<string, 探测命中>()
+  for (const 结论 of 结论们) for (const 项 of 结论.命中们 ?? []) if (!表.has(项.id)) 表.set(项.id, 项)
+  return [...表.values()].toSorted(
+    (甲, 乙) =>
+      乙.priority - 甲.priority ||
+      (甲.id < 乙.id ? -1 : 甲.id > 乙.id ? 1 : 0),
+  )
 }
 
 /**

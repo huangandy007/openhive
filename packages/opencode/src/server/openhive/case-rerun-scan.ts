@@ -65,6 +65,11 @@ export interface 扫描结果 {
   /** 前 5 条路径（跨三类，按 目录独有 → 未入队 → 未识别 的顺序）。 */
   样本: string[]
   截断: boolean
+  /**
+   * 本次 `扫树` 实际交回的条目数（AR12）。触顶时它就是上限本身——用户要能区分
+   * 「一共只有 1 份」与「只看到 1 份」。没扫目录（范围不含「目录独有」）⇒ 0。
+   */
+  已扫: number
 }
 
 export interface 批量入队结果 {
@@ -111,7 +116,7 @@ function 读字节器(依赖: 扫描依赖): (绝对路径: string) => Promise<U
 async function 算候选(
   db: Queryable,
   输入: { projectId: string; 范围: readonly 扫描范围[]; 依赖: 扫描依赖 },
-): Promise<{ 候选: 内部候选; 截断: boolean }> {
+): Promise<{ 候选: 内部候选; 截断: boolean; 已扫: number }> {
   const { projectId, 范围, 依赖 } = 输入
 
   // ① 已有材料的 fingerprint 集合：**全量行**（`#002-06`：两个问题、两份取数）。
@@ -195,12 +200,14 @@ async function 算候选(
 
   let 目录独有: 内部候选["目录独有"] = []
   let 截断 = false
+  let 已扫 = 0
   if (范围.includes("目录独有")) {
     const 读 = 依赖.读目录
     if (读 === undefined) throw new Error("读取文件树失败：没有提供读目录")
     const 结果 = await 扫树(读)
     if (结果 === undefined) throw new Error("读取文件树失败")
     截断 = 结果.truncated
+    已扫 = 结果.paths.length
 
     const 读文件 = 读字节器(依赖)
     const 本扫指纹 = new Set<string>()
@@ -219,14 +226,14 @@ async function 算候选(
     }
   }
 
-  return { 候选: { 目录独有, 未入队, 未识别 }, 截断 }
+  return { 候选: { 目录独有, 未入队, 未识别 }, 截断, 已扫 }
 }
 
 export async function 扫候选(
   db: Queryable,
   输入: { projectId: string; 范围: readonly 扫描范围[]; 依赖: 扫描依赖 },
 ): Promise<扫描结果> {
-  const { 候选, 截断 } = await 算候选(db, 输入)
+  const { 候选, 截断, 已扫 } = await 算候选(db, 输入)
   const 样本 = [
     ...候选.目录独有.map((项) => 项.path),
     ...候选.未入队.map((项) => 项.path),
@@ -241,6 +248,7 @@ export async function 扫候选(
     },
     样本,
     截断,
+    已扫,
   }
 }
 

@@ -42,7 +42,7 @@ import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 读设置, 写设置 } from "./case-ingest-settings"
-import { 最新报告, 报告历史 } from "./case-material-report"
+import { 最新报告, 报告历史, type 报告行 } from "./case-material-report"
 import { 批量入队, 扫候选, type 扫描范围, type 扫描依赖 } from "./case-rerun-scan"
 import { 过门, type Deps as 过门依赖 } from "./case-ui-routes"
 import { OpenhivePg } from "./pg"
@@ -121,6 +121,8 @@ function 对外扫描(结果: Awaited<ReturnType<typeof 扫候选>>) {
     },
     样本: 结果.样本.map(正斜杠),
     截断: 结果.截断,
+    // AR12：触顶时 `截断: true` 只说明「没看全」，`已扫` 才说清看了多少条。
+    已扫: 结果.已扫,
   }
 }
 
@@ -142,10 +144,14 @@ function 读体(request: HttpServerRequest.HttpServerRequest) {
 const 是范围 = (value: unknown): value is 扫描范围 =>
   typeof value === "string" && (范围闭集 as readonly string[]).includes(value)
 
-/** 缺省 = 全部三类；非数组 / 含闭集外的值 ⇒ `undefined`（调用方回 400，不静默忽略）。 */
+/**
+ * 缺省 = 全部三类；非数组 / 空数组 / 含闭集外的值 ⇒ `undefined`（调用方回 400，不静默忽略）。
+ * 空数组单独判：回 200「已入队 0」会让调用方以为真扫过一遍（AR12），语义上它是坏请求。
+ */
 function 读范围(value: unknown): 扫描范围[] | undefined {
   if (value === undefined) return [...范围闭集]
   if (!Array.isArray(value)) return undefined
+  if (value.length === 0) return undefined
   if (!value.every(是范围)) return undefined
   return value
 }
@@ -218,7 +224,7 @@ function handleRerun(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
 
     const 范围 = 读范围(体.范围)
     if (范围 === undefined)
-      return fail(400, "范围 必须是数组，且每项只能是 目录独有 / 未入队 / 未识别", "bad_request")
+      return fail(400, "范围 必须是非空数组，且每项只能是 目录独有 / 未入队 / 未识别", "bad_request")
 
     const 依赖 = yield* 建扫描依赖(deps, 门.user.id, projectId)
     if (依赖 === undefined) return fail(500, "读取文件树失败")
@@ -284,6 +290,15 @@ function handleSettingsWrite(request: HttpServerRequest.HttpServerRequest, deps:
   })
 }
 
+/**
+ * 报告出口的行映射：DAO 用驼峰 `convertedRows`，契约 §4 的对外字段是 `转换行数`（D2）。
+ * 改名只在这一层做一次，不让内部字段名泄漏到线路上（`#002-06`）。
+ */
+function 对外报告(行: 报告行) {
+  const { convertedRows, ...其余 } = 行
+  return { ...其余, 转换行数: convertedRows }
+}
+
 function handleReport(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
   return Effect.gen(function* () {
     const 参数 = new URL(request.url, "http://localhost").searchParams
@@ -298,11 +313,11 @@ function handleReport(request: HttpServerRequest.HttpServerRequest, deps: Deps) 
 
     if (参数.get("历史") === "1") {
       const 行们 = yield* Effect.promise(() => 报告历史(deps.pg(), projectId, materialId))
-      return ok({ reports: 行们 })
+      return ok({ reports: 行们.map(对外报告) })
     }
 
     const 报告 = yield* Effect.promise(() => 最新报告(deps.pg(), projectId, materialId))
     // 「还没跑完」是正常态：200 + null，不是 404（契约 §4 的歧义裁定）。
-    return ok({ report: 报告 ?? null })
+    return ok({ report: 报告 === undefined ? null : 对外报告(报告) })
   })
 }

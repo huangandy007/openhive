@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process"
-import { readFile, readdir, rm } from "node:fs/promises"
+import { access, readFile, readdir, rm } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { createTreeStopper } from "./governance-mcp-supervisor"
 
@@ -32,8 +32,13 @@ import { createTreeStopper } from "./governance-mcp-supervisor"
 export const 默认超时ms = 60_000
 /** 原件绝对路径的第二条通道（第一条是脚本的第一个参数）。 */
 export const 输入路径环境名 = "OPENHIVE_INPUT_PATH"
-/** 只允许内核镜像里可信的运行时前缀，别的解释器一律不起。 */
-const 命令白名单 = ["bun", "node"] as const
+/**
+ * 只允许内核镜像里可信的运行时前缀，别的解释器一律不起。
+ *
+ * **与发布闸（`asset-service/src/ingest-gate.ts` 的 `匹配命令前缀`）同一口径**：
+ * `bun` 必须带 `run` 子命令（`bun install` / `bun add` 会联网装包，不是转换器），`node` 直跑脚本。
+ */
+const 命令白名单 = ["bun run", "node"] as const
 /** 子进程运行必需的环境键；刻意**不含**任何数据库 / 云厂商凭据。 */
 const 允许的环境键 = [
   "PATH",
@@ -70,22 +75,33 @@ export type 转换器结果 =
 
 export async function 跑转换器(输入: 转换器输入): Promise<转换器结果> {
   const 命令 = 输入.适配器.entry.command.trim().split(/\s+/).filter((项) => 项 !== "")
-  const 前缀 = 命令[0]
-  if (前缀 === undefined || !命令白名单.some((允许) => 允许 === 前缀)) {
-    return { ok: false, detail: `命令前缀不在白名单（只允许 bun / node）：${前缀 ?? "空命令"}` }
+  const 命令文本 = 命令.join(" ")
+  // 前缀必须是「整词 + 空格」：`bun run` 匹配 `bun run convert.ts`，不匹配 `bunrunner`；
+  // `node` 匹配 `node convert.js`，不匹配 `node_modules/...`（后者本就不会作为命令出现）。
+  const 前缀 = 命令白名单.find((允许) => 命令文本.startsWith(`${允许} `))
+  if (前缀 === undefined) {
+    return {
+      ok: false,
+      detail: `命令前缀不在白名单（只允许 bun run / node）：${命令[0] ?? "空命令"}`,
+    }
   }
 
   const 目录 = 输入.适配器.目录
-  // 整个执行体（快照 → spawn → 读输出 → 清理）都必须在同一目录的锁内：输出路径固定且读后即删。
+  // 整个执行体（检查 → 快照 → spawn → 读输出 → 清理）都必须在同一目录的锁内：输出路径固定且读后即删。
   return 串行化(目录, async () => {
     const 输出名 = basename(输入.适配器.output.file)
     const 输出路径 = join(目录, 输入.适配器.output.file)
+    // 技能包是**共享资产**：output.file 若已存在，只能是别人放进包里的文件。既不能覆盖
+    // （会改坏共享包），也不能删（「读完即删」只适用于本次新建的输出）。所以运行前先拒。
+    if (await 输出已存在(输出路径)) {
+      return { ok: false, detail: `输出文件已存在，拒绝覆盖共享技能包：${输出名}` }
+    }
     const 超时ms = 输入.超时ms ?? 默认超时ms
     const 运行前JSON = await 列出后缀(目录, ".json")
     const 运行前xlsx = await 列出后缀(目录, ".xlsx")
 
     const 执行 = await 执行子进程({
-      命令: [前缀, ...命令.slice(1)],
+      命令,
       参数: [输入.原件],
       cwd: 目录,
       env: 子进程环境(输入.原件),
@@ -339,6 +355,21 @@ async function 尝试读报告(路径: string): Promise<unknown> {
   }
   if (!是对象(值) || !("report" in 值)) return undefined
   return 值["report"]
+}
+
+/**
+ * `output.file` 是否已存在。`ENOENT` ⇒ 不存在；其它错误（权限 / 路径怪）按**存在**处理：
+ * 宁可拒绝执行、让用户看见原因，也不能冒覆盖/删除共享技能包里既有文件的险。
+ */
+async function 输出已存在(路径: string): Promise<boolean> {
+  try {
+    await access(路径)
+    return true
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return false
+    console.warn(`${告警标签} 检查输出文件失败，按已存在处理：${路径}：${消息(error)}`)
+    return true
+  }
 }
 
 async function 清理输出(路径: string): Promise<void> {

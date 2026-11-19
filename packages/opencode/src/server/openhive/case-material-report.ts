@@ -34,6 +34,10 @@ export interface 报告行 {
   gates: unknown[]
   warnings: unknown[]
   skippedRows: unknown[]
+  /** 本次作业全部表头闸通过者（含落选者），`priority desc, id asc`（FR-009）。 */
+  matches: unknown[]
+  /** 本次实际产生的事实行数（迁移 0050）。 */
+  convertedRows: number
   /** `null` = 本次没跑富化（非资金材料 / 富化失败）。 */
   enrich: unknown
   /** `null` 不会出现：写报告时准入结论必已算好（Ruling N）。 */
@@ -52,6 +56,10 @@ export interface 报告输入 {
   gates: unknown[]
   warnings: unknown[]
   skippedRows: unknown[]
+  /** 全部命中的适配器（含落选者）。 */
+  matches: unknown[]
+  /** 本次实际产生的事实行数。 */
+  convertedRows: number
   /** `null` = 本次没跑富化。 */
   enrich: unknown
   /** `null` 不该出现；保留给直接调 DAO 的调用方做兜底。 */
@@ -72,13 +80,16 @@ export async function 写报告(tx: Queryable, 输入: 报告输入): Promise<vo
   await tx.execute(sql`
     insert into auth.case_material_report
       (project_id, id, job_id, material_id, adapter_id, adapter_version, rule_version,
-       source_sha256, gates, warnings, skipped_rows, enrich, admission, created_at)
+       source_sha256, gates, warnings, skipped_rows, matches, converted_rows, enrich, admission,
+       created_at)
     values (${输入.projectId}, ${报告id(输入.projectId, 输入.jobId)}, ${输入.jobId},
             ${输入.materialId}, ${输入.adapterId}, ${输入.adapterVersion}, ${输入.ruleVersion},
             ${输入.sourceSha256},
             ${JSON.stringify(输入.gates)}::text::jsonb,
             ${JSON.stringify(输入.warnings)}::text::jsonb,
             ${JSON.stringify(输入.skippedRows)}::text::jsonb,
+            ${JSON.stringify(输入.matches)}::text::jsonb,
+            ${输入.convertedRows},
             ${输入.enrich === null ? null : JSON.stringify(输入.enrich)}::text::jsonb,
             ${输入.admission === null ? null : JSON.stringify(输入.admission)}::text::jsonb,
             ${nowSeconds()})
@@ -118,6 +129,8 @@ function 映射行(行: Record<string, unknown>): 报告行 {
     gates: 解析数组(行.gates),
     warnings: 解析数组(行.warnings),
     skippedRows: 解析数组(行.skipped_rows),
+    matches: 解析数组(行.matches),
+    convertedRows: Number(行.converted_rows ?? 0),
     enrich: 解析json(行.enrich) ?? null,
     admission: 解析json(行.admission) ?? null,
     createdAt: Number(行.created_at ?? 0),
@@ -126,7 +139,8 @@ function 映射行(行: Record<string, unknown>): 报告行 {
 
 const 全列 = sql`
   project_id, id, job_id, material_id, adapter_id, adapter_version, rule_version,
-  source_sha256, gates, warnings, skipped_rows, enrich, admission, created_at
+  source_sha256, gates, warnings, skipped_rows, matches, converted_rows, enrich, admission,
+  created_at
 `
 
 /** 该材料最新一份报告；没有 ⇒ `undefined`（「还没跑完」是正常态，不是错误）。 */

@@ -335,6 +335,8 @@ async function 校验入口与输出(
       problems.push(`${识别卡}：output.file 不能为空`)
     } else if (!在包内(dir, 文件)) {
       problems.push(`${识别卡}：output.file 必须是相对技能目录的路径：${JSON.stringify(文件)}`)
+    } else {
+      校验输出不撞既有文件(dir, 文件, entry目录卡, 是转换器, problems)
     }
   }
 
@@ -345,6 +347,42 @@ async function 校验入口与输出(
   })
   const 有转换器 = 条目.some((项) => 项.isFile() && convert形状.test(项.name))
   if (!有转换器) problems.push("缺少四件套：convert.*（kind=converter 必需）")
+}
+
+/**
+ * `output.file` 不得指向包内**既有文件**（T018 A1）。
+ *
+ * 运行期执行器对 `output.file` 是「读完即删」，而技能包是共享资产：若 output.file 正好是
+ * `adapter.json` / `SKILL.md` / 转换器脚本本身，一次入库就会把共享包的执行依赖删掉/覆盖。
+ * 发布闸是最后一道能拦住它的闸——两个出口共用本函数（`#002-06`）。
+ */
+function 校验输出不撞既有文件(
+  dir: string,
+  输出文件: string,
+  条目卡: Record<string, unknown>,
+  是转换器: boolean,
+  problems: string[],
+): void {
+  const 输出绝对 = resolve(dir, 输出文件)
+  for (const 保留 of ["adapter.json", "SKILL.md"] as const) {
+    if (同路径(输出绝对, resolve(dir, 保留))) {
+      problems.push(`${识别卡}：output.file 不能指向包内既有文件 ${保留}：${JSON.stringify(输出文件)}`)
+    }
+  }
+  const entry = 条目卡["entry"]
+  if (!是转换器 || !是对象(entry)) return
+  const command = entry["command"]
+  if (!是非空串(command)) return
+  const 前缀 = 匹配命令前缀(command.trim())
+  const 脚本 = 前缀 === undefined ? undefined : 命令脚本(command.trim(), 前缀)
+  if (脚本 !== undefined && 同路径(输出绝对, resolve(dir, 脚本))) {
+    problems.push(`${识别卡}：output.file 不能指向 entry.command 引用的脚本：${JSON.stringify(输出文件)}`)
+  }
+}
+
+/** win32 文件系统大小写不敏感：比较前折叠，避免 `Adapter.json` 绕过。 */
+function 同路径(甲: string, 乙: string): boolean {
+  return process.platform === "win32" ? 甲.toLowerCase() === 乙.toLowerCase() : 甲 === 乙
 }
 
 /**

@@ -946,13 +946,14 @@ export function 启用内核(deps: Deps, userId: string, projectId: string, asse
       if (已有 === assetId) continue
       const 另一份 = yield* Effect.promise(() => assetById(deps.pg(), 已有))
       if (另一份 === undefined || 另一份.visibility === "personal") continue
-      // R6：读不到的不拿来比名——否则会把无权读者看不到的资产名回显给他。
-      if (!canReadAsset(viewer, 另一份, grants)) continue
       const 另一目标 = skillLinkTarget(assetsRoot(process.env), 另一份)
-      if (新名 !== undefined) {
+      // 同名拦截仍按可见性：读不到的不拿来比名（R6：不能把无权读者看不到的资产名回显给他）。
+      if (新名 !== undefined && canReadAsset(viewer, 另一份, grants)) {
         const 另一名 = yield* 读名字(另一目标)
         if (新名 === 另一名) return 内核失败(409, `项目里已启用同名 skill：${新名}`, "duplicate_skill_name")
       }
+      // A11：adapter id 占位**不看可见性**——同项目已启用即占位。过滤掉看不见的包，内核里
+      // 就会同时装进两份同 id 适配器（启用者看不到另一份，不等于它不在这个项目里）。
       const 占用 = yield* Effect.promise(() => 读入库包id(另一目标))
       if (占用 !== undefined) 已占用id.push(占用)
     }
