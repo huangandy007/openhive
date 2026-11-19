@@ -150,6 +150,7 @@ async function 种材料(input: {
   status?: 解析状态
   kind?: string
   detail?: unknown
+  probe?: unknown
   fingerprint?: string
   createdAt?: number
   queuedBy?: string | null
@@ -158,11 +159,12 @@ async function 种材料(input: {
   await 库().execute(sql`
     insert into auth.case_material
       (id, project_id, file_name, kind, fingerprint, path, parse_status, parse_detail,
-       queued_by, clock_offset_sec, created_at)
+       probe, queued_by, clock_offset_sec, created_at)
     values (${id}, ${input.projectId ?? 项目}, ${input.path.split("/").at(-1) ?? input.path},
             ${input.kind ?? "话单"}, ${input.fingerprint ?? `fp-${id}`}, ${input.path},
             ${input.status ?? "未入队"},
             ${input.detail === undefined ? null : JSON.stringify(input.detail)}::jsonb,
+            ${input.probe === undefined ? null : JSON.stringify(input.probe)}::jsonb,
             ${input.queuedBy ?? null}, 0, ${input.createdAt ?? 1})
   `)
   return id
@@ -189,13 +191,21 @@ async function 种作业(input: {
   projectId?: string
   status?: "排队中" | "运行中" | "完成" | "失败" | "已取消"
   queuedAt?: number
+  reasonCode?: string | null
+  progress?: unknown
+  adapterId?: string | null
+  adapterVersion?: string | null
 }): Promise<string> {
   const id = `j-${crypto.randomUUID()}`
   await 库().execute(sql`
     insert into auth.case_ingest_job
-      (id, project_id, material_id, status, attempts, queued_by, queued_at)
+      (id, project_id, material_id, status, attempts, queued_by, queued_at,
+       reason_code, progress, adapter_id, adapter_version)
     values (${id}, ${input.projectId ?? 项目}, ${input.materialId}, ${input.status ?? "排队中"},
-            0, null, ${input.queuedAt ?? 0})
+            0, null, ${input.queuedAt ?? 0},
+            ${input.reasonCode ?? null},
+            ${input.progress === undefined ? null : JSON.stringify(input.progress)}::jsonb,
+            ${input.adapterId ?? null}, ${input.adapterVersion ?? null})
   `)
   return id
 }
@@ -255,6 +265,11 @@ const 清单形状 = Schema.Struct({
       factCount: Schema.Number,
       numberCount: Schema.Number,
       parseable: Schema.Boolean,
+      adapterId: Schema.NullOr(Schema.String),
+      adapterVersion: Schema.NullOr(Schema.String),
+      reasonCode: Schema.NullOr(Schema.String),
+      progress: Schema.NullOr(Schema.Unknown),
+      probe: Schema.NullOr(Schema.Unknown),
     }),
   ),
   parseableExtensions: Schema.Array(Schema.String),
@@ -430,6 +445,109 @@ describe("GET /openhive/case/materials", () => {
       const 目标 = 行.find((m) => m.id === 材料id)
       expect(目标?.factCount).toBe(3)
       expect(目标?.numberCount).toBe(1)
+    }))
+
+  it("视图：最近作业的适配器快照、原因码、进度与材料 probe 一并带出", () =>
+    Effect.gen(function* () {
+      const 有作业 = yield* Effect.promise(() =>
+        种材料({
+          path: "资料/未识别.xlsx",
+          status: "有问题",
+          probe: { 状态: "未识别", 原因码: "未识别:缺必需列:交易时间" },
+        }),
+      )
+      yield* Effect.promise(() =>
+        种作业({
+          materialId: 有作业,
+          status: "失败",
+          queuedAt: 1,
+          reasonCode: "未识别:无匹配适配器",
+          progress: { 阶段: "读表" },
+          adapterId: "demo",
+          adapterVersion: "1.0.0",
+        }),
+      )
+      yield* Effect.promise(() => 种材料({ path: "资料/无作业.xlsx", status: "未入队" }))
+
+      const 包 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}`))
+
+      expect(包.materials.find((item) => item.path === "资料/未识别.xlsx")).toMatchObject({
+        adapterId: "demo",
+        adapterVersion: "1.0.0",
+        reasonCode: "未识别:无匹配适配器",
+        progress: { 阶段: "读表" },
+        probe: { 状态: "未识别", 原因码: "未识别:缺必需列:交易时间" },
+      })
+      // 没有作业的材料：五字段显式 null（契约要 JSON 里看得见 null，不是缺键 / undefined）
+      expect(包.materials.find((item) => item.path === "资料/无作业.xlsx")).toMatchObject({
+        adapterId: null,
+        adapterVersion: null,
+        reasonCode: null,
+        progress: null,
+        probe: null,
+      })
+    }))
+
+  it("最近作业：同一材料多次作业只取 queued_at desc, id desc 最新那条的原因码与适配器", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/重跑.xlsx", status: "有问题" }))
+      yield* Effect.promise(() =>
+        种作业({
+          materialId: 材料,
+          status: "失败",
+          queuedAt: 5,
+          reasonCode: "未识别:缺必需列:交易时间",
+          progress: { 阶段: "旧" },
+          adapterId: "old",
+          adapterVersion: "0.9.0",
+        }),
+      )
+      yield* Effect.promise(() =>
+        种作业({
+          materialId: 材料,
+          status: "失败",
+          queuedAt: 9,
+          reasonCode: "未识别:无匹配适配器",
+          progress: { 阶段: "读表" },
+          adapterId: "demo",
+          adapterVersion: "1.0.0",
+        }),
+      )
+
+      const 包 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}`))
+      expect(包.materials.find((item) => item.path === "资料/重跑.xlsx")).toMatchObject({
+        reasonCode: "未识别:无匹配适配器",
+        adapterId: "demo",
+        adapterVersion: "1.0.0",
+        progress: { 阶段: "读表" },
+      })
+    }))
+
+  it("未识别=1：只返回最近作业原因码以「未识别:」开头的材料；其余值与不带参数同义", () =>
+    Effect.gen(function* () {
+      const 未识别 = yield* Effect.promise(() => 种材料({ path: "资料/未识别.xlsx", status: "有问题" }))
+      yield* Effect.promise(() =>
+        种作业({ materialId: 未识别, status: "失败", queuedAt: 3, reasonCode: "未识别:无匹配适配器" }),
+      )
+      const 已解析 = yield* Effect.promise(() => 种材料({ path: "资料/已解析.xlsx", status: "已解析" }))
+      // 更早那次是未识别、最近一次成功 ⇒ 口径是「最近一次」，不进「未识别」
+      yield* Effect.promise(() =>
+        种作业({ materialId: 已解析, status: "失败", queuedAt: 1, reasonCode: "未识别:无匹配适配器" }),
+      )
+      yield* Effect.promise(() => 种作业({ materialId: 已解析, status: "完成", queuedAt: 2 }))
+      // 未入队：没有作业就没有原因码，不算未识别
+      yield* Effect.promise(() => 种材料({ path: "资料/未入队.xlsx", status: "未入队" }))
+
+      const 筛选 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}&未识别=1`))
+      expect(筛选.materials.map((item) => item.path)).toEqual(["资料/未识别.xlsx"])
+
+      const 全部路径 = ["资料/未入队.xlsx", "资料/已解析.xlsx", "资料/未识别.xlsx"].sort()
+      for (const 参数 of ["0", "true", ""]) {
+        const 全部 = yield* 读清单回包(
+          yield* 发(我, `/openhive/case/materials?projectId=${项目}&未识别=${参数}`),
+        )
+        expect(全部.materials.map((item) => item.path).sort(), `未识别=${参数}`).toEqual(全部路径)
+      }
     }))
 })
 
