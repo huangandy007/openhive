@@ -270,6 +270,36 @@ describe("写入翻译结果", () => {
     // 出处：两条参与者都指向同一张卡片的引用行，且能回过 `case_citation`。
     expect(参与.every((p) => p.citation_id === 引用[0]?.id)).toBe(true)
   })
+
+  test("tenpay 账号（FR-030）：建账户实体、挂户名别名与开户行属性", async () => {
+    const 账号 = "abc@wx.tenpay.com"
+    await 写("tp1", [
+      行({
+        materialId: "tp1",
+        ownerAccount: 账号,
+        extras: { ownerName: "张三", "属性:本方:开户行": "招商银行" },
+      }),
+    ])
+    const 实体 = rowsOf(
+      await db().execute(sql`
+        select id, attrs from auth.case_entity
+         where project_id = ${项目} and type = '账户' and canonical_value = ${账号}
+      `),
+    )
+    expect(实体).toHaveLength(1)
+    const 别名 = rowsOf(
+      await db().execute(sql`
+        select kind, value, revoked_at from auth.case_entity_alias
+         where project_id = ${项目} and entity_id = ${String(实体[0]?.id)}
+      `),
+    )
+    expect(别名).toHaveLength(1)
+    expect(别名[0]).toMatchObject({ kind: "户名", value: "张三", revoked_at: null })
+    // 属性按实体存 `auth.case_entity.attrs`（没有单独的属性表）；jsonb 两种读法都认。
+    const 原始属性 = 实体[0]?.attrs
+    const 属性 = typeof 原始属性 === "string" ? JSON.parse(原始属性) : 原始属性
+    expect(属性).toEqual({ 开户行: [{ 值: "招商银行", 出处: "tp1#Sheet1#2" }] })
+  })
 })
 
 const 模板项目 = "prj-tpl"
