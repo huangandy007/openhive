@@ -391,6 +391,11 @@ function 一份材料(值: { id: string; path: string }): 材料视图 {
     factCount: 0,
     numberCount: 0,
     parseable: true,
+    adapterId: null,
+    adapterVersion: null,
+    reasonCode: null,
+    progress: null,
+    probe: null,
   }
 }
 

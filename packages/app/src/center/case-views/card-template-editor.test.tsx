@@ -93,6 +93,11 @@ const 已解析材料: 材料视图 = {
   factCount: 0,
   numberCount: 0,
   parseable: true,
+  adapterId: null,
+  adapterVersion: null,
+  reasonCode: null,
+  progress: null,
+  probe: null,
 }
 
 function 假api(over: Partial<CaseTemplateApi> = {}): CaseTemplateApi {

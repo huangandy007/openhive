@@ -1,4 +1,4 @@
-import type { 材料视图, 解析状态 } from "./case-materials-api"
+import type { 材料视图, 解析状态, 作业进度, 探测结论 } from "./case-materials-api"
 
 /**
  * 左栏文件视图的**全部纯规则**（计划 3 · 设计 §8.1）。
@@ -375,6 +375,62 @@ export function 跳过不可用原因(b: 亮灯依据): string | undefined {
   if (b.row?.status === "已跳过") return "已经跳过了"
   if (b.row?.status === "已解析") return "已经解析过了，不能跳过"
   return undefined
+}
+
+// ---------------------------------------------------------------------------
+// 016 T017 · 三列展示逻辑（探测徽标 / 原因码 / 进度 / 队列位置）
+//
+// 与上面的标记同一层：组件只把结果画出来，文案与形状都在这里定。`#002-06`：同一句话
+// 在行、徽标、提示里各写一份，改一处漏一处不会报错。
+// ---------------------------------------------------------------------------
+
+/** 探测徽标：`探测中` 半圆、`已识别` 勾、`未识别` 叹号；`null` 表示没有探测结论，不画。 */
+export function 探测徽标(
+  probe: 探测结论 | null,
+): { 文案: string; 形状: "half" | "check" | "alert" } | null {
+  if (probe === null) return null
+  switch (probe.状态) {
+    case "探测中":
+      return { 文案: "探测中", 形状: "half" }
+    case "已识别": {
+      const 细节 =
+        probe.适配器id !== undefined && probe.版本 !== undefined
+          ? `${probe.适配器id}@${probe.版本}`
+          : undefined
+      return { 文案: 细节 === undefined ? "已识别" : `已识别 · ${细节}`, 形状: "check" }
+    }
+    case "未识别": {
+      const 原因 = 原因码文案(probe.原因码 ?? null)
+      return { 文案: 原因 === null ? "未识别" : `未识别 · ${原因}`, 形状: "alert" }
+    }
+  }
+  return null
+}
+
+/**
+ * 原因码给人看的那半句。
+ *
+ * 只有 `未识别:无匹配适配器` 这一条去掉前缀（契约把「没匹配上」当成可直说的结论）；
+ * 其余值（含 `未识别:缺必需列:…`）**原样**返回——把带列名的码截短会让人丢掉该去核对哪一列。
+ */
+export function 原因码文案(reasonCode: string | null): string | null {
+  if (reasonCode === null) return null
+  if (reasonCode === "未识别:无匹配适配器") return "无匹配适配器"
+  return reasonCode
+}
+
+/** 进度文案：`转换 300/1200`；缺任一分母 / 分子只说阶段；`null` 不画。 */
+export function 进度文案(progress: 作业进度 | null): string | null {
+  if (progress === null) return null
+  if (progress.已处理 !== undefined && progress.总数 !== undefined)
+    return `${progress.阶段} ${progress.已处理}/${progress.总数}`
+  return progress.阶段
+}
+
+/** 队列位置：只有 `排队中` 有位置（N = 前面还有几个 + 1），其余状态不画。 */
+export function 队列位置文案(row: 材料视图): string | null {
+  if (row.status !== "排队中") return null
+  return `第 ${row.queueAhead + 1} 位`
 }
 
 export function 查看不可用原因(b: 亮灯依据): string | undefined {

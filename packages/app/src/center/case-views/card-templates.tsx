@@ -52,6 +52,11 @@ const 空材料项: 材料视图 = {
   factCount: 0,
   numberCount: 0,
   parseable: false,
+  adapterId: null,
+  adapterVersion: null,
+  reasonCode: null,
+  progress: null,
+  probe: null,
 }
 
 /**

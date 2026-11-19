@@ -78,8 +78,8 @@ const 材料api: CaseMaterialsApi = {
     kind: "ok",
     value: {
       materials: [
-        { id: "m-1", path: "材料/话单.xlsx", kind: "话单", status: "已解析", detail: null, queueAhead: 0, factCount: 0, numberCount: 0, parseable: true },
-        { id: "m-2", path: "材料/未解析.xlsx", kind: "话单", status: "有问题", detail: null, queueAhead: 0, factCount: 0, numberCount: 0, parseable: true },
+        { id: "m-1", path: "材料/话单.xlsx", kind: "话单", status: "已解析", detail: null, queueAhead: 0, factCount: 0, numberCount: 0, parseable: true, adapterId: null, adapterVersion: null, reasonCode: null, progress: null, probe: null },
+        { id: "m-2", path: "材料/未解析.xlsx", kind: "话单", status: "有问题", detail: null, queueAhead: 0, factCount: 0, numberCount: 0, parseable: true, adapterId: null, adapterVersion: null, reasonCode: null, progress: null, probe: null },
       ],
       parseableExtensions: [".xlsx"],
     },
