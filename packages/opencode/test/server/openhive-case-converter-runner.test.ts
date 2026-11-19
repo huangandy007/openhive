@@ -191,6 +191,55 @@ await Bun.write(
     expect(结果.detail).toContain("report")
   })
 
+  test("extras 已知键（字段目录 extras + 备注 + 交易类型 + 属性:）不告警，词表外键仍告警", async () => {
+    // 依据：case-field-registry.ts `extras字段们`；case-translate.ts:213-214 明说
+    // 「字段目录没有备注/交易类型，所以必然在 extras」。每行 3 个已知键 × 16,481 行
+    // 曾刷出 49,378 条 `契约第 3 条` 告警，把真正的「未认出键」淹没。
+    const 脚本 = `
+await Bun.write(
+  "out.json",
+  JSON.stringify({
+    rows: [
+      {
+        sheet: "Sheet1",
+        rowNo: 2,
+        amount: "1.00",
+        direction: "收",
+        extras: {
+          ownerName: "样本姓名甲",
+          备注: "备注：示例交易",
+          交易类型: "支付账户消费",
+          address: "示例地址",
+          merchant: "示例商户",
+          contactPhone: "13800000000",
+          personName: "样本姓名乙",
+          deliveredAt: 1730000000,
+          "属性:对方:开户行": "招商银行",
+          merchantNo: "30000001",
+        },
+      },
+    ],
+    report: {},
+  }),
+)
+`
+    const 目录 = await 造技能目录(脚本)
+    const 原告警 = console.warn
+    const 告警们: string[] = []
+    console.warn = (...参数: unknown[]) => {
+      告警们.push(参数.map(String).join(" "))
+    }
+    try {
+      const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+      expect(结果.ok).toBe(true)
+    } finally {
+      console.warn = 原告警
+    }
+
+    expect(告警们.length).toBe(1)
+    expect(告警们[0]).toContain("merchantNo")
+  })
+
   test("环境：父进程的 PG_PASSWORD 不进子进程", async () => {
     const 脚本 = `
 await Bun.write(

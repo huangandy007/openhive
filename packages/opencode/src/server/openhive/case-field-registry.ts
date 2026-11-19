@@ -28,6 +28,14 @@ export type 标准列字段 = (typeof 标准列字段们)[number]
 export const extras字段们 = ["address", "merchant", "contactPhone", "personName", "deliveredAt", "ownerName"] as const
 export type ExtrasField = (typeof extras字段们)[number]
 
+/**
+ * `extras` 里允许出现的**非** `属性:` 键：识别层自己的 extras 字段，加上「备注」「交易类型」。
+ * 后两个不在字段目录里（`case-translate.ts:213-214`：没有对应标准列，原文必然落 extras），
+ * 但它们被翻译资金直接读取，属已知词表。转换器执行器用它区分「已知键」与「词表外键」，
+ * 避免每行三个已知键刷出几十万条 `契约第 3 条` 告警、把真正未认出的键淹没。
+ */
+export const 已知extras键们: ReadonlySet<string> = new Set([...extras字段们, "备注", "交易类型"])
+
 export type 识别字段 = 标准列字段 | ExtrasField
 
 export type 字段种类 = "账号" | "户名" | "号码" | "金额" | "余额" | "时间" | "时长" | "地点" | "商户" | "方向" | "文本"

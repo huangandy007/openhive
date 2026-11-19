@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { access, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
+import { 已知extras键们 } from "./case-field-registry"
 import { createTreeStopper } from "./governance-mcp-supervisor"
 
 /**
@@ -350,9 +351,10 @@ function 校验输出(值: unknown): 转换器结果 {
     if (extras !== undefined) {
       if (!是对象(extras)) return { ok: false, detail: `契约第 3 条：rows[${序}].extras 必须是对象` }
       for (const 键 of Object.keys(extras)) {
-        if (!键.startsWith("属性:")) {
-          // 契约第 3 条：非属性键**进告警、不算失败**。
-          console.warn(`${告警标签} 告警（契约第 3 条）：rows[${序}].extras 键不是 属性: 前缀：${键}`)
+        if (!键.startsWith("属性:") && !已知extras键们.has(键)) {
+          // 契约第 3 条：词表外的键**进告警、不算失败**。已知 extras 键（字段目录 + 备注/交易类型）
+          // 是下游会读的正常产物，不告警；否则 1.6 万行 × 3 键会把真正的未认出键淹没。
+          console.warn(`${告警标签} 告警（契约第 3 条）：rows[${序}].extras 键不在已知词表（非 属性: 前缀）：${键}`)
         }
       }
     }
