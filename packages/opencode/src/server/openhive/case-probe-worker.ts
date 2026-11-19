@@ -9,6 +9,7 @@ import type { AssetViewer } from "@opencode-ai/asset-service/readable-sql"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { 读适配器注册表, type 适配器 } from "./case-adapter-registry"
 import { 探测, type 探测结论 } from "./case-adapter-probe"
+import { 文本数组 } from "./case-fact-store"
 import { 作业项目目录, 沙箱内路径 } from "./case-ingest"
 import { readSheets } from "./case-sheet"
 import type { Queryable } from "./case-store"
@@ -45,12 +46,38 @@ const 告警标签 = "[openhive-case-probe-worker]"
 /** 认领时写入的临时状态；探测结束会被结论覆盖，读失败则清回 NULL。 */
 const 探测中 = JSON.stringify({ 状态: "探测中" })
 
+/**
+ * 失败冷却：同一条材料失败后 60s 内不再参与认领。
+ *
+ * 没有冷却时，失败会把 probe 清回 NULL，而材料仍是「排队中」——500ms 的轮询会每拍重认领
+ * 同一条，队首被永久占住（饿死），后面的材料一条轮不到。冷却只影响**认领**，不改变
+ * 「失败 ⇒ probe 留空」的契约。模块级表跨用例共享，测试用 `清空失败冷却()` 清。
+ */
+const 失败冷却ms = 60_000
+const 失败表 = new Map<string, number>()
+
+/** 仅测试与实现共用的清理口：失败表是模块级状态，用例之间必须能清。 */
+export function 清空失败冷却(): void {
+  失败表.clear()
+}
+
+function 失败键(一份: 待探测材料): string {
+  return `${一份.projectId}/${一份.materialId}`
+}
+
 export interface 待探测材料 {
   readonly projectId: string
   readonly materialId: string
   /** 项目内相对路径（界面口径）。 */
   readonly path: string
   readonly queuedBy: string | null
+  /**
+   * 作业的**权威沙箱落点**（`case_ingest_job.source_path`，`/` 分隔的沙箱根相对路径）。
+   *
+   * 不能用 `[queuedBy, projectId, path]` 反推：沙箱落点恒为**项目属主**目录，而 `queued_by`
+   * 记的是**操作人**——共享项目里成员入队的材料反推出来必然 ENOENT。无作业行 ⇒ `null`。
+   */
+  readonly sourcePath: string | null
   /** 入队人部门（`AssetViewer` 判同部门可见性要用）。 */
   readonly 部门: string
 }
@@ -64,13 +91,24 @@ export interface 待探测材料 {
  * 判据取改指语句自己的返回，不取先前读到的快照）。
  */
 export async function 认领待探测(db: Queryable): Promise<待探测材料 | undefined> {
+  const 现在 = Date.now()
+  for (const [键, 到期] of 失败表) if (到期 <= 现在) 失败表.delete(键)
+  const 冷却中 = [...失败表.keys()]
+  // 冷却闸必须写在 CTE 里：放到外层 WHERE 时，CTE 的 `limit 1` 已经挑中冷却中的那一行，
+  // 外层再把它滤掉 ⇒ 每次返回 0 行，队首照样饿死。
+  const 冷却闸 =
+    冷却中.length === 0
+      ? sql``
+      : sql`and (m.project_id || '/' || m.id) <> all(${文本数组(冷却中)}::text[])`
+
   const rows = rowsOf(
     await db.execute(sql`
       with 候选 as (
-        select project_id, id
-          from auth.case_material
-         where parse_status = '排队中' and probe is null
-         order by created_at, id
+        select m.project_id, m.id
+          from auth.case_material m
+         where m.parse_status = '排队中' and m.probe is null
+         ${冷却闸}
+         order by m.created_at, m.id
          limit 1
          for update skip locked
       )
@@ -82,6 +120,11 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
          and m.parse_status = '排队中'
          and m.probe is null
       returning m.project_id, m.id, m.path, m.queued_by,
+                (select j.source_path
+                   from auth.case_ingest_job j
+                  where j.project_id = m.project_id and j.material_id = m.id
+                  order by j.queued_at desc, j.id desc
+                  limit 1) as source_path,
                 (select dept from auth.user u where u.id = m.queued_by) as dept
     `),
   )
@@ -92,6 +135,7 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
     materialId: String(row.id),
     path: String(row.path),
     queuedBy: typeof row.queued_by === "string" ? row.queued_by : null,
+    sourcePath: typeof row.source_path === "string" ? row.source_path : null,
     部门: typeof row.dept === "string" ? row.dept : "",
   }
 }
@@ -113,9 +157,10 @@ export interface 探测依赖 {
  */
 export async function 探测材料(db: Queryable, deps: 探测依赖, 一份: 待探测材料): Promise<void> {
   try {
-    const sourcePath =
-      一份.queuedBy === null ? undefined : [一份.queuedBy, 一份.projectId, 一份.path].join("/")
-    if (sourcePath === undefined) throw new Error("材料没有入队人，算不出沙箱内落点")
+    // 落点取作业的权威 `source_path`（见 `待探测材料.sourcePath` 的注释）：按 `queued_by`
+    // 反推在共享项目里会指到操作人目录，而文件实际在**属主**目录下。
+    const sourcePath = 一份.sourcePath
+    if (sourcePath === null) throw new Error("材料没有作业行，算不出权威落点")
     const 绝对 = 沙箱内路径(deps.root, sourcePath)
     if (绝对 === undefined) throw new Error(`材料的落点不合法：${sourcePath}`)
     const 目录 = 作业项目目录(deps.root, sourcePath, 一份.projectId)
@@ -134,7 +179,9 @@ export async function 探测材料(db: Queryable, deps: 探测依赖, 一份: �
     const 结论 = 探测({ 表头 }, 注册表)
 
     await 写结论(db, 一份, { ...结论, 完成秒: nowSeconds() })
+    失败表.delete(失败键(一份))
   } catch (error) {
+    失败表.set(失败键(一份), Date.now() + 失败冷却ms)
     // 不吞（`#006-28` 反面）：原因进 WARN，运维按材料 id 能捞到。
     console.warn(`${告警标签} 探测跳过，probe 留空：${一份.projectId}/${一份.materialId}：${消息(error)}`)
     await 清空认领(db, 一份)
