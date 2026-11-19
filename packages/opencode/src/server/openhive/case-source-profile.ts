@@ -16,6 +16,13 @@ export interface 档案候选 {
   type: "资金" | "话单" | "其他"
   /** 表头原文（trim 后）→ 字段。 */
   mapping: Record<string, string>
+  /**
+   * 允许缺失的表头（FR-065 后半）。**刻意不参与命中**：命中只看 `mapping` 里的键，
+   * 本字段仅为随候选带出、供展示 / 后续规则使用；把它接进判定会造出「可选列也影响命中」的第二套前提。
+   */
+  optionalHeaders: readonly string[]
+  /** 命中优先级（**大者优先**），在 `hitCount` 之后、`updatedAt` 之前决胜。 */
+  priority: number
   hitCount: number
   updatedAt: number
 }
@@ -43,17 +50,28 @@ function 映射签名(mapping: Record<string, string>): string {
   )
 }
 
+/**
+ * 表头 → 第一次出现的列下标（trim 后比较；空表头不参与）。
+ *
+ * 重名时取第一次出现的列：档案按表头原文建，重名表头在建档时已被拒绝；
+ * 这里取第一个只是让「库里有脏数据」时行为确定，不是支持重名。
+ *
+ * **一份**判据：`匹配数据源档案` 与探测闸（`case-adapter-probe.ts`）都调它（`#002-06`）。
+ */
+export function 表头下标(表头: readonly (string | null)[]): Map<string, number> {
+  const 下标 = new Map<string, number>()
+  表头.forEach((原始, i) => {
+    const 表头 = 原始?.trim() ?? ""
+    if (表头 !== "" && !下标.has(表头)) 下标.set(表头, i)
+  })
+  return 下标
+}
+
 export function 匹配数据源档案(输入: {
   表头: readonly (string | null)[]
   档案们: readonly 档案候选[]
 }): 档案命中 | null {
-  // 表头重名时取第一次出现的列：档案按表头原文建，重名表头在建档时已被拒绝；
-  // 这里取第一个只是让「库里有脏数据」时行为确定，不是支持重名。
-  const 下标 = new Map<string, number>()
-  输入.表头.forEach((原始, i) => {
-    const 表头 = 原始?.trim() ?? ""
-    if (表头 !== "" && !下标.has(表头)) 下标.set(表头, i)
-  })
+  const 下标 = 表头下标(输入.表头)
 
   const 合格: 合格候选[] = []
   for (const 档案 of 输入.档案们) {
@@ -98,6 +116,7 @@ export function 匹配数据源档案(输入: {
     (甲, 乙) =>
       乙.有效列数 - 甲.有效列数 ||
       乙.档案.hitCount - 甲.档案.hitCount ||
+      乙.档案.priority - 甲.档案.priority ||
       乙.档案.updatedAt - 甲.档案.updatedAt ||
       (甲.档案.id < 乙.档案.id ? -1 : 甲.档案.id > 乙.档案.id ? 1 : 0),
   )

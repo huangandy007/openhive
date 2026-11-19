@@ -304,7 +304,13 @@ function 按id(a: { readonly id: string }, b: { readonly id: string }): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-function 按优先与id(a: 适配器, b: 适配器): number {
+/**
+ * 多命中的**唯一**决胜口径：`priority desc, id asc`。
+ *
+ * 注册表自己的列表排序与探测闸（`case-adapter-probe.ts`）共用这一份（`#002-06`）——
+ * 别在探测里再写一遍比较器，否则两边哪天改了一边就静默漂移。
+ */
+export function 按优先与id(a: 适配器, b: 适配器): number {
   const 差 = b.match.priority - a.match.priority
   return 差 !== 0 ? 差 : 按id(a, b)
 }

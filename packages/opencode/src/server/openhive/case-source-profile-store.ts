@@ -20,7 +20,7 @@ import { inTransaction, type Queryable } from "./case-store"
 export async function 读活跃档案(db: Queryable, projectId: string): Promise<档案候选[]> {
   const 行们 = rowsOf(
     await db.execute(sql`
-      select id, name, type, mapping, hit_count, updated_at
+      select id, name, type, mapping, optional_headers, priority, hit_count, updated_at
         from auth.case_source_profile
        where project_id = ${projectId} and revoked_at is null
     `),
@@ -39,6 +39,8 @@ export async function 读活跃档案(db: Queryable, projectId: string): Promise
       name: String(行.name),
       type,
       mapping: 干净,
+      optionalHeaders: 解析字符串数组(行.optional_headers),
+      priority: Number(行.priority ?? 100),
       hitCount: Number(行.hit_count ?? 0),
       updatedAt: Number(行.updated_at ?? 0),
     })
