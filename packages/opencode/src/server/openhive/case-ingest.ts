@@ -594,7 +594,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     `)
     // ② 原件绝对路径：拿不到就失败，**不许**降级走四层。
     const 原件 = deps.根目录 === undefined ? undefined : 沙箱内路径(deps.根目录, job.sourcePath)
-    if (原件 === undefined) throw new Error("失败:转换器异常：拿不到原件路径（根目录/落点不合法）")
+    if (原件 === undefined) throw new Error("拿不到原件路径（根目录/落点不合法）")
     // ③ 起转换器。同一技能目录的并发已由 runner 进程内串行（T007，Ruling AH），这里不再加锁。
     await 报进度("转换")
     const 结果 = await 跑转换器({ 适配器: 适配, 原件 })
@@ -1032,11 +1032,11 @@ function 第一个失败闸(报告: unknown): { 检查项: string } | undefined 
  * 这里只把 JSON 值收成 `FactRowInput` 的字段类型，不另发明一套校验。
  */
 function 转换行(原: unknown, job: ClaimedJob): FactRowInput {
-  if (!是对象(原)) throw new Error("失败:转换器异常：事实行必须是对象")
+  if (!是对象(原)) throw new 原因码错误("失败:转换器异常", "事实行必须是对象")
   const sheet = 原["sheet"]
   const rowNo = 原["rowNo"]
   if (typeof sheet !== "string" || typeof rowNo !== "number") {
-    throw new Error("失败:转换器异常：事实行缺少 sheet / rowNo")
+    throw new 原因码错误("失败:转换器异常", "事实行缺少 sheet / rowNo")
   }
   const extras = 原["extras"]
   const direction = 原["direction"]

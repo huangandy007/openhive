@@ -260,6 +260,9 @@ describe("T011 原因码（六值字面）与作业进度", () => {
     // 字面全等：不许被值闸映射冒领（报告缺失 ⇒ 不走 `未识别:值闸不过:*`）。
     expect((await 取作业行(作业.jobId)).reason_code).toBe("失败:转换器异常")
     expect((await getMaterial(db(), projectId, 作业.materialId))?.parseStatus).toBe("有问题")
+    // 失败后 `收尾` 不改 `progress`，阶段应停在转换器真正跑起来的那一步。
+    // 「转换」不是默认值（入队为 NULL，前一步是「探测」）⇒ 这条有牙（`#005-47`）。
+    expect(解析进度((await 取作业行(作业.jobId)).progress)["阶段"]).toBe("转换")
   })
 
   test("3. 写入事务失败（故障注入：独立库 drop 掉 case_fact_row）⇒ 失败:入库异常", async () => {
@@ -387,5 +390,28 @@ process.exit(3)
     expect(行数).toBe(2)
     expect(Number(进度["已处理"])).toBe(行数)
     expect(Number(进度["总数"])).toBe(行数)
+  })
+
+  test("9. 转换器回 ok 但事实行缺 sheet ⇒ 失败:转换器异常（不许写 NULL）", async () => {
+    // runner 不校验 `sheet`（只校 rowNo / amount / direction）⇒ 这条行能穿过 runner 到 `转换行`。
+    // 契约把「转换器回 ok 但行不可搬运」判为 `失败:转换器异常`，裸 `Error` 会落 NULL（漏码）。
+    const 缺列脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [{ rowNo: 1, amount: "1.00", direction: "收", startedAt: "2026-01-02 03:04:05" }],
+  report: {}
+}))
+`
+    const { 根, 技能目录, projectId, 文件名 } = await 备适配器("缺sheet", {
+      表头们: 流水表头,
+      工作簿: 造工作簿({ Sheet1: [[...流水表头], ["2026-01-02 03:04:05", "100.00", "张三"]] }),
+      转换脚本: 缺列脚本,
+      写原件: true,
+    })
+    await 入队(projectId, 文件名)
+
+    const { 作业, 结果 } = await 跑一条(装适配器依赖(根, [卡(技能目录, 流水表头)]))
+    expect(结果).toBe("失败")
+
+    expect((await 取作业行(作业.jobId)).reason_code).toBe("失败:转换器异常")
   })
 })
