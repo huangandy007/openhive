@@ -125,9 +125,11 @@ export async function 材料视图(
          group by f.material_id
       ),
       recent_job as (
+        -- 取消只把作业置「已取消」、行保留；置顶重来得把 queued_at 回填得更小 ⇒ 不排除它
+        -- 就会选中那条取消掉的作业（原因码为空），「未识别」永远筛不出来。
         select distinct on (material_id) material_id, reason_code, progress, adapter_id, adapter_version
           from auth.case_ingest_job
-         where project_id = ${projectId}
+         where project_id = ${projectId} and status <> '已取消'
          order by material_id, queued_at desc, id desc
       )
       select l.id, l.path, l.kind, l.parse_status, l.parse_detail, l.probe,

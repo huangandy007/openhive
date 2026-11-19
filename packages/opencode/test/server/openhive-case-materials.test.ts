@@ -549,6 +549,49 @@ describe("GET /openhive/case/materials", () => {
         expect(全部.materials.map((item) => item.path).sort(), `未识别=${参数}`).toEqual(全部路径)
       }
     }))
+
+  it("最近作业排除「已取消」：取消的 J1 排在前面也不顶掉重新入队的 J2", () =>
+    Effect.gen(function* () {
+      // 「置顶」会把新作业的 queued_at 回填成 min(当前排队)-1 ⇒ 重新入队的 J2 数值更小；
+      // 而取消只把 J1 置「已取消」、行仍保留。按 queued_at 取最近会错选 J1（原因码为空）。
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/重来.xlsx", status: "有问题" }))
+      yield* Effect.promise(() =>
+        种作业({ materialId: 材料, status: "已取消", queuedAt: 100, reasonCode: null }),
+      )
+      yield* Effect.promise(() =>
+        种作业({
+          materialId: 材料,
+          status: "失败",
+          queuedAt: 49,
+          reasonCode: "未识别:无匹配适配器",
+          progress: { 阶段: "读表" },
+          adapterId: "demo",
+          adapterVersion: "1.0.0",
+        }),
+      )
+
+      const 包 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}`))
+      expect(包.materials.find((item) => item.path === "资料/重来.xlsx")).toMatchObject({
+        reasonCode: "未识别:无匹配适配器",
+        adapterId: "demo",
+        adapterVersion: "1.0.0",
+        progress: { 阶段: "读表" },
+      })
+    }))
+
+  it("未识别=1 也按「排除已取消」后的最近作业筛：取消的 J1 挡不住 J2", () =>
+    Effect.gen(function* () {
+      const 材料 = yield* Effect.promise(() => 种材料({ path: "资料/重来.xlsx", status: "有问题" }))
+      yield* Effect.promise(() =>
+        种作业({ materialId: 材料, status: "已取消", queuedAt: 100, reasonCode: null }),
+      )
+      yield* Effect.promise(() =>
+        种作业({ materialId: 材料, status: "失败", queuedAt: 49, reasonCode: "未识别:无匹配适配器" }),
+      )
+
+      const 筛选 = yield* 读清单回包(yield* 发(我, `/openhive/case/materials?projectId=${项目}&未识别=1`))
+      expect(筛选.materials.map((item) => item.path)).toEqual(["资料/重来.xlsx"])
+    }))
 })
 
 const 解析回包形状 = Schema.Struct({ ok: Schema.Boolean, status: Schema.String })
