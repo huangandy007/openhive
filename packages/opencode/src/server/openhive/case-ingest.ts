@@ -873,12 +873,13 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         },
       )
       if (资金翻译 !== undefined) 并入属性观察(资金翻译, 富化结果.属性们)
+      // 收尾进度只在富化**成功后**写；失败保留进入时的「富化 0/N」（M9）。
+      if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 资金行.length, 总数: 资金行.length })
     } catch (error) {
       console.warn(
         `[openhive-case-ingest] 富化失败（不影响作业）：${error instanceof Error ? error.message : String(error)}`,
       )
     }
-    if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 资金行.length, 总数: 资金行.length })
   }
 
   const 翻译 = 资金翻译 === undefined && 模板翻译们.length === 0 ? undefined : 合并翻译结果([

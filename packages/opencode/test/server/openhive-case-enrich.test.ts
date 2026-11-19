@@ -65,6 +65,47 @@ describe("参考类处置", () => {
     expect(r.告警们.every((w) => w.原因 !== "")).toBe(true)
     expect(r.统计.未补全数).toBeGreaterThan(0)
   })
+
+  test("用例 12 · 带空格 / 横线的账号先归一化再查参考库与案件库（适配器通路）", async () => {
+    // 四层通路 `toFactRows` 已归一化；适配器通路 `转换行` 不归一化 ⇒ 产键必须自己归一化，
+    // 否则参考类全告警、匹配类全未匹配（静默降质）。
+    const 参考库 = 建参考库(async () => ({
+      版本: "ref-v1",
+      条目: [{ 类别: "开户行", 值: "6222021234567890", 结果: "招商银行" }] satisfies 参考条目[],
+    }))
+    const 案件库收到: string[] = []
+    const r = await 富化(
+      { projectId: "prj-enrich", materialId: "m1", rows: [行({ ownerAccount: "6222 0212-3456 7890" })] },
+      {
+        参考库,
+        案件库: async (值们) => {
+          案件库收到.push(...值们)
+          return new Map()
+        },
+      },
+    )
+    expect(r.属性们).toContainEqual({ 归属: "本方", 键: "开户行", 值: "招商银行", 出处: "m1#表1#2" })
+    expect(案件库收到).toContain("6222021234567890")
+  })
+
+  test("用例 13 · 同一账号两行 ⇒ 两条观察（出处各不同），补全数按归属+键+值去重", async () => {
+    const 参考库 = 建参考库(async () => ({
+      版本: "ref-v1",
+      条目: [{ 类别: "开户行", 值: 账号, 结果: "招商银行" }] satisfies 参考条目[],
+    }))
+    const r = await 富化(
+      {
+        projectId: "prj-enrich",
+        materialId: "m1",
+        rows: [行({ rowNo: 2, ownerAccount: 账号 }), 行({ rowNo: 3, ownerAccount: 账号 })],
+      },
+      { 参考库, 案件库: async () => new Map() },
+    )
+    const 开户行们 = r.属性们.filter((a) => a.键 === "开户行")
+    expect(开户行们).toHaveLength(2)
+    expect([...new Set(开户行们.map((a) => a.出处))].sort()).toEqual(["m1#表1#2", "m1#表1#3"])
+    expect(r.统计.补全数).toBe(1)
+  })
 })
 
 describe("身份类处置", () => {
@@ -92,6 +133,33 @@ describe("身份类处置", () => {
     // 「不写空值」：待确认里不会出现空串结果。
     expect(未命中.待确认们.every((p) => p.值 !== "")).toBe(true)
   })
+
+  test("用例 14 · 同一证件号在本方与对方（自转）⇒ 两条结论（归属各一），服务只问 1 次", async () => {
+    let 调次 = 0
+    const r = await 富化(
+      {
+        projectId: "prj-enrich",
+        materialId: "m1",
+        rows: [行({ extras: { "属性:本方:证件号": 证件号, "属性:对方:证件号": 证件号 } })],
+      },
+      {
+        参考库: 空库(),
+        案件库: async () => new Map(),
+        外部服务: {
+          核验: async () => {
+            调次 += 1
+            return "张三"
+          },
+        },
+      },
+    )
+    const 结论们 = r.属性们.filter((a) => a.键 === "实名核验结论")
+    expect(结论们).toHaveLength(2)
+    expect(结论们.some((a) => a.归属 === "本方")).toBe(true)
+    expect(结论们.some((a) => a.归属 === "对方")).toBe(true)
+    // 核验缓存仍按 (键,值)：同一证件号只问一次服务。
+    expect(调次).toBe(1)
+  })
 })
 
 describe("匹配类处置", () => {
@@ -117,6 +185,40 @@ describe("匹配类处置", () => {
     expect(未匹配们包含(未命中.未匹配们, "账号", 账号)).toBe(true)
     expect(未命中.告警们).toEqual([])
     expect(未命中.待确认们).toEqual([])
+  })
+
+  test("用例 15 · 人名取 counterpartyName / extras.ownerName，不取账号原文", async () => {
+    const 案件库收到: string[][] = []
+    const r = await 富化(
+      {
+        projectId: "prj-enrich",
+        materialId: "m1",
+        rows: [
+          行({
+            ownerAccountRaw: "6222021234567890",
+            counterpartyName: "李四",
+            extras: { ownerName: "张三" },
+          }),
+        ],
+      },
+      {
+        参考库: 空库(),
+        案件库: async (值们) => {
+          案件库收到.push([...值们])
+          return new Map([
+            ["张三", "entity-张"],
+            ["李四", "entity-李"],
+          ])
+        },
+      },
+    )
+    const 值集 = new Set(案件库收到.flat())
+    expect(值集.has("张三")).toBe(true)
+    expect(值集.has("李四")).toBe(true)
+    // `ownerAccountRaw` 是账号原文，不是人名。
+    expect(值集.has("6222021234567890")).toBe(false)
+    expect(r.匹配命中们).toContainEqual({ 类别: "人名", 值: "张三", 实体id: "entity-张" })
+    expect(r.匹配命中们).toContainEqual({ 类别: "人名", 值: "李四", 实体id: "entity-李" })
   })
 })
 
@@ -211,7 +313,40 @@ describe("外部服务客户端", () => {
     )
     const 结果 = await Promise.all(Array.from({ length: 6 }, (_, i) => 客户端.核验(`证件-${i}`)))
     expect(结果).toEqual(Array.from({ length: 6 }, () => "核验通过"))
-    expect(峰值).toBeLessThanOrEqual(4)
+    // 6 个任务、20ms 延时足够让前 4 个同时在飞：峰值必须真的顶到上限（不是 ≤ 4 的空断言）。
+    expect(峰值).toBe(4)
+  })
+
+  test("用例 16 · 超时 ⇒ undefined（服务 200ms 才有结果，超时 50ms）", async () => {
+    const 客户端 = 建外部服务客户端(
+      {
+        核验: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200))
+          return "核验通过"
+        },
+      },
+      { 超时ms: 50 },
+    )
+    expect(await 客户端.核验("110101199001011234")).toBeUndefined()
+  })
+
+  test("用例 17 · 服务抛错 ⇒ undefined ＋ 至少一条 WARN（不空 catch）", async () => {
+    const 客户端 = 建外部服务客户端({
+      核验: async () => {
+        throw new Error("boom")
+      },
+    })
+    const 告警: unknown[][] = []
+    const 原warn = console.warn
+    console.warn = ((...args: unknown[]) => {
+      告警.push(args)
+    }) as typeof console.warn
+    try {
+      expect(await 客户端.核验("110101199001011234")).toBeUndefined()
+    } finally {
+      console.warn = 原warn
+    }
+    expect(告警.length).toBeGreaterThanOrEqual(1)
   })
 
   test("用例 8 · 未命中负缓存 10 分钟：TTL 内不再问服务，过期后再问", async () => {

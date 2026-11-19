@@ -3,7 +3,7 @@ export * as OpenhiveCaseEnrich from "./case-enrich"
 import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 解析属性列, type 属性归属 } from "./case-attribute-registry"
-import { 是账户形状 } from "./case-field-registry"
+import { 是账户形状, 归一化值 } from "./case-field-registry"
 import { 文本数组 } from "./case-fact-store"
 import type { FactRowInput, Queryable } from "./case-store"
 import type { 属性观察 } from "./case-translate"
@@ -126,8 +126,10 @@ function 产键(输入: 富化输入): {
     const 出处 = `${输入.materialId}#${row.sheet}#${row.rowNo}`
 
     // ── 账户形状：开户行 / 卡种（参考类）＋ 账号（匹配类）──
-    const 本方 = (row.ownerAccount ?? "").trim()
-    const 对方 = (row.counterparty ?? "").trim()
+    // 适配器通路（`转换行`）给的是原文，四层通路 `toFactRows` 已归一化 ⇒ 这里统一走
+    // 标准归一化（幂等）：否则带空格 / 横线的账号查参考库全不中、查案件库全未匹配。
+    const 本方 = 归一化值("ownerAccount", row.ownerAccount ?? "").trim()
+    const 对方 = 归一化值("counterparty", row.counterparty ?? "").trim()
     const 账号们: { 归属: 属性归属; 值: string }[] = []
     if (本方 !== "" && 是账户形状(本方)) 账号们.push({ 归属: "本方", 值: 本方 })
     if (对方 !== "" && 是账户形状(对方)) 账号们.push({ 归属: "对方", 值: 对方 })
@@ -140,14 +142,15 @@ function 产键(输入: 富化输入): {
     // 来源只取明确的号码字段：caller / callee / extras.contactPhone。
     // 不扫全部 extras：原始账号列也在 extras 里，12 位以内的裸账号会被误当号码。
     const 号码们: { 归属: 属性归属; 值: string }[] = []
-    const 加号码 = (归属: 属性归属, 原: string | null | undefined) => {
-      const 值 = (原 ?? "").trim()
+    const 加号码 = (归属: 属性归属, 字段: "caller" | "callee" | "contactPhone", 原: string | null | undefined) => {
+      // 形状同样对**归一化后**的值判：`+86 …` 原文会被 `电话形状` 判掉（同 I1 的通路问题）。
+      const 值 = 归一化值(字段, 原 ?? "").trim()
       if (值 !== "" && 电话形状.test(值)) 号码们.push({ 归属, 值 })
     }
-    加号码("本方", row.caller)
-    加号码("对方", row.callee)
+    加号码("本方", "caller", row.caller)
+    加号码("对方", "callee", row.callee)
     const 联系人电话 = row.extras?.["contactPhone"]
-    if (typeof 联系人电话 === "string") 加号码("对方", 联系人电话)
+    if (typeof 联系人电话 === "string") 加号码("对方", "contactPhone", 联系人电话)
     for (const 号码 of 号码们) 参考.push({ 归属: 号码.归属, 键: "号码归属地", 值: 号码.值, 出处 })
 
     // ── extras 属性列：身份类产键（参考类原文已由翻译层写入，匹配类不追加）──
@@ -162,11 +165,12 @@ function 产键(输入: 富化输入): {
       身份.push({ 归属: 属性.归属, 键: 属性.键, 值, 出处 })
     }
 
-    // ── 匹配类固定产键：户名 / 本方账号原文 ⇒ 人名 ──
+    // ── 匹配类固定产键：对手户名 / 本方户名（`extras.ownerName`）⇒ 人名 ──
+    // `ownerAccountRaw` 是**账号原文**、不是人名：当人名去查案件库只会制造未匹配噪音。
     const 对手户名 = (row.counterpartyName ?? "").trim()
     if (对手户名 !== "") 匹配.push({ 类别: "人名", 值: 对手户名 })
-    const 本方原文 = (row.ownerAccountRaw ?? "").trim()
-    if (本方原文 !== "") 匹配.push({ 类别: "人名", 值: 本方原文 })
+    const 本方户名 = row.extras?.["ownerName"]
+    if (typeof 本方户名 === "string" && 本方户名.trim() !== "") 匹配.push({ 类别: "人名", 值: 本方户名.trim() })
   }
 
   return { 参考, 身份, 匹配 }
@@ -191,9 +195,13 @@ export async function 富化(输入: 富化输入, 依赖: 富化依赖): Promis
   const 匹配命中们: { 类别: string; 值: string; 实体id: string }[] = []
   const 补全明细们: 富化结果["补全明细们"] = []
 
+  /** 属性观察去重：`归属\0键\0值\0出处`（同一 (键,值,出处) 只产一条）。 */
   const 属性已见 = new Set<string>()
   const 待确认已见 = new Set<string>()
   const 告警已见 = new Set<string>()
+  /** 统计口径：`归属\0键\0值`（同一值多出处只算一次）。 */
+  const 补全已见 = new Set<string>()
+  const 未补全已见 = new Set<string>()
 
   // ── 参考类：内存查，无语句 ──
   const 参考查过 = new Map<string, string | undefined>()
@@ -205,13 +213,17 @@ export async function 富化(输入: 富化输入, 依赖: 富化依赖): Promis
       参考查过.set(查询键, 结果)
     }
     if (结果 === undefined) {
+      未补全已见.add(`${键.归属}\u0000${键.键}\u0000${键.值}`)
+      // 告警按「值」层面去重：同一账号在两侧 / 多行都查不到，人只需要看一条值级告警。
       const 去重 = `${键.键}\u0000${键.值}`
       if (告警已见.has(去重)) continue
       告警已见.add(去重)
       告警们.push({ 键: 键.键, 值: 键.值, 原因: "参考库无此值" })
       continue
     }
-    const 去重 = `${键.归属}\u0000${键.键}\u0000${结果}`
+    补全已见.add(`${键.归属}\u0000${键.键}\u0000${结果}`)
+    // 出处进去重键：同一值来自不同行时每行各产一条观察（`#002-06` 的「出处是事实」）。
+    const 去重 = `${键.归属}\u0000${键.键}\u0000${结果}\u0000${键.出处}`
     if (属性已见.has(去重)) continue
     属性已见.add(去重)
     属性们.push({ 归属: 键.归属, 键: 键.键, 值: 结果, 出处: 键.出处 })
@@ -226,35 +238,39 @@ export async function 富化(输入: 富化输入, 依赖: 富化依赖): Promis
   }
 
   // ── 身份类：同一 (键, 值) 只核验一次；外部服务缺失 ⇒ 全部按查不到 ──
-  const 身份唯一 = new Map<string, 身份产键>()
+  const 核验唯一 = new Map<string, 身份产键>()
   for (const 键 of 身份产键们) {
     const 去重 = `${键.键}\u0000${键.值}`
-    if (!身份唯一.has(去重)) 身份唯一.set(去重, 键)
+    if (!核验唯一.has(去重)) 核验唯一.set(去重, 键)
   }
   const 身份结果 = new Map<string, string | undefined>()
   if (依赖.外部服务 === undefined) {
-    for (const 去重 of 身份唯一.keys()) 身份结果.set(去重, undefined)
+    for (const 去重 of 核验唯一.keys()) 身份结果.set(去重, undefined)
   } else {
     const 服务 = 依赖.外部服务
     await Promise.all(
-      [...身份唯一.entries()].map(async ([去重, 键]) => {
+      [...核验唯一.entries()].map(async ([去重, 键]) => {
         身份结果.set(去重, await 服务.核验(键.值))
       }),
     )
   }
-  for (const [去重, 键] of 身份唯一) {
-    const 结果 = 身份结果.get(去重)
+  // 产出 / 待确认**遍历全部产键**：同一证件号既是本方又是对方时两侧都产（核验仍只问一次）。
+  for (const 键 of 身份产键们) {
+    const 结果 = 身份结果.get(`${键.键}\u0000${键.值}`)
+    const 产出去重 = `${键.归属}\u0000${键.键}\u0000${键.值}\u0000${键.出处}`
     if (结果 === undefined) {
-      if (待确认已见.has(去重)) continue
-      待确认已见.add(去重)
+      if (待确认已见.has(产出去重)) continue
+      待确认已见.add(产出去重)
+      未补全已见.add(`${键.归属}\u0000${键.键}\u0000${键.值}`)
       待确认们.push({ 键: 键.键, 值: 键.值, 出处: 键.出处, 原因: "查不到" })
       continue
     }
     // 身份类命中的产物固定是「实名核验结论」（brief 三类处置表）。
     const 观察键 = "实名核验结论"
-    const 属性去重 = `${键.归属}\u0000${观察键}\u0000${结果}`
+    const 属性去重 = `${键.归属}\u0000${观察键}\u0000${结果}\u0000${键.出处}`
     if (属性已见.has(属性去重)) continue
     属性已见.add(属性去重)
+    补全已见.add(`${键.归属}\u0000${观察键}\u0000${结果}`)
     属性们.push({ 归属: 键.归属, 键: 观察键, 值: 结果, 出处: 键.出处 })
     补全明细们.push({
       键: 观察键,
@@ -290,8 +306,9 @@ export async function 富化(输入: 富化输入, 依赖: 富化依赖): Promis
     匹配命中们,
     补全明细们,
     统计: {
-      补全数: 属性们.length,
-      未补全数: 待确认们.length + 告警们.length,
+      // 按 `归属+键+值` 去重：同一值多出处只算一次（brief「按值去重后」）。
+      补全数: 补全已见.size,
+      未补全数: 未补全已见.size,
       参考库版本: 依赖.参考库.版本,
     },
   }

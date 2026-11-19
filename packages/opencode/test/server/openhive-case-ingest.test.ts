@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
+import { PgDialect } from "drizzle-orm/pg-core"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -20,7 +21,7 @@ import type { 适配器 } from "../../src/server/openhive/case-adapter-registry"
 import { formatFingerprint } from "../../src/server/openhive/case-mapping"
 import { 读别名上下文 } from "../../src/server/openhive/case-field-alias"
 import { readSheets } from "../../src/server/openhive/case-sheet"
-import { applyParseAction, countFactRows, getMaterial } from "../../src/server/openhive/case-store"
+import { applyParseAction, countFactRows, getMaterial, type Queryable } from "../../src/server/openhive/case-store"
 import type { 材料识别 } from "../../src/server/openhive/case-recognize"
 import { 表格材料们 } from "../../script/openhive-case-stage0"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
@@ -2545,5 +2546,41 @@ describe("富化接入", () => {
     if (!是对象(详情) || !是对象(详情["富化"])) throw new Error("parse_detail.富化 形状不对")
     expect(Number(详情["富化"]["未补全数"])).toBeGreaterThan(0)
     expect(详情["富化"]["参考库版本"]).toBe("内置-空")
+  })
+
+  test("用例 11 · 富化失败不写「富化完成」进度，作业仍完成（M9）", async () => {
+    const projectId = "p-富化失败"
+    文件.set(`${projectId}/流水.xlsx`, 资金表)
+    const 入 = await 入队(projectId, "流水.xlsx", Hash.sha256(`${projectId}-富化失败`))
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的")
+
+    // 进度写在事务外，只拦顶层 `execute` 即可；事务能力原样交给真库。
+    const 方言 = new PgDialect()
+    const 真 = db()
+    const 富化进度们: { 已处理: number; 总数: number }[] = []
+    const 记录库 = {
+      execute: async (query: SQL) => {
+        for (const 参数 of 方言.sqlToQuery(query).params) {
+          if (typeof 参数 !== "string" || !参数.includes('"富化"')) continue
+          const 解析 = JSON.parse(参数) as { 已处理?: number; 总数?: number }
+          富化进度们.push({ 已处理: Number(解析.已处理), 总数: Number(解析.总数) })
+        }
+        return 真.execute(query)
+      },
+      transaction: (fn: (tx: Queryable) => Promise<unknown>) => 真.transaction((tx) => fn(tx)),
+    }
+
+    const 结果 = await runJob(
+      记录库,
+      { ...deps, 参考库: 建参考库(async () => {
+        throw new Error("参考库载入失败")
+      }) },
+      作业,
+    )
+    expect(结果).toBe("完成")
+    // 进入时的「富化 0/N」可以有；失败后不得再写「富化 N/N」。
+    expect(富化进度们.length).toBeGreaterThanOrEqual(1)
+    expect(富化进度们.every((p) => p.已处理 < p.总数)).toBe(true)
   })
 })
