@@ -86,9 +86,9 @@ packages/opencode/src/server/openhive/
 ├── project-assets.ts                # 【改】N7/M10 启用侧：抽出可复用的「启用内核」，先过识别卡校验
 ├── case-ui-routes.ts                # 【改】仅 `export` 既有 `过门` / `Deps` / `PREFIX`（实现零改）
 ├── case-adapter-registry.ts         # 【新】N1 适配器注册表（复用 SKILL_LINK_DIR / skillLinkPath / usableSkillAssets）
-├── case-adapter-probe.ts            # 【新】N2 两道闸探测（表头闸 → 值闸；priority 决胜）
+├── case-adapter-probe.ts            # 【新】N2 表头闸探测（值闸由转换器报告承担，Ruling X；priority 决胜）
 ├── case-probe-worker.ts             # 【新】探测独立通道（DB 即队列，不占转换 worker）
-├── case-converter-runner.ts         # 【新】N3 子进程执行器（cwd=技能目录、临时输出、超时、无 PG 凭据）
+├── case-converter-runner.ts         # 【新】N3 子进程执行器（cwd=技能目录、输出已存在即拒＋运行标记自愈、默认 60s、无 PG 凭据）
 ├── case-ingest-admission.ts         # 【新】N8 准入结论闸（命名避开既有 case-admission.ts：那是实体泛称闸）
 ├── case-enrich.ts                   # 【新】N4 富化层（产键 → 批量查 → Map 回填；键分类受控表）
 ├── case-reference-store.ts          # 【新】N4 静态参考库（内存缓存 + 版本）+ 外部服务客户端（并发/超时/负缓存）
