@@ -190,8 +190,12 @@ function handleScan(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
 
     // `算候选` 在 `扫树` 取不到时 reject（`Effect.promise` 的 reject 是 defect，`Effect.catch`
     // 接不住）⇒ 在 promise 内收成 `undefined`，回契约错误体而不是通用 500（`project-tree.ts:183` 同形）。
+    // 留 warn：SQL / 连接错误也会走到这里，不记日志现场无从分辨。
     const 结果 = yield* Effect.promise(() =>
-      扫候选(deps.pg(), { projectId, 范围: [...范围闭集], 依赖 }).catch(() => undefined),
+      扫候选(deps.pg(), { projectId, 范围: [...范围闭集], 依赖 }).catch((error: unknown) => {
+        console.warn("[openhive] 扫描候选失败", error)
+        return undefined
+      }),
     )
     if (结果 === undefined) return fail(500, "读取文件树失败")
     return ok(对外扫描(结果))
@@ -220,7 +224,10 @@ function handleRerun(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if (依赖 === undefined) return fail(500, "读取文件树失败")
 
     const 结果 = yield* Effect.promise(() =>
-      批量入队(deps.pg(), { projectId, 范围, userId: 门.user.id, 依赖 }).catch(() => undefined),
+      批量入队(deps.pg(), { projectId, 范围, userId: 门.user.id, 依赖 }).catch((error: unknown) => {
+        console.warn("[openhive] 批量入队失败", error)
+        return undefined
+      }),
     )
     if (结果 === undefined) return fail(500, "读取文件树失败")
     return ok(对外批量(结果))
