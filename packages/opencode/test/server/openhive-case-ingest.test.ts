@@ -2646,6 +2646,36 @@ await Bun.write("result.json", JSON.stringify({
     expect(作业行?.reason_code).toBe("失败:转换器异常")
   })
 
+  test("转换行 startedAt 为 null ⇒ 合法：材料已解析、该行 started_at 为 NULL（K4① 合法路径）", async () => {
+    // 缺省 / null 是「没有时间列」的合法数据，不许被上一条守卫误伤。
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: null, amount: "100.00", direction: "收",
+      counterparty: "6222000000000002", extras: {} }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("时间空值", 脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-时间空值`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("完成")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    const 行 = rowsOf(
+      await db().execute(sql`
+        select started_at from auth.case_fact_row
+         where project_id = ${projectId} and sheet = 'Sheet1' and row_no = 2
+      `),
+    )
+    expect(行).toHaveLength(1)
+    expect(行[0]?.started_at === null).toBe(true)
+  })
+
   test("适配器通路 0 行 ⇒ 判失败且不删既有事实（K4②）", async () => {
     const { projectId, 文件名, 技能目录 } = await 备料("空行重跑", 成功脚本)
     await 入队(projectId, 文件名, Hash.sha256(`${projectId}-空行重跑`))
@@ -2678,6 +2708,9 @@ await Bun.write("result.json", JSON.stringify({
 
     const 材料 = await getMaterial(db(), projectId, 作业.materialId)
     expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || typeof 详情["reason"] !== "string") throw new Error("parse_detail.reason 形状不对")
+    expect(详情["reason"]).toContain("rows 为空")
     const 作业行 = rowsOf(
       await db().execute(sql`
         select status, reason_code from auth.case_ingest_job where id = ${作业.jobId}

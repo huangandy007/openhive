@@ -190,7 +190,7 @@ CHECK (
 <assetId>/
 ├── SKILL.md          # description 只写「什么时候用」（发布评审项）
 ├── adapter.json      # 识别卡（schema 见 contracts/adapter-json-contract.md）
-├── convert.ts        # kind=converter 的入口；kind=rowRules 可为薄封装或不提供
+├── convert.ts        # kind=converter 的入口；kind=rowRules 可为薄封装或不提供（**本期不执行**，见 Ruling F/I）
 └── test/             # 金标准：原件 + 期望 rows + 变异样本
 ```
 

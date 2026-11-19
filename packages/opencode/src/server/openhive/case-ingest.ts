@@ -1211,7 +1211,7 @@ function 转换行(原: unknown, job: ClaimedJob): FactRowInput {
     if (typeof startedAt原 !== "number" || !Number.isFinite(startedAt原)) {
       throw new 原因码错误(
         "失败:转换器异常",
-        `事实行的 startedAt 必须是数字时间戳（实得 ${typeof startedAt原} ${String(startedAt原)}）`,
+        `事实行的 startedAt 必须是数字时间戳（实得 ${实得值(startedAt原)}）`,
       )
     }
     startedAt = startedAt原
@@ -1240,6 +1240,32 @@ function 转换行(原: unknown, job: ClaimedJob): FactRowInput {
 
 function 文或空(值: unknown): string | null {
   return typeof 值 === "string" ? 值 : null
+}
+
+/**
+ * 违约值的单值呈现：对象只报类型名（`String(obj)` 得到的是无信息量的 `[object Object]`），
+ * 别把整行 JSON 化塞进 reason。
+ */
+function 实得值(值: unknown): string {
+  switch (typeof 值) {
+    case "string":
+      return `字符串 ${值}`
+    case "number":
+      return `数字 ${值}`
+    case "boolean":
+      return `布尔 ${值}`
+    case "bigint":
+      return `大整数 ${值}`
+    case "symbol":
+      return "symbol"
+    case "function":
+      return "函数"
+    case "undefined":
+      return "undefined"
+    default:
+      if (值 === null) return "null"
+      return Array.isArray(值) ? "数组" : "对象"
+  }
 }
 
 /** `amount` 契约里是字符串；runner 也接受数字 ⇒ 按原文优先搬运，不改写数值。 */
