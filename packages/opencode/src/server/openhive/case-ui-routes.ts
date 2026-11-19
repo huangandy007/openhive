@@ -120,8 +120,12 @@ function ok(value: unknown) {
   return HttpServerResponse.jsonUnsafe(value, { status: 200 })
 }
 
-function fail(status: number, error: string, code?: string) {
-  return HttpServerResponse.jsonUnsafe(code === undefined ? { error } : { error, code }, { status })
+function fail(status: number, error: string, code?: string, problems?: readonly string[]) {
+  // 【保留的定制 · 016】A 类档案映射校验失败带逐条 `problems`（`mapping_invalid`）。
+  const 体: Record<string, unknown> = { error }
+  if (code !== undefined) 体.code = code
+  if (problems !== undefined) 体.problems = problems
+  return HttpServerResponse.jsonUnsafe(体, { status })
 }
 
 const 身份 = Effect.serviceOption(User.Service)
@@ -597,6 +601,9 @@ function 翻档案错误(错误: 档案错误) {
   if (错误.code === "material_not_found") return fail(404, 错误.message, "not_found")
   if (错误.code === "no_fingerprints") return fail(409, 错误.message, "conflict")
   if (错误.code === "conflict") return fail(409, 错误.message, "conflict")
+  if (错误.code === "mapping_invalid") {
+    return fail(400, 错误.message, "mapping_invalid", 错误.problems ?? [])
+  }
   return fail(400, 错误.message, "bad_request")
 }
 

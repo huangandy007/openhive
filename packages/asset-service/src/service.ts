@@ -730,7 +730,8 @@ export async function transitionAsset(input: TransitionAssetInput): Promise<Asse
       const 校验 = await 校验入库包({
         assetType: asset.type,
         dir: 待发布目录,
-        词汇: input.ingestGate?.词汇 ?? { 归属: [], 键: [] },
+        // 不把「没注入」伪装成「空词表」：缺省时校验器会显式报「校验闸未注入词表」（F1）。
+        ...(input.ingestGate?.词汇 === undefined ? {} : { 词汇: input.ingestGate.词汇 }),
         已占用id: input.ingestGate?.已占用id ?? [],
       })
       if (!校验.ok) {

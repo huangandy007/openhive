@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { 校验入库包 } from "./ingest-gate"
+import { 校验入库包, 校验档案映射 } from "./ingest-gate"
 
 /**
  * T002 · M10 识别卡校验（纯函数级，临时目录造包，**不连库**）。
@@ -48,7 +48,7 @@ function 合法识别卡(): Record<string, unknown> {
     },
     admission: {
       checks: ["金额可解析"],
-      thresholds: { 其余: 1 },
+      thresholds: { 金额可解析: 1, 其余: 1 },
     },
     entry: { command: "bun run convert.ts", input: "xlsx", output: "json" },
     output: { file: "result.json" },
@@ -150,8 +150,7 @@ describe("识别卡校验（M10）", () => {
         ...合法识别卡(),
         kind: "rowRules",
         rowRules: undefined,
-        entry: undefined,
-        output: undefined,
+        entry: { input: "xlsx", output: "json" },
       },
       不写convert: true,
     })
@@ -163,14 +162,35 @@ describe("识别卡校验（M10）", () => {
         ...合法识别卡(),
         kind: "rowRules",
         rowRules: ["本方方 = 借贷=='借' ? 付款方 : 收款方"],
-        entry: undefined,
-        output: undefined,
+        entry: { input: "xlsx", output: "json" },
       },
       不写convert: true,
     })
     expect(await 校验入库包({ assetType: "skill", dir: 合法规则, 词汇: 词表, 已占用id: [] })).toEqual({
       ok: true,
     })
+  })
+
+  test("7c. kind=rowRules 缺 entry / output.file ⇒ 红（FR-017/FR-019：只有 convert.* 可省）", async () => {
+    const 缺entry = await 造包({
+      adapter: { ...合法识别卡(), kind: "rowRules", rowRules: ["x = y"], entry: undefined },
+      不写convert: true,
+    })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir: 缺entry, 词汇: 词表, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("entry"))).toBe(true)
+
+    const 缺输出文件 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        kind: "rowRules",
+        rowRules: ["x = y"],
+        entry: { input: "xlsx", output: "json" },
+        output: undefined,
+      },
+      不写convert: true,
+    })
+    const 输出问题 = 是失败(await 校验入库包({ assetType: "skill", dir: 缺输出文件, 词汇: 词表, 已占用id: [] }))
+    expect(输出问题.problems.some((项) => 项.includes("output.file"))).toBe(true)
   })
 
   test("8. 已占用id 含同 id ⇒ 红（唯一性）", async () => {
@@ -202,16 +222,142 @@ describe("识别卡校验（M10）", () => {
     expect(problems.some((项) => 项.includes("missing.ts"))).toBe(true)
   })
 
-  test("12. A 类：mapping 键含首尾空白 ⇒ 红；键为表头原文 ⇒ 绿", async () => {
-    const 坏 = await 造包({
-      adapter: { ...合法识别卡(), mapping: { " 交易时间 ": "交易时间" } },
+  test("F5. attributeKeys 比对不 trim：`对方: 开户行` 必须判词表外键", async () => {
+    const dir = await 造包({
+      adapter: { ...合法识别卡(), attributeKeys: ["对方: 开户行"] },
     })
-    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir: 坏, 词汇: 词表, 已占用id: [] }))
-    expect(problems.some((项) => 项.includes("mapping"))).toBe(true)
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir, 词汇: 词表, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("词表外键"))).toBe(true)
+    expect(problems.some((项) => 项.includes("对方: 开户行"))).toBe(true)
+  })
 
-    const 好 = await 造包({
-      adapter: { ...合法识别卡(), mapping: { 交易时间: "交易时间", 交易金额: "金额" } },
+  test("F6a. version 必须是语义版本；预发布后缀放行", async () => {
+    const 短版本 = await 造包({ adapter: { ...合法识别卡(), version: "1.0" } })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir: 短版本, 词汇: 词表, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("version"))).toBe(true)
+
+    const 预发布 = await 造包({ adapter: { ...合法识别卡(), version: "1.0.0-beta.1" } })
+    expect(await 校验入库包({ assetType: "skill", dir: 预发布, 词汇: 词表, 已占用id: [] })).toEqual({ ok: true })
+  })
+
+  test("F6b. admission.checks 元素必须是字符串、阈值必须是数字", async () => {
+    const 坏检查项 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        admission: { checks: [1], thresholds: { "1": 0.99 } },
+      },
     })
-    expect(await 校验入库包({ assetType: "skill", dir: 好, 词汇: 词表, 已占用id: [] })).toEqual({ ok: true })
+    const 检查项问题 = 是失败(
+      await 校验入库包({ assetType: "skill", dir: 坏检查项, 词汇: 词表, 已占用id: [] }),
+    )
+    expect(检查项问题.problems.some((项) => 项.includes("admission.checks"))).toBe(true)
+
+    const 坏阈值 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        admission: { checks: ["金额可解析"], thresholds: { 金额可解析: "0.99" } },
+      },
+    })
+    const 阈值问题 = 是失败(
+      await 校验入库包({ assetType: "skill", dir: 坏阈值, 词汇: 词表, 已占用id: [] }),
+    )
+    expect(阈值问题.problems.some((项) => 项.includes("admission.thresholds"))).toBe(true)
+  })
+
+  test("F6c. admission.checks 必须 ⊆ thresholds 键集", async () => {
+    const dir = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        admission: { checks: ["金额可解析", "时间可解析"], thresholds: { 金额可解析: 0.99, 其余: 1 } },
+      },
+    })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir, 词汇: 词表, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("时间可解析"))).toBe(true)
+  })
+
+  test("F7. 包内 `..` 开头的合法文件名不误判为越界；真越界仍拒", async () => {
+    const 合法 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        entry: { command: "bun run ..convert.ts", input: "xlsx", output: "json" },
+      },
+      其他文件: { "..convert.ts": "// 名字以 .. 开头，但仍在包内\n" },
+    })
+    expect(await 校验入库包({ assetType: "skill", dir: 合法, 词汇: 词表, 已占用id: [] })).toEqual({ ok: true })
+
+    const 越界 = await 造包({
+      adapter: {
+        ...合法识别卡(),
+        entry: { command: "bun run ../outside.ts", input: "xlsx", output: "json" },
+      },
+    })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir: 越界, 词汇: 词表, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("必须在包内"))).toBe(true)
+  })
+
+  test("F1. 有 attributeKeys 但词表未注入 ⇒ 显式「校验闸未注入词表」，不伪装成词表外键", async () => {
+    const dir = await 造包({
+      adapter: { ...合法识别卡(), attributeKeys: ["对方:开户行"] },
+    })
+    const { problems } = 是失败(await 校验入库包({ assetType: "skill", dir, 已占用id: [] }))
+    expect(problems.some((项) => 项.includes("校验闸未注入词表"))).toBe(true)
+    expect(problems.some((项) => 项.includes("词表外键"))).toBe(false)
+  })
+})
+
+describe("A 类档案映射校验（M10 / F4）", () => {
+  const 是识别字段 = (字段: string) => ["startedAt", "amount", "counterpartyName"].includes(字段)
+
+  test("合法映射 ⇒ 绿", () => {
+    expect(
+      校验档案映射({
+        type: "资金",
+        mapping: { 交易时间: "startedAt", 交易金额: "amount" },
+        requiredHeaders: ["交易时间", "交易金额"],
+        是识别字段,
+      }),
+    ).toEqual({ ok: true })
+  })
+
+  test("mapping 键不是表头原文（含首尾空白）⇒ 红", () => {
+    const 结果 = 校验档案映射({
+      type: "资金",
+      mapping: { " 交易时间 ": "startedAt" },
+      requiredHeaders: ["交易时间"],
+      是识别字段,
+    })
+    expect(结果.ok).toBe(false)
+    if (结果.ok) throw new Error("预期失败")
+    expect(结果.problems.some((项) => 项.includes("交易时间"))).toBe(true)
+  })
+
+  test("mapping 值不在字段目录内 ⇒ 红", () => {
+    const 结果 = 校验档案映射({
+      type: "资金",
+      mapping: { 交易时间: "不存在的字段" },
+      requiredHeaders: ["交易时间"],
+      是识别字段,
+    })
+    expect(结果.ok).toBe(false)
+    if (结果.ok) throw new Error("预期失败")
+    expect(结果.problems.some((项) => 项.includes("不存在的字段"))).toBe(true)
+  })
+
+  test("requiredHeaders 为空 / type 不在闭集 ⇒ 红", () => {
+    const 空必需列 = 校验档案映射({
+      type: "资金",
+      mapping: { 交易时间: "startedAt" },
+      requiredHeaders: [],
+      是识别字段,
+    })
+    expect(空必需列.ok).toBe(false)
+
+    const 坏类型 = 校验档案映射({
+      type: "未知",
+      mapping: { 交易时间: "startedAt" },
+      requiredHeaders: ["交易时间"],
+      是识别字段,
+    })
+    expect(坏类型.ok).toBe(false)
   })
 })

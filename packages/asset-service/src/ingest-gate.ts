@@ -27,15 +27,20 @@
  */
 
 import { readFile, readdir, stat } from "node:fs/promises"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
 export interface IngestGateInput {
   /** 资产类型：skill 才校验识别卡；其他类型直接 `{ok:true}`。 */
   assetType: string
   /** 技能目录绝对路径（含 SKILL.md / adapter.json）。 */
   dir: string
-  /** 受控词表，由调用方（opencode 侧）注入：归属闭集 + 属性键词表。 */
-  词汇: { 归属: readonly string[]; 键: readonly string[] }
+  /**
+   * 受控词表，由调用方（opencode 侧）注入：归属闭集 + 属性键词表。
+   *
+   * 可选：**未注入 ≠ 词表为空**。包里有非空 `attributeKeys` 而此处缺席时，按
+   * 「校验闸未注入词表（fail-closed）」显式拒绝，不伪装成逐条「词表外键」（T002 修复轮 1 · F1）。
+   */
+  词汇?: { 归属: readonly string[]; 键: readonly string[] }
   /** 本项目已启用包内的 adapter id（判唯一用）；由调用方查库后传入。 */
   已占用id: readonly string[]
 }
@@ -45,6 +50,8 @@ export type IngestGateResult = { ok: true } | { ok: false; problems: string[] }
 const 识别卡 = "adapter.json"
 const id形状 = /^[A-Za-z0-9_-]+$/
 const convert形状 = /^convert\.[^./\\]+$/
+/** 语义版本：`1.2.3`，可带 `-预发布` / `+构建` 后缀。 */
+const 语义版本 = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const 材料类型闭集 = ["资金", "话单", "其他"] as const
 const 执行方式闭集 = ["rowRules", "converter"] as const
 
@@ -78,8 +85,8 @@ function 是ENOENT(error: unknown): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === "ENOENT"
 }
 
-/** 读并解析识别卡；不存在 ⇒ `undefined`（不是入库包）。解析失败与字段问题由 `校验入库包` 报。 */
-async function 读识别卡(dir: string): Promise<{ 原文?: string; 值?: unknown }> {
+/** 读识别卡原文；不存在 ⇒ `undefined`（不是入库包）。解析失败与字段问题由 `校验入库包` 报。 */
+async function 读识别卡(dir: string): Promise<{ 原文?: string }> {
   try {
     const 原文 = await readFile(join(dir, 识别卡), "utf8")
     return { 原文 }
@@ -144,7 +151,11 @@ export async function 校验入库包(input: IngestGateInput): Promise<IngestGat
   else if (!id形状.test(id)) problems.push(`${识别卡}：id 只能包含字母、数字与 - / _（实为 ${JSON.stringify(id)}）`)
   else if (input.已占用id.includes(id)) problems.push(`${识别卡}：id ${JSON.stringify(id)} 已被本项目启用包占用`)
   if (!是非空串(卡["name"])) problems.push(`${识别卡}：缺少 name`)
-  if (!是非空串(卡["version"])) problems.push(`${识别卡}：缺少 version`)
+  const version = 卡["version"]
+  if (!是非空串(version)) problems.push(`${识别卡}：缺少 version`)
+  else if (!语义版本.test(version)) {
+    problems.push(`${识别卡}：version 必须是语义版本（形如 1.2.3，可带预发布后缀）：${JSON.stringify(version)}`)
+  }
 
   const kind = 卡["kind"]
   const 是已知kind = 是字符串成员(kind, 执行方式闭集)
@@ -156,7 +167,13 @@ export async function 校验入库包(input: IngestGateInput): Promise<IngestGat
   }
 
   // ---- attributeKeys（受控词表）----
-  校验属性键(卡["attributeKeys"], input.词汇, problems)
+  // 词表缺席 ≠ 词表为空：有键要校验却没注入词表时，报「未注入」而不是逐条「词表外键」。
+  const 属性键 = 卡["attributeKeys"]
+  if (Array.isArray(属性键) && 属性键.length > 0 && input.词汇 === undefined) {
+    problems.push(`${识别卡}：校验闸未注入词表（fail-closed），无法校验 attributeKeys`)
+  } else {
+    校验属性键(属性键, input.词汇, problems)
+  }
 
   // ---- match / admission ----
   const match = 卡["match"]
@@ -181,25 +198,48 @@ export async function 校验入库包(input: IngestGateInput): Promise<IngestGat
   if (!是对象(admission)) {
     problems.push(`${识别卡}：缺少 admission（checks / thresholds）`)
   } else {
-    if (!Array.isArray(admission["checks"])) problems.push(`${识别卡}：admission.checks 必须是数组`)
-    if (!是对象(admission["thresholds"])) problems.push(`${识别卡}：admission.thresholds 必须是对象`)
-  }
-
-  // ---- kind 分支 ----
-  if (是已知kind) {
-    if (kind === "converter") await 校验转换器(input.dir, 卡, problems)
-    if (kind === "rowRules") {
-      const 规则 = 卡["rowRules"]
-      if (!Array.isArray(规则) || 规则.length === 0) {
-        problems.push(`${识别卡}：kind=rowRules 时 rowRules 必须是非空数组`)
-      } else if (!规则.every(是非空串)) {
-        problems.push(`${识别卡}：rowRules 的每一项必须是非空字符串`)
+    const checks = admission["checks"]
+    if (!Array.isArray(checks)) {
+      problems.push(`${识别卡}：admission.checks 必须是数组`)
+    } else if (!checks.every(是非空串)) {
+      problems.push(`${识别卡}：admission.checks 的每一项必须是非空字符串`)
+    }
+    const thresholds = admission["thresholds"]
+    if (!是对象(thresholds)) {
+      problems.push(`${识别卡}：admission.thresholds 必须是对象`)
+    } else {
+      const 非数字 = Object.entries(thresholds).filter(([, 值]) => typeof 值 !== "number" || !Number.isFinite(值))
+      if (非数字.length > 0) {
+        problems.push(
+          `${识别卡}：admission.thresholds 的值必须是数字（问题键：${非数字.map(([键]) => JSON.stringify(键)).join("、")}）`,
+        )
+      }
+      if (Array.isArray(checks)) {
+        const 缺阈值 = checks.filter(
+          (项): 项 is string => typeof 项 === "string" && thresholds[项] === undefined,
+        )
+        if (缺阈值.length > 0) {
+          problems.push(
+            `${识别卡}：admission.checks 含 thresholds 未定义的检查项 ${缺阈值.map((项) => JSON.stringify(项)).join("、")}`,
+          )
+        }
       }
     }
   }
 
-  // ---- A 类档案（数据源档案）----
-  校验字段映射(卡["mapping"], problems)
+  // ---- entry / output：行规则与转换器都要（FR-017/FR-019；只有 convert.* 仅 converter 必需）----
+  const 是转换器 = 是已知kind && kind === "converter"
+  await 校验入口与输出(input.dir, 卡, problems, 是转换器)
+
+  // ---- kind 分支 ----
+  if (是已知kind && kind === "rowRules") {
+    const 规则 = 卡["rowRules"]
+    if (!Array.isArray(规则) || 规则.length === 0) {
+      problems.push(`${识别卡}：kind=rowRules 时 rowRules 必须是非空数组`)
+    } else if (!规则.every(是非空串)) {
+      problems.push(`${识别卡}：rowRules 的每一项必须是非空字符串`)
+    }
+  }
 
   return problems.length === 0 ? { ok: true } : { ok: false, problems }
 }
@@ -208,11 +248,17 @@ function 是字符串成员(value: unknown, 闭集: readonly string[]): value is
   return typeof value === "string" && 闭集.includes(value)
 }
 
-function 校验属性键(值: unknown, 词汇: IngestGateInput["词汇"], problems: string[]): void {
+function 校验属性键(
+  值: unknown,
+  词汇: IngestGateInput["词汇"],
+  problems: string[],
+): void {
   if (!Array.isArray(值)) {
     problems.push(`${识别卡}：attributeKeys 必须是数组（无属性写 []）`)
     return
   }
+  // 空数组不需要词表；非空且词表缺席的路径已在调用处报「未注入」。
+  if (词汇 === undefined) return
   值.forEach((项, 下标) => {
     const 序号 = 下标 + 1
     if (typeof 项 !== "string") {
@@ -221,7 +267,8 @@ function 校验属性键(值: unknown, 词汇: IngestGateInput["词汇"], proble
     }
     const 冒号 = 项.indexOf(":")
     const 归属 = 冒号 === -1 ? "" : 项.slice(0, 冒号)
-    const 键 = 冒号 === -1 ? "" : 项.slice(冒号 + 1).trim()
+    // 不 trim：`"对方: 开户行"` 的键是 `" 开户行"`，必须按词表外键拒绝（T002 修复轮 1 · F5）。
+    const 键 = 冒号 === -1 ? "" : 项.slice(冒号 + 1)
     if (冒号 === -1 || !词汇.归属.includes(归属) || 键 === "") {
       problems.push(`${识别卡} 第 ${序号} 条：attributeKeys 形状非法 ${JSON.stringify(项)}（应为 <归属>:<键>）`)
       return
@@ -232,26 +279,39 @@ function 校验属性键(值: unknown, 词汇: IngestGateInput["词汇"], proble
   })
 }
 
-async function 校验转换器(dir: string, 卡: Record<string, unknown>, problems: string[]): Promise<void> {
-  const entry = 卡["entry"]
+/**
+ * `entry` / `output`：两种 `kind` 都必须有（FR-017 / FR-019）。
+ *
+ * 只有 `entry.command` 与四件套里的 `convert.*` 是 `kind=converter` 专属；
+ * `rowRules` 同样要声明原件输入与 JSON 输出文件名。
+ */
+async function 校验入口与输出(
+  dir: string,
+  entry目录卡: Record<string, unknown>,
+  problems: string[],
+  是转换器: boolean,
+): Promise<void> {
+  const entry = entry目录卡["entry"]
   if (!是对象(entry)) {
-    problems.push(`${识别卡}：kind=converter 时必须有 entry（command / input / output）`)
+    problems.push(`${识别卡}：必须有 entry（input / output 必填；command 仅 kind=converter 必填）`)
   } else {
-    const command = entry["command"]
-    if (!是非空串(command)) {
-      problems.push(`${识别卡}：entry.command 不能为空`)
-    } else {
-      const 前缀 = 匹配命令前缀(command.trim())
-      if (前缀 === undefined) {
-        problems.push(`${识别卡}：entry.command 前缀不在白名单（只允许 bun run / node）：${JSON.stringify(command)}`)
+    if (是转换器) {
+      const command = entry["command"]
+      if (!是非空串(command)) {
+        problems.push(`${识别卡}：kind=converter 时 entry.command 不能为空`)
       } else {
-        const 脚本 = 命令脚本(command.trim(), 前缀)
-        if (脚本 === undefined) {
-          problems.push(`${识别卡}：entry.command 没有引用脚本：${JSON.stringify(command)}`)
-        } else if (isAbsolute(脚本) || relative(dir, resolve(dir, 脚本)).startsWith("..")) {
-          problems.push(`${识别卡}：entry.command 引用的脚本必须在包内：${JSON.stringify(脚本)}`)
-        } else if (!(await 是文件(resolve(dir, 脚本)))) {
-          problems.push(`${识别卡}：entry.command 引用的脚本不在包内：${脚本}`)
+        const 前缀 = 匹配命令前缀(command.trim())
+        if (前缀 === undefined) {
+          problems.push(`${识别卡}：entry.command 前缀不在白名单（只允许 bun run / node）：${JSON.stringify(command)}`)
+        } else {
+          const 脚本 = 命令脚本(command.trim(), 前缀)
+          if (脚本 === undefined) {
+            problems.push(`${识别卡}：entry.command 没有引用脚本：${JSON.stringify(command)}`)
+          } else if (!在包内(dir, 脚本)) {
+            problems.push(`${识别卡}：entry.command 引用的脚本必须在包内：${JSON.stringify(脚本)}`)
+          } else if (!(await 是文件(resolve(dir, 脚本)))) {
+            problems.push(`${识别卡}：entry.command 引用的脚本不在包内：${脚本}`)
+          }
         }
       }
     }
@@ -259,24 +319,37 @@ async function 校验转换器(dir: string, 卡: Record<string, unknown>, proble
     if (entry["output"] !== "json") problems.push(`${识别卡}：entry.output 必须是 "json"`)
   }
 
-  const output = 卡["output"]
+  const output = entry目录卡["output"]
   if (!是对象(output)) {
-    problems.push(`${识别卡}：kind=converter 时必须有 output.file`)
+    problems.push(`${识别卡}：必须有 output.file`)
   } else {
     const 文件 = output["file"]
     if (!是非空串(文件)) {
       problems.push(`${识别卡}：output.file 不能为空`)
-    } else if (isAbsolute(文件) || relative(dir, resolve(dir, 文件)).startsWith("..")) {
+    } else if (!在包内(dir, 文件)) {
       problems.push(`${识别卡}：output.file 必须是相对技能目录的路径：${JSON.stringify(文件)}`)
     }
   }
 
+  if (!是转换器) return
   const 条目 = await readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
     if (是ENOENT(error)) return []
     throw error
   })
   const 有转换器 = 条目.some((项) => 项.isFile() && convert形状.test(项.name))
   if (!有转换器) problems.push("缺少四件套：convert.*（kind=converter 必需）")
+}
+
+/**
+ * 解析后的路径是否仍在包内。
+ *
+ * 只判 `relative` 的结果：`=== ".."` 或以 `".." + sep` 开头才是越界。
+ * 裸 `startsWith("..")` 会把包内的合法文件名 `..convert.ts` 误判成越界（T002 修复轮 1 · F7）。
+ */
+function 在包内(dir: string, 路径: string): boolean {
+  if (isAbsolute(路径)) return false
+  const 相对 = relative(dir, resolve(dir, 路径))
+  return 相对 !== ".." && !相对.startsWith(`..${sep}`) && !isAbsolute(相对)
 }
 
 const 命令前缀们 = ["bun run", "node"] as const
@@ -299,24 +372,52 @@ function 命令脚本(command: string, 前缀: (typeof 命令前缀们)[number])
   return 首个.replace(/^["']|["']$/g, "")
 }
 
-/** A 类档案：`mapping` 的键是表头原文、值为非空字段名。只做结构判断，不查库。 */
-function 校验字段映射(值: unknown, problems: string[]): void {
-  if (值 === undefined) return
-  if (!是对象(值)) {
-    problems.push(`${识别卡}：mapping 必须是对象（表头原文 → 识别字段）`)
-    return
+/**
+ * A 类档案（数据源档案）的映射校验（M10 / FR-017/FR-019）。
+ *
+ * 落点是 `case-source-profile-store.ts` 的**建档写入路径**，不在 `adapter.json` 里
+ *（契约没有 `adapter.json.mapping` 字段）。规则仍只有这一份：调用方把字段目录的判定
+ * 函数作为入参注入——`asset-service` 不依赖 opencode 的 `case-field-registry.ts`。
+ */
+export interface 档案映射输入 {
+  /** 档案类型；闭集 `资金` / `话单` / `其他`。 */
+  type: string
+  /** 表头原文 → 识别字段。 */
+  mapping: Record<string, unknown>
+  /** 必需列（表头原文）；必须非空。 */
+  requiredHeaders: readonly unknown[]
+  /** 字段目录判定，由 opencode 侧注入（`是识别字段`）。 */
+  是识别字段: (字段: string) => boolean
+}
+
+export function 校验档案映射(input: 档案映射输入): IngestGateResult {
+  const problems: string[] = []
+  if (!是字符串成员(input.type, 材料类型闭集)) {
+    problems.push(`档案 type 必须是 ${材料类型闭集.join(" / ")} 之一（实为 ${JSON.stringify(input.type)}）`)
   }
-  const 键们 = Object.keys(值)
+
+  const 键们 = Object.keys(input.mapping)
   if (键们.length === 0) {
-    problems.push(`${识别卡}：mapping 不能为空对象`)
-    return
+    problems.push("档案 mapping 不能为空（至少一列表头原文 → 识别字段）")
   }
   键们.forEach((键, 下标) => {
+    const 序号 = 下标 + 1
     if (键.trim() === "" || 键 !== 键.trim()) {
-      problems.push(`${识别卡}：mapping 的第 ${下标 + 1} 个键 ${JSON.stringify(键)} 不是表头原文（不能为空或含首尾空白）`)
+      problems.push(`档案 mapping 的第 ${序号} 个键 ${JSON.stringify(键)} 不是表头原文（不能为空或含首尾空白）`)
     }
-    if (!是非空串(值[键])) {
-      problems.push(`${识别卡}：mapping[${JSON.stringify(键)}] 必须是非空字段名`)
+    const 值 = input.mapping[键]
+    if (!是非空串(值)) {
+      problems.push(`档案 mapping[${JSON.stringify(键)}] 必须是非空字段名`)
+    } else if (!input.是识别字段(值)) {
+      problems.push(`档案 mapping[${JSON.stringify(键)}] 的值 ${JSON.stringify(值)} 不在字段目录内`)
     }
   })
+
+  if (input.requiredHeaders.length === 0) {
+    problems.push("档案 requiredHeaders 不能为空（fail-closed：全含才命中）")
+  } else if (!input.requiredHeaders.every(是非空串)) {
+    problems.push("档案 requiredHeaders 的每一项必须是非空表头原文")
+  }
+
+  return problems.length === 0 ? { ok: true } : { ok: false, problems }
 }

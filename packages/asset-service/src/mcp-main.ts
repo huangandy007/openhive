@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { connect } from "@opencode-ai/auth/db"
 import { workspaceRoot } from "@opencode-ai/auth/workspace"
-import { createGovernanceServer } from "./governance"
+import { createGovernanceServer, ingestGateFromEnv } from "./governance"
 import { assetsRoot } from "./storage"
 
 /**
@@ -30,6 +30,8 @@ const server = createGovernanceServer({
   db: connect(process.env),
   root: assetsRoot(process.env),
   workspaceRoot: workspaceRoot(process.env),
+  // 【保留的定制 · 016】M10 词表：内核 spawn 时经环境变量传入（本进程不 import opencode）。
+  ingestGate: ingestGateFromEnv(process.env),
 })
 
 await server.connect(new StdioServerTransport())

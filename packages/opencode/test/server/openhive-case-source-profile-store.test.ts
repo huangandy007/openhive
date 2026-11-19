@@ -8,6 +8,7 @@ import {
   建数据源档案,
   列出数据源档案,
   撤销数据源档案,
+  档案错误,
 } from "../../src/server/openhive/case-source-profile-store"
 
 const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
@@ -296,5 +297,26 @@ describe("数据源档案 DAO", () => {
     const 全部 = await 列出数据源档案(db(), { projectId: "p-撤", 含撤销: true })
     expect(全部).toHaveLength(1)
     expect(全部[0]?.revoked_at).not.toBeNull()
+  })
+
+  test("复用的档案 mapping 值不在字段目录内 ⇒ mapping_invalid 并列问题项，不写库（F4）", async () => {
+    const 项目 = "p-坏映射"
+    await db().execute(sql`
+      insert into auth.case_source_profile
+        (id, project_id, name, type, header_set, mapping, created_at, updated_at)
+      values ('bad-profile', ${项目}, '坏档案', '资金',
+              ${JSON.stringify(["交易时间", "交易金额"])}::text::jsonb,
+              ${JSON.stringify({ 交易时间: "startedAt", 交易金额: "不存在的字段" })}::text::jsonb,
+              0, 0)
+    `)
+    await 种档案命中({ projectId: 项目, materialId: "m-坏映射", fingerprint: "fp-坏映射", 档案id: "bad-profile" })
+
+    const 错误 = await 建数据源档案(db(), { projectId: 项目, materialId: "m-坏映射" }).catch((e: unknown) => e)
+    expect(错误).toBeInstanceOf(档案错误)
+    if (!(错误 instanceof 档案错误)) throw new Error("预期 档案错误")
+    expect(错误.code).toBe("mapping_invalid")
+    expect((错误.problems ?? []).join("\n")).toContain("不存在的字段")
+    // 拒绝发生在写入之前：不该多出一个档案行。
+    expect(await 列出数据源档案(db(), { projectId: 项目 })).toHaveLength(1)
   })
 })

@@ -2,6 +2,7 @@ export * as OpenhiveCaseSourceProfileStore from "./case-source-profile-store"
 
 import { randomUUID } from "node:crypto"
 import { sql } from "drizzle-orm"
+import { 校验档案映射 } from "@opencode-ai/asset-service/ingest-gate"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { classifyMaterialType, 解析缓存映射 } from "./case-mapping"
@@ -62,11 +63,15 @@ export type 档案错误码 =
   | "type_other"
   | "header_duplicate"
   | "conflict"
+  /** 【保留的定制 · 016】A 类档案映射未过 M10 校验（键 / 字段目录 / 必需列 / 类型）。 */
+  | "mapping_invalid"
 
 export class 档案错误 extends Error {
   constructor(
     readonly code: 档案错误码,
     message: string,
+    /** 仅 `mapping_invalid` 携带：逐条问题项，出口原样列给用户（不静默丢弃）。 */
+    readonly problems?: readonly string[],
   ) {
     super(message)
     this.name = "档案错误"
@@ -317,6 +322,24 @@ export async function 建数据源档案(
           })()
     const headerSet = 选中.来源 === "档案" ? 选中.headerSet : Object.keys(mapping).sort()
     if (headerSet.length < 2) throw new 档案错误("no_usable_sheet", "有效表头少于 2 列")
+
+    // 【保留的定制 · 016】M10 / A 类档案：映射键是表头原文、值在字段目录内、必需列非空、
+    // 类型在闭集内。规则实现只有 `ingest-gate.ts` 一份；字段目录判定由本层注入。
+    // 不成立 ⇒ 在建档写入路径拒绝并列问题项——尤其「档案复用」分支的 mapping 来自库，
+    // 之前会原样写回，脏映射会静默固化成新档案。
+    const 映射校验 = 校验档案映射({
+      type: 选中.类型,
+      mapping,
+      requiredHeaders: headerSet,
+      是识别字段,
+    })
+    if (!映射校验.ok) {
+      throw new 档案错误(
+        "mapping_invalid",
+        `档案映射未过校验：${映射校验.problems.join("；")}`,
+        映射校验.problems,
+      )
+    }
 
     const name = (input.name ?? "").trim() || `${String(材料行.file_name)} · ${选中.工作表}`
 

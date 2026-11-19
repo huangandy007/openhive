@@ -88,6 +88,13 @@ const IDS = {
   badEnable: "asset_ingest_bad_enable",
   /** 已发布，共享目录里是合法包（启用对照）。 */
   goodEnable: "asset_ingest_good_enable",
+  /** 待技术发布，合法包 + 非空 attributeKeys（词表注入的端到端证据）。 */
+  goodVocabPublish: "asset_ingest_good_vocab",
+  /** 待技术发布，attributeKeys 含词表外键。 */
+  badVocabPublish: "asset_ingest_bad_vocab",
+  /** 已发布，两份包 adapter id 相同（启用侧唯一性）。 */
+  dupEnableA: "asset_ingest_dup_enable_a",
+  dupEnableB: "asset_ingest_dup_enable_b",
 } as const
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "status">): AssetMetadata => ({
@@ -123,7 +130,7 @@ function 写文件(path: string, content: string) {
 }
 
 /** 合法 converter 包（字段最小但齐全）。 */
-function 写好包(dir: string, id: string, 技能名: string) {
+function 写好包(dir: string, id: string, 技能名: string, 属性键: string[] = []) {
   mkdirSync(join(dir, "test"), { recursive: true })
   写文件(join(dir, "SKILL.md"), `---\nname: ${技能名}\ndescription: 测试用\n---\n`)
   写文件(join(dir, "convert.ts"), "// 转换器\n")
@@ -135,9 +142,9 @@ function 写好包(dir: string, id: string, 技能名: string) {
       version: "1.0.0",
       kind: "converter",
       materialType: "资金",
-      attributeKeys: [],
+      attributeKeys: 属性键,
       match: { requiredHeaders: ["交易时间"], optionalHeaders: [], priority: 100 },
-      admission: { checks: ["金额可解析"], thresholds: { 其余: 1 } },
+      admission: { checks: ["金额可解析"], thresholds: { 金额可解析: 0.99, 其余: 1 } },
       entry: { command: "bun run convert.ts", input: "xlsx", output: "json" },
       output: { file: "result.json" },
     }),
@@ -158,7 +165,7 @@ function 写坏包(dir: string, id: string, 技能名: string) {
       materialType: "资金",
       attributeKeys: [],
       match: { requiredHeaders: ["交易时间"], optionalHeaders: [], priority: 100 },
-      admission: { checks: ["金额可解析"], thresholds: { 其余: 1 } },
+      admission: { checks: ["金额可解析"], thresholds: { 金额可解析: 0.99, 其余: 1 } },
       entry: { command: "bun run convert.ts", input: "xlsx", output: "json" },
       output: { file: "result.json" },
     }),
@@ -186,12 +193,20 @@ beforeAll(async () => {
   await insertAsset(pg.db, 资产({ id: IDS.badIteration, name: "坏包迭代", status: "iterating" }))
   await insertAsset(pg.db, 资产({ id: IDS.badEnable, name: "坏包启用", status: "published", publishedAt: 900 }))
   await insertAsset(pg.db, 资产({ id: IDS.goodEnable, name: "好包启用", status: "published", publishedAt: 900 }))
+  await insertAsset(pg.db, 资产({ id: IDS.goodVocabPublish, name: "词表好包发布", status: "pending_tech" }))
+  await insertAsset(pg.db, 资产({ id: IDS.badVocabPublish, name: "词表坏包发布", status: "pending_tech" }))
+  await insertAsset(pg.db, 资产({ id: IDS.dupEnableA, name: "重复包甲", status: "published", publishedAt: 900 }))
+  await insertAsset(pg.db, 资产({ id: IDS.dupEnableB, name: "重复包乙", status: "published", publishedAt: 900 }))
 
   写坏包(join(ASSETS_ROOT, "pending", IDS.badPublish), "bad-publish", "坏包发布")
   写好包(join(ASSETS_ROOT, "pending", IDS.goodPublish), "good-publish", "好包发布")
   写坏包(join(ASSETS_ROOT, "pending", IDS.badIteration), "bad-iteration", "坏包迭代")
   写坏包(join(ASSETS_ROOT, "global", "skills", IDS.badEnable), "bad-enable", "坏包启用")
   写好包(join(ASSETS_ROOT, "global", "skills", IDS.goodEnable), "good-enable", "好包启用")
+  写好包(join(ASSETS_ROOT, "pending", IDS.goodVocabPublish), "vocab-good", "词表好包发布", ["对方:开户行"])
+  写好包(join(ASSETS_ROOT, "pending", IDS.badVocabPublish), "vocab-bad", "词表坏包发布", ["对方:不存在键"])
+  写好包(join(ASSETS_ROOT, "global", "skills", IDS.dupEnableA), "dup-adapter", "重复包甲")
+  写好包(join(ASSETS_ROOT, "global", "skills", IDS.dupEnableB), "dup-adapter", "重复包乙")
 })
 
 afterAll(async () => {
@@ -287,6 +302,26 @@ describe("016 T002 · 发布闸（治理台）", () => {
       expect(yield* Effect.promise(() => 库状态(IDS.badIteration))).toBe("iterating")
     }),
   )
+
+  it.live("F3a. 非空 attributeKeys 的合法包 ⇒ 200（词表注入端到端）", () =>
+    Effect.gen(function* () {
+      const response = yield* post(管理员, transitionUrl(IDS.goodVocabPublish), { action: "publish_tech" })
+      expect(response.status).toBe(200)
+      expect((yield* json(流转响应, response)).asset.status).toBe("published")
+      expect(yield* Effect.promise(() => 库状态(IDS.goodVocabPublish))).toBe("published")
+    }),
+  )
+
+  it.live("F3b. attributeKeys 含词表外键 ⇒ 409，problems 指出该键", () =>
+    Effect.gen(function* () {
+      const response = yield* post(管理员, transitionUrl(IDS.badVocabPublish), { action: "publish_tech" })
+      expect(response.status).toBe(409)
+      const body = yield* json(校验失败响应, response)
+      expect(body.code).toBe("ingest_gate_failed")
+      expect(body.problems.some((项) => 项.includes("对方:不存在键"))).toBe(true)
+      expect(yield* Effect.promise(() => 库状态(IDS.badVocabPublish))).toBe("pending_tech")
+    }),
+  )
 })
 
 describe("016 T002 · 启用闸（项目）", () => {
@@ -315,6 +350,19 @@ describe("016 T002 · 启用闸（项目）", () => {
       const response = yield* post(属主, ENABLE, { projectId: 项目, assetId: IDS.goodEnable })
       expect(response.status).toBe(200)
       expect((yield* json(启用响应, response)).enabled).toContain(IDS.goodEnable)
+    }),
+  )
+
+  it.live("F3c. 同 adapter id 的第二份包 ⇒ 409（已占用 id 唯一性）", () =>
+    Effect.gen(function* () {
+      const 甲 = yield* post(属主, ENABLE, { projectId: 项目, assetId: IDS.dupEnableA })
+      expect(甲.status).toBe(200)
+
+      const 乙 = yield* post(属主, ENABLE, { projectId: 项目, assetId: IDS.dupEnableB })
+      expect(乙.status).toBe(409)
+      const body = yield* json(校验失败响应, 乙)
+      expect(body.code).toBe("ingest_gate_failed")
+      expect(body.problems.some((项) => 项.includes("dup-adapter"))).toBe(true)
     }),
   )
 })
