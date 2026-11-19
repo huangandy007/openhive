@@ -80,14 +80,16 @@ interface 造材料输入 {
   fingerprint: string
   path: string
   status?: string
+  kind?: string
+  createdAt?: number
 }
 
 async function 造材料(输入: 造材料输入) {
   await db().execute(sql`
     insert into auth.case_material
       (id, project_id, file_name, kind, fingerprint, path, parse_status, created_at)
-    values (${输入.id}, ${输入.projectId}, ${输入.fileName}, '其他', ${输入.fingerprint},
-            ${输入.path}, ${输入.status ?? "未入队"}, 1000)
+    values (${输入.id}, ${输入.projectId}, ${输入.fileName}, ${输入.kind ?? "其他"}, ${输入.fingerprint},
+            ${输入.path}, ${输入.status ?? "未入队"}, ${输入.createdAt ?? 1000})
   `)
 }
 
@@ -268,6 +270,81 @@ describe("扫候选", () => {
     expect(结果.截断).toBe(true)
     expect(结果.合计).toBe(1)
     expect(结果.候选.目录独有).toEqual([{ path: "材料/真材料.xlsx" }])
+  })
+})
+
+describe("修复轮 1（产物行 / 同一 path 多行）", () => {
+  test("7. 产物行不进三类候选；批量入队不增作业、不另建行", async () => {
+    const 根 = await 临时根()
+    const 项目 = 新项目()
+    const 依赖 = 建依赖(根, { "": [] }, {})
+    // `case_material_parsed_source` 把产物的 parse_status 钉死为「未入队」：只看状态会把它当候选。
+    await 造材料({
+      projectId: 项目,
+      id: "m-产物",
+      fileName: "资金分析报告.md",
+      fingerprint: "fp-产物",
+      path: "材料/资金分析报告.md",
+      status: "未入队",
+      kind: "产物",
+    })
+
+    const 扫描 = await 扫候选(db(), { projectId: 项目, 范围: 全部范围, 依赖 })
+    expect(扫描.合计).toBe(0)
+    expect(扫描.候选.目录独有).toEqual([])
+    expect(扫描.候选.未入队).toEqual([])
+    expect(扫描.候选.未识别).toEqual([])
+
+    const 结果 = await 批量入队(db(), { projectId: 项目, 范围: 全部范围, userId: "u-操作人", 依赖 })
+    expect(结果).toEqual({ 已入队: 0, 跳过: [], 失败: [] })
+
+    // 产物硬边界：不排作业，也不另建一行 `kind='其他'` 绕过 0031 的约束。
+    const 作业数 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_ingest_job where project_id = ${项目}`),
+    )
+    expect(Number(作业数[0]?.n)).toBe(0)
+    const 材料数 = rowsOf(
+      await db().execute(sql`select count(*)::int as n from auth.case_material where project_id = ${项目}`),
+    )
+    expect(Number(材料数[0]?.n)).toBe(1)
+  })
+
+  test("8. 同一 path 只认最新一行：旧「未入队」+ 新「已解析」⇒ 不进候选", async () => {
+    const 根 = await 临时根()
+    const 项目 = 新项目()
+    const 依赖 = 建依赖(根, { "": [] }, {})
+    // 内容变过 ⇒ 另建一行（fingerprint 不同），旧行留着；界面上那份文件只认最新一行。
+    await 造材料({
+      projectId: 项目,
+      id: "m-旧行",
+      fileName: "流水.xlsx",
+      fingerprint: "fp-旧",
+      path: "材料/流水.xlsx",
+      status: "未入队",
+      createdAt: 100,
+    })
+    await 造材料({
+      projectId: 项目,
+      id: "m-新行",
+      fileName: "流水.xlsx",
+      fingerprint: "fp-新",
+      path: "材料/流水.xlsx",
+      status: "已解析",
+      createdAt: 200,
+    })
+    // 对照：另一条真·未入队必须照常命中，防止「查询写坏了 ⇒ 全部为空」也绿。
+    await 造材料({
+      projectId: 项目,
+      id: "m-对照",
+      fileName: "对照.xlsx",
+      fingerprint: "fp-对照-8",
+      path: "材料/对照.xlsx",
+    })
+
+    const 结果 = await 扫候选(db(), { projectId: 项目, 范围: 全部范围, 依赖 })
+
+    expect(结果.候选.未入队).toEqual([{ materialId: "m-对照", path: "材料/对照.xlsx" }])
+    expect(结果.合计).toBe(1)
   })
 })
 

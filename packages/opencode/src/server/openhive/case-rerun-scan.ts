@@ -13,9 +13,14 @@ export * as OpenhiveCaseRerunScan from "./case-rerun-scan"
  * 一份被改过名的材料会在新旧两个文件名之间来回振荡：每次扫描都报「目录独有」，
  * 每次批量入队又只把它改名。判据必须是**内容**，不是路径。
  *
- * ## 三类取数各一条语句，不逐条查
+ * ## 取数各一条语句，不逐条查
  *
- * 已有材料一条；最近作业一条（`distinct on (material_id)`，与 `材料视图` 同一取「最近」口径）。
+ * - 全量 fingerprint（**不是最新行**）：已有材料的去重集合；
+ * - 候选来源行一条：`distinct on (path)` 取最新一行（与材料视图 / 未解析份数同口径），
+ *   并排除 `kind='产物'`（它们的 `parse_status` 被约束钉死为「未入队」，不排除就会绕过
+ *   产物硬边界）；
+ * - 最近作业一条（`distinct on (material_id)`，与 `材料视图` 同一取「最近」口径）。
+ *
  * 最近作业**必须排除 `已取消`**（Ruling W）：置顶会把新作业的 `queued_at` 回填成更小值，
  * 不排除的话，那条取消掉的旧行（原因码为空）会遮蔽新作业，「未识别」永远筛不出来。
  *
@@ -109,17 +114,41 @@ async function 算候选(
 ): Promise<{ 候选: 内部候选; 截断: boolean }> {
   const { projectId, 范围, 依赖 } = 输入
 
-  // ① 已有材料（一条语句）。**先于**扫树读：批量入队的安全性依赖「候选快照早于入队」——
-  // 扫描期间材料若被并发改成「已解析」，第二道防线（见下）才拦得住。
-  const 材料行 = rowsOf(
+  // ① 已有材料的 fingerprint 集合：**全量行**（`#002-06`：两个问题、两份取数）。
+  // 幂等键是 `(project_id, fingerprint)`，同内容只会有一行；包括历史行与产物——任何一行
+  // 占着这个指纹，`createMaterial` 就会改写它的 `path`，扫描不该再报「目录独有」。
+  const 指纹行 = rowsOf(
     await db.execute(sql`
-      select id, path, parse_status, fingerprint
+      select fingerprint
         from auth.case_material
        where project_id = ${projectId}
+    `),
+  )
+  const 已有指纹 = new Set(指纹行.map((行) => String(行.fingerprint)))
+
+  // ② 候选来源行（一条语句）。**先于**扫树读：批量入队的安全性依赖「候选快照早于入队」——
+  // 扫描期间材料若被并发改成「已解析」，第二道防线（见下）才拦得住。
+  //
+  // - `distinct on (path)` 取**最新一行**，与材料视图 / `未解析材料份数`
+  //   （`case-row-query.ts:335-343`）同口径：内容变了会另建一行、旧行留着，界面上那份文件
+  //   只认最新行；直接扫全部历史行会让旧的「未入队」重复进候选。
+  // - `kind <> '产物'`（I1）：0031 的 `case_material_parsed_source` 把产物的 `parse_status`
+  //   钉死为「未入队」，不排除则每份产物（含每个历史版本）都会进候选，批量入队再另建一行
+  //   `kind='其他'` 并排队，绕过设计 §5.5 的产物硬边界。同族口径见 `case-row-query.ts:335-355`。
+  const 材料行 = rowsOf(
+    await db.execute(sql`
+      with latest as (
+        select distinct on (path) id, path, kind, parse_status, fingerprint
+          from auth.case_material
+         where project_id = ${projectId}
+         order by path, created_at desc, id desc
+      )
+      select id, path, parse_status, fingerprint
+        from latest
+       where kind <> '产物'
        order by path, id
     `),
   )
-  const 已有指纹 = new Set(材料行.map((行) => String(行.fingerprint)))
 
   const 未入队 = 范围.includes("未入队")
     ? 材料行
