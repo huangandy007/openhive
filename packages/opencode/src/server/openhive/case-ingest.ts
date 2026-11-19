@@ -660,6 +660,12 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     // ④ 保留报告：T013 把它原样写进 `case_material_report.gates`（Ruling X）。
     // 本处不写库、不解析它的内容（语义归报告读侧，取数在成功事务里）。
     转换器报告 = 结果.report
+    // 0 行守卫（同四层通路的 `认出列数 === 0`）：必须在**任何删旧行之前**抛。
+    // 空 rows 不是「成功导入 0 条」——放它过去会先删掉既有事实、再写 0 行，
+    // 材料还报「已解析」：既丢数据又说谎。
+    if (结果.rows.length === 0) {
+      throw new 原因码错误("失败:转换器异常", "转换器没有产出任何事实行（rows 为空）")
+    }
     // ⑤ 事实行搬运：T007 已做契约校验，这里只补内核侧的 projectId / materialId。
     for (const 行 of 结果.rows) 待写.push(转换行(行, job))
     // ⑥ 合成与 `识别材料` 同形状的结论。`工作表: []` 是刻意的：转换器给的是事实行不是列映射，
@@ -1196,12 +1202,26 @@ function 转换行(原: unknown, job: ClaimedJob): FactRowInput {
   }
   const extras = 原["extras"]
   const direction = 原["direction"]
+  // `startedAt` 缺省 / null 合法（没有时间列）；存在但不是有限数字则是转换器违约。
+  // 契约校验（`case-converter-runner.ts`）不查这个字段，这里再静默收成 null 就等于
+  // 「材料已解析、时间却凭空没了」——必须显式失败。
+  const startedAt原 = 原["startedAt"]
+  let startedAt: number | null = null
+  if (startedAt原 !== undefined && startedAt原 !== null) {
+    if (typeof startedAt原 !== "number" || !Number.isFinite(startedAt原)) {
+      throw new 原因码错误(
+        "失败:转换器异常",
+        `事实行的 startedAt 必须是数字时间戳（实得 ${typeof startedAt原} ${String(startedAt原)}）`,
+      )
+    }
+    startedAt = startedAt原
+  }
   return {
     projectId: job.projectId,
     materialId: job.materialId,
     sheet,
     rowNo,
-    startedAt: 数或空(原["startedAt"]),
+    startedAt,
     startedRaw: 文或空(原["startedRaw"]),
     precision: 精度(原["precision"]),
     timeType: 时间类型(原["timeType"]),
@@ -1227,10 +1247,6 @@ function 金额文本(值: unknown): string | null {
   if (typeof 值 === "string") return 值
   if (typeof 值 === "number" && Number.isFinite(值)) return String(值)
   return null
-}
-
-function 数或空(值: unknown): number | null {
-  return typeof 值 === "number" && Number.isFinite(值) ? 值 : null
 }
 
 function 精度(值: unknown): "到日" | "到分" | "到秒" | null {
