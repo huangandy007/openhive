@@ -489,6 +489,32 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
           )
           expect(审计.length).toBe(1)
         }
+
+        // R2c / Ruling BV：再上传一次（同项目、同资产）。自动启用把白名单重走一遍，
+        // 此刻两份资产都是 already_enabled ⇒ 只补链接，**不应**再记任何审计
+        // （否则每次成员上传都会伪造一条「属主启用了该资产」）。
+        const 再传 = yield* 上传("材料", "开关开-再传.xlsx", "内容", 项目B)
+        expect(再传.status).toBe(200)
+
+        const 再传启用行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select asset_id from auth.project_asset_enablement
+               where project_id = ${项目B} and asset_id = ${开资产}
+            `),
+          ),
+        )
+        expect(再传启用行.length).toBe(1)
+        for (const action of ["asset.enable", "case.trusted_skill.auto_enable"]) {
+          const 审计 = rowsOf(
+            yield* Effect.promise(() =>
+              库().execute(sql`
+                select 1 from auth.audit_event where action = ${action} and target_id = ${开资产}
+              `),
+            ),
+          )
+          expect(审计.length).toBe(1)
+        }
       }),
     30_000,
   )
@@ -514,6 +540,15 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
 
         const 响应 = yield* 上传("材料", "无属主.xlsx", "内容", 项目C)
         expect(响应.status).toBe(200)
+
+        // 就地阳性对照：证明这次上传真的走到了 tap（入队成功）——否则下面全是「没有」断言，
+        // tap 压根没被调用也会绿。
+        const 材料 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`select count(*)::int as n from auth.case_material where project_id = ${项目C}`),
+          ),
+        )
+        expect(Number(材料[0]?.n ?? 0)).toBe(1)
 
         const 启用行 = rowsOf(
           yield* Effect.promise(() =>

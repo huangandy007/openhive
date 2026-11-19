@@ -986,8 +986,12 @@ export type 完整启用结果 =
  * 「启用」的**唯一一份实现**（2026-11-19，016 review R2，`#002-06`）。
  *
  * 人工启用（`handleToggle`）与上传链的自动启用（`file.ts` 的 `自动启用尽力`）都走这里，
- * 顺序与 `handleToggle` 原先的 enable 分支**逐句一致**：
- * 校验（`启用内核`）⇒ 写启用行（20 上限在库层）⇒ 建链接 ⇒ 丢缓存 ⇒ 审计。
+ * 顺序是：校验（`启用内核`）⇒ 写启用行（20 上限在库层）⇒ 建链接 ⇒ 丢缓存 ⇒ 审计。
+ *
+ * **审计只记 `enabled`（Ruling BV，2026-11-19 控制器裁定）**：`already_enabled` 仍补链接
+ * （幂等修复缺失链接）与丢缓存，但**不**再记 `asset.enable`。理由是上传链每次都会把全部
+ * 白名单资产重走一遍：无条件记的话，每次成员上传都产出「属主启用了某资产」的假记录，而
+ * `detail` 只有 `{projectId}`，没有任何字段能区分「真启用」与「幂等重跑」。
  *
  * 权限（成员 / 属主）**不在这里**：那是出口的事（`#004-09` 权限先于一切副作用），
  * 调用方自己判完再把属主身份交进来。
@@ -1017,14 +1021,19 @@ export function 完整启用(
       Effect.catchCause((cause) => Effect.logError("链接失败，等待下一次对账修复", { projectId, assetId, cause })),
     )
     yield* 丢缓存(deps, 目录)
-    yield* 记治理(deps, userId, {
-      board: BOARD,
-      action: "asset.enable",
-      targetType: "asset",
-      targetId: assetId,
-      result: "ok",
-      detail: { projectId },
-    })
+    // Ruling BV（2026-11-19 控制器裁定，修正 brief §1.3 的「无论哪种都记治理」）：
+    // `already_enabled` 只补链接/丢缓存，不记审计——否则每次成员上传都会伪造一条
+    // 「属主启用了该资产」的记录，且 `detail` 无法区分真启用与幂等重跑。
+    if (结果 === "enabled") {
+      yield* 记治理(deps, userId, {
+        board: BOARD,
+        action: "asset.enable",
+        targetType: "asset",
+        targetId: assetId,
+        result: "ok",
+        detail: { projectId },
+      })
+    }
     return { ok: true as const, 结果, target: 内核.target }
   })
 }
