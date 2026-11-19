@@ -283,6 +283,26 @@ describe("T011 原因码（六值字面）与作业进度", () => {
       const { 作业, 结果 } = await 跑一条(deps, 独立库)
       expect(结果).toBe("失败")
       expect((await 取作业行(作业.jobId, 独立库)).reason_code).toBe("失败:入库异常")
+
+      // 详情必须是「能定位」的一小句，而不是整条 INSERT ＋ 全部参数：drizzle 的 message 是
+      // `Failed query: <SQL> params: <每行账户/金额/姓名>`，一份 1.6 万行流水失败一次就是
+      // 39 万字符（2026-11-19 真栈实测 292,801），既撑爆 parse_detail / 作业 error 列，
+      // 又把原件里的账户与姓名顺手写进材料明细。驱动错误的 cause（"…不存在"）才有用。
+      const 材料 = await getMaterial(独立库, projectId, 作业.materialId)
+      const 明细 = 材料?.parseDetail
+      expect(是对象(明细)).toBe(true)
+      const 详情 = 是对象(明细) ? 明细.reason : undefined
+      expect(typeof 详情).toBe("string")
+      const 文字 = typeof 详情 === "string" ? 详情 : ""
+      expect(文字.length).toBeLessThanOrEqual(600)
+      expect(文字).not.toContain("Failed query")
+      expect(文字).toContain("case_fact_row")
+      const 作业详情 = rowsOf(
+        await 独立库.execute(sql`select error from auth.case_ingest_job where id = ${作业.jobId}`),
+      )[0]?.error
+      expect(typeof 作业详情).toBe("string")
+      const 作业文字 = typeof 作业详情 === "string" ? 作业详情 : ""
+      expect(作业文字.length).toBeLessThanOrEqual(600)
     } finally {
       await 独立库?.$client.close()
       await 独立.stop()

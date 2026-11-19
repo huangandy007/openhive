@@ -116,13 +116,36 @@ function 是原因码(码: unknown): 码 is 原因码 {
   return 码.startsWith("未识别:值闸不过:") && 码.length > "未识别:值闸不过:".length
 }
 
+/** 失败详情上限：够写清「哪张表 / 哪个文件 / 什么错」，又不把整批参数塞进材料行。 */
+const 详情上限 = 500
+
+/**
+ * 失败详情：只留**能定位**的一小句。
+ *
+ * drizzle 的 `DrizzleQueryError.message` 是 `Failed query: <整条 SQL> params: <全部参数>`——
+ * 一份 1.6 万行的流水，写入失败一次就把整批参数（账户、金额、姓名）塞进
+ * `parse_detail.reason` 与作业 `error`（2026-11-19 真栈实测 292,801 字符），既撑爆这两列，
+ * 又把原件内容顺手写进材料明细。驱动错误的 `cause` 才是排障要的那句
+ * （如 `42P01 relation "auth.case_fact_row" does not exist`）；没有 `cause` 时才退回
+ * 原 message，并截断到上限。
+ */
+function 失败详情(error: unknown): string {
+  if (!(error instanceof Error)) return String(error).slice(0, 详情上限)
+  const 因 = error.cause
+  const 源 = 因 instanceof Error ? 因 : error
+  const 码值: unknown = (源 as unknown as { readonly code?: unknown }).code
+  const 码 = typeof 码值 === "string" ? `${码值} ` : ""
+  const 一句话 = `${码}${源.message}`.trim()
+  return 一句话.length > 详情上限 ? `${一句话.slice(0, 详情上限)}…` : 一句话
+}
+
 /**
  * 边界包装：已带码的原样交回（别把内层的码改写成外层码），否则按给定码包一层。
- * 详情只取原 message——码存 `reason_code`，文案存 `parse_detail.reason`，两者分开。
+ * 详情走 `失败详情`——码存 `reason_code`，文案存 `parse_detail.reason`，两者分开。
  */
 function 转原因码错误(error: unknown, 码: 原因码): 原因码错误 {
   if (error instanceof 原因码错误) return error
-  return new 原因码错误(码, error instanceof Error ? error.message : String(error))
+  return new 原因码错误(码, 失败详情(error))
 }
 
 export interface EnqueueInput {
@@ -458,7 +481,9 @@ export async function runJob(
     // 失败路径**不**用事务（R28）：这两笔是各自独立的尽力结论，绑成一个事务只会
     // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
     // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
-    const 原因 = error instanceof Error ? error.message : String(error)
+    // 与 `转原因码错误` 同一条口径：未包装的错（dryRun 之外的兜底）也不许把整条 SQL ＋
+    // 全部参数写进 `parse_detail.reason` / 作业 `error`。
+    const 原因 = 失败详情(error)
     // 只认**显式带码**的异常（`原因码错误`）；未带码的错误写 NULL，不按文案猜（契约：码是闭集）。
     const 码: 原因码 | null = error instanceof 原因码错误 ? error.原因码 : null
     await applyParseAction(db, {
