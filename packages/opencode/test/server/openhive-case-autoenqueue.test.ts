@@ -12,7 +12,7 @@ import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
-import { 写设置 } from "../../src/server/openhive/case-ingest-settings"
+import { 写设置, 读设置 } from "../../src/server/openhive/case-ingest-settings"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -42,6 +42,11 @@ const 我: TokenSubject = { id: "u-auto-me", policeNo: "970101", name: "甲民�
 const 项目 = "p-auto-mine"
 /** 自动启用用例的独立项目（与上面那些上传用例的启用态互不干扰）。 */
 const 项目B = "p-auto-autoenable"
+/**
+ * 无属主项目（R2b）：`project_member` 里只有上传者本人的 `member` 行，**没有 owner 行**。
+ * 自动启用必须 fail-closed（不替数据异常编一个属主，`#004-09`）。
+ */
+const 项目C = "p-auto-noowner"
 
 /** 项目头是**客户端契约**：测试写死字面量（import 生产常量就成了「生产改什么测试跟着改什么」）。 */
 const PROJECT_HEADER = "x-openhive-project"
@@ -49,6 +54,7 @@ const PROJECT_HEADER = "x-openhive-project"
 const 原始沙箱根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-ws-"))
 const 项目根 = join(原始沙箱根, 我.id, 项目)
 const 项目根B = join(原始沙箱根, 我.id, 项目B)
+const 项目根C = join(原始沙箱根, 我.id, 项目C)
 const 数据根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-data-"))
 /** 共享卷：上传链的自动启用要沿 `OPENHIVE_ASSETS_ROOT` 找已发布目录。 */
 const 资产根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-assets-"))
@@ -130,6 +136,11 @@ beforeAll(async () => {
       values (${projectId}, ${我.id}, 'owner', 1000)
     `)
   }
+  // 用例 C：只有 member 行、**没有 owner 行**（`ownersOf()` 的键会缺席 ⇒ 自动启用 fail-closed）。
+  await pg.db.execute(sql`
+    insert into auth.project_member (project_id, user_id, role, time_created)
+    values (${项目C}, ${我.id}, 'member', 1000)
+  `)
   await 种资产(关资产, "开关关着的技能")
   await 种资产(开资产, "开关开着就自动装的技能")
   // 平台级白名单：两条都可信（开关才是 A/B 的分界）。
@@ -143,7 +154,7 @@ beforeAll(async () => {
 
 /** 每个用例从干净的业务表开始（项目行在本地库，`种项目` 是幂等的）。 */
 beforeEach(async () => {
-  for (const projectId of [项目, 项目B]) {
+  for (const projectId of [项目, 项目B, 项目C]) {
     await 库().execute(sql`delete from auth.case_ingest_job where project_id = ${projectId}`)
     await 库().execute(sql`delete from auth.case_fact_row where project_id = ${projectId}`)
     await 库().execute(sql`delete from auth.case_material where project_id = ${projectId}`)
@@ -206,9 +217,9 @@ const 种项目 = (projectId = 项目) =>
     }
   })
 
-/** 重置盘上夹具：两个项目根各重建出 `材料/` 与 `报告/` 两个目录。 */
+/** 重置盘上夹具：三个项目根各重建出 `材料/` 与 `报告/` 两个目录。 */
 function 重置文件() {
-  for (const 根 of [项目根, 项目根B]) {
+  for (const 根 of [项目根, 项目根B, 项目根C]) {
     rmSync(根, { recursive: true, force: true })
     mkdirSync(join(根, "材料"), { recursive: true })
     mkdirSync(join(根, "报告"), { recursive: true })
@@ -220,6 +231,7 @@ const 就绪 = () =>
     重置文件()
     yield* 种项目()
     yield* 种项目(项目B)
+    yield* 种项目(项目C)
   })
 
 /** 发一个 multipart 上传（落哪个项目目录由项目头指出）。 */
@@ -261,6 +273,22 @@ async function 材料数() {
 async function 作业数() {
   const rows = rowsOf(
     await 库().execute(sql`select count(*)::int as n from auth.case_ingest_job where project_id = ${项目}`),
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/**
+ * 两份夹具资产上的自动启用审计总数。
+ *
+ * `case.trusted_skill.auto_enable` 的 detail 只有 `assetId`（没有 projectId），无法按项目过滤；
+ * 用「上传前后计数不变」判「本项目的上传没有落下这条审计」。
+ */
+async function 自动启用审计行数() {
+  const rows = rowsOf(
+    await 库().execute(sql`
+      select count(*)::int as n from auth.audit_event
+       where action = 'case.trusted_skill.auto_enable' and target_id in (${关资产}, ${开资产})
+    `),
   )
   return Number(rows[0]?.n ?? 0)
 }
@@ -461,6 +489,54 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
           )
           expect(审计.length).toBe(1)
         }
+      }),
+    30_000,
+  )
+
+  it(
+    "⑦ R2b 无属主行：开关开着也 fail-closed（不写启用行、不建链接、不落审计）",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        // 设置「开」。本项目**没有属主行**，所以不走 `写设置`（它的 `操作人是属主` 是调用方
+        // 给的判据——这里不替一个不存在的属主声明身份，也不为用例放宽生产校验）；直写设置行，
+        // 只为让「开关开着」这个前提成立。
+        yield* Effect.promise(() =>
+          库().execute(sql`
+            insert into auth.project_case_ingest_settings (project_id, auto_enable_trusted, updated_at)
+            values (${项目C}, true, 0)
+            on conflict (project_id) do update set auto_enable_trusted = true
+          `),
+        )
+        // 前提核对：开关确实是开的（否则本用例会因为「开关关」而假绿）。
+        expect((yield* Effect.promise(() => 读设置(库(), 项目C))).autoEnableTrusted).toBe(true)
+        const 审计基线 = yield* Effect.promise(() => 自动启用审计行数())
+
+        const 响应 = yield* 上传("材料", "无属主.xlsx", "内容", 项目C)
+        expect(响应.status).toBe(200)
+
+        const 启用行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`select asset_id from auth.project_asset_enablement where project_id = ${项目C}`),
+          ),
+        )
+        expect(启用行.length).toBe(0)
+        for (const assetId of [关资产, 开资产]) {
+          expect(existsSync(join(项目根C, ".opencode", "skill", assetId))).toBe(false)
+        }
+
+        // `asset.enable` 的 detail 带 projectId ⇒ 直接按项目过滤。
+        const 启用审计 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select 1 from auth.audit_event
+               where action = 'asset.enable' and detail like ${`%${项目C}%`}
+            `),
+          ),
+        )
+        expect(启用审计.length).toBe(0)
+        // `case.trusted_skill.auto_enable` 的 detail 只有 assetId ⇒ 用前后计数不变判。
+        expect(yield* Effect.promise(() => 自动启用审计行数())).toBe(审计基线)
       }),
     30_000,
   )
