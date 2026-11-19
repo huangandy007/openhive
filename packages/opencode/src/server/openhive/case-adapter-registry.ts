@@ -198,7 +198,8 @@ async function 读一份(目录: string): Promise<{ 适配器?: 适配器; 原�
  *
  * 几个刻意的口径：
  * - `match.requiredHeaders` 必须**非空**：空数组会让探测命中一切表（fail-closed 的底线）；
- * - `kind=rowRules` 的 `rowRules` 必须非空——内核要拿它执行；`kind=converter` 允许缺省（契约里仅作说明），
+ * - `kind=rowRules` 的 `rowRules` 必须非空——只校验结构；本期内核**不执行**它（Ruling F/I：探测只收
+ *   `converter`，执行期按「未识别」处理）。`kind=converter` 允许缺省（契约里仅作说明），
  *   缺省按 `[]` 补齐（出参字段非可选）；
  * - `entry.input` / `entry.output` / `output.file` **两种 kind 都必填**（契约 §字段规则 46–49 行）：
  *   缺任一即跳过，**不静默丢 `entry`**；只有 `entry.command` 是 `kind=converter` 专属必填。

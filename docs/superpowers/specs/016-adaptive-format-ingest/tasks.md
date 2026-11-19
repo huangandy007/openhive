@@ -104,7 +104,7 @@
 
 ## Phase 9: US8 - 可信技能免确认（P3）
 
-- [ ] T014 [P] [US8] 白名单 + 项目开关 + 自动启用：`packages/opencode/src/server/openhive/case-trusted-skill.ts`（新，平台级，`is_admin` 维护，启用前复判 `status='published'`）、`packages/opencode/src/server/openhive/case-ingest-settings.ts`（新，`auto_enqueue` 默认 true / `auto_enable_trusted` 默认 false，行缺失取默认，写要求项目属主），自动启用直接调 `enableAsset`（`asset-service/src/enablement.ts:90`，含 20 上限），变更走 `记治理`（`audit.ts:97`）。**入参**：`{projectId, assetId, userId, 开关}` → **出参**：开关状态 + 启用结果。**判据**：`openhive-case-trusted-skill.test.ts`（新）：默认关闭；白名单内零确认；白名单外仍提示；超 20 被拒；非管理员 403；变更留痕一行。**变异**：删启用前的 `published` 复判 ⇒ 「下线后不自动启用」红。
+- [ ] T014 [P] [US8] 白名单 + 项目开关 + 自动启用：`packages/opencode/src/server/openhive/case-trusted-skill.ts`（新，平台级，`is_admin` 维护，启用前复判 `status='published'`）、`packages/opencode/src/server/openhive/case-ingest-settings.ts`（新，`auto_enqueue` 默认 true / `auto_enable_trusted` 默认 false，行缺失取默认，写要求项目属主），自动启用与人工「启用」共用 `project-assets.ts` 的 `完整启用`（启用内核校验 + `enableAsset`（`asset-service/src/enablement.ts:90`，含 20 上限）+ `linkSkill` + 丢缓存 + 记治理，一条实现），变更走 `记治理`（`audit.ts:97`）。**入参**：`{projectId, assetId, userId, 开关}` → **出参**：开关状态 + 启用结果。**判据**：`openhive-case-trusted-skill.test.ts`（新）：默认关闭；白名单内零确认；白名单外仍提示；超 20 被拒；非管理员 403；变更留痕一行。**变异**：删启用前的 `published` 复判 ⇒ 「下线后不自动启用」红。
 
 ---
 

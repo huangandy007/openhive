@@ -118,14 +118,15 @@
 
 - 权限：`user.is_admin`（服务端判；非管理员 403）。
 - 变更写 `记治理`：`action: "case.trusted_skill.add"` / `"case.trusted_skill.revoke"`。
-- 自动启用走既有 `asset-service` 的 `enableAsset`（`enablement.ts`，含 `ENABLEMENT_LIMIT=20` 原子上限），不新建启用通道；白名单条目在启用前再判一次 `status='published'`。
+- 自动启用与人工「启用」共用 `project-assets.ts` 的 `完整启用`（内部走既有 `asset-service` 的 `enableAsset`，含 `ENABLEMENT_LIMIT=20` 原子上限；再加 `linkSkill` / 丢缓存 / 记治理），不新建启用通道；白名单条目在启用前再判一次 `status='published'`。
+- 上传触发点：`file.ts` 的 `自动入队` 在 `入队材料` 成功后尽力自动启用（R2）；属主身份 fail-closed——`ownersOf` 查不到属主行就**不**启用（不拿上传者顶替）。
 
 ## 7. 不变（明确不改）
 
 | 出口 | 裁定 |
 |---|---|
 | `POST /openhive/case/parse` | 单文件人工动作原样保留（§14 第 5 条）；批量重跑走新出口 |
-| `POST /openhive/file`（上传） | 路径、参数、响应形状不变；**行为**只增加「落在 `材料/` 且开关开 ⇒ 入队」 |
+| `POST /openhive/file`（上传） | 路径、参数、响应形状不变；**行为**只增加「落在 `材料/` 且开关开 ⇒ 入队」，以及入队成功后开关开 ⇒ 尽力自动启用白名单内已发布技能（R2；失败只记 WARN） |
 | `GET /openhive/case/source-profiles` / `POST .../source-profile/build` / `.../revoke` | 原样；发布校验在服务端内部加强，出口形状不变 |
 
 ## 8. 前端触点（客户端约定）
