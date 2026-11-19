@@ -63,27 +63,6 @@ async function 造资产(输入: { id: string; name: string; type?: string; stat
   `)
 }
 
-async function 造启用(projectId: string, assetId: string, 秒: number) {
-  await db().execute(sql`
-    insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
-    values (${projectId}, ${assetId}, ${属主}, ${秒})
-  `)
-}
-
-async function 启用行数(projectId: string, assetId?: string) {
-  const 结果 =
-    assetId === undefined
-      ? await db().execute(sql`
-          select count(*) as n from auth.project_asset_enablement where project_id = ${projectId}
-        `)
-      : await db().execute(sql`
-          select count(*) as n
-            from auth.project_asset_enablement
-           where project_id = ${projectId} and asset_id = ${assetId}
-        `)
-  return Number(rowsOf(结果)[0]?.n ?? 0)
-}
-
 async function 白名单行数(assetId: string) {
   const 结果 = await db().execute(sql`
     select count(*) as n from auth.trusted_skill where asset_id = ${assetId}
@@ -109,21 +88,22 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     const 资产 = "asset_t014_default"
     await 造资产({ id: 资产, name: "默认关闭技能" })
     expect(await 加白名单(db(), { assetId: 资产, userId: 管理员, 操作人是管理员: true })).toEqual({ ok: true })
-    let 内核调用 = 0
+    let 启用调用 = 0
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: 属主,
       资产id们: [资产],
       操作人是属主: true,
-      内核: async () => {
-        内核调用 += 1
-        return { ok: true as const }
+      启用: async () => {
+        启用调用 += 1
+        return { ok: true as const, 结果: "enabled" as const }
       },
     })
     expect(结果.已启用.length).toBe(0)
     expect(结果.跳过[0]?.原因).toBe("自动启用开关关闭")
-    expect(内核调用).toBe(0)
-    expect(await 启用行数(项目, 资产)).toBe(0)
+    // 更直接：开关关着时注入的启用**一次都不该被调**（不再是「库里没有启用行」——
+    // 启用行现在由注入实现自己写，模块根本不碰表）。
+    expect(启用调用).toBe(0)
   })
 
   it("2 白名单内零确认：已发布的可信技能自动启用并落启用行", async () => {
@@ -149,22 +129,31 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     expect(条目.status).toBe("published")
     expect(条目.addedBy).toBe(管理员)
 
-    let 内核调用 = 0
+    let 启用调用 = 0
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: 属主,
       资产id们: [资产],
       操作人是属主: true,
-      内核: async () => {
-        内核调用 += 1
-        return { ok: true as const }
+      启用: async () => {
+        启用调用 += 1
+        return { ok: true as const, 结果: "enabled" as const }
       },
     })
     expect(结果.已启用).toEqual([资产])
     expect(结果.跳过.length).toBe(0)
     expect(结果.失败.length).toBe(0)
-    expect(内核调用).toBe(1)
-    expect(await 启用行数(项目, 资产)).toBe(1)
+    expect(启用调用).toBe(1)
+
+    // FR-063：真启用 ⇒ 一条 `case.trusted_skill.auto_enable` 审计（裸 SQL 读表）。
+    const 审计 = rowsOf(
+      await db().execute(sql`
+        select action, target_id, detail from auth.audit_event
+         where action = 'case.trusted_skill.auto_enable' and target_id = ${资产}
+      `),
+    )
+    expect(审计.length).toBe(1)
+    expect(String(审计[0]?.detail)).toContain(资产)
   })
 
   it("3 白名单外仍提示：跳过、不调内核、不建启用行", async () => {
@@ -179,26 +168,25 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     })
     expect(写.ok).toBe(true)
 
-    let 内核调用 = 0
+    let 启用调用 = 0
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: 属主,
       资产id们: [资产],
       操作人是属主: true,
-      内核: async () => {
-        内核调用 += 1
-        return { ok: true as const }
+      启用: async () => {
+        启用调用 += 1
+        return { ok: true as const, 结果: "enabled" as const }
       },
     })
     expect(结果.已启用.length).toBe(0)
     expect(结果.跳过.length).toBe(1)
     expect(结果.跳过[0]?.原因).toBe("不在白名单（仍需提示）")
     expect(结果.失败.length).toBe(0)
-    expect(内核调用).toBe(0)
-    expect(await 启用行数(项目, 资产)).toBe(0)
+    expect(启用调用).toBe(0)
   })
 
-  it("4 超 20 被拒：第 21 个失败，启用行仍 20", async () => {
+  it("4 上限由注入实现判定：`!ok` ⇒ 失败（原因取 error）", async () => {
     const 项目 = "p_t014_limit"
     const 写 = await 写设置(db(), {
       projectId: 项目,
@@ -208,27 +196,23 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     })
     expect(写.ok).toBe(true)
 
-    // 20 条已启用行（asset_id 有外键 ⇒ 20 份资产也要真插）。
-    for (let i = 0; i < 20; i += 1) {
-      const 已有 = `asset_t014_limit_${i}`
-      await 造资产({ id: 已有, name: `占位技能${i}` })
-      await 造启用(项目, 已有, 1000 + i)
-    }
     const 第二十一 = "asset_t014_limit_20"
     await 造资产({ id: 第二十一, name: "第 21 个技能" })
     expect(await 加白名单(db(), { assetId: 第二十一, userId: 管理员, 操作人是管理员: true })).toEqual({ ok: true })
 
+    // 原用例靠真 `enableAsset` 撞 20 上限；上限已随「一份启用实现」进入注入的 `启用`
+    // （`project-assets.ts` 的 `完整启用` 把 `limit_reached` 翻成 `{ok:false, error}`）。
+    // 本模块负责的是：`!ok` ⇒ 进 `失败`，原因取注入实现的 `error`。
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: 属主,
       资产id们: [第二十一],
       操作人是属主: true,
-      内核: async () => ({ ok: true as const }),
+      启用: async () => ({ ok: false as const, error: "项目启用数已达上限" }),
     })
     expect(结果.已启用.length).toBe(0)
     expect(结果.失败.length).toBe(1)
     expect(结果.失败[0]?.原因).toBe("项目启用数已达上限")
-    expect(await 启用行数(项目)).toBe(20)
   })
 
   it("5 非管理员 403：服务端判 + 写入校验三种码", async () => {
@@ -325,22 +309,21 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     expect(await 加白名单(db(), { assetId: 资产, userId: 管理员, 操作人是管理员: true })).toEqual({ ok: true })
     await db().execute(sql`update auth.asset set status = 'draft' where id = ${资产}`)
 
-    let 内核调用 = 0
+    let 启用调用 = 0
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: 属主,
       资产id们: [资产],
       操作人是属主: true,
-      内核: async () => {
-        内核调用 += 1
-        return { ok: true as const }
+      启用: async () => {
+        启用调用 += 1
+        return { ok: true as const, 结果: "enabled" as const }
       },
     })
     expect(结果.已启用.length).toBe(0)
     expect(结果.失败.length).toBe(1)
     expect(结果.失败[0]?.原因).toBe("资产未发布（白名单条目已失效）")
-    expect(内核调用).toBe(0)
-    expect(await 启用行数(项目, 资产)).toBe(0)
+    expect(启用调用).toBe(0)
   })
 
   it("8 非属主写设置：forbidden，行不变", async () => {
@@ -400,20 +383,53 @@ describe("T014 可信技能白名单 / 项目开关 / 自动启用", () => {
     })
     expect(写.ok).toBe(true)
 
-    let 内核调用 = 0
+    let 启用调用 = 0
     const 结果 = await 自动启用可信技能(db(), {
       projectId: 项目,
       userId: "u_t014_member",
       资产id们: [资产],
       操作人是属主: false,
-      内核: async () => {
-        内核调用 += 1
-        return { ok: true as const }
+      启用: async () => {
+        启用调用 += 1
+        return { ok: true as const, 结果: "enabled" as const }
       },
     })
     expect(结果.已启用.length).toBe(0)
     expect(结果.跳过[0]?.原因).toBe("非项目属主不能自动启用")
-    expect(内核调用).toBe(0)
-    expect(await 启用行数(项目, 资产)).toBe(0)
+    expect(启用调用).toBe(0)
+  })
+
+  it("11 已启用：注入实现回 already_enabled ⇒ 进跳过，不推「已启用」、不留审计", async () => {
+    const 项目 = "p_t014_already"
+    const 资产 = "asset_t014_already"
+    await 造资产({ id: 资产, name: "已经装过的技能" })
+    const 写 = await 写设置(db(), {
+      projectId: 项目,
+      userId: 属主,
+      操作人是属主: true,
+      autoEnableTrusted: true,
+    })
+    expect(写.ok).toBe(true)
+    expect(await 加白名单(db(), { assetId: 资产, userId: 管理员, 操作人是管理员: true })).toEqual({ ok: true })
+
+    const 结果 = await 自动启用可信技能(db(), {
+      projectId: 项目,
+      userId: 属主,
+      资产id们: [资产],
+      操作人是属主: true,
+      启用: async () => ({ ok: true as const, 结果: "already_enabled" as const }),
+    })
+    expect(结果.已启用.length).toBe(0)
+    expect(结果.失败.length).toBe(0)
+    expect(结果.跳过).toEqual([{ assetId: 资产, 原因: "已启用" }])
+
+    // 没有「这次真的启用了」，就不该有那条审计。
+    const 审计 = rowsOf(
+      await db().execute(sql`
+        select 1 from auth.audit_event
+         where action = 'case.trusted_skill.auto_enable' and target_id = ${资产}
+      `),
+    )
+    expect(审计.length).toBe(0)
   })
 })

@@ -143,6 +143,7 @@ export * as OpenhiveFile from "./file"
  * - **重命名的「目标已存在」在竞态下有缝**：同 `move`，Node 没有「目标在就失败」的改名原语。
  */
 
+import { ownersOf } from "@opencode-ai/auth/project-member"
 import { User } from "@opencode-ai/core/user"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Cause, Config as EffectConfig, Effect, Option, Schema } from "effect"
@@ -162,8 +163,10 @@ import { enqueueMaterial } from "./case-ingest"
 import { 自动入队开 } from "./case-ingest-settings"
 import { 材料目录名, 解析方式 } from "./case-parseable"
 import { 迁移材料路径, type MaterialKind, type Queryable } from "./case-store"
+import { 列白名单, 自动启用可信技能 } from "./case-trusted-skill"
 import { 模板字节 } from "./file-templates"
 import { OpenhivePg } from "./pg"
+import { 完整启用 } from "./project-assets"
 
 /** 与 `OpenhiveProject.PREFIX` 同款：fork 自己的前缀。 */
 export const PREFIX = "/openhive/file"
@@ -844,6 +847,9 @@ function 自动入队(
         by: user.value.id,
       }),
     ).pipe(
+      // 入队成功后再尽力自动启用可信技能（016 review R2 / FR-047：成员拖入匹配文件 ⇒
+      // 开关开着且可信已发布 ⇒ 自动启用并解析）。失败**不**影响上传与入队。
+      Effect.tap(() => 自动启用尽力(pg, { root: input.root, projectId: 标识.projectId })),
       Effect.catchCause((cause) =>
         Effect.logWarning("文件已上传，但自动入队失败（可右键「解析入库」重试）", {
           error: Cause.prettyErrors(cause).map((error) => `${error.name}: ${error.message}`),
@@ -851,6 +857,67 @@ function 自动入队(
       ),
     )
   })
+}
+
+/**
+ * 上传成功后的**尽力**自动启用（016 review R2，FR-047）。
+ *
+ * 只在「自动入队也成功」之后跑；任何失败都只记 WARN，不改上传响应（同 `自动入队` 的口径，
+ * `#006-28`：不许空 `catch` / 静默）。
+ *
+ * ## 属主：无行 ⇒ 直接不做（fail-closed）
+ *
+ * 自动启用与人工启用同一口径：只有项目属主能往项目目录里写链接（`#004-09`）。这里**不**用
+ * `项目属主()`——它会把「PG 里没有属主行」的坏账回落到调用者自己；在上传链上没有调用者身份
+ * 可信，编一个属主等于替数据异常做决定。`ownersOf()` 的「没有属主行的项目键缺席」正好是
+ * 我们要的 fail-closed。
+ *
+ * ## 空候选提前返回
+ *
+ * 白名单为空时 `自动启用可信技能` 内部的开关判断也只会全部跳过（无副作用），省掉那一次调用
+ * 与一次设置查询；两种实现同义，这里选省一次查。
+ *
+ * ## `store: Option.none()` 的理由
+ *
+ * 上传处理器拿不到 `InstanceStore`；`丢缓存` 自带「实例层缺席」日志，不会假装丢了。
+ * 链接落在**属主**的项目目录，上传者自己的实例缓存本来就不该丢（与 R8「其他成员需
+ * 自己对账才可见」同口径）。
+ */
+function 自动启用尽力(
+  pg: OpenhivePg.Interface,
+  input: { root: string; projectId: string },
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const 属主们 = yield* Effect.promise(() => ownersOf(pg.pg(), [input.projectId]))
+    const ownerId = 属主们.get(input.projectId)
+    if (ownerId === undefined) return
+
+    const 候选 = (yield* Effect.promise(() => 列白名单(pg.pg())))
+      .filter((条) => 条.status === "published")
+      .map((条) => 条.assetId)
+    if (候选.length === 0) return
+
+    const 结果 = yield* Effect.promise(() =>
+      自动启用可信技能(pg.pg(), {
+        projectId: input.projectId,
+        userId: ownerId,
+        资产id们: 候选,
+        操作人是属主: true,
+        启用: (id) =>
+          Effect.runPromise(
+            // `启用依赖.pg` 是**函数**（`Deps` 的形状），不是 `OpenhivePg.Interface` 本体。
+            完整启用({ pg: pg.pg, root: input.root, store: Option.none() }, ownerId, input.projectId, id),
+          ),
+      }),
+    )
+    if (结果.失败.length > 0) yield* Effect.logWarning("自动启用可信技能部分失败", { 失败: 结果.失败 })
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("自动启用可信技能失败（不影响入队）", {
+        error: Cause.prettyErrors(cause).map((error) => `${error.name}: ${error.message}`),
+      }),
+    ),
+  )
 }
 
 /**

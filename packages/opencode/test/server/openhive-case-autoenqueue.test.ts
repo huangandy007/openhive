@@ -1,16 +1,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect } from "bun:test"
 import { Database as Sqlite } from "bun:sqlite"
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { Hash } from "@opencode-ai/core/util/hash"
+import { publishDirectory } from "@opencode-ai/asset-service/storage"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
 import { DEPLOYED_DEFAULT_PASSWORD, restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { signToken, type TokenSubject } from "@opencode-ai/auth/token"
+import { 写设置 } from "../../src/server/openhive/case-ingest-settings"
 import { UserIdentity } from "../../src/server/user-identity"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { testEffect } from "../lib/effect"
@@ -38,15 +40,21 @@ const SECRET = "a2u3t4o5e6n7q8u9e0a1b2c3d4e5f6g7"
 
 const 我: TokenSubject = { id: "u-auto-me", policeNo: "970101", name: "甲民警", isAdmin: false }
 const 项目 = "p-auto-mine"
+/** 自动启用用例的独立项目（与上面那些上传用例的启用态互不干扰）。 */
+const 项目B = "p-auto-autoenable"
 
 /** 项目头是**客户端契约**：测试写死字面量（import 生产常量就成了「生产改什么测试跟着改什么」）。 */
 const PROJECT_HEADER = "x-openhive-project"
 
 const 原始沙箱根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-ws-"))
 const 项目根 = join(原始沙箱根, 我.id, 项目)
+const 项目根B = join(原始沙箱根, 我.id, 项目B)
 const 数据根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-data-"))
+/** 共享卷：上传链的自动启用要沿 `OPENHIVE_ASSETS_ROOT` 找已发布目录。 */
+const 资产根 = mkdtempSync(join(tmpdir(), "openhive-auto-enqueue-assets-"))
 
 const restoreWs = restorePoint({ OPENHIVE_WORKSPACE_ROOT: 原始沙箱根 })
+const restoreAssets = restorePoint({ OPENHIVE_ASSETS_ROOT: 资产根 })
 const restoreDefaultPassword = restorePoint({ [DEFAULT_PASSWORD_ENV]: DEPLOYED_DEFAULT_PASSWORD })
 /** PGlite 夹具把多条连接汇进同一个 PG 会话；事务另起连接，池只留 1 条。 */
 const restorePoolMax = restorePoint({ PG_POOL_MAX: "1" })
@@ -57,6 +65,7 @@ const previousDataRoot = process.env.OPENHIVE_DATA_ROOT
 process.env.OPENHIVE_DATA_ROOT = 数据根
 
 afterAll(restoreWs)
+afterAll(restoreAssets)
 afterAll(restoreDefaultPassword)
 afterAll(restorePoolMax)
 afterAll(restoreWorker)
@@ -74,6 +83,11 @@ afterAll(() => {
     rmSync(数据根, { recursive: true, force: true })
   } catch {} // 同上
 })
+afterAll(() => {
+  try {
+    rmSync(资产根, { recursive: true, force: true })
+  } catch {} // 同上
+})
 
 let pg: Awaited<ReturnType<typeof startProductionDb>> | undefined
 const 库 = () => {
@@ -81,17 +95,61 @@ const 库 = () => {
   return pg.db
 }
 
+/** 自动启用用例的两份可信技能资产（A、B 各用一份，互不共用）。 */
+const 关资产 = "asset-auto-off"
+const 开资产 = "asset-auto-on"
+
+/** 造一份已发布、全局可见的 skill 资产，并在共享卷里放好 SKILL.md（链接的落点必须真的存在）。 */
+async function 种资产(id: string, name: string) {
+  await pg!.db.execute(sql`
+    insert into auth.asset
+      (id, name, type, description, icon, category, owner_id, owner_name, department,
+       visibility, status, created_at, updated_at, published_at)
+    values (${id}, ${name}, 'skill', '夹具', 'skill', 'intelligence', ${我.id}, ${我.name},
+            '', 'global', 'published', 1000, 1000, 1000)
+  `)
+  // 落点走生产的 `publishDirectory`（`global/skills/<id>`），不手拼目录名。
+  const 目标 = publishDirectory(资产根, "skill", { visibility: "global" }, id)
+  mkdirSync(目标, { recursive: true })
+  writeFileSync(join(目标, "SKILL.md"), `---\nname: ${name}\ndescription: 测试\n---\n\n正文\n`, "utf8")
+}
+
 beforeAll(async () => {
   pg = await startProductionDb()
   await migrate(pg.db)
+
+  // 属主身份要有 `auth.user` 行（`project_member.user_id` 有外键）。
+  await pg.db.execute(sql`
+    insert into auth.user (id, police_no, name, id_card, phone, org, dept, section, status, password_hash, created_at)
+    values (${我.id}, ${我.policeNo}, ${我.name}, 'x', 'x', 'x', '甲部门', 'x', 0, 'h', 0)
+  `)
+  // 两个项目都以「我」为属主：自动启用只认属主（与人工启用同口径）。
+  for (const projectId of [项目, 项目B]) {
+    await pg.db.execute(sql`
+      insert into auth.project_member (project_id, user_id, role, time_created)
+      values (${projectId}, ${我.id}, 'owner', 1000)
+    `)
+  }
+  await 种资产(关资产, "开关关着的技能")
+  await 种资产(开资产, "开关开着就自动装的技能")
+  // 平台级白名单：两条都可信（开关才是 A/B 的分界）。
+  for (const assetId of [关资产, 开资产]) {
+    await pg.db.execute(sql`
+      insert into auth.trusted_skill (asset_id, added_by, added_at)
+      values (${assetId}, ${我.id}, 1000)
+    `)
+  }
 })
 
 /** 每个用例从干净的业务表开始（项目行在本地库，`种项目` 是幂等的）。 */
 beforeEach(async () => {
-  await 库().execute(sql`delete from auth.case_ingest_job where project_id = ${项目}`)
-  await 库().execute(sql`delete from auth.case_fact_row where project_id = ${项目}`)
-  await 库().execute(sql`delete from auth.case_material where project_id = ${项目}`)
-  await 库().execute(sql`delete from auth.project_case_ingest_settings where project_id = ${项目}`)
+  for (const projectId of [项目, 项目B]) {
+    await 库().execute(sql`delete from auth.case_ingest_job where project_id = ${projectId}`)
+    await 库().execute(sql`delete from auth.case_fact_row where project_id = ${projectId}`)
+    await 库().execute(sql`delete from auth.case_material where project_id = ${projectId}`)
+    await 库().execute(sql`delete from auth.project_case_ingest_settings where project_id = ${projectId}`)
+    await 库().execute(sql`delete from auth.project_asset_enablement where project_id = ${projectId}`)
+  }
 })
 
 const OPEN: Record<string, string | undefined> = {
@@ -128,36 +186,40 @@ const 用户库 = join(数据根, 我.id, "opencode.db")
  * 第一步的 `GET /openhive/project` 不能省：库文件是建库钩子在被测应用里建出来的，手搓一份
  * schema 迟早与生产漂开（`openhive-file-ops.test.ts` 的注释同款理由）。
  */
-const 种项目 = Effect.gen(function* () {
-  yield* 发(我, "/openhive/project")
-  if (!existsSync(用户库)) throw new Error(`应用没有建出本地库：${用户库}`)
+const 种项目 = (projectId = 项目) =>
+  Effect.gen(function* () {
+    yield* 发(我, "/openhive/project")
+    if (!existsSync(用户库)) throw new Error(`应用没有建出本地库：${用户库}`)
 
-  const 本地 = new Sqlite(用户库)
-  try {
-    本地.run(
-      "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, '[]', 1700000000000, 1700000000000)",
-      [项目, `/tmp/${项目}`],
-    )
-    本地.run(
-      "INSERT OR IGNORE INTO project_ext (project_id, type, project_type, shared_directory, last_accessed_at) VALUES (?, 'private', '单案', NULL, 1700000000000)",
-      [项目],
-    )
-  } finally {
-    本地.close()
-  }
-})
+    const 本地 = new Sqlite(用户库)
+    try {
+      本地.run(
+        "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, '[]', 1700000000000, 1700000000000)",
+        [projectId, `/tmp/${projectId}`],
+      )
+      本地.run(
+        "INSERT OR IGNORE INTO project_ext (project_id, type, project_type, shared_directory, last_accessed_at) VALUES (?, 'private', '单案', NULL, 1700000000000)",
+        [projectId],
+      )
+    } finally {
+      本地.close()
+    }
+  })
 
-/** 重置盘上夹具：项目根重建出 `材料/` 与 `报告/` 两个目录。 */
+/** 重置盘上夹具：两个项目根各重建出 `材料/` 与 `报告/` 两个目录。 */
 function 重置文件() {
-  rmSync(项目根, { recursive: true, force: true })
-  mkdirSync(join(项目根, "材料"), { recursive: true })
-  mkdirSync(join(项目根, "报告"), { recursive: true })
+  for (const 根 of [项目根, 项目根B]) {
+    rmSync(根, { recursive: true, force: true })
+    mkdirSync(join(根, "材料"), { recursive: true })
+    mkdirSync(join(根, "报告"), { recursive: true })
+  }
 }
 
 const 就绪 = () =>
   Effect.gen(function* () {
     重置文件()
-    yield* 种项目
+    yield* 种项目()
+    yield* 种项目(项目B)
   })
 
 /** 发一个 multipart 上传（落哪个项目目录由项目头指出）。 */
@@ -332,6 +394,73 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
         expect(yield* Effect.promise(() => 材料数())).toBe(0)
         expect(yield* Effect.promise(() => 作业数())).toBe(0)
         expect(响应.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  it(
+    "⑤ 自动启用开关默认关：上传匹配文件 ⇒ 不写启用行、不建链接",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+
+        const 响应 = yield* 上传("材料", "开关关.xlsx", "内容", 项目)
+        expect(响应.status).toBe(200)
+
+        const 行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select asset_id from auth.project_asset_enablement
+               where project_id = ${项目} and asset_id = ${关资产}
+            `),
+          ),
+        )
+        expect(行.length).toBe(0)
+        expect(existsSync(join(项目根, ".opencode", "skill", 关资产))).toBe(false)
+      }),
+    30_000,
+  )
+
+  it(
+    "⑥ 自动启用开关开：上传匹配文件 ⇒ 启用行 + 属主目录链接 + 两条审计",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const 写 = yield* Effect.promise(() =>
+          写设置(库(), { projectId: 项目B, userId: 我.id, 操作人是属主: true, autoEnableTrusted: true }),
+        )
+        expect(写.ok).toBe(true)
+
+        const 响应 = yield* 上传("材料", "开关开.xlsx", "内容", 项目B)
+        expect(响应.status).toBe(200)
+
+        // 启用行：项目级事实。
+        const 启用行 = rowsOf(
+          yield* Effect.promise(() =>
+            库().execute(sql`
+              select asset_id, enabled_by from auth.project_asset_enablement
+               where project_id = ${项目B} and asset_id = ${开资产}
+            `),
+          ),
+        )
+        expect(启用行).toEqual([{ asset_id: 开资产, enabled_by: 我.id }])
+
+        // 链接落在**属主**的项目目录（本机 win32 是 junction，`isSymbolicLink()` 为 true）。
+        const 链接 = join(项目根B, ".opencode", "skill", 开资产)
+        expect(existsSync(链接)).toBe(true)
+        expect(lstatSync(链接).isSymbolicLink()).toBe(true)
+
+        // 两条审计：人工启用那条 `asset.enable` ＋ 自动启用那条（FR-063）。
+        for (const action of ["asset.enable", "case.trusted_skill.auto_enable"]) {
+          const 审计 = rowsOf(
+            yield* Effect.promise(() =>
+              库().execute(sql`
+                select 1 from auth.audit_event where action = ${action} and target_id = ${开资产}
+              `),
+            ),
+          )
+          expect(审计.length).toBe(1)
+        }
       }),
     30_000,
   )

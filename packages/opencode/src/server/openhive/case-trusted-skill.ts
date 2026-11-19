@@ -1,6 +1,5 @@
 export * as OpenhiveCaseTrustedSkill from "./case-trusted-skill"
 
-import { enableAsset } from "@opencode-ai/asset-service/enablement"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { nowSeconds } from "@opencode-ai/auth/time"
 import { sql } from "drizzle-orm"
@@ -126,8 +125,11 @@ export interface 自动启用输入 {
   资产id们: readonly string[]
   /** 项目属主才能装（与人工启用同口径，`#004-09`）。 */
   操作人是属主: boolean
-  /** 注入 `启用内核`（T016 接线）：只判「这份资产能不能装进项目」。 */
-  内核: (assetId: string) => Promise<{ ok: true } | { ok: false; code?: string; error: string }>
+  /** 注入完整启用（`project-assets.ts` 的 `完整启用`）：校验 + 启用行 + 链接 + 缓存 + 审计，一份实现。 */
+  启用: (assetId: string) => Promise<
+    | { readonly ok: true; readonly 结果: "enabled" | "already_enabled" }
+    | { readonly ok: false; readonly error: string }
+  >
 }
 
 export interface 自动启用结果 {
@@ -140,12 +142,11 @@ export interface 自动启用结果 {
  * 自动启用可信技能（FR-047）。顺序固定：
  *
  * 1. 非属主 ⇒ 全部跳过（与人工启用同口径；权限在任何副作用之前，`#004-09`）；
- * 2. 开关关闭 ⇒ 全部跳过，**不碰** `enableAsset`；
+ * 2. 开关关闭 ⇒ 全部跳过，**不碰**注入的 `启用`；
  * 3. 不在白名单 ⇒ 跳过（「仍需提示」，不是失败）；
- * 4. 启用前复判 `status='published'` ⇒ 下线后白名单条目失效，**不调**内核 / `enableAsset`；
- * 5. 注入的启用内核 ⇒ `ok:false` 即失败（原因取 `error`）；
- * 6. `enableAsset`（20 上限原样在 SQL 里）⇒ `enabled` / `already_enabled`（跳过）/ `limit_reached`（失败）；
- * 7. 每个**真的**启用的资产一条审计（FR-063）。
+ * 4. 启用前复判 `status='published'` ⇒ 下线后白名单条目失效，**不调** `启用`；
+ * 5. 注入的 `启用`（与人工启用同一实现）⇒ `enabled` / `already_enabled`（跳过）/ `ok:false`（失败）；
+ * 6. 每个**真的**启用的资产一条审计（FR-063）。
  */
 export async function 自动启用可信技能(db: Queryable, 输入: 自动启用输入): Promise<自动启用结果> {
   const 已启用: string[] = []
@@ -191,20 +192,19 @@ export async function 自动启用可信技能(db: Queryable, 输入: 自动启�
       continue
     }
 
-    let 内核结果: { ok: true } | { ok: false; code?: string; error: string }
+    let 启用结果: Awaited<ReturnType<自动启用输入["启用"]>>
     try {
-      内核结果 = await 输入.内核(assetId)
+      启用结果 = await 输入.启用(assetId)
     } catch (error) {
       失败.push({ assetId, 原因: error instanceof Error ? error.message : String(error) })
       continue
     }
-    if (!内核结果.ok) {
-      失败.push({ assetId, 原因: 内核结果.error })
+    if (!启用结果.ok) {
+      失败.push({ assetId, 原因: 启用结果.error })
       continue
     }
 
-    const 启用 = await enableAsset(db, { projectId: 输入.projectId, assetId, userId: 输入.userId })
-    if (启用 === "enabled") {
+    if (启用结果.结果 === "enabled") {
       已启用.push(assetId)
       await 留痕(db, 输入.userId, {
         action: "case.trusted_skill.auto_enable",
@@ -212,10 +212,8 @@ export async function 自动启用可信技能(db: Queryable, 输入: 自动启�
         targetId: assetId,
         detail: { assetId },
       })
-    } else if (启用 === "already_enabled") {
-      跳过.push({ assetId, 原因: "已启用" })
     } else {
-      失败.push({ assetId, 原因: "项目启用数已达上限" })
+      跳过.push({ assetId, 原因: "已启用" })
     }
   }
 
