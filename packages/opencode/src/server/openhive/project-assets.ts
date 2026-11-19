@@ -914,7 +914,7 @@ function 内核失败(status: number, error: string, code?: string, problems?: r
  * 上限与写库 / 建链接也留在出口。末尾追加 M10 识别卡校验（016）：坏包不进项目，
  * `problems` 原样交给出口逐条列出。
  */
-function 启用内核(deps: Deps, userId: string, projectId: string, assetId: string) {
+export function 启用内核(deps: Deps, userId: string, projectId: string, assetId: string) {
   return Effect.gen(function* () {
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
     if (asset === undefined) return 内核失败(404, "资产不存在", "not_found")
