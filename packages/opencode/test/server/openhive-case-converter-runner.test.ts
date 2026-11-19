@@ -303,6 +303,52 @@ await Bun.write("out.json", JSON.stringify({ rows: [], report: {} }))
     expect(await fs.readFile(输出路径, "utf8")).toBe(预置)
     // 更硬的证据：转换器根本没被执行。
     expect(await 存在(join(目录, "ran.marker"))).toBe(false)
+    // 无运行标记 ⇒ 只能人工清理；提示里给文件名，不给绝对路径。
+    expect(结果.detail).toContain("手动")
+    expect(结果.detail).toContain("out.json")
+    expect(结果.detail.includes(目录)).toBe(false)
+  })
+
+  test("崩溃残留自愈：输出与运行标记同存 ⇒ 判异常残留、清掉后正常执行（变异：删「有标记即放行」⇒ 本条红）", async () => {
+    const 脚本 = `
+await Bun.write("ran.marker", "1")
+await Bun.write("out.json", JSON.stringify({ rows: [], report: {} }))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 输出路径 = join(目录, "out.json")
+    const 标记路径 = join(目录, ".out.json.openhive-running")
+    // 模拟 OOM / SIGKILL：上次执行留下了输出与标记（标记内容=开始时间）。
+    await fs.writeFile(输出路径, "上次崩溃留下的半截输出", "utf8")
+    await fs.writeFile(标记路径, String(Date.now()), "utf8")
+
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(true)
+    // 残留被本轮真正跑出的输出替换后读完即删；标记也清掉。
+    expect(await 存在(输出路径)).toBe(false)
+    expect(await 存在(标记路径)).toBe(false)
+    expect(await 存在(join(目录, "ran.marker"))).toBe(true)
+  })
+
+  test("正常路径：执行前写运行标记（含开始时间），跑完连标记一起清（变异：不写标记 ⇒ 本条红）", async () => {
+    const 脚本 = `
+const 标记 = Bun.file(".out.json.openhive-running")
+const 标记在 = await 标记.exists()
+const 标记内容 = 标记在 ? await 标记.text() : ""
+await Bun.write("out.json", JSON.stringify({ rows: [], report: { 标记在, 标记内容 } }))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(true)
+    if (!结果.ok) return
+    const 报告 = 结果.report
+    if (typeof 报告 !== "object" || 报告 === null) throw new Error("report 必须是对象")
+    expect(Reflect.get(报告, "标记在")).toBe(true)
+    const 标记内容 = Reflect.get(报告, "标记内容")
+    expect(typeof 标记内容).toBe("string")
+    expect(Number.isFinite(Number(标记内容))).toBe(true)
+    expect(await 存在(join(目录, ".out.json.openhive-running"))).toBe(false)
   })
 
   test("契约第 7 条：多出一个 JSON 文件 ⇒ 失败并指出文件名", async () => {

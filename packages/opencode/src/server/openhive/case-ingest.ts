@@ -228,7 +228,7 @@ export interface ClaimedJob {
   sourcePath: string
   /** 入队时人工指定的卡片模板（§9.5）；缺省 = 按表自动建议。 */
   templateId?: string
-  /** 入队人（`case_ingest_job.queued_by`）；适配器注册表判「读得到」要用它。 */
+  /** 入队人（`case_ingest_job.queued_by`）。仅留痕；注册表可见性按**落点属主**判，不读它（A9）。 */
   queuedBy?: string
 }
 
@@ -992,7 +992,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     // 重放清理必须早于写入，且顺序固定（Global Constraints 8）。表格路径以前不写事实，
     // 这两句对老材料是空操作；不写的话，第二次解析会在库里叠出第二份卡片。
     await 清本材料翻译(tx, job.projectId, job.materialId)
-    await insertFactRows(tx, 待写)
+    const 实写行数 = await insertFactRows(tx, 待写)
     const 翻译回执 =
       翻译 === undefined
         ? undefined
@@ -1071,6 +1071,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     if (是对象(转换器报告) && Array.isArray(转换器报告["warnings"])) {
       报告警告们.push(...转换器报告["warnings"])
     }
+    // A7 轮 2：`insertFactRows` 的 `on conflict do nothing` 会吃掉批内重复的
+    // `(sheet,rowNo)`——报告写实际写入数，差额如实告警（重复行不是整份失败）。
+    const 批内重复行数 = 待写.length - 实写行数
+    if (批内重复行数 > 0) 报告警告们.push(`批内重复行 ${批内重复行数} 条未写入`)
     const 未认出列数 = 未认出们.reduce((合计, 项) => 合计 + (项?.列们.length ?? 0), 0)
     if (未认出列数 > 0) 报告警告们.push(`未认出列 ${未认出列数} 个`)
     // T012 审查 M4：待确认只算不落，报告是它唯一的持久化出口（FR-052「交人看」）。
@@ -1111,7 +1115,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       // A3：报告列全部表头闸命中项（跨表去重，`priority desc, id asc`）。
       matches: 合并命中们(结论们),
       // A7：本次实际写出的事实行数（两条通路同一口径，不写真值以外的东西）。
-      convertedRows: 待写.length,
+      convertedRows: 实写行数,
       enrich: 富化结果 === undefined ? null : 富化结果.统计,
       admission: 准入,
     })
@@ -1152,11 +1156,7 @@ function 选适配器(结论们: readonly 探测结论[], 适配器们: readonly
 function 合并命中们(结论们: readonly 探测结论[]): 探测命中[] {
   const 表 = new Map<string, 探测命中>()
   for (const 结论 of 结论们) for (const 项 of 结论.命中们 ?? []) if (!表.has(项.id)) 表.set(项.id, 项)
-  return [...表.values()].toSorted(
-    (甲, 乙) =>
-      乙.priority - 甲.priority ||
-      (甲.id < 乙.id ? -1 : 甲.id > 乙.id ? 1 : 0),
-  )
+  return [...表.values()].toSorted(按优先与id)
 }
 
 /**

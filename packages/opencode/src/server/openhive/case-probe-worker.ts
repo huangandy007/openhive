@@ -70,11 +70,10 @@ export interface 待探测材料 {
   readonly materialId: string
   /** 项目内相对路径（界面口径）。 */
   readonly path: string
-  readonly queuedBy: string | null
   /**
    * 作业的**权威沙箱落点**（`case_ingest_job.source_path`，`/` 分隔的沙箱根相对路径）。
    *
-   * 不能用 `[queuedBy, projectId, path]` 反推：沙箱落点恒为**项目属主**目录，而 `queued_by`
+   * 不能用 `[queued_by, projectId, path]` 反推：沙箱落点恒为**项目属主**目录，而 `queued_by`
    * 记的是**操作人**——共享项目里成员入队的材料反推出来必然 ENOENT。无作业行 ⇒ `null`。
    */
   readonly sourcePath: string | null
@@ -117,7 +116,7 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
          and m.id = c.id
          and m.parse_status = '排队中'
          and m.probe is null
-      returning m.project_id, m.id, m.path, m.queued_by,
+      returning m.project_id, m.id, m.path,
                 (select j.source_path
                    from auth.case_ingest_job j
                   where j.project_id = m.project_id and j.material_id = m.id
@@ -131,7 +130,6 @@ export async function 认领待探测(db: Queryable): Promise<待探测材料 | 
     projectId: String(row.project_id),
     materialId: String(row.id),
     path: String(row.path),
-    queuedBy: typeof row.queued_by === "string" ? row.queued_by : null,
     sourcePath: typeof row.source_path === "string" ? row.source_path : null,
   }
 }

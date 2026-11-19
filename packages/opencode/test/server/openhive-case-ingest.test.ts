@@ -28,6 +28,7 @@ import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 建实体 } from "./openhive-case-fact-fixture"
 import { 建参考库, type 参考库 } from "../../src/server/openhive/case-reference-store"
 import { 最新报告 } from "../../src/server/openhive/case-material-report"
+import { 造作业适配器读者 } from "../../src/server/openhive/case-ingest-worker"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -2491,6 +2492,29 @@ await Bun.write("result.json", JSON.stringify({
     expect(报告.matches).toEqual([{ id: "adapter-流水转换", version: "1.2.3", priority: 100 }])
   })
 
+  test("转换行数 = 实际写入数：批内重复 (sheet,rowNo) 只落一条，另记告警（变异：改回待写.length ⇒ 本条红）", async () => {
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" },
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225660, amount: "200.00", direction: "付" }
+  ],
+  report: { adapterId: "adapter-流水转换", gates: [] }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("批内重复", 脚本)
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-批内重复`))
+    const { 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    // 重复行不是整份失败：能写多少写多少，另外如实告警。
+    expect(结果).toBe("完成")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.convertedRows).toBe(1)
+    expect(报告.warnings).toContainEqual(expect.stringContaining("批内重复行 1 条未写入"))
+  })
+
   test("值闸不过 ⇒ 原因码取第一个失败闸（Ruling X）", async () => {
     const 闸脚本 = `
 await Bun.write("result.json", JSON.stringify({
@@ -2587,6 +2611,35 @@ process.exit(3)
     const 对照侧 = await 取行(对照项目)
     expect(适配侧.length).toBeGreaterThan(0)
     expect(适配侧).toEqual(对照侧)
+  })
+
+  test("worker 注入的注册表 viewer = 落点属主，不是入队人（A9 轮 2；变异：改回 queuedBy ⇒ 本条红）", async () => {
+    await 备料("属主读者", 成功脚本)
+    // 共享项目：成员入队、属主拥有适配器。
+    const 属主适配器 = 卡(join(根目录, "skill-属主独有"))
+    const 看到的属主们: string[] = []
+    const 读适配器 = 造作业适配器读者(
+      () => db(),
+      根目录,
+      async (_db, viewer) => {
+        看到的属主们.push(viewer.userId)
+        // 模拟可见性：这张卡只有落点属主读得到。viewer 用了入队人 ⇒ 空注册表。
+        return viewer.userId === "属主用户"
+          ? { 适配器: [属主适配器], 跳过: [] }
+          : { 适配器: [], 跳过: [] }
+      },
+    )
+
+    const 注册表 = await 读适配器({
+      projectId: "p-属主判定",
+      jobId: "job-属主判定",
+      materialId: "m-属主判定",
+      sourcePath: "属主用户/p-属主判定/流水.xlsx",
+      queuedBy: "成员用户",
+    })
+
+    expect(看到的属主们).toEqual(["属主用户"])
+    expect(注册表.适配器.map((项) => 项.id)).toEqual(["adapter-流水转换"])
   })
 })
 

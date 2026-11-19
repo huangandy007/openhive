@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process"
-import { access, readFile, readdir, rm } from "node:fs/promises"
+import { access, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { createTreeStopper } from "./governance-mcp-supervisor"
 
@@ -26,6 +26,12 @@ import { createTreeStopper } from "./governance-mcp-supervisor"
  *
  * 收尾：读完输出即删（它在技能目录里不该留），删除失败只记 WARN。超时 / 内核退出时
  * 按 `spawnGovernanceMcp` 的同一套收尾杀**整棵进程树**（`bun` 在 win32 是包装器，脚本在孙进程）。
+ *
+ * ## 崩溃残留自愈
+ *
+ * 执行前在技能目录写 `.<output.file>.openhive-running`（内容=开始时间），正常路径连同输出一起删。
+ * 下次见到「输出 + 标记」= 上次被 OOM / SIGKILL 打断的异常残留，清掉重跑；只有输出没有标记
+ * ⇒ 仍是共享包里的既有文件，拒绝覆盖并提示手动清理。跨进程并发由 Ruling AH（单摄入 worker）收敛。
  */
 
 /** 默认超时；转换器可能跑大表，给 60s。 */
@@ -91,53 +97,76 @@ export async function 跑转换器(输入: 转换器输入): Promise<转换器�
   return 串行化(目录, async () => {
     const 输出名 = basename(输入.适配器.output.file)
     const 输出路径 = join(目录, 输入.适配器.output.file)
-    // 技能包是**共享资产**：output.file 若已存在，只能是别人放进包里的文件。既不能覆盖
-    // （会改坏共享包），也不能删（「读完即删」只适用于本次新建的输出）。所以运行前先拒。
+    // 运行标记：执行前写入开始时间；正常路径随输出一起清掉。若进程被 OOM / SIGKILL 打断，
+    // 标记与输出会一起留在共享技能包目录里——下一次见到「输出 + 标记」就知道是异常残留，
+    // 可以安全清掉重跑（跨进程并发已由 Ruling AH 收敛到单摄入 worker，不需要额外锁）。
+    const 标记路径 = join(目录, `.${输出名}.openhive-running`)
+    // 技能包是**共享资产**：output.file 若已存在且**没有**运行标记，只能是别人放进包里的文件，
+    // 既不能覆盖（会改坏共享包），也不能删（「读完即删」只适用于本次新建的输出），所以拒绝执行。
     if (await 输出已存在(输出路径)) {
-      return { ok: false, detail: `输出文件已存在，拒绝覆盖共享技能包：${输出名}` }
+      if (await 输出已存在(标记路径)) {
+        console.warn(`${告警标签} 检出自上次异常中断的残留（输出 + 运行标记），清掉后重跑：${输出名}`)
+        await 清理输出(输出路径)
+        await 清理标记(标记路径)
+      } else {
+        return {
+          ok: false,
+          detail: `输出文件已存在，拒绝覆盖共享技能包：${输出名}；若不是上次执行残留，请手动删除该文件后重试`,
+        }
+      }
+    } else if (await 输出已存在(标记路径)) {
+      // 上次在写输出前就被打断：只剩标记，同样是残留。
+      await 清理标记(标记路径)
+    }
+    if (!(await 写标记(标记路径))) {
+      return { ok: false, detail: `无法写运行标记，拒绝执行：${输出名}` }
     }
     const 超时ms = 输入.超时ms ?? 默认超时ms
     const 运行前JSON = await 列出后缀(目录, ".json")
     const 运行前xlsx = await 列出后缀(目录, ".xlsx")
 
-    const 执行 = await 执行子进程({
-      命令,
-      参数: [输入.原件],
-      cwd: 目录,
-      env: 子进程环境(输入.原件),
-      超时ms,
-    })
+    try {
+      const 执行 = await 执行子进程({
+        命令,
+        参数: [输入.原件],
+        cwd: 目录,
+        env: 子进程环境(输入.原件),
+        超时ms,
+      })
 
-    if (执行.超时 || 执行.启动错误 !== undefined || 执行.退出码 !== 0) {
-      const 报告 = await 尝试读报告(输出路径)
+      if (执行.超时 || 执行.启动错误 !== undefined || 执行.退出码 !== 0) {
+        const 报告 = await 尝试读报告(输出路径)
+        await 清理输出(输出路径)
+        const detail = 执行.超时
+          ? `超时 ${超时ms}ms`
+          : 执行.启动错误 !== undefined
+            ? `无法启动转换器：${消息(执行.启动错误)}`
+            : 执行.退出码 === null
+              ? `转换器被信号终止：${执行.信号 ?? "未知"}`
+              : `转换器退出码 ${执行.退出码}`
+        return 报告 === undefined ? { ok: false, detail } : { ok: false, detail, 报告 }
+      }
+
+      // 契约第 7 条：输出只能是 output.file 这一个 JSON；期间新冒出来的 .json 视为校验失败。
+      const 多出JSON = 新增文件(运行前JSON, await 列出后缀(目录, ".json"), 输出名)
+      // 契约第 6 条：产出 xlsx 视为多余输出，**不采用**（不据此失败，只记 WARN）。
+      const 多出xlsx = 新增文件(运行前xlsx, await 列出后缀(目录, ".xlsx"), 输出名)
+      for (const 名 of 多出xlsx) {
+        console.warn(`${告警标签} 告警（契约第 6 条）：产出 .xlsx 视为多余输出，不采用：${名}`)
+      }
+
+      const 读取 = await 读输出(输出路径)
       await 清理输出(输出路径)
-      const detail = 执行.超时
-        ? `超时 ${超时ms}ms`
-        : 执行.启动错误 !== undefined
-          ? `无法启动转换器：${消息(执行.启动错误)}`
-          : 执行.退出码 === null
-            ? `转换器被信号终止：${执行.信号 ?? "未知"}`
-            : `转换器退出码 ${执行.退出码}`
-      return 报告 === undefined ? { ok: false, detail } : { ok: false, detail, 报告 }
+
+      if (多出JSON.length > 0) {
+        return { ok: false, detail: `契约第 7 条：输出目录多出 JSON 文件：${多出JSON.join("、")}` }
+      }
+      if (!读取.ok) return { ok: false, detail: 读取.detail }
+
+      return 校验输出(读取.值)
+    } finally {
+      await 清理标记(标记路径)
     }
-
-    // 契约第 7 条：输出只能是 output.file 这一个 JSON；期间新冒出来的 .json 视为校验失败。
-    const 多出JSON = 新增文件(运行前JSON, await 列出后缀(目录, ".json"), 输出名)
-    // 契约第 6 条：产出 xlsx 视为多余输出，**不采用**（不据此失败，只记 WARN）。
-    const 多出xlsx = 新增文件(运行前xlsx, await 列出后缀(目录, ".xlsx"), 输出名)
-    for (const 名 of 多出xlsx) {
-      console.warn(`${告警标签} 告警（契约第 6 条）：产出 .xlsx 视为多余输出，不采用：${名}`)
-    }
-
-    const 读取 = await 读输出(输出路径)
-    await 清理输出(输出路径)
-
-    if (多出JSON.length > 0) {
-      return { ok: false, detail: `契约第 7 条：输出目录多出 JSON 文件：${多出JSON.join("、")}` }
-    }
-    if (!读取.ok) return { ok: false, detail: 读取.detail }
-
-    return 校验输出(读取.值)
   })
 }
 
@@ -377,6 +406,25 @@ async function 清理输出(路径: string): Promise<void> {
     await rm(路径, { force: true })
   } catch (error) {
     console.warn(`${告警标签} 删除输出失败（不影响结果）：${路径}：${消息(error)}`)
+  }
+}
+
+/** 写运行标记（内容 = 开始时间毫秒）；写不进就不执行，避免崩溃后无法自愈。 */
+async function 写标记(路径: string): Promise<boolean> {
+  try {
+    await writeFile(路径, String(Date.now()), "utf8")
+    return true
+  } catch (error) {
+    console.warn(`${告警标签} 写运行标记失败：${路径}：${消息(error)}`)
+    return false
+  }
+}
+
+async function 清理标记(路径: string): Promise<void> {
+  try {
+    await rm(路径, { force: true })
+  } catch (error) {
+    console.warn(`${告警标签} 删除运行标记失败（不影响结果）：${路径}：${消息(error)}`)
   }
 }
 

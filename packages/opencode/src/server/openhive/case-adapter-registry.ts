@@ -309,12 +309,25 @@ function 按id(a: { readonly id: string }, b: { readonly id: string }): number {
 /**
  * 多命中的**唯一**决胜口径：`priority desc, id asc`。
  *
- * 注册表自己的列表排序与探测闸（`case-adapter-probe.ts`）共用这一份（`#002-06`）——
- * 别在探测里再写一遍比较器，否则两边哪天改了一边就静默漂移。
+ * 注册表列表排序、探测闸与入库报告的 `matches` 共用这一份（`#002-06`）——
+ * 别在调用方再写一遍比较器，否则哪天改了一边就静默漂移。适配器读 `match.priority`，
+ * 探测命中读顶层 `priority`（两种形状都接受）。
  */
-export function 按优先与id(a: 适配器, b: 适配器): number {
-  const 差 = b.match.priority - a.match.priority
-  return 差 !== 0 ? 差 : 按id(a, b)
+export function 按优先与id(甲: 适配器, 乙: 适配器): number
+export function 按优先与id(甲: 优先级项, 乙: 优先级项): number
+export function 按优先与id(甲: 适配器 | 优先级项, 乙: 适配器 | 优先级项): number {
+  const 差 = 取优先级(乙) - 取优先级(甲)
+  return 差 !== 0 ? 差 : 按id(甲, 乙)
+}
+
+/** 探测命中把 `priority` 放在顶层（注册表里的适配器在 `match.priority`）。 */
+interface 优先级项 {
+  readonly id: string
+  readonly priority: number
+}
+
+function 取优先级(项: 适配器 | 优先级项): number {
+  return "priority" in 项 ? 项.priority : 项.match.priority
 }
 
 /**
