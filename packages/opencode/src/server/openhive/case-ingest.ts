@@ -78,6 +78,49 @@ import type { ParseAction, ParseStatus } from "./case-status"
  * 映射修正、解析器升级之后要让改动生效，必须真的把旧行删掉——`do nothing` 只会
  * 把老行原样留下，「重放成功」于是成了静默的空操作。
  */
+/**
+ * 016 T011 · M3 作业原因码（六值闭集，字面值即契约：`contracts/reason-code-contract.md`）。
+ *
+ * 为什么用类而不是「按 message 文案反推」：`失败:转换器异常` 的详情是人写的自由文本
+ * （退出码 / 契约第几条），文案改一个字，按文案匹配的映射就静默失效。码只从异常对象上取；
+ * 未带码的错误写 NULL，**不编造**。
+ */
+type 原因码 =
+  | "未识别:无匹配适配器"
+  | `未识别:缺必需列:${string}`
+  | `未识别:值闸不过:${string}`
+  | "失败:读文件"
+  | "失败:转换器异常"
+  | "失败:入库异常"
+
+class 原因码错误 extends Error {
+  constructor(
+    readonly 原因码: 原因码,
+    详情: string,
+  ) {
+    super(详情)
+    this.name = "原因码错误"
+  }
+}
+
+/** `探测结论.原因码` 在类型层是 `string`：跨模块边界只认闭集里的字面值。 */
+function 是原因码(码: unknown): 码 is 原因码 {
+  if (typeof 码 !== "string") return false
+  if (码 === "未识别:无匹配适配器") return true
+  if (码 === "失败:读文件" || 码 === "失败:转换器异常" || 码 === "失败:入库异常") return true
+  if (码.startsWith("未识别:缺必需列:") && 码.length > "未识别:缺必需列:".length) return true
+  return 码.startsWith("未识别:值闸不过:") && 码.length > "未识别:值闸不过:".length
+}
+
+/**
+ * 边界包装：已带码的原样交回（别把内层的码改写成外层码），否则按给定码包一层。
+ * 详情只取原 message——码存 `reason_code`，文案存 `parse_detail.reason`，两者分开。
+ */
+function 转原因码错误(error: unknown, 码: 原因码): 原因码错误 {
+  if (error instanceof 原因码错误) return error
+  return new 原因码错误(码, error instanceof Error ? error.message : String(error))
+}
+
 export interface EnqueueInput {
   projectId: string
   /** 项目内路径（落 `case_material.path`，界面用）。 */
@@ -405,13 +448,15 @@ export async function runJob(
     // 把「其中一笔做不到」升级成「两笔都丢」——作业会永远停在「运行中」，而它不在
     // 可认领集合里，材料也卡在旧状态，双方都不自愈。各自兜底，谁成谁算。
     const 原因 = error instanceof Error ? error.message : String(error)
+    // 只认**显式带码**的异常（`原因码错误`）；未带码的错误写 NULL，不按文案猜（契约：码是闭集）。
+    const 码: 原因码 | null = error instanceof 原因码错误 ? error.原因码 : null
     await applyParseAction(db, {
       projectId: job.projectId,
       materialId: job.materialId,
       action: "出问题",
       detail: { reason: 原因 },
     }).catch(() => undefined)
-    await 收尾(db, job, "失败", 原因).catch(() => undefined)
+    await 收尾(db, job, "失败", 原因, 码).catch(() => undefined)
     return "失败"
   }
 }
@@ -441,19 +486,46 @@ function 合并翻译结果(结果们: readonly 翻译结果[]): 翻译结果 {
  * 不写明细、不写材料状态，识别结果从 `收集` 交出去。
  */
 async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: RunOptions): Promise<void> {
+  /**
+   * 进度写点（T011）：阶段切换必写；`dryRun` 一律不写（R18）。
+   * 写失败由 `写进度` 吞掉并记 WARN——进度不是账本，不该把作业打失败。
+   */
+  const 报进度 = async (
+    阶段: "读表" | "探测" | "转换" | "写入",
+    数字: { 已处理?: number; 总数?: number } = {},
+  ): Promise<void> => {
+    if (选项.dryRun === true) return
+    await 写进度(db, job, { 阶段, ...数字 })
+  }
+
+  await 报进度("读表")
+
   // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
   // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
   // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
-  const { sheets, skippedSheets, truncatedSheets } = readSheets(await deps.readFile(job.sourcePath))
-  if (skippedSheets.length > 0 || truncatedSheets.length > 0) {
-    const 缘由 = [
-      skippedSheets.length > 0 ? `工作表超过上限，未解析：${skippedSheets.join("、")}` : "",
-      truncatedSheets.length > 0 ? `行数超过上限，已截断：${truncatedSheets.join("、")}` : "",
-    ]
-      .filter((s) => s !== "")
-      .join("；")
-    throw new Error(缘由)
+  const 读表 = async (): Promise<ReturnType<typeof readSheets>> => {
+    try {
+      const 结果 = readSheets(await deps.readFile(job.sourcePath))
+      if (结果.skippedSheets.length > 0 || 结果.truncatedSheets.length > 0) {
+        const 缘由 = [
+          结果.skippedSheets.length > 0
+            ? `工作表超过上限，未解析：${结果.skippedSheets.join("、")}`
+            : "",
+          结果.truncatedSheets.length > 0
+            ? `行数超过上限，已截断：${结果.truncatedSheets.join("、")}`
+            : "",
+        ]
+          .filter((s) => s !== "")
+          .join("；")
+        throw new Error(缘由)
+      }
+      return 结果
+    } catch (error) {
+      // 读盘 / 面积闸 / 编码 / 超限拒绝都属于「这份文件读不进来」⇒ `失败:读文件`。
+      throw 转原因码错误(error, "失败:读文件")
+    }
   }
+  const { sheets } = await 读表()
 
   // 别名库一个任务只读一次（设计 §4.2-4），指纹的版本号也用它。
   const 别名 = await 读别名上下文(db)
@@ -475,6 +547,7 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       : await deps.读适配器(job)
   const 结论们 = sheets.map((_, i) => 探测({ 表头: 表头们[i] ?? [] }, 注册表.适配器))
   const 适配 = 选适配器(结论们, 注册表.适配器)
+  await 报进度("探测")
 
   // 两条通路共用的落地骨架：适配器通路跳过四层，但翻译 / 写入 / 按材料清理零改动。
   let 识别: 材料识别
@@ -523,12 +596,16 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     const 原件 = deps.根目录 === undefined ? undefined : 沙箱内路径(deps.根目录, job.sourcePath)
     if (原件 === undefined) throw new Error("失败:转换器异常：拿不到原件路径（根目录/落点不合法）")
     // ③ 起转换器。同一技能目录的并发已由 runner 进程内串行（T007，Ruling AH），这里不再加锁。
+    await 报进度("转换")
     const 结果 = await 跑转换器({ 适配器: 适配, 原件 })
     if (!结果.ok) {
       // 值闸映射（Ruling X）：非零退出后 runner 仍会带上报告；取报告顺序里**第一个**失败闸。
+      // 判定**直接看 `结果.报告`**，不按 detail 文案反推（自由文本永远不可作判据）。
       const 失败闸 = 第一个失败闸(结果.报告)
-      if (失败闸 !== undefined) throw new Error(`未识别:值闸不过:${失败闸.检查项}`)
-      throw new Error(`失败:转换器异常：${结果.detail}`)
+      if (失败闸 !== undefined) {
+        throw new 原因码错误(`未识别:值闸不过:${失败闸.检查项}`, `未识别:值闸不过:${失败闸.检查项}`)
+      }
+      throw new 原因码错误("失败:转换器异常", `失败:转换器异常：${结果.detail}`)
     }
     // ④ 保留报告：T013 会把它原样写进 `case_material_report.gates`（Ruling X）。
     // 本任务不写库、不解析它的内容。
@@ -700,7 +777,19 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
 
     // 所有表一列都没认出来 ⇒ 大概率是标题行被当成了表头（I3）。「已解析」+ 0 行等于
     // 告诉民警「导入成功」，实际什么也没进来。必须在删旧行**之前**抛（要么全换要么不动）。
-    if (认出列数 === 0) throw new Error("一列都没认出来（表头可能是标题行）")
+    //
+    // 016 T011：`未识别:*` 由探测结论显式给出（不靠文案匹配）。走到这里说明没有适配器命中，
+    // 结论只可能带 `未识别:无匹配适配器` / `未识别:缺必需列:<列名>`；取**最先命中**的字面值。
+    if (认出列数 === 0) {
+      let 码: 原因码 = "未识别:无匹配适配器"
+      for (const 结论 of 结论们) {
+        if (结论.状态 === "未识别" && 是原因码(结论.原因码)) {
+          码 = 结论.原因码
+          break
+        }
+      }
+      throw new 原因码错误(码, "一列都没认出来（表头可能是标题行）")
+    }
   }
 
   // ── 选模板（§9.2）：显式指定优先，否则按表自动建议；资金表只走资金通路（§4 偏差 3）──
@@ -815,7 +904,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // ⚠️ 删除与写入**必须同一个事务**（复审 C1）：两条独立语句时，写到中途失败会留下
   // 「旧行已删、只有前 500 行」——材料标成「有问题」，数据却成了半份，比失败更糟。
   // 状态与作业收尾一并放进来：事实层与「这份材料处理完了」是同一件事，不该分两个时刻提交。
-  await inTransaction(db, async (tx) => {
+  //
+  // 016 T011：**只包事务这一段**（别把事务外的读 / 翻译失败误标成「入库异常」）。
+  try {
+    await inTransaction(db, async (tx) => {
     await deleteFactRowsOfMaterial(tx, job.projectId, job.materialId)
     // 重放清理必须早于写入，且顺序固定（Global Constraints 8）。表格路径以前不写事实，
     // 这两句对老材料是空操作；不写的话，第二次解析会在库里叠出第二份卡片。
@@ -883,7 +975,13 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         : [],
     )
     await 收尾(tx, job, "完成", null)
-  })
+    })
+  } catch (error) {
+    throw 转原因码错误(error, "失败:入库异常")
+  }
+  // 批处理每批写一次（不承诺逐行）。放在事务**提交之后**：事务内写进度一旦失败会带崩整笔事务，
+  // 而进度只是回显，不该有这种权力。
+  await 报进度("写入", { 已处理: 待写.length, 总数: 待写.length })
 }
 
 type 转换器 = Extract<适配器, { kind: "converter" }>
@@ -1018,8 +1116,15 @@ async function 跑文本(
 ): Promise<"完成" | "失败"> {
   if (!deps.建抽取器) throw new Error("这份部署没有配置抽取模型（缺少抽取器）")
 
-  const bytes = await deps.readFile(job.sourcePath)
-  const { text } = 抽取文本(bytes, material.path)
+  const 读文本 = async (): Promise<string> => {
+    try {
+      return 抽取文本(await deps.readFile(job.sourcePath), material.path).text
+    } catch (error) {
+      // 读盘 / 编码闸（严格 UTF-8、UTF-16 拒绝）都属于「这份文件读不进来」⇒ `失败:读文件`。
+      throw 转原因码错误(error, "失败:读文件")
+    }
+  }
+  const text = await 读文本()
   const 抽取器 = await deps.建抽取器(job)
 
   const 输出 = await 抽取材料(
@@ -1084,7 +1189,9 @@ async function 跑文本(
   // 这条判断保留的是「同一份输出只写一次」的语义，不是事务安全的兜底。
   const 已写事实 = new Set<string>()
 
-  await inTransaction(db, async (tx) => {
+  // 016 T011：只包写入事务这一段 ⇒ 任何写入失败都记 `失败:入库异常`（读盘已在上面单独赋码）。
+  try {
+    await inTransaction(db, async (tx) => {
     // 关系对迁移（#013-02 同型）：本材料上一次贡献的 human 转账对必须在删事实之前取出，
     // 否则重放换对手后，旧对没有卡片支持、却没人传进 `重建关系`，会留一笔聚合了已删事件的转账。
     // 取的是**对齐后**的账户对（`本材料转账对` 内部完成），否则删不到真正的机器行。
@@ -1255,7 +1362,10 @@ async function 跑文本(
       全部片失败 ? "失败" : "完成",
       全部片失败 ? `全部 ${输出.片们.length} 段都没抽干净：${问题片[0]?.问题[0] ?? ""}` : null,
     )
-  })
+    })
+  } catch (error) {
+    throw 转原因码错误(error, "失败:入库异常")
+  }
 
   return 全部片失败 ? "失败" : "完成"
 }
@@ -1472,10 +1582,47 @@ async function 归还认领(db: Queryable, job: ClaimedJob): Promise<void> {
   `)
 }
 
-async function 收尾(db: Queryable, job: ClaimedJob, status: "完成" | "失败", error: string | null) {
+/**
+ * 016 T011 · 进度写入（`progress` 形状见 data-model §3）。
+ *
+ * **失败吞掉只记 WARN**：进度不是账本，写不进去不该把作业打失败。但**不许空 catch**
+ * （`#006-28`）：吞掉的东西必须留一条能检索的痕迹。
+ *
+ * `dryRun` 的判断在调用方（`跑表格` 的 `报进度`）：这里的入参没有运行选项。
+ */
+async function 写进度(
+  db: Queryable,
+  job: ClaimedJob,
+  进度: { 阶段: "读表" | "探测" | "转换" | "写入" | "富化"; 已处理?: number; 总数?: number },
+): Promise<void> {
+  try {
+    await db.execute(sql`
+      update auth.case_ingest_job
+         set progress = ${JSON.stringify({ ...进度, 更新时间: nowSeconds() })}::jsonb
+       where project_id = ${job.projectId} and id = ${job.jobId}
+    `)
+  } catch (error) {
+    console.warn(
+      `[openhive-case-ingest] 写进度失败（不影响作业）：${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+/**
+ * 作业收尾：状态 / 错误自由文本 / 结构化原因码。
+ *
+ * `reasonCode` 缺省 `null`：成功路径与未带码的失败都写 NULL（**不编造**，契约「写入规则」）。
+ */
+async function 收尾(
+  db: Queryable,
+  job: ClaimedJob,
+  status: "完成" | "失败",
+  error: string | null,
+  reasonCode: string | null = null,
+) {
   await db.execute(sql`
     update auth.case_ingest_job
-       set status = ${status}, finished_at = ${nowSeconds()}, error = ${error}
+       set status = ${status}, finished_at = ${nowSeconds()}, error = ${error}, reason_code = ${reasonCode}
      where project_id = ${job.projectId} and id = ${job.jobId}
   `)
 }
