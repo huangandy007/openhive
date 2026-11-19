@@ -28,6 +28,8 @@ import { 探测, type 探测结论 } from "./case-adapter-probe"
 import { 跑转换器 } from "./case-converter-runner"
 import { 匹配数据源档案, type 档案命中 } from "./case-source-profile"
 import { 记档案命中, 读活跃档案 } from "./case-source-profile-store"
+import { 判准入 } from "./case-ingest-admission"
+import { 写报告, 最新报告 } from "./case-material-report"
 import { 读别名上下文, 记别名命中 } from "./case-field-alias"
 import type { 表头识别器 } from "./case-header-ai"
 import { toFactRows } from "./case-rows"
@@ -527,9 +529,10 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   // Task 2 的 R10–R13 裁定：`readSheets` 返回 `ReadResult`，截断不再静默。
   // 表被丢弃或行被截断时**整份材料不落库**、直接落「有问题」——
   // 宁可让用户拆表重导，也不要往库里灌半份话单（半份数据的统计是错的，且看起来像全的）。
-  const 读表 = async (): Promise<ReturnType<typeof readSheets>> => {
+  const 读表 = async (): Promise<{ 结果: ReturnType<typeof readSheets>; 字节: Uint8Array }> => {
     try {
-      const 结果 = readSheets(await deps.readFile(job.sourcePath))
+      const 字节 = await deps.readFile(job.sourcePath)
+      const 结果 = readSheets(字节)
       if (结果.skippedSheets.length > 0 || 结果.truncatedSheets.length > 0) {
         const 缘由 = [
           结果.skippedSheets.length > 0
@@ -543,13 +546,17 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
           .join("；")
         throw new Error(缘由)
       }
-      return 结果
+      return { 结果, 字节 }
     } catch (error) {
       // 读盘 / 面积闸 / 编码 / 超限拒绝都属于「这份文件读不进来」⇒ `失败:读文件`。
       throw 转原因码错误(error, "失败:读文件")
     }
   }
-  const { sheets } = await 读表()
+  const { 结果: 读取结果, 字节: 原件字节 } = await 读表()
+  const { sheets } = 读取结果
+  // 报告的 `source_sha256` 与材料指纹同一口径（`case-parse.ts:281` 的 `Hash.sha256(文件字节)`）：
+  // 一次作业只读一次盘，字节留着算指纹，别重读。
+  const 原件sha256 = Hash.sha256(Buffer.from(原件字节))
 
   // 别名库一个任务只读一次（设计 §4.2-4），指纹的版本号也用它。
   const 别名 = await 读别名上下文(db)
@@ -609,6 +616,11 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
   const 命中档案id = new Set<string>()
   /** 适配器通路下同时命中的数据源档案：只记录、不参与决策（FR-006，Ruling H）。 */
   const 档案也命中: { 工作表: string; id: string; name: string }[] = []
+  /**
+   * 转换器自报的报告（Ruling X：值闸的权威是转换器）。只有适配器通路有；
+   * 事务里原样写进 `case_material_report.gates`，这里不改写、不解析语义。
+   */
+  let 转换器报告: unknown = undefined
 
   if (适配 !== undefined) {
     // ① 先落作业快照列：转换器失败时这两列也必须已经落盘。
@@ -631,10 +643,9 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
       }
       throw new 原因码错误("失败:转换器异常", `失败:转换器异常：${结果.detail}`)
     }
-    // ④ 保留报告：T013 会把它原样写进 `case_material_report.gates`（Ruling X）。
-    // 本任务不写库、不解析它的内容。
-    const 转换报告 = 结果.report
-    void 转换报告
+    // ④ 保留报告：T013 把它原样写进 `case_material_report.gates`（Ruling X）。
+    // 本处不写库、不解析它的内容（语义归报告读侧，取数在成功事务里）。
+    转换器报告 = 结果.report
     // ⑤ 事实行搬运：T007 已做契约校验，这里只补内核侧的 projectId / materialId。
     for (const 行 of 结果.rows) 待写.push(转换行(行, job))
     // ⑥ 合成与 `识别材料` 同形状的结论。`工作表: []` 是刻意的：转换器给的是事实行不是列映射，
@@ -1030,6 +1041,50 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
           )
         : [],
     )
+    // ── 016 T013 · N8：入库报告与准入结论（一次作业一行，与事实同一事务，Ruling O）──
+    // 五要素取数不编造：值闸只有转换器自报一条权威（Ruling X），没有就写空并告警。
+    const 报告值闸们: unknown[] = []
+    const 报告警告们: unknown[] = []
+    if (适配 === undefined) {
+      报告警告们.push("无适配器（四层识别），未执行适配器闸")
+    } else if (是对象(转换器报告) && Array.isArray(转换器报告["gates"])) {
+      报告值闸们.push(...转换器报告["gates"])
+    } else {
+      报告警告们.push("转换器未报告值闸结果")
+    }
+    const 未认出列数 = 未认出们.reduce((合计, 项) => 合计 + (项?.列们.length ?? 0), 0)
+    if (未认出列数 > 0) 报告警告们.push(`未认出列 ${未认出列数} 个`)
+    // T012 审查 M4：待确认只算不落，报告是它唯一的持久化出口（FR-052「交人看」）。
+    for (const 告警 of 富化结果?.告警们 ?? []) 报告警告们.push(告警)
+    for (const 待确认 of 富化结果?.待确认们 ?? []) 报告警告们.push(待确认)
+    const 本轮适配器 = 适配 === undefined ? undefined : { id: 适配.id, version: 适配.version }
+    const 历史报告 = await 最新报告(tx, job.projectId, job.materialId)
+    const 准入 = 判准入({
+      ...(本轮适配器 === undefined ? {} : { 本轮适配器 }),
+      本轮原因码: null,
+      原件sha256,
+      ...(历史报告 === undefined
+        ? {}
+        : { 历史报告: { adapterId: 历史报告.adapterId, sourceSha256: 历史报告.sourceSha256 } }),
+    })
+    // 失败**不吞**（报告是入库的一部分）：冲突 / 写不进都会抛，由 T011 的包裹落
+    // `失败:入库异常` 并整笔回滚。
+    await 写报告(tx, {
+      projectId: job.projectId,
+      jobId: job.jobId,
+      materialId: job.materialId,
+      adapterId: 本轮适配器?.id ?? null,
+      adapterVersion: 本轮适配器?.version ?? null,
+      // Ruling AO：`case_source_profile` 没有 `rule_version` 列 ⇒ 四层/档案通路恒 null；
+      // 适配器通路记适配版本（FR-058）。不为它加迁移或编造值。
+      ruleVersion: 本轮适配器?.version ?? null,
+      sourceSha256: 原件sha256,
+      gates: 报告值闸们,
+      warnings: 报告警告们,
+      skippedRows: (翻译?.跳过们 ?? []).map((跳过) => ({ 行号: 跳过.rowNo, 原因: 跳过.原因 })),
+      enrich: 富化结果 === undefined ? null : 富化结果.统计,
+      admission: 准入,
+    })
     await 收尾(tx, job, "完成", null)
     })
   } catch (error) {
