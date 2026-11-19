@@ -588,8 +588,10 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
       (s) => s.includes("from auth.case_event e") && s.includes("from auth.case_event_participant"),
     )
     // ② 事件取数 + ④ 聚合：一条都不能漏（逐行实现时这里是 0 条带 materialized）。
+    // 钉**这一条** CTE 名：语句内嵌的 `资金对基` 自带 `as materialized`，只匹配裸子串
+    // 会让「事件对 改回普通 CTE」照样绿（`#006-22` 的假绿）。
     expect(取数语句.length).toBeGreaterThanOrEqual(2)
-    for (const s of 取数语句) expect(s).toContain("as materialized")
+    for (const s of 取数语句) expect(s).toContain("事件对 as materialized")
 
     // ① human 转账关系同族：过滤列是 `coalesce(对齐代表, id)`，同样会把对过滤下推到
     // 单列再逐行算第二列（事务内临时改 source_kind 实测 926ms；物化后 68ms）。
@@ -597,7 +599,7 @@ describe("重建关系 · 对过滤不许下推到付款方一侧", () => {
       (s) => s.includes("from auth.case_relation r") && s.includes("auth.case_entity_alias"),
     )
     expect(关系取数.length).toBeGreaterThanOrEqual(1)
-    for (const s of 关系取数) expect(s).toContain("as materialized")
+    for (const s of 关系取数) expect(s).toContain("人类转账关系 as materialized")
   })
 })
 
