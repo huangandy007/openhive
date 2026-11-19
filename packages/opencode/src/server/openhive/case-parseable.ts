@@ -14,6 +14,9 @@ export const 表格扩展名 = [".xlsx", ".xls", ".csv"] as const
 export const 文本扩展名 = [".txt", ".md", ".log", ".docx"] as const
 export const 可解析扩展名 = [...表格扩展名, ...文本扩展名] as const
 
+/** 项目里的材料目录（D2）。上传自动入队与重跑扫描问的是同一个问题，只留这一处。 */
+export const 材料目录名 = "材料"
+
 export type 解析方式 = "表格" | "文本"
 
 export function 解析方式(path: string): 解析方式 | undefined {

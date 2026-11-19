@@ -160,7 +160,7 @@ import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { enqueueMaterial } from "./case-ingest"
 import { 自动入队开 } from "./case-ingest-settings"
-import { 解析方式 } from "./case-parseable"
+import { 材料目录名, 解析方式 } from "./case-parseable"
 import { 迁移材料路径, type MaterialKind, type Queryable } from "./case-store"
 import { 模板字节 } from "./file-templates"
 import { OpenhivePg } from "./pg"
@@ -846,7 +846,7 @@ function 自动入队(
     ).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("文件已上传，但自动入队失败（可右键「解析入库」重试）", {
-          error: Cause.prettyErrors(cause).map((error) => error.name),
+          error: Cause.prettyErrors(cause).map((error) => `${error.name}: ${error.message}`),
         }),
       ),
     )
@@ -911,8 +911,16 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
     // 「解析入库」（`case-parse.ts` 的 `action === "入队"`）。响应**恒为**落盘相对路径——
     // 入队返回 undefined / 不排队 / 抛错都不改变它（见 `自动入队`）。
     const 项目相对 = relativePath(project, target)
-    if (项目相对.split("/")[0] === "材料" && 解析方式(项目相对) !== undefined) {
-      yield* 自动入队(pg, { root, project, target, bytes, fileName: basename(target) })
+    if (项目相对.split("/")[0] === 材料目录名 && 解析方式(项目相对) !== undefined) {
+      // 外层再兜一道：`pg.pg()` 同步抛会成为 Effect failure ⇒ 500，破坏「响应恒为落盘路径」。
+      // 这里只记 WARN，不改响应（内层 `自动入队` 已兜住入队本身的失败）。
+      yield* 自动入队(pg, { root, project, target, bytes, fileName: basename(target) }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("自动入队未执行（上传已成功）", {
+            error: Cause.prettyErrors(cause).map((error) => `${error.name}: ${error.message}`),
+          }),
+        ),
+      )
     }
     return Made(项目相对)
   })
