@@ -89,7 +89,7 @@ CHECK (
 
 ---
 
-## 4. `auth.case_material_report`（新，迁移 `0049`）
+## 4. `auth.case_material_report`（新，迁移 `0049`；`0050` 补两列）
 
 | 列 | 类型 | 约束 |
 |---|---|---|
@@ -100,6 +100,8 @@ CHECK (
 | `adapter_id` | `text` | 可空（规则型 / 四层链可为空） |
 | `adapter_version` | `text` | 可空 |
 | `rule_version` | `text` | 可空 |
+| `matches` | `jsonb` | NOT NULL DEFAULT '[]'（全部表头闸命中项 `{id,version,priority}`，按 `priority desc, id asc`，含落选者；迁移 `0050`） |
+| `converted_rows` | `integer` | NOT NULL DEFAULT 0（本次实际写入的事实行数；迁移 `0050`） |
 | `source_sha256` | `text` | NOT NULL |
 | `gates` | `jsonb` | NOT NULL（逐项：分母 / 命中 / 通过率 / 阈值） |
 | `warnings` | `jsonb` | NOT NULL DEFAULT '[]' |

@@ -80,8 +80,13 @@
 
 ```json
 { "report": { "adapterId": "…", "adapterVersion": "…", "ruleVersion": "…", "sourceSha256": "…",
-              "gates": [], "warnings": [], "skippedRows": [], "enrich": {}, "admission": {}, "createdAt": 1730000000 } }
+              "matches": [{ "id": "…", "version": "…", "priority": 10 }],
+              "gates": [], "warnings": [], "skippedRows": [], "enrich": {}, "admission": {},
+              "转换行数": 5000, "createdAt": 1730000000 } }
 ```
+
+- `matches`：**全部**表头闸命中项（含落选者），按 `priority desc, id asc`；采用者仍看 `adapterId` / `adapterVersion`。
+- `转换行数`：本次实际产生的事实行数（库内列名 `converted_rows`，出口层改名 `转换行数`）。
 
 再加 `&历史=1` 返回全部（按 `createdAt` 降序，FR-060：历史报告保留当时版本）。权限：项目成员。
 
@@ -128,9 +133,11 @@
 | 客户端文件 | 调用的出口 |
 |---|---|
 | `packages/app/src/project/case-materials-api.ts` | 1（加字段） |
-| `packages/app/src/project/source-profile-api.ts` | 既有三出口 |
+| `packages/app/src/project/case-ingest-api.ts` | 2 / 3 / 5（扫描、重跑、项目开关的客户端） |
 | `packages/app/src/project/case-rerun-dialog.tsx` | 2 / 3 |
-| `packages/app/src/project/case-ingest-settings.ts` | 5 |
-| `packages/app/src/governance/trusted-skill-api.ts` | 6 |
+| `packages/app/src/project/case-ingest-settings.tsx` | 5 |
+| `packages/app/src/project/source-profile-api.ts` / `source-profile-view.tsx` | 既有三出口 |
+| `packages/app/src/governance/trusted-skill-api.ts` / `trusted-skill-manage.tsx` | 6 |
 | `packages/app/src/project/case-skill-hint.tsx` | —（展示型；提醒状态存 `localStorage`，不新增出口、不扩 `preferences` 键集） |
+| `packages/app/src/project/case-materials-view.ts` | —（展示助手：探测进度 `已探测 k / N`、未识别待确认徽标） |
 | `packages/app/src/ai-assets/enable-api.ts` | 既有启停接口（不新增） |

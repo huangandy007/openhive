@@ -204,8 +204,8 @@ packages/app/src/{project,governance}/*.test.{ts,tsx}
 - **M8 与 C2 同批**：转换器改列名 + 内核裸属性列防线。
 
 1. **N1 注册表**：目录口径直接复用 `作业项目目录` + `SKILL_LINK_DIR` / `skillLinkPath`（`project-skill-link.ts`），技能集合来自 `usableSkillAssets`（`skill-availability.ts:80`，已含 `type='skill' AND status='published'` 与可见性），只在其落点上读 `adapter.json`——**不自己遍历 `.opencode/skill`、不自己判资产可见性**；缓存按目录签名（realpath + mtime + size）失效；不改 `skill/index.ts`。
-2. **N2 探测**：表头闸（`requiredHeaders` 全含，沿用 `匹配数据源档案` 的表头归一语义——抽成一份 `表头下标()` 给档案与适配器共用，`#002-06`）→ 值闸（样本行过 `admission.thresholds`，值检查复用既有取数 / 归一化工具——实现前先 grep 确认落点，不新写第二套）；多命中按 `priority` 降序、打平按 `id` 字典序；报告列全部命中项。
-3. **N3 执行器**：子进程、`cwd` = 技能目录、只读输入、写临时目录、超时、环境清理（不透传 `PG_*`）；只认 §6.2 JSON。
+2. **N2 探测**：**只跑表头闸**（`requiredHeaders` 全含，沿用 `匹配数据源档案` 的表头归一语义——抽成一份 `表头下标()` 给档案与适配器共用，`#002-06`）；值闸不在探测期跑，由作业链在转换器成功返回后读 `report.gates` 判定（Ruling X）；多命中按 `priority` 降序、打平按 `id` 字典序；报告列全部命中项。
+3. **N3 执行器**：子进程、`cwd` = 技能目录（输出 `output.file` 也落在技能目录；运行前已存在即拒，只删本次新建的输出）、只读输入、默认 60s 超时、环境清理（不透传 `PG_*`）；运行时命令前缀白名单 `bun run` / `node`（与发布闸同一口径）；只认 §6.2 JSON。
 4. **M2 作业链**：读表后先问注册表 ⇒ 命中 `kind: "rowRules"` 由内核按 `rowRules` 执行（不起子进程）；命中 `kind: "converter"` 调执行器读 JSON；两者都构造一份与 `识别材料` 返回**同形状**的 `材料识别`，下游（`翻译资金` / 写入 / 按材料清理）零改动；转换前调用与 N2 **同一个**值闸函数（不另写一份闸，`#002-06`）；失败落「有问题」+ 原因码，**不回退四层识别**。
 5. **N8 前移**：转换完成后写 `case_material_report`，准入闸读报告（适配器 id / 版本 / SHA-256）；原件直入走旁路标记并在界面显示。**自动入队对外打开前必须就绪**（开发期用开关关闭验证）。
 6. **N5 重跑**：`case-rerun-scan.ts` 用既有 `扫树`（`project-tree-scan.ts:69`，经 `project-tree.ts:161`）取目录集，算三类候选（目录有库没有 / 未入队 / 未识别），一个请求逐份调 `入队材料` 并返回汇总；已解析不自动重跑（`该走哪个动作` 兜底）。**「目录独有」必须按内容 sha256 对已有材料去重**——`createMaterial` 同内容重复上传会改写 `path`（`case-store.ts:96-111`），不去重会出现「旧路径永远是目录独有」的来回振荡；`扫树.truncated` 为真时如实报告，不得少报候选数（FR-040）。
