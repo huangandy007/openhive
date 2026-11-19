@@ -14,7 +14,10 @@ import { 跑转换器 } from "../../src/server/openhive/case-converter-runner"
  * 3. 超时：到点杀进程树，detail 带「超时」；
  * 4. 输出不合 `converter-output-contract.md`：`direction` 非收/付（第 2 条）、缺 `report`（第 4 条）；
  * 5. 环境：父进程里的 `PG_PASSWORD` **不进**子进程（变异点：去掉环境清理 ⇒ 本条红）；
- * 6. 命令前缀白名单：`python x.py` ⇒ 失败。
+ * 6. 命令前缀白名单：`python x.py` ⇒ 失败；
+ * 7. 契约反向：多出 JSON（第 7 条）、`rowNo` 非数字（第 1 条）、`amount` 非正（第 2 条）；
+ * 8. 内核退出兜底钩子运行中挂上、结算后注销（监听数回到原值）；
+ * 9. 同一技能目录并发执行互不踩输出文件（进程内按目录串行）。
  *
  * 注意：断言「文件不存在」一律用布尔比较（`#013-12`：`toBeNull()` 在本仓库出现过假绿）。
  */
@@ -48,6 +51,13 @@ async function 存在(路径: string): Promise<boolean> {
     () => true,
     () => false,
   )
+}
+
+function 第一行金额(结果: 转换器结果): unknown {
+  if (!结果.ok) throw new Error(`期望 ok:true，实得：${结果.detail}`)
+  const 第一行 = 结果.rows[0]
+  if (typeof 第一行 !== "object" || 第一行 === null) throw new Error("rows[0] 必须是对象")
+  return Reflect.get(第一行, "amount")
 }
 
 afterAll(async () => {
@@ -116,7 +126,7 @@ process.exit(3)
 
     expect(结果.ok).toBe(false)
     if (结果.ok) return
-    expect(结果.detail).toContain("3")
+    expect(结果.detail).toContain("退出码 3")
     const 报告 = 结果.报告
     expect(typeof 报告).toBe("object")
     if (typeof 报告 !== "object" || 报告 === null) throw new Error("报告必须是对象")
@@ -133,7 +143,7 @@ process.exit(3)
 
     expect(结果.ok).toBe(false)
     if (结果.ok) return
-    expect(结果.detail).toContain("7")
+    expect(结果.detail).toContain("退出码 7")
     expect(结果.报告 === undefined).toBe(true)
   })
 
@@ -216,5 +226,112 @@ await Bun.write(
     expect(结果.ok).toBe(false)
     if (结果.ok) return
     expect(结果.detail).toContain("白名单")
+  })
+
+  test("契约第 7 条：多出一个 JSON 文件 ⇒ 失败并指出文件名", async () => {
+    const 脚本 = `
+await Bun.write("out.json", JSON.stringify({ rows: [], report: {} }))
+await Bun.write("extra.json", JSON.stringify({}))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) return
+    expect(结果.detail).toContain("契约第 7 条")
+    expect(结果.detail).toContain("extra.json")
+  })
+
+  test("契约第 1 条：rowNo 不是数字 ⇒ 失败并指出 rowNo", async () => {
+    const 脚本 = `
+await Bun.write(
+  "out.json",
+  JSON.stringify({
+    rows: [{ sheet: "Sheet1", rowNo: "2", amount: "1.00", direction: "收" }],
+    report: {},
+  }),
+)
+`
+    const 目录 = await 造技能目录(脚本)
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) return
+    expect(结果.detail).toContain("契约第 1 条")
+    expect(结果.detail).toContain("rowNo")
+  })
+
+  test("契约第 2 条：amount 非正 ⇒ 失败并指出 amount", async () => {
+    const 脚本 = `
+await Bun.write(
+  "out.json",
+  JSON.stringify({
+    rows: [{ sheet: "Sheet1", rowNo: 2, amount: "-1", direction: "收" }],
+    report: {},
+  }),
+)
+`
+    const 目录 = await 造技能目录(脚本)
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) return
+    expect(结果.detail).toContain("契约第 2 条")
+    expect(结果.detail).toContain("amount")
+  })
+
+  test("内核退出兜底钩子：运行中挂上、结算后注销（监听数回到原值）", async () => {
+    const 脚本 = `
+await Bun.write("started.marker", "1")
+await new Promise((解析) => setTimeout(解析, 400))
+await Bun.write("out.json", JSON.stringify({ rows: [], report: {} }))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 标记 = join(目录, "started.marker")
+    const 跑前 = process.listenerCount("exit")
+
+    const 第一次 = 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+    // 子进程开始执行 ⇒ 兜底钩子必须已在父进程挂上（spawn 后同步注册）。
+    for (let 次 = 0; 次 < 200; 次++) {
+      if (await 存在(标记)) break
+      await new Promise((解析) => setTimeout(解析, 10))
+    }
+    expect(await 存在(标记)).toBe(true)
+    expect(process.listenerCount("exit")).toBe(跑前 + 1)
+
+    const 第一次结果 = await 第一次
+    expect(第一次结果.ok).toBe(true)
+    expect(process.listenerCount("exit")).toBe(跑前)
+
+    // 连续再跑一次：注销必须成对，监听数不随执行次数累积（变异点：删 `process.off` ⇒ 本条红）。
+    await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+    expect(process.listenerCount("exit")).toBe(跑前)
+  })
+
+  test("同一技能目录并发：输出文件互不踩（进程内按目录串行）", async () => {
+    const 脚本 = `
+const 内容 = await Bun.file(process.env.OPENHIVE_INPUT_PATH).text()
+await Bun.write(
+  "out.json",
+  JSON.stringify({
+    rows: [{ rowNo: 1, amount: 内容.trim(), direction: "收", startedAt: "2026-01-01 00:00:00" }],
+    report: {},
+  }),
+)
+await new Promise((解析) => setTimeout(解析, 400))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 原件甲 = join(目录, "a.csv")
+    const 原件乙 = join(目录, "b.csv")
+    await fs.writeFile(原件甲, "1.11", "utf8")
+    await fs.writeFile(原件乙, "2.22", "utf8")
+
+    const [结果甲, 结果乙] = await Promise.all([
+      跑转换器({ 适配器: 适配器(目录), 原件: 原件甲 }),
+      跑转换器({ 适配器: 适配器(目录), 原件: 原件乙 }),
+    ])
+
+    expect(第一行金额(结果甲)).toBe("1.11")
+    expect(第一行金额(结果乙)).toBe("2.22")
   })
 })

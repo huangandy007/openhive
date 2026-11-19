@@ -76,50 +76,81 @@ export async function 跑转换器(输入: 转换器输入): Promise<转换器�
   }
 
   const 目录 = 输入.适配器.目录
-  const 输出名 = basename(输入.适配器.output.file)
-  const 输出路径 = join(目录, 输入.适配器.output.file)
-  const 超时ms = 输入.超时ms ?? 默认超时ms
-  const 运行前JSON = await 列出后缀(目录, ".json")
-  const 运行前xlsx = await 列出后缀(目录, ".xlsx")
+  // 整个执行体（快照 → spawn → 读输出 → 清理）都必须在同一目录的锁内：输出路径固定且读后即删。
+  return 串行化(目录, async () => {
+    const 输出名 = basename(输入.适配器.output.file)
+    const 输出路径 = join(目录, 输入.适配器.output.file)
+    const 超时ms = 输入.超时ms ?? 默认超时ms
+    const 运行前JSON = await 列出后缀(目录, ".json")
+    const 运行前xlsx = await 列出后缀(目录, ".xlsx")
 
-  const 执行 = await 执行子进程({
-    命令: [前缀, ...命令.slice(1)],
-    参数: [输入.原件],
-    cwd: 目录,
-    env: 子进程环境(输入.原件),
-    超时ms,
-  })
+    const 执行 = await 执行子进程({
+      命令: [前缀, ...命令.slice(1)],
+      参数: [输入.原件],
+      cwd: 目录,
+      env: 子进程环境(输入.原件),
+      超时ms,
+    })
 
-  if (执行.超时 || 执行.启动错误 !== undefined || 执行.退出码 !== 0) {
-    const 报告 = await 尝试读报告(输出路径)
+    if (执行.超时 || 执行.启动错误 !== undefined || 执行.退出码 !== 0) {
+      const 报告 = await 尝试读报告(输出路径)
+      await 清理输出(输出路径)
+      const detail = 执行.超时
+        ? `超时 ${超时ms}ms`
+        : 执行.启动错误 !== undefined
+          ? `无法启动转换器：${消息(执行.启动错误)}`
+          : 执行.退出码 === null
+            ? `转换器被信号终止：${执行.信号 ?? "未知"}`
+            : `转换器退出码 ${执行.退出码}`
+      return 报告 === undefined ? { ok: false, detail } : { ok: false, detail, 报告 }
+    }
+
+    // 契约第 7 条：输出只能是 output.file 这一个 JSON；期间新冒出来的 .json 视为校验失败。
+    const 多出JSON = 新增文件(运行前JSON, await 列出后缀(目录, ".json"), 输出名)
+    // 契约第 6 条：产出 xlsx 视为多余输出，**不采用**（不据此失败，只记 WARN）。
+    const 多出xlsx = 新增文件(运行前xlsx, await 列出后缀(目录, ".xlsx"), 输出名)
+    for (const 名 of 多出xlsx) {
+      console.warn(`${告警标签} 告警（契约第 6 条）：产出 .xlsx 视为多余输出，不采用：${名}`)
+    }
+
+    const 读取 = await 读输出(输出路径)
     await 清理输出(输出路径)
-    const detail = 执行.超时
-      ? `超时 ${超时ms}ms`
-      : 执行.启动错误 !== undefined
-        ? `无法启动转换器：${消息(执行.启动错误)}`
-        : 执行.退出码 === null
-          ? `转换器被信号终止：${执行.信号 ?? "未知"}`
-          : `转换器退出码 ${执行.退出码}`
-    return 报告 === undefined ? { ok: false, detail } : { ok: false, detail, 报告 }
+
+    if (多出JSON.length > 0) {
+      return { ok: false, detail: `契约第 7 条：输出目录多出 JSON 文件：${多出JSON.join("、")}` }
+    }
+    if (!读取.ok) return { ok: false, detail: 读取.detail }
+
+    return 校验输出(读取.值)
+  })
+}
+
+/**
+ * 进程内按技能目录互斥。
+ *
+ * 输出路径恒为 `join(目录, output.file)`、执行器又读后即删 ⇒ 两个并发执行**同一适配器**
+ * 会读到 / 删掉对方刚写的文件（契约钉死 cwd + 相对输出，改不了）。跨进程并发不在本层
+ * 解决：两个内核进程同时跑同一技能目录仍会互踩。
+ */
+const 目录锁 = new Map<string, Promise<void>>()
+
+/** 同一技能目录串行执行；任务自身的结果 / 错误原样交回调用方。 */
+async function 串行化<T>(目录: string, 任务: () => Promise<T>): Promise<T> {
+  const 前驱 = 目录锁.get(目录) ?? Promise.resolve()
+  let 放行: () => void = () => {}
+  const 轮到我了 = new Promise<void>((解析) => {
+    放行 = 解析
+  })
+  // 链尾只表示「本次执行结束」，从不 reject ⇒ 一次失败不会污染后来者（错误走任务自己的返回路径）。
+  const 链尾 = 前驱.then(() => 轮到我了)
+  目录锁.set(目录, 链尾)
+  try {
+    await 前驱
+    return await 任务()
+  } finally {
+    放行()
+    if (目录锁.get(目录) === 链尾) 目录锁.delete(目录)
   }
-
-  // 契约第 7 条：输出只能是 output.file 这一个 JSON；期间新冒出来的 .json 视为校验失败。
-  const 多出JSON = 新增文件(运行前JSON, await 列出后缀(目录, ".json"), 输出名)
-  // 契约第 6 条：产出 xlsx 视为多余输出，**不采用**（不据此失败，只记 WARN）。
-  const 多出xlsx = 新增文件(运行前xlsx, await 列出后缀(目录, ".xlsx"), 输出名)
-  for (const 名 of 多出xlsx) {
-    console.warn(`${告警标签} 告警（契约第 6 条）：产出 .xlsx 视为多余输出，不采用：${名}`)
-  }
-
-  const 读取 = await 读输出(输出路径)
-  await 清理输出(输出路径)
-
-  if (多出JSON.length > 0) {
-    return { ok: false, detail: `契约第 7 条：输出目录多出 JSON 文件：${多出JSON.join("、")}` }
-  }
-  if (!读取.ok) return { ok: false, detail: 读取.detail }
-
-  return 校验输出(读取.值)
 }
 
 /**
@@ -137,10 +168,13 @@ export function 子进程环境(原件: string, 来源: NodeJS.ProcessEnv = proc
   return 环境
 }
 
-/** 防御性一层：任何以 `PG_` 开头的键都不交给子进程。 */
+/**
+ * 防御性一层：任何以 `PG_` 开头的键（大小写不敏感）都不交给子进程。
+ * 正向白名单（`允许的环境键`）为主；这是将来有人往环境里拼 `process.env` 时的防御层。
+ */
 function 剔除库凭据(环境: Record<string, string>): void {
   for (const 键 of Object.keys(环境)) {
-    if (键.startsWith("PG_")) delete 环境[键]
+    if (键.toUpperCase().startsWith("PG_")) delete 环境[键]
   }
 }
 
@@ -180,6 +214,9 @@ function 执行子进程(项: 执行参数): Promise<执行结果> {
     }
 
     const 收尾 = createTreeStopper(child.pid)
+    // 内核顶层无条件 `process.exit()`：作用域 finalizer 不保证跑完，这里同步兜底强杀整棵树（同 `spawnGovernanceMcp`）。
+    const 内核退出收尾 = () => 收尾.force()
+    process.once("exit", 内核退出收尾)
     const timer = setTimeout(() => {
       超时 = true
       收尾.force()
@@ -190,6 +227,8 @@ function 执行子进程(项: 执行参数): Promise<执行结果> {
       已结算 = true
       clearTimeout(timer)
       收尾.cancel()
+      // 必须与注册时是**同一个函数引用**，否则 off 无效、监听器随每次执行累积。
+      process.off("exit", 内核退出收尾)
       resolve({ 退出码, 信号, 超时, 启动错误 })
     }
 
@@ -217,13 +256,14 @@ async function 读输出(路径: string): Promise<读取输出> {
   try {
     原文 = await readFile(路径, "utf8")
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return { ok: false, detail: `契约第 7 条：未产出输出文件 ${basename(路径)}` }
+    // 缺文件不属于契约第 7 条（#7 是「输出目录里只能有一个 JSON 文件」），如实写原因。
+    if (codeOf(error) === "ENOENT") return { ok: false, detail: `未产出输出文件 ${basename(路径)}` }
     return { ok: false, detail: `读不到输出文件 ${basename(路径)}：${消息(error)}` }
   }
   try {
     return { ok: true, 值: JSON.parse(原文) }
   } catch (error) {
-    return { ok: false, detail: `输出不是合法 JSON：${消息(error)}` }
+    return { ok: false, detail: `输出文件不是合法 JSON：${消息(error)}` }
   }
 }
 
