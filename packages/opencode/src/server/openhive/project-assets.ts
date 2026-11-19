@@ -1060,6 +1060,12 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
     if (动作 === "enable") {
       // 【保留的定制 · 016】成员 / 属主由本出口判；「能不能装 + 写库 + 建链接 + 缓存 + 审计」
       // 只有 `完整启用()` 一份（上传链的自动启用也走它）。
+      //
+      // Ruling BV（R2c）：重复启用（`already_enabled`）只补链接 + 丢缓存，**不**再记
+      // `asset.enable`——上传链每次都把白名单重走一遍，若重记就会给每次成员上传伪造一条
+      // 「属主启用了该资产」（detail 只有 projectId、actor 却是属主）。这与下面停用侧
+      // 「幽灵 id 也留痕」的方向**刻意相反**：停用留痕是为了追「谁按了什么」，启用留痕
+      // 只在事实真的新增时才有意义。停用行为不动。
       const 结果 = yield* 完整启用(deps, userId, projectId, assetId)
       if (!结果.ok) return fail(结果.status, 结果.error, 结果.code, 结果.problems)
     } else {

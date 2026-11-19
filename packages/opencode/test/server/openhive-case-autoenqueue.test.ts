@@ -7,6 +7,7 @@ import { sql } from "drizzle-orm"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { Hash } from "@opencode-ai/core/util/hash"
+import { unlinkSkill } from "@opencode-ai/asset-service/project-skill-link"
 import { publishDirectory } from "@opencode-ai/asset-service/storage"
 import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { DEFAULT_PASSWORD_ENV } from "@opencode-ai/auth/policy"
@@ -493,8 +494,18 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
         // R2c / Ruling BV：再上传一次（同项目、同资产）。自动启用把白名单重走一遍，
         // 此刻两份资产都是 already_enabled ⇒ 只补链接，**不应**再记任何审计
         // （否则每次成员上传都会伪造一条「属主启用了该资产」）。
+        //
+        // R2d Minor 1：先删掉项目 B 的链接，再上传——第二次是 already_enabled，
+        // 链接仍必须被恢复（`already_enabled` 分支不能跳过 linkSkill，这是幂等修复）。
+        yield* Effect.promise(() => unlinkSkill(项目根B, 开资产))
+        expect(existsSync(链接)).toBe(false)
+
         const 再传 = yield* 上传("材料", "开关开-再传.xlsx", "内容", 项目B)
         expect(再传.status).toBe(200)
+
+        // 链接恢复：boolean 断言（`#013-12`），再确认是链接本体（win32 junction）。
+        expect(existsSync(链接)).toBe(true)
+        expect(lstatSync(链接).isSymbolicLink()).toBe(true)
 
         const 再传启用行 = rowsOf(
           yield* Effect.promise(() =>
@@ -541,14 +552,15 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
         const 响应 = yield* 上传("材料", "无属主.xlsx", "内容", 项目C)
         expect(响应.status).toBe(200)
 
-        // 就地阳性对照：证明这次上传真的走到了 tap（入队成功）——否则下面全是「没有」断言，
-        // tap 压根没被调用也会绿。
-        const 材料 = rowsOf(
+        // 就地阳性对照：证明入队成功 ⇒ tap 必跑——否则下面全是「没有」断言，
+        // tap 压根没被调用也会绿。判据用 `case_ingest_job`（入队事实），
+        // 不用材料行（材料创建在事务外，不证明 tap 路径）。
+        const 入队作业 = rowsOf(
           yield* Effect.promise(() =>
-            库().execute(sql`select count(*)::int as n from auth.case_material where project_id = ${项目C}`),
+            库().execute(sql`select count(*)::int as n from auth.case_ingest_job where project_id = ${项目C}`),
           ),
         )
-        expect(Number(材料[0]?.n ?? 0)).toBe(1)
+        expect(Number(入队作业[0]?.n ?? 0)).toBe(1)
 
         const 启用行 = rowsOf(
           yield* Effect.promise(() =>

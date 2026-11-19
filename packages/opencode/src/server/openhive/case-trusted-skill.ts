@@ -125,7 +125,7 @@ export interface 自动启用输入 {
   资产id们: readonly string[]
   /** 项目属主才能装（与人工启用同口径，`#004-09`）。 */
   操作人是属主: boolean
-  /** 注入完整启用（`project-assets.ts` 的 `完整启用`）：校验 + 启用行 + 链接 + 缓存 + 审计，一份实现。 */
+  /** 注入完整启用（`project-assets.ts` 的 `完整启用`）：校验 + 启用行 + 链接 + 缓存 + 审计（仅真新增时记 `asset.enable`）。 */
   启用: (assetId: string) => Promise<
     | { readonly ok: true; readonly 结果: "enabled" | "already_enabled" }
     | { readonly ok: false; readonly error: string }
