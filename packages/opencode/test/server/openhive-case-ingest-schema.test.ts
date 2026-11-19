@@ -110,6 +110,7 @@ describe("0045 作业原因码 / 进度 / 适配器快照 + 材料 probe", () =>
     expect(索引).toHaveLength(1)
     const 定义 = String(索引[0]?.indexdef)
     expect(定义).toContain("WHERE")
+    expect(定义).toContain("排队中")
     expect(定义).toContain("probe IS NULL")
   })
 
@@ -171,6 +172,48 @@ describe("0048 可信技能白名单", () => {
 })
 
 describe("0049 材料报告", () => {
+  test("两条复合外键：源列与目标表 / 目标列都钉住", async () => {
+    // 查目录而不是「插一条坏数据」：FK 缺失时插坏数据才会被拒；但「有 FK」的证明要落到
+    // 列序与目标列上（只查约束名挡不住「引错列」）。按 ord 把 conkey / confkey 对齐。
+    const 行们 = rowsOf(
+      await db().execute(sql`
+        select c.conname,
+               a.attname  as 源列,
+               tc.relname as 目标表,
+               ta.attname as 目标列
+          from pg_constraint c
+          join pg_class tc on tc.oid = c.confrelid
+          join unnest(c.conkey) with ordinality as k(attnum, ord) on true
+          join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+          join unnest(c.confkey) with ordinality as fk(attnum, ford) on fk.ford = k.ord
+          join pg_attribute ta on ta.attrelid = c.confrelid and ta.attnum = fk.attnum
+         where c.conrelid = 'auth.case_material_report'::regclass
+           and c.contype = 'f'
+         order by c.conname, k.ord
+      `),
+    )
+    const 外键: Record<string, string[]> = {}
+    for (const 行 of 行们) {
+      const 目标 = String(行.目标表)
+      ;(外键[目标] ??= []).push(`${String(行.源列)}->${String(行.目标列)}`)
+    }
+    expect(外键).toEqual({
+      case_ingest_job: ["project_id->project_id", "job_id->id"],
+      case_material: ["project_id->project_id", "material_id->id"],
+    })
+  })
+
+  test("索引 case_material_report_recent 存在且列序正确", async () => {
+    const 索引 = rowsOf(
+      await db().execute(sql`
+        select indexdef from pg_indexes
+         where schemaname = 'auth' and indexname = 'case_material_report_recent'
+      `),
+    )
+    expect(索引).toHaveLength(1)
+    expect(String(索引[0]?.indexdef)).toContain("project_id, material_id, created_at DESC")
+  })
+
   test("表存在、gates NOT NULL、(project_id, job_id) 唯一键真拒第二条", async () => {
     expect(await 表存在("case_material_report")).toHaveLength(1)
 
@@ -218,6 +261,9 @@ describe("down 脚本", () => {
   })
 
   test("rollback 0049 后表消失，再 migrate 能重新应用", async () => {
+    // 写死版本号是刻意的：`rollback()` 只认 head，而 0049 是当前最后一个迁移——
+    // 将来 0050 落地后这里会**转红**（head 变了），届时改成「先滚到 Newest 再逐级回滚」
+    // 或按 `migrationVersions()` 取 head，别把红当成 down 脚本坏了。
     await rollback(db(), "0049_case_material_report")
     expect(await 表存在("case_material_report")).toHaveLength(0)
 
