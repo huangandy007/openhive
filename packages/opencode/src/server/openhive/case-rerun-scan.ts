@@ -31,7 +31,7 @@ export * as OpenhiveCaseRerunScan from "./case-rerun-scan"
  */
 
 import { sql } from "drizzle-orm"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, join, sep } from "node:path"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 可解析材料, 材料目录名 } from "./case-parseable"
@@ -258,11 +258,15 @@ export async function 批量入队(
   const 失败: 批量入队结果["失败"] = []
 
   const 处理一份 = async (path: string, fingerprint: string) => {
+    // 上传链路（`file.ts` 的 `relativePath`）恒写 `/`；`扫树` 在 win32 上给 `\`。
+    // 不归一，库内同一项目会混两种分隔符（`case_material.path` / `source_path` 都是 `/` 口径）。
+    // 只换**平台分隔符**，不用 `replaceAll("\\", "/")`：POSIX 上 `\` 是正文字符（`file.ts:475-482`）。
+    const 归一 = path.split(sep).join("/")
     const 结果 = await enqueueMaterial(db, {
       projectId: 输入.projectId,
-      path,
-      // 作业靠它读盘：`/` 分隔（与 `file.ts:800` 同口径）；扫描路径在 win32 上可能是 `\`。
-      sourcePath: `${前缀}/${path.replace(/\\/g, "/")}`,
+      path: 归一,
+      // 作业靠它读盘：`/` 分隔（与 `file.ts:800` 同口径）。
+      sourcePath: `${前缀}/${归一}`,
       fileName: 末段(path),
       fingerprint,
       by: 输入.userId,

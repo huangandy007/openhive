@@ -420,6 +420,36 @@ describe("批量入队", () => {
     expect(作业.map((行) => String(行.source_path))).toEqual(["u1/prj1/材料/新文件.xlsx"])
   })
 
+  test("10. 目录独有带 win32 反斜杠 ⇒ 库内 path 归一为 /，source_path 同口径", async () => {
+    const 根 = await 临时根()
+    const 项目 = 新项目()
+    const 内容 = 字节("反斜杠路径的目录独有内容")
+    // `扫树` 在 win32 上把 `path.relative` 的原样（`材料\批1.xlsx`）交回来。
+    const 依赖 = 建依赖(
+      根,
+      {
+        "": [{ path: "材料", type: "directory", ignored: false }],
+        材料: [{ path: "材料\\批1.xlsx", type: "file", ignored: false }],
+      },
+      { [join(根, "材料\\批1.xlsx")]: 内容 },
+      { 沙箱前缀: "u10/prj10" },
+    )
+
+    const 结果 = await 批量入队(db(), { projectId: 项目, 范围: ["目录独有"], userId: "u-操作人", 依赖 })
+    expect(结果).toEqual({ 已入队: 1, 跳过: [], 失败: [] })
+
+    const 材料们 = rowsOf(
+      await db().execute(sql`select path from auth.case_material where project_id = ${项目}`),
+    )
+    // 上传链路（`file.ts` 的 `relativePath`）恒写 `/`；这里必须同一形状。
+    expect(材料们.map((行) => String(行.path))).toEqual(["材料/批1.xlsx"])
+
+    const 作业们 = rowsOf(
+      await db().execute(sql`select source_path from auth.case_ingest_job where project_id = ${项目}`),
+    )
+    expect(作业们.map((行) => String(行.source_path))).toEqual(["u10/prj10/材料/批1.xlsx"])
+  })
+
   test("6. 已解析的候选被跳过（扫描后被并发改状态，第二道防线拦下）", async () => {
     const 根 = await 临时根()
     const 项目 = 新项目()

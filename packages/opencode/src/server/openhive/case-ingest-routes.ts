@@ -15,10 +15,12 @@ export * as OpenhiveCaseIngestRoutes from "./case-ingest-routes"
  * `过门(…, { 已知身份 })` → 字段校验 → 写。这样既满足「401 不因坏体变成 400」，
  * 也保证权限判定在**任何副作用之前**（`#004-09`）。读口直接 `过门` 即可。
  *
- * ## 扫描目录是「当前请求者」的沙箱
+ * ## 扫描目录恒按**属主**拼（Ruling AR）
  *
- * 与 `archive.ts` 同口径：`projectDirectory(root, user.id, projectId)`。注意共享项目的成员与
- * 属主目录不同——这是 brief 明确的口径；若日后改为「落点属主」，改这一处即可。
+ * 共享项目的文件在属主沙箱里（`project-actor.ts` 的 `项目属主`；同 `case-parse.ts:193`、
+ * `hgraph-ops.ts:276-283`、`file.ts` 的 `sourcePath`）。按请求者拼，成员会落到一个不存在的
+ * 目录（`realPath` 是 orDie ⇒ 500），重跑的 `source_path` 也会指错、worker 读不到盘。
+ * scan / rerun 共用同一个 `建扫描依赖`，只在这里取一次属主（`#002-06`）。
  *
  * ## 服务在构造期取
  *
@@ -35,6 +37,7 @@ import { LocationServiceMap, type LocationServices } from "@opencode-ai/core/loc
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { User } from "@opencode-ai/core/user"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
+import { sep } from "node:path"
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
@@ -43,6 +46,7 @@ import { 最新报告, 报告历史 } from "./case-material-report"
 import { 批量入队, 扫候选, type 扫描范围, type 扫描依赖 } from "./case-rerun-scan"
 import { 过门, type Deps as 过门依赖 } from "./case-ui-routes"
 import { OpenhivePg } from "./pg"
+import { 项目属主 } from "./project-actor"
 import { 建项目读目录 } from "./project-tree"
 
 export const PREFIX = "/openhive/case/ingest"
@@ -101,7 +105,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * 出口统一正斜杠。库内材料路径是 `/`，而 `扫树` 在 win32 上给 `\`——不归一，同一份响应会
  * 混两种分隔符（契约示例与既有材料视图都是 `/`）。只改展示，不改正斜杠以外的任何字符。
  */
-const 正斜杠 = (path: string) => path.replace(/\\/g, "/")
+const 正斜杠 = (path: string) => path.split(sep).join("/")
 
 function 对外扫描(结果: Awaited<ReturnType<typeof 扫候选>>) {
   return {
@@ -152,7 +156,9 @@ function 读范围(value: unknown): 扫描范围[] | undefined {
  */
 const 建扫描依赖 = (deps: Deps, userId: string, projectId: string) =>
   Effect.gen(function* () {
-    const 根目录 = projectDirectory(deps.root, userId, projectId)
+    // Ruling AR：目录与 `sourcePath` 前缀都按**落点属主**（`过门` 已验过成员，退化分支回本人）。
+    const 属主 = yield* Effect.promise(() => 项目属主(deps.pg(), userId, projectId))
+    const 根目录 = projectDirectory(deps.root, 属主, projectId)
     const 层 = deps.locations.get(Location.Ref.make({ directory: AbsolutePath.make(根目录) }))
     const 读 = yield* 建项目读目录({ 层, raw: deps.raw })
     if (读 === undefined) return undefined
@@ -167,7 +173,7 @@ const 建扫描依赖 = (deps: Deps, userId: string, projectId: string) =>
           return undefined
         }
       },
-      沙箱前缀: `${userId}/${projectId}`,
+      沙箱前缀: `${属主}/${projectId}`,
     } satisfies 扫描依赖
   })
 
@@ -182,9 +188,12 @@ function handleScan(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     const 依赖 = yield* 建扫描依赖(deps, 门.user.id, projectId)
     if (依赖 === undefined) return fail(500, "读取文件树失败")
 
+    // `算候选` 在 `扫树` 取不到时 reject（`Effect.promise` 的 reject 是 defect，`Effect.catch`
+    // 接不住）⇒ 在 promise 内收成 `undefined`，回契约错误体而不是通用 500（`project-tree.ts:183` 同形）。
     const 结果 = yield* Effect.promise(() =>
-      扫候选(deps.pg(), { projectId, 范围: [...范围闭集], 依赖 }),
+      扫候选(deps.pg(), { projectId, 范围: [...范围闭集], 依赖 }).catch(() => undefined),
     )
+    if (结果 === undefined) return fail(500, "读取文件树失败")
     return ok(对外扫描(结果))
   })
 }
@@ -211,8 +220,9 @@ function handleRerun(request: HttpServerRequest.HttpServerRequest, deps: Deps) {
     if (依赖 === undefined) return fail(500, "读取文件树失败")
 
     const 结果 = yield* Effect.promise(() =>
-      批量入队(deps.pg(), { projectId, 范围, userId: 门.user.id, 依赖 }),
+      批量入队(deps.pg(), { projectId, 范围, userId: 门.user.id, 依赖 }).catch(() => undefined),
     )
+    if (结果 === undefined) return fail(500, "读取文件树失败")
     return ok(对外批量(结果))
   })
 }

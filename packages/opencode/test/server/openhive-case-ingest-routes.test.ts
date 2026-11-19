@@ -97,12 +97,10 @@ beforeAll(async () => {
     insert into auth.project_member (project_id, user_id, role, time_created)
     values (${别人的项目}, ${别人.id}, 'owner', 0)
   `)
-  // 扫描 / 重跑要读**当前请求者**的沙箱项目目录（brief：`projectDirectory(root, user.id, projectId)`），
-  // 目录不存在时 `建项目读目录` 是 defect ⇒ 两个会发请求的人都各建一份。
-  for (const subject of [属主, 成员]) {
-    for (const projectId of 我的项目们) {
-      mkdirSync(join(projectDirectory(沙箱根, subject.id, projectId), "材料"), { recursive: true })
-    }
+  // Ruling AR：项目目录**恒按属主**拼（共享成员读写属主目录）。只建属主那份——
+  // 成员视角的用例因此能证明「不是按请求者拼目录」（请求者目录不存在也照样 200）。
+  for (const projectId of 我的项目们) {
+    mkdirSync(join(projectDirectory(沙箱根, 属主.id, projectId), "材料"), { recursive: true })
   }
   // 扫描用例的「目录独有」真文件（只有属主沙箱里有）：内容与库内任何 fingerprint 都不同。
   writeFileSync(join(项目目录(扫描项目), "材料", "目录独有.xlsx"), "T016 目录独有的字节")
@@ -201,6 +199,10 @@ const 发JSON = (subject: TokenSubject | null, url: string, body: unknown) =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
+
+/** 坏 JSON 体：写口必须在解析体之前认出「没身份」（`#004-09` 顺序的唯一用例）。 */
+const 发坏体 = (subject: TokenSubject | null, url: string) =>
+  发(subject, url, { method: "POST", headers: { "content-type": "application/json" }, body: "{" })
 
 /** 设置行数（SQL 文本故意与 DAO 不同：列别名 `行数`）。 */
 const 设置行数 = (projectId: string) =>
@@ -332,6 +334,19 @@ describe("016 T016 · 入库设置（项目属主）", () => {
     }))
 })
 
+describe("016 T016 · 写口顺序（401 在体之前）", () => {
+  it("8. 无 Cookie ＋ 坏 JSON 体 / 空体 ⇒ 401，不是 400", () =>
+    Effect.gen(function* () {
+      for (const url of ["/openhive/case/ingest/settings", "/openhive/case/ingest/rerun"]) {
+        const 坏体 = yield* 发坏体(null, url)
+        expect(坏体.status).toBe(401)
+
+        const 空体 = yield* 发(null, url, { method: "POST", headers: { "content-type": "application/json" } })
+        expect(空体.status).toBe(401)
+      }
+    }))
+})
+
 describe("016 T016 · 可信技能白名单（平台管理员）", () => {
   const 资产 = "asset-ingest-trust"
   const 非技能资产 = "asset-ingest-mcp"
@@ -400,6 +415,18 @@ describe("016 T016 · 重跑（一个请求完成批量）", () => {
         ]),
       )
       expect(yield* 排队作业数(重跑项目)).toBe(3)
+
+      // Ruling AR：成员重跑的落点是**属主**沙箱（不是请求者 id），worker 才读得到盘。
+      const 落点 = yield* Effect.promise(async () =>
+        rowsOf(
+          await pg!.db.execute(sql`
+            select source_path from auth.case_ingest_job where project_id = ${重跑项目}
+          `),
+        ),
+      )
+      expect(落点.length).toBe(3)
+      for (const 行 of 落点)
+        expect(String(行.source_path).startsWith(`${属主.id}/${重跑项目}/`)).toBe(true)
     }))
 
   it("5. 范围非数组 / 含闭集外的值 ⇒ 400，且不产生副作用", () =>
@@ -422,7 +449,7 @@ describe("016 T016 · 重跑（一个请求完成批量）", () => {
 describe("016 T016 · 扫描", () => {
   it("6. GET /scan 返回契约字段：合计 / 候选三类 / 样本 / 截断", () =>
     Effect.gen(function* () {
-      // 以属主身份扫：目录在属主沙箱里（brief 明确 scan 用「当前请求者」的沙箱）。
+      // Ruling AR：目录恒按属主拼。属主视角是基准。
       const 响应 = yield* 发(属主, `/openhive/case/ingest/scan?projectId=${encodeURIComponent(扫描项目)}`)
       expect(响应.status).toBe(200)
       const 体 = yield* 读回<{
@@ -438,6 +465,12 @@ describe("016 T016 · 扫描", () => {
       expect(体.合计).toBe(2)
       expect(体.样本).toEqual(["材料/目录独有.xlsx", "材料/排队.xlsx"])
       expect(体.截断).toBe(false)
+
+      // Ruling AR：共享项目的普通成员扫的是**属主**目录——请求者自己的项目目录根本不存在，
+      // 按请求者拼会 500（`realPath` 是 orDie）。合计必须与属主视角一致。
+      const 成员响应 = yield* 发(成员, `/openhive/case/ingest/scan?projectId=${encodeURIComponent(扫描项目)}`)
+      expect(成员响应.status).toBe(200)
+      expect(yield* 读回<{ 合计: number }>(成员响应)).toMatchObject({ 合计: 体.合计 })
 
       // 非成员 / 未登录走同一道门。
       expect((yield* 发(别人, `/openhive/case/ingest/scan?projectId=${encodeURIComponent(扫描项目)}`)).status).toBe(403)
@@ -481,6 +514,14 @@ describe("016 T016 · 报告", () => {
       // 「还没跑完」是正常态：200 + report:null，不是 404。
       expect(空.status).toBe(200)
       expect((yield* 读回<{ report: unknown }>(空)).report === null).toBe(true)
+
+      // 空历史是 `[]`（不是 null / 404）：前端 `历史=1` 恒拿数组。
+      const 空历史 = yield* 发(
+        成员,
+        `/openhive/case/ingest/report?projectId=${encodeURIComponent(报告项目)}&materialId=m-没有报告&历史=1`,
+      )
+      expect(空历史.status).toBe(200)
+      expect(yield* 读回<{ reports: unknown[] }>(空历史)).toEqual({ reports: [] })
 
       // materialId 缺失 ⇒ 400；非成员 ⇒ 403。
       expect((yield* 发(成员, `/openhive/case/ingest/report?projectId=${encodeURIComponent(报告项目)}`)).status).toBe(400)
