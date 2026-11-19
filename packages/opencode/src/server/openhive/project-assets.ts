@@ -225,6 +225,14 @@ interface Deps {
   readonly skill: Option.Option<Skill.Interface>
 }
 
+/**
+ * 一次「完整启用」需要的依赖（2026-11-19，016 review R2）。
+ *
+ * 比 `Deps` 窄：`完整启用` 不读每用户 SQLite、也不碰内核技能服务，只有它要的三样。
+ * 上传链（`file.ts`）拿得到 `pg` / `root`，拿不到 `InstanceStore`，按这个形状才接得上。
+ */
+export type 启用依赖 = Pick<Deps, "pg" | "root" | "store">
+
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const openhivePg = yield* OpenhivePg.Service
@@ -283,12 +291,12 @@ function 读体(request: HttpServerRequest.HttpServerRequest) {
   )
 }
 
-function 项目目录(deps: Deps, userId: string, projectId: string): string {
+function 项目目录(deps: 启用依赖, userId: string, projectId: string): string {
   return projectDirectory(deps.root, userId, projectId)
 }
 
 /** 丢掉该项目的实例缓存：让下一次请求重扫 skill 目录（见文件头「丢缓存」）。 */
-function 丢缓存(deps: Deps, directory: string) {
+function 丢缓存(deps: 启用依赖, directory: string) {
   return disposeInstanceDirectory(deps.store, directory, "实例层缺席，跳过缓存丢弃；启用在重启前不生效")
 }
 
@@ -603,7 +611,7 @@ function 找被覆盖(
 }
 
 /** 读者部门（`AssetViewer` 要它判部门/个人空间）。 */
-function 取部门(deps: Deps, userId: string) {
+function 取部门(deps: 启用依赖, userId: string) {
   return Effect.promise(async (): Promise<string> => {
     const rows = rowsOf(await deps.pg().execute(sql`select dept from auth.user where id = ${userId}`))
     const 部门 = rows[0]?.["dept"]
@@ -914,7 +922,7 @@ function 内核失败(status: number, error: string, code?: string, problems?: r
  * 上限与写库 / 建链接也留在出口。末尾追加 M10 识别卡校验（016）：坏包不进项目，
  * `problems` 原样交给出口逐条列出。
  */
-export function 启用内核(deps: Deps, userId: string, projectId: string, assetId: string) {
+export function 启用内核(deps: 启用依赖, userId: string, projectId: string, assetId: string) {
   return Effect.gen(function* () {
     const asset = yield* Effect.promise(() => assetById(deps.pg(), assetId))
     if (asset === undefined) return 内核失败(404, "资产不存在", "not_found")
@@ -970,6 +978,57 @@ export function 启用内核(deps: Deps, userId: string, projectId: string, asse
   })
 }
 
+export type 完整启用结果 =
+  | { readonly ok: true; readonly 结果: "enabled" | "already_enabled"; readonly target: string }
+  | { readonly ok: false; readonly status: number; readonly error: string; readonly code?: string; readonly problems?: readonly string[] }
+
+/**
+ * 「启用」的**唯一一份实现**（2026-11-19，016 review R2，`#002-06`）。
+ *
+ * 人工启用（`handleToggle`）与上传链的自动启用（`file.ts` 的 `自动启用尽力`）都走这里，
+ * 顺序与 `handleToggle` 原先的 enable 分支**逐句一致**：
+ * 校验（`启用内核`）⇒ 写启用行（20 上限在库层）⇒ 建链接 ⇒ 丢缓存 ⇒ 审计。
+ *
+ * 权限（成员 / 属主）**不在这里**：那是出口的事（`#004-09` 权限先于一切副作用），
+ * 调用方自己判完再把属主身份交进来。
+ */
+export function 完整启用(
+  deps: 启用依赖,
+  userId: string,
+  projectId: string,
+  assetId: string,
+): Effect.Effect<完整启用结果> {
+  return Effect.gen(function* () {
+    const 内核 = yield* 启用内核(deps, userId, projectId, assetId)
+    if (!内核.ok) return 内核
+
+    // 上限是 `ENABLEMENT_LIMIT` 常量，由库层自己带（`enablement.ts`），这里不传
+    const 结果 = yield* Effect.promise(() => enableAsset(deps.pg(), { projectId, assetId, userId }))
+    if (结果 === "limit_reached")
+      return {
+        ok: false as const,
+        status: 409,
+        error: `每个项目最多启用 ${ENABLEMENT_LIMIT} 个 skill，请先停用一个`,
+        code: "enablement_limit",
+      }
+
+    const 目录 = 项目目录(deps, userId, projectId)
+    yield* Effect.promise(() => linkSkill(目录, assetId, 内核.target)).pipe(
+      Effect.catchCause((cause) => Effect.logError("链接失败，等待下一次对账修复", { projectId, assetId, cause })),
+    )
+    yield* 丢缓存(deps, 目录)
+    yield* 记治理(deps, userId, {
+      board: BOARD,
+      action: "asset.enable",
+      targetType: "asset",
+      targetId: assetId,
+      result: "ok",
+      detail: { projectId },
+    })
+    return { ok: true as const, 结果, target: 内核.target }
+  })
+}
+
 function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 动作: "enable" | "disable") {
   return Effect.gen(function* () {
     const user = yield* 身份
@@ -990,29 +1049,10 @@ function handleToggle(request: HttpServerRequest.HttpServerRequest, deps: Deps, 
       return fail(403, "只有项目属主能启用或停用技能", "forbidden")
 
     if (动作 === "enable") {
-      // 【保留的定制 · 016】启用前置抽成 `启用内核()`：成员 / 属主由本出口判，
-      // 「这份资产能不能装进项目」与识别卡校验只有那一份（`ingest-gate.ts`）。
-      const 内核 = yield* 启用内核(deps, userId, projectId, assetId)
-      if (!内核.ok) return fail(内核.status, 内核.error, 内核.code, 内核.problems)
-
-      // 上限是 `ENABLEMENT_LIMIT` 常量，由库层自己带（`enablement.ts`），这里不传
-      const 结果 = yield* Effect.promise(() => enableAsset(deps.pg(), { projectId, assetId, userId }))
-      if (结果 === "limit_reached")
-        return fail(409, `每个项目最多启用 ${ENABLEMENT_LIMIT} 个 skill，请先停用一个`, "enablement_limit")
-
-      const 目录 = 项目目录(deps, userId, projectId)
-      yield* Effect.promise(() => linkSkill(目录, assetId, 内核.target)).pipe(
-        Effect.catchCause((cause) => Effect.logError("链接失败，等待下一次对账修复", { projectId, assetId, cause })),
-      )
-      yield* 丢缓存(deps, 目录)
-      yield* 记治理(deps, userId, {
-        board: BOARD,
-        action: "asset.enable",
-        targetType: "asset",
-        targetId: assetId,
-        result: "ok",
-        detail: { projectId },
-      })
+      // 【保留的定制 · 016】成员 / 属主由本出口判；「能不能装 + 写库 + 建链接 + 缓存 + 审计」
+      // 只有 `完整启用()` 一份（上传链的自动启用也走它）。
+      const 结果 = yield* 完整启用(deps, userId, projectId, assetId)
+      if (!结果.ok) return fail(结果.status, 结果.error, 结果.code, 结果.problems)
     } else {
       // 停用对「库里没有这条」的 assetId 也回 200 + 审计，这是刻意的幂等：用户连点两次、
       // 或两台机器同时点，不该第二次报错。幽灵 id 也留一条审计，便于追「谁按了什么」。
