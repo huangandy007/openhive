@@ -159,6 +159,7 @@ import {
 import ignore from "ignore"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { enqueueMaterial } from "./case-ingest"
+import { 自动入队开 } from "./case-ingest-settings"
 import { 解析方式 } from "./case-parseable"
 import { 迁移材料路径, type MaterialKind, type Queryable } from "./case-store"
 import { 模板字节 } from "./file-templates"
@@ -404,7 +405,7 @@ export const routes = HttpRouter.use((router) =>
 
     yield* router.add("POST", PATH.copy, (request) => handleTransfer(request, root, pg, "copy"))
     yield* router.add("POST", PATH.move, (request) => handleTransfer(request, root, pg, "move"))
-    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root))
+    yield* router.add("POST", PATH.upload, (request) => handleUpload(request, root, pg))
     yield* router.add("GET", PATH.download, (request) => handleDownload(request, root))
     // 2026-10-12：读**前**问一句大小（前端闸门，表格 5 MB / 其余 10 MB）。
     yield* router.add("GET", PATH.stat, (request) => handleStat(request, root))
@@ -810,6 +811,49 @@ export async function 入队材料(
 }
 
 /**
+ * 上传落盘后的**尽力**自动入队（016 T004）。
+ *
+ * 三个条件**同时**成立才动手：项目相对路径首段是 `材料`、扩展名在可解析白名单里（`解析方式`）、
+ * 项目开关开着。是否真的排作业不在这里判——交给 `入队材料` 内部的 `该走哪个动作`（R14：
+ * 「已解析 ＋ 同内容」不新增作业，「有问题」重来）。
+ *
+ * ⚠️ 失败只记 WARN，**不**改上传响应：文件已经落盘，回 500 会让用户以为没传成（同
+ * `同步材料路径` 的口径，`#006-28`：不许空 `catch`）。取不到身份就跳过——`gate` 理论上
+ * 已经挡过，这里不报错。
+ */
+function 自动入队(
+  pg: OpenhivePg.Interface,
+  input: { root: string; project: string; target: string; bytes: Uint8Array; fileName: string },
+) {
+  return Effect.gen(function* () {
+    const 标识 = 项目标识(input.root, input.project)
+    if (标识 === undefined) return
+    const 开 = yield* Effect.promise(() => 自动入队开(pg.pg(), 标识.projectId))
+    if (!开) return
+
+    const user = yield* Effect.serviceOption(User.Service)
+    if (Option.isNone(user)) return
+
+    yield* Effect.promise(() =>
+      入队材料(pg.pg(), {
+        root: input.root,
+        project: input.project,
+        target: input.target,
+        bytes: input.bytes,
+        fileName: input.fileName,
+        by: user.value.id,
+      }),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("文件已上传，但自动入队失败（可右键「解析入库」重试）", {
+          error: Cause.prettyErrors(cause).map((error) => error.name),
+        }),
+      ),
+    )
+  })
+}
+
+/**
  * 上传：`multipart/form-data`，一个 `file` 字段，`?dir=` 指出落在哪个目录（相对项目根）。
  *
  * **一次一个文件**（范围裁定）：拖进来的是一批时由前端逐个发——按文件分开的成败，
@@ -823,7 +867,7 @@ export async function 入队材料(
  * ⚠️ 中间件不会碰这个体：它只在 `content-type` 会被当 JSON 解时读体，而 multipart 不是
  * （`project-location.ts` 的 `isJsonRequest`）——两件事各归各的，别把「中间件不管」读成「没中间件」。
  */
-function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string) {
+function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string, pg: OpenhivePg.Interface) {
   return Effect.gen(function* () {
     const project = yield* gate(request, root)
     if (typeof project !== "string") return project
@@ -862,9 +906,15 @@ function handleUpload(request: HttpServerRequest.HttpServerRequest, root: string
       yield* Effect.die(failed)
     }
 
-    // 上传只落盘（feature 011 / FR-001）：不再建材料行、不排作业。
-    // 入库的唯一入口是右键「解析入库」（`case-parse.ts` 的 `action === "入队"`）。
-    return Made(relativePath(project, target))
+    // 落盘之后的**尽力**自动入队（016 T004）：项目 `材料/` 目录 ＋ 可解析扩展名 ＋ 项目开关开着
+    // ⇒ 顺手登记材料并排队。其余情形与 feature 011 起的行为一致：只落盘，入库仍可走右键
+    // 「解析入库」（`case-parse.ts` 的 `action === "入队"`）。响应**恒为**落盘相对路径——
+    // 入队返回 undefined / 不排队 / 抛错都不改变它（见 `自动入队`）。
+    const 项目相对 = relativePath(project, target)
+    if (项目相对.split("/")[0] === "材料" && 解析方式(项目相对) !== undefined) {
+      yield* 自动入队(pg, { root, project, target, bytes, fileName: basename(target) })
+    }
+    return Made(项目相对)
   })
 }
 
