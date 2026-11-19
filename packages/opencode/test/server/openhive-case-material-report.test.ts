@@ -320,6 +320,41 @@ await Bun.write("result.json", JSON.stringify({
     expect(停用后历史.find((行) => 行.id === 新报告.id)).toEqual(新报告)
   })
 
+  test("待确认（未登记身份类键）落进报告 warnings（FR-052 唯一出口）", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("待确认")
+    // 未登记键 `星座`：`键分类` 兜底为身份类；适配依赖没有 `外部服务` ⇒ 核验查不到 ⇒ 待确认。
+    await writeFile(
+      join(技能目录, "convert.ts"),
+      `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收",
+      ownerAccount: "6222000000000001", counterparty: "6222000000000002", counterpartyName: "张三",
+      currency: "CNY", extras: { "属性:对方:星座": "天秤" } }
+  ],
+  report: {
+    adapterId: "adapter-流水转换",
+    gates: [{ 检查项: "时间可解析", 分母: 1, 命中: 1, 通过率: 1, 阈值: 0.99 }]
+  }
+}))
+`,
+    )
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-待确认`))
+
+    const { 作业, 结果 } = await 跑下一条(适配依赖([卡(技能目录)]))
+    expect(结果).toBe("完成")
+
+    const 报告 = await 最新报告(db(), projectId, 作业.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    // 待确认不进事实表、不落别处：报告是它的唯一持久化出口。
+    expect(报告.warnings).toContainEqual({
+      键: "星座",
+      值: "天秤",
+      出处: `${作业.materialId}#Sheet1#2`,
+      原因: "查不到",
+    })
+  })
+
   test("四层通路 ⇒ 报告标记旁路（原件直入），adapterId 为空", async () => {
     const projectId = "p-报告-四层"
     const 文件名 = "话单.xlsx"
@@ -359,6 +394,17 @@ describe("判准入（纯函数）", () => {
         历史报告: { adapterId: "a1", sourceSha256: "abc" },
       }),
     ).toEqual({ 结论: "准入", 依据: ["适配器 a1@2", "SHA-256 与原件一致"] })
+  })
+
+  test("历史 SHA 与本轮不同 ⇒ 仍准入（Ruling AP：历史 SHA 不参与结论）", () => {
+    expect(
+      判准入({
+        本轮适配器: { id: "x", version: "3" },
+        本轮原因码: null,
+        原件sha256: "B",
+        历史报告: { adapterId: "x", sourceSha256: "A" },
+      }),
+    ).toEqual({ 结论: "准入", 依据: ["适配器 x@3", "SHA-256 与原件一致"] })
   })
 
   test("无适配器 ⇒ 旁路；历史由适配器产出 ⇒ 追加停用提示", () => {
