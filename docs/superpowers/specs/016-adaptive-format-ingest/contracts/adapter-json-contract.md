@@ -42,7 +42,7 @@
 | `match.priority` | ✅ | 整数；多命中取最高；打平按 `id` 字典序（FR-009） |
 | `admission.checks` | ✅ | 值闸检查项名称清单 |
 | `admission.thresholds` | ✅ | 每个检查项的通过率阈值；`其余` 为兜底键 |
-| `rowRules` | `kind=rowRules` 时 ✅ | 内核执行的声明式行规则；`kind=converter` 时仅作说明 |
+| `rowRules` | `kind=rowRules` 时 ✅ | 内核执行的声明式行规则；`kind=converter` 时仅作说明（**本期落地状态 2026-11-19**：内核未实现规则解释器，执行期按「未识别」处理，Ruling F/I。） |
 | `entry.command` | `kind=converter` 时 ✅ | 白名单前缀（`bun run` / `node`）；`cwd` = 技能目录 |
 | `entry.input` | ✅ | 指**原件**（不是人工预处理副本） |
 | `entry.output` | ✅ | `"json"` |

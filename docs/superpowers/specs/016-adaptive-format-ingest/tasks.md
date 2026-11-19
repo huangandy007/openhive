@@ -62,7 +62,7 @@
 
 - [ ] T007 [P] [US2] N3 转换器执行器：`packages/opencode/src/server/openhive/case-converter-runner.ts`（新），照 `governance-mcp-supervisor.ts:219` 的子进程形状：`cwd`=技能目录、原件只读（argv[2] 与 `OPENHIVE_INPUT_PATH` 两通道）、输出固定 `output.file`（已存在且无运行标记 ⇒ 拒绝覆盖；带运行标记的异常残留 ⇒ 清掉重跑）、默认超时 60s、环境白名单（**不透传 `PG_*`**）。**入参**：`{适配器, 原件, 超时ms?}` → **出参**：`{ok:true, rows, report} | {ok:false, detail, 报告?}`。**判据**：`openhive-case-converter-runner.test.ts`（新）：非零退出、超时、输出不合 `converter-output-contract.md`、环境里查不到 `PG_PASSWORD`，四类各一例。**变异**：去掉环境清理 ⇒ 「无 PG 凭据」红。
 
-- [ ] T008 [US2] M2 作业链接入：`packages/opencode/src/server/openhive/case-ingest.ts` 的 `跑表格`——档案之后、缓存之前问注册表；`converter` 调 T007（`rowRules` 本期不执行，Ruling F/I：探测只收 converter，命中记 WARN 按「未识别」处理）；两者构造与 `识别材料` **同形状**的 `材料识别`，下游零改动；写 `adapter_id`/`adapter_version`；失败落「有问题」，**不回退四层**。**入参**：sheets + 注册表 + 档案结果 → **出参**：既有写入路径的事实行 + 作业快照列。**判据**：`openhive-case-ingest.test.ts`（已有，扩）：适配器命中跳过四层（用模型不可用的夹具也可绿）；适配器失败后 `parse_detail` 不出现四层结论；两列已写。**变异**：删「不回退」分支 ⇒ 失败用例红。
+- [ ] T008 [US2] M2 作业链接入：`packages/opencode/src/server/openhive/case-ingest.ts` 的 `跑表格`——档案之后、缓存之前问注册表；`converter` 调 T007（`rowRules` 本期不执行，Ruling F/I：探测只收 converter，命中记 WARN 按「未识别」处理）；命中转换器者构造与 `识别材料` **同形状**的 `材料识别`，下游零改动；写 `adapter_id`/`adapter_version`；失败落「有问题」，**不回退四层**。**入参**：sheets + 注册表 + 档案结果 → **出参**：既有写入路径的事实行 + 作业快照列。**判据**：`openhive-case-ingest.test.ts`（已有，扩）：适配器命中跳过四层（用模型不可用的夹具也可绿）；适配器失败后 `parse_detail` 不出现四层结论；两列已写。**变异**：删「不回退」分支 ⇒ 失败用例红。
 
 **Checkpoint**: US2 独立可验（探测 + 转换 + 入库）。
 
