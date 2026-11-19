@@ -1,7 +1,7 @@
 export * as OpenhiveCaseMapping from "./case-mapping"
 
 import { Hash } from "@opencode-ai/core/util/hash"
-import { 是属性列 } from "./case-attribute-registry"
+import { 属性键们, 是属性列 } from "./case-attribute-registry"
 import {
   候选字段集,
   规范化,
@@ -139,7 +139,22 @@ function 需修饰裁决(field: 识别字段): boolean {
   return field === "counterparty" || field === "counterpartyName" || field === "ownerAccount"
 }
 
+/**
+ * 疑似属性副本：`<对手/本方修饰> + 受控属性键`，但没有 `属性:` 前缀（FR-032 / 05 §4.4）。
+ *
+ * 这不是「卡号不能是账号」，而是：带受控属性键（`属性键们`）的**裸**表头是属性列的疑似写法，
+ * 错误认领会把属性值当账号造出错误实体，属性本身也无处可挂。规范写法 `属性:对方:银行卡号`
+ * 已由 `是属性列` 在四层召回之前排除；这里挡的是没有前缀的副本，让它落未知列交人确认。
+ *
+ * `h` 在两个调用点都已 `规范化`（小写、去空白）；`属性键们` 是中文键，不受大小写影响。
+ */
+function 是裸属性副本(h: string): boolean {
+  return (对手修饰.test(h) || 本方修饰.test(h)) && 属性键们.some((键) => h.includes(键))
+}
+
 function 修饰语放行(field: 识别字段, h: string): boolean {
+  // FR-032：裸属性副本不许被修饰语放行——否则「交易对方银行卡号」会走合成候选认成账号。
+  if (是裸属性副本(h)) return false
   if (对手修饰.test(h)) {
     const 允许: readonly 识别字段[] = 户名词尾.test(h)
       ? ["counterpartyName"]
@@ -161,6 +176,8 @@ function 修饰语放行(field: 识别字段, h: string): boolean {
  * 合成；不做无修饰的通用词尾猜测，否则「账号」「卡号」这类通用词会到处乱认。
  */
 function 合成词长(field: 识别字段, h: string): number | undefined {
+  // FR-032：与 `修饰语放行` 同一条判据（`#002-06`）——这里的合成也不许认领裸属性副本。
+  if (是裸属性副本(h)) return undefined
   if (field === "counterparty" || field === "counterpartyName") {
     if (!对手修饰.test(h)) return undefined
     return (field === "counterparty" ? 账号词尾 : 户名词尾).exec(h)?.[0].length
