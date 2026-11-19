@@ -246,13 +246,26 @@ describe("0049 材料报告", () => {
   })
 })
 
+describe("0050 报告 matches / converted_rows", () => {
+  test("两列存在、NOT NULL，默认值为 [] / 0", async () => {
+    const 列们 = await 列("case_material_report")
+    const matches = 列们.find((row) => row.column_name === "matches")
+    expect(matches?.is_nullable).toBe("NO")
+    expect(String(matches?.column_default)).toContain("[]")
+    const convertedRows = 列们.find((row) => row.column_name === "converted_rows")
+    expect(convertedRows?.is_nullable).toBe("NO")
+    expect(String(convertedRows?.column_default)).toBe("0")
+  })
+})
+
 describe("down 脚本", () => {
-  test("0045–0048 的 .down.sql 存在且含 DROP", async () => {
+  test("0045–0050 的 .down.sql 存在且含 DROP", async () => {
     for (const version of [
       "0045_case_ingest_probe_reason_progress",
       "0046_case_source_profile_priority",
       "0047_project_case_ingest_settings",
       "0048_trusted_skill",
+      "0050_case_material_report_matches",
     ]) {
       const file = Bun.file(join(MIGRATIONS_DIR, `${version}.down.sql`))
       expect(await file.exists()).toBe(true)
@@ -260,14 +273,17 @@ describe("down 脚本", () => {
     }
   })
 
-  test("rollback 0049 后表消失，再 migrate 能重新应用", async () => {
-    // 写死版本号是刻意的：`rollback()` 只认 head，而 0049 是当前最后一个迁移——
-    // 将来 0050 落地后这里会**转红**（head 变了），届时改成「先滚到 Newest 再逐级回滚」
-    // 或按 `migrationVersions()` 取 head，别把红当成 down 脚本坏了。
+  test("rollback 0050 + 0049 后表消失，再 migrate 能重新应用", async () => {
+    // `rollback()` 只认 head ⇒ 先滚掉 0050，再滚 0049（后者才删表）。
+    await rollback(db(), "0050_case_material_report_matches")
     await rollback(db(), "0049_case_material_report")
     expect(await 表存在("case_material_report")).toHaveLength(0)
 
     await migrate(db())
     expect(await 表存在("case_material_report")).toHaveLength(1)
+    // 重新应用后 0050 的两列也在。
+    const 列们 = (await 列("case_material_report")).map((row) => String(row.column_name))
+    expect(列们).toContain("matches")
+    expect(列们).toContain("converted_rows")
   })
 })

@@ -82,6 +82,8 @@ describe("016 T006 · 探测（表头闸）", () => {
       状态: "已识别",
       适配器id: "converter-a",
       版本: "1.0.0",
+      // 乙多要「对方户名」⇒ 只有甲过表头闸。
+      命中们: [{ id: "converter-a", version: "1.0.0", priority: 100 }],
     })
   })
 
@@ -125,6 +127,10 @@ describe("016 T006 · 探测（表头闸）", () => {
         状态: "已识别",
         适配器id: "a-tie",
         版本: "1.0.0",
+        命中们: [
+          { id: "a-tie", version: "1.0.0", priority: 150 },
+          { id: "b-tie", version: "1.0.0", priority: 150 },
+        ],
       })
     }
   })
@@ -162,12 +168,60 @@ describe("016 T006 · 探测（表头闸）", () => {
       状态: "已识别",
       适配器id: "z-high",
       版本: "1.0.0",
+      命中们: [
+        { id: "z-high", version: "1.0.0", priority: 200 },
+        { id: "a-low", version: "1.0.0", priority: 100 },
+      ],
     })
     expect(探测({ 表头: ["交易时间"] }, [高, 低])).toEqual({
       状态: "已识别",
       适配器id: "z-high",
       版本: "1.0.0",
+      命中们: [
+        { id: "z-high", version: "1.0.0", priority: 200 },
+        { id: "a-low", version: "1.0.0", priority: 100 },
+      ],
     })
+  })
+
+  test("A2：converter 零命中、rowRules 命中 ⇒ 告警含规则型 id 与 projectId；converter 命中不告警", () => {
+    const 原告警 = console.warn
+    const 记录: string[] = []
+    console.warn = (...参数: unknown[]) => {
+      记录.push(参数.map((项) => String(项)).join(" "))
+    }
+    try {
+      const 行 = 行规则("row-rules-a", ["交易时间"])
+      expect(探测({ 表头: ["交易时间"], projectId: "p-warn" }, [行])).toEqual({
+        状态: "未识别",
+        原因码: "未识别:无匹配适配器",
+      })
+      const 规则告警 = 记录.filter((项) => 项.includes("规则型适配器未在本期实现"))
+      expect(规则告警.length).toBe(1)
+      expect(规则告警[0]).toContain("row-rules-a")
+      expect(规则告警[0]).toContain("p-warn")
+
+      // converter 命中 ⇒ 不再出现规则型告警。
+      记录.length = 0
+      const 转 = 转换器({ id: "converter-a", requiredHeaders: ["交易时间"] })
+      expect(探测({ 表头: ["交易时间"], projectId: "p-warn" }, [转, 行]).状态).toBe("已识别")
+      expect(记录.filter((项) => 项.includes("规则型适配器未在本期实现")).length).toBe(0)
+    } finally {
+      console.warn = 原告警
+    }
+  })
+
+  test("A3：命中们 = 全部表头闸通过者（含落选者），按 priority desc, id asc", () => {
+    const 甲 = 转换器({ id: "z-low", requiredHeaders: ["交易时间"], priority: 100 })
+    const 乙 = 转换器({ id: "a-high", requiredHeaders: ["交易时间"], priority: 200 })
+    const 结论 = 探测({ 表头: ["交易时间"] }, [甲, 乙])
+
+    expect(结论.状态).toBe("已识别")
+    expect(结论.适配器id).toBe("a-high")
+    expect(结论.命中们).toEqual([
+      { id: "a-high", version: "1.0.0", priority: 200 },
+      { id: "z-low", version: "1.0.0", priority: 100 },
+    ])
   })
 })
 
@@ -264,6 +318,8 @@ describe("016 T006 · 独立探测通道", () => {
     expect(probe["适配器id"]).toBe("converter-a")
     expect(probe["版本"]).toBe("1.0.0")
     expect(typeof probe["完成秒"]).toBe("number")
+    // A3：`命中们` 只进报告，**不进** `case_material.probe`（键集保持文档字段）。
+    expect(Object.keys(probe).sort()).toEqual(["完成秒", "版本", "状态", "适配器id"].sort())
     // 探测不推进解析状态（否则会造「排队中 → 有问题」的非法转移）。
     expect(row?.parse_status).toBe("排队中")
 
@@ -351,6 +407,8 @@ describe("016 T006 · 独立探测通道", () => {
   test("探测失败后进入冷却：同一条不会每 500ms 被重认领（I1）", async () => {
     await 造材料({ id: "probe-fail", status: "排队中", createdAt: -1 })
     await 造作业({ id: "job-probe-fail", materialId: "probe-fail", sourcePath: "u-probe/p-probe/材料/a.xlsx" })
+    // 下一条**同项目**材料：证明冷却只按材料（而非按项目）生效。
+    await 造材料({ id: "probe-after", status: "排队中", createdAt: 1 })
 
     const 一份 = await 认领待探测(库())
     expect(一份?.materialId).toBe("probe-fail")
@@ -377,8 +435,55 @@ describe("016 T006 · 独立探测通道", () => {
     expect(row?.probe === null).toBe(true)
     expect(row?.parse_status).toBe("排队中")
 
-    // 冷却期内不许立刻重认领同一条（可以认领下一条，但绝不是 probe-fail）。
+    // 冷却期内不许立刻重认领同一条；同项目的下一条必须能认领到（把「冷却键只按 projectId」
+    // 做变异靶子：那样这里拿到 undefined ⇒ 红）。
     const 再认领 = await 认领待探测(库())
-    expect(再认领?.materialId).not.toBe("probe-fail")
+    expect(再认领?.materialId).toBe("probe-after")
+  })
+
+  test("A9：viewer 用落点属主（source_path 第一段），不是 queued_by", async () => {
+    await 库().execute(sql`
+      insert into auth.user
+        (id, police_no, name, id_card, phone, org, dept, section, status, is_admin, password_hash, created_at)
+      values (${"属主乙"}, 'p-owner-a9', '属主乙', 'x', 'x', '基座单位', '经侦支队', '基座科室', 1, 0, 'h', 0)
+    `)
+    await 造材料({ id: "probe-a9", status: "排队中", createdAt: -100 })
+    await 造作业({
+      id: "job-a9",
+      materialId: "probe-a9",
+      sourcePath: "属主乙/p-probe/材料/a.xlsx",
+      queuedBy: "成员甲",
+    })
+
+    const 一份 = await 认领待探测(库())
+    expect(一份?.materialId).toBe("probe-a9")
+
+    const 收到读者: { userId: string; department: string }[] = []
+    await 探测材料(
+      库(),
+      {
+        root: "/sandbox",
+        readFile: async () => 命中表,
+        // 模拟 `usableSkillAssets` 的可见性：只有属主本人看得到这份部门定向适配器。
+        读注册表: async (_目录, viewer) => {
+          收到读者.push({ userId: viewer.userId, department: viewer.department })
+          return viewer.userId === "属主乙"
+            ? [转换器({ id: "converter-a", requiredHeaders: ["交易时间", "交易金额"] })]
+            : []
+        },
+      },
+      一份!,
+    )
+
+    expect(收到读者[0]?.userId).toBe("属主乙")
+    expect(收到读者[0]?.department).toBe("经侦支队")
+
+    const row = rowsOf(
+      await 库().execute(sql`
+        select probe from auth.case_material
+         where project_id = ${项目} and id = 'probe-a9'
+      `),
+    )[0]
+    expect(读probe(row?.probe)["状态"]).toBe("已识别")
   })
 })

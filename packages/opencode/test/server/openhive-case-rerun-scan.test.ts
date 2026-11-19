@@ -268,6 +268,8 @@ describe("扫候选", () => {
     const 结果 = await 扫候选(db(), { projectId: 项目, 范围: ["目录独有"], 依赖 })
 
     expect(结果.截断).toBe(true)
+    // AR12：触顶时必须说清「扫了多少」，否则用户分不清「只有 1 份」和「只看到 1 份」。
+    expect(结果.已扫).toBeGreaterThanOrEqual(50_000)
     expect(结果.合计).toBe(1)
     expect(结果.候选.目录独有).toEqual([{ path: "材料/真材料.xlsx" }])
   })

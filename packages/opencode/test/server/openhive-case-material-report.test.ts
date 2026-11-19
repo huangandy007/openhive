@@ -58,6 +58,28 @@ function 是对象(值: unknown): 值 is Record<string, unknown> {
   return typeof 值 === "object" && 值 !== null
 }
 
+/**
+ * 错误文本：drizzle 会把驱动错误包成 `DrizzleQueryError`（message 只有 SQL 与参数），
+ * SQLSTATE / 约束名在 `cause` 链上。逐层收集 code / errno / message。
+ */
+function 错误文本(error: unknown): string {
+  const 部分: string[] = []
+  let 当前: unknown = error
+  for (let 层 = 0; 层 < 5 && 当前 !== undefined && 当前 !== null; 层++) {
+    if (当前 instanceof Error) {
+      const 带码 = 当前 as Error & { code?: unknown; errno?: unknown; constraint?: unknown }
+      部分.push(String(带码.code ?? 带码.errno ?? ""))
+      部分.push(String(带码.constraint ?? ""))
+      部分.push(当前.message)
+      当前 = (当前 as Error & { cause?: unknown }).cause
+      continue
+    }
+    部分.push(String(当前))
+    break
+  }
+  return 部分.join(" | ")
+}
+
 function 造工作簿(sheets: Record<string, (string | number | null)[][]>): Uint8Array {
   const wb = XLSX.utils.book_new()
   for (const [name, rows] of Object.entries(sheets)) {
@@ -222,9 +244,12 @@ await Bun.write("result.json", JSON.stringify({
     expect(报告.materialId).toBe(作业.materialId)
     expect(报告.adapterId).toBe("adapter-流水转换")
     expect(报告.adapterVersion).toBe("1.2.3")
-    // Ruling AO：适配器通路 ruleVersion = 适配.version；档案表没有 rule_version 列。
+    // 适配器通路 ruleVersion = 适配.version（FR-058：适配器与档案各自有版本）。
     expect(报告.ruleVersion).toBe("1.2.3")
     expect(报告.sourceSha256).toBe(Hash.sha256(Buffer.from(工作簿)))
+    // A3/A4：报告列全部表头闸命中项（本夹具只有一张卡）与本次转换行数。
+    expect(报告.matches).toEqual([{ id: "adapter-流水转换", version: "1.2.3", priority: 100 }])
+    expect(报告.convertedRows).toBe(2)
 
     // Ruling X：gates 原样取转换器自报，不编造分母/通过率。
     expect(报告.gates).toEqual([{ 检查项: "时间可解析", 分母: 2, 命中: 2, 通过率: 1, 阈值: 0.99 }])
@@ -275,10 +300,13 @@ await Bun.write("result.json", JSON.stringify({
     if (新报告 === undefined) throw new Error("重跑没有新增报告")
     expect(新报告.jobId).toBe(第二次.作业.jobId)
     expect(新报告.sourceSha256).toBe(Hash.sha256(Buffer.from(工作簿)))
+    // A4：每行各自保留自己的 matches / convertedRows（追加行不改历史）。
+    expect(新报告.matches).toEqual([{ id: "adapter-流水转换", version: "1.2.3", priority: 100 }])
+    expect(新报告.convertedRows).toBe(2)
 
-    // 同一作业写第二份报告 = 编程错误，必须抛错（UNIQUE(project_id, job_id)）；
-    // 不许 `on conflict do update` 静默覆盖历史（本文件的变异用例就拆这一条）。
-    let 重复写入抛错 = false
+    // 同一作业写第二份报告 = 编程错误，必须抛**唯一冲突**（UNIQUE(project_id, job_id)）；
+    // 不许 `on conflict do update` 静默覆盖历史，也不许裸 catch 把任何错误都当成功（A2-1）。
+    let 重复错误: unknown = undefined
     try {
       await 写报告(db(), {
         projectId,
@@ -291,18 +319,22 @@ await Bun.write("result.json", JSON.stringify({
         gates: [],
         warnings: [],
         skippedRows: [],
+        matches: [],
+        convertedRows: 0,
         enrich: null,
         admission: null,
       })
-    } catch {
-      重复写入抛错 = true
+    } catch (error) {
+      重复错误 = error
     }
+    // 断言是**唯一冲突**（SQLSTATE 23505 / 约束名 / duplicate key），不是随便一个错误。
+    expect(重复错误 === undefined).toBe(false)
+    expect(错误文本(重复错误)).toMatch(/23505|case_material_report_project_id_job_id_key|duplicate key|unique/i)
     // 变异靶子：`on conflict … do update` 会把历史那一行覆盖成「重复」——
     // 追加语义下它必须一个字都不变（这轮写入本来就该失败）。
     const 重复后历史 = await 报告历史(db(), projectId, 第二次.作业.materialId)
     expect(重复后历史.length).toBe(2)
     expect(重复后历史.find((行) => 行.id === 首次报告.id)).toEqual(首次报告)
-    expect(重复写入抛错).toBe(true)
 
     // ── 停用适配器（空注册表）后再跑：四层认不出这批表头 ⇒ 未识别:无匹配适配器 ──
     expect((await 入队(projectId, 文件名, Hash.sha256(`${projectId}-追加`), true)).enqueued).toBe(true)
@@ -370,6 +402,9 @@ await Bun.write("result.json", JSON.stringify({
     expect(报告.adapterVersion).toBeNull()
     expect(报告.ruleVersion).toBeNull()
     expect(报告.gates).toEqual([])
+    // A3/A7：四层通路没有适配器命中（matches 空），转换行数按实际事实行记（话单夹具 2 行）。
+    expect(报告.matches).toEqual([])
+    expect(报告.convertedRows).toBe(2)
     expect(报告.warnings).toContain("无适配器（四层识别），未执行适配器闸")
     expect(报告.sourceSha256).toBe(Hash.sha256(Buffer.from(话单)))
 

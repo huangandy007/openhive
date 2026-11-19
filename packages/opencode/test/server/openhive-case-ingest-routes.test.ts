@@ -147,7 +147,14 @@ beforeAll(async () => {
     queuedAt: 200,
   })
   await 种种报告({ projectId: 报告项目, id: "rep-旧", jobId: "j-旧", materialId: "m-报告", createdAt: 100 })
-  await 种种报告({ projectId: 报告项目, id: "rep-新", jobId: "j-新", materialId: "m-报告", createdAt: 200 })
+  await 种种报告({
+    projectId: 报告项目,
+    id: "rep-新",
+    jobId: "j-新",
+    materialId: "m-报告",
+    createdAt: 200,
+    convertedRows: 12,
+  })
 
   await 种种材料({ projectId: 未识别项目, id: "m-识-坏", path: "材料/坏.xlsx", fingerprint: "fp-识坏", status: "有问题" })
   await 种种作业({
@@ -279,14 +286,16 @@ async function 种种报告(输入: {
   jobId: string
   materialId: string
   createdAt: number
+  convertedRows?: number
 }) {
   if (!pg) throw new Error("真库没起来")
   await pg.db.execute(sql`
     insert into auth.case_material_report
       (project_id, id, job_id, material_id, adapter_id, adapter_version, rule_version, source_sha256,
-       gates, warnings, skipped_rows, enrich, admission, created_at)
+       gates, warnings, skipped_rows, converted_rows, enrich, admission, created_at)
     values (${输入.projectId}, ${输入.id}, ${输入.jobId}, ${输入.materialId}, 'adapter-流水', '1.2.3', '1.2.3',
-            'sha-原件', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, ${'{"补全数":2}'}::text::jsonb,
+            'sha-原件', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, ${输入.convertedRows ?? 0},
+            ${'{"补全数":2}'}::text::jsonb,
             ${'{"结论":"准入"}'}::text::jsonb, ${输入.createdAt})
   `)
 }
@@ -444,10 +453,20 @@ describe("016 T016 · 重跑（一个请求完成批量）", () => {
       expect(yield* 读回<{ code: string }>(闭集外)).toMatchObject({ code: "bad_request" })
       expect(yield* 排队作业数(重跑项目)).toBe(前)
     }))
+
+  it("5b. 范围为空数组 ⇒ 400 bad_request，不是「0 份成功」", () =>
+    Effect.gen(function* () {
+      // AR12：空范围语义上是「什么都不扫」，回 200 已入队 0 会让调用方以为扫过一遍。
+      const 前 = yield* 排队作业数(重跑项目)
+      const 响应 = yield* 发JSON(成员, "/openhive/case/ingest/rerun", { projectId: 重跑项目, 范围: [] })
+      expect(响应.status).toBe(400)
+      expect(yield* 读回<{ code: string }>(响应)).toMatchObject({ code: "bad_request" })
+      expect(yield* 排队作业数(重跑项目)).toBe(前)
+    }))
 })
 
 describe("016 T016 · 扫描", () => {
-  it("6. GET /scan 返回契约字段：合计 / 候选三类 / 样本 / 截断", () =>
+  it("6. GET /scan 返回契约字段：合计 / 候选三类 / 样本 / 截断 / 已扫", () =>
     Effect.gen(function* () {
       // Ruling AR：目录恒按属主拼。属主视角是基准。
       const 响应 = yield* 发(属主, `/openhive/case/ingest/scan?projectId=${encodeURIComponent(扫描项目)}`)
@@ -457,13 +476,18 @@ describe("016 T016 · 扫描", () => {
         候选: { 目录独有: { path: string }[]; 未入队: { materialId: string; path: string }[]; 未识别: unknown[] }
         样本: string[]
         截断: boolean
+        已扫: number
       }>(响应)
       // 目录里那份真文件的 sha 不在库里 ⇒ 目录独有；库内一行未入队。
       expect(体.候选.目录独有).toEqual([{ path: "材料/目录独有.xlsx" }])
       expect(体.候选.未入队).toEqual([{ materialId: "m-扫描未入队", path: "材料/排队.xlsx" }])
       expect(体.候选.未识别).toEqual([])
       expect(体.合计).toBe(2)
-      expect(体.样本).toEqual(["材料/目录独有.xlsx", "材料/排队.xlsx"])
+      // AR12：没有触顶也要给出「扫了多少」。`扫树` 只在目录为空时补目录自己，
+      // 故这里只有那份真文件一条（=`paths.length`）。
+      expect(体.已扫).toBe(1)
+      // A2-9：契约未规定 `样本` 顺序，按集合比（顺序断言是假红源）。
+      expect([...体.样本].sort()).toEqual(["材料/目录独有.xlsx", "材料/排队.xlsx"].sort())
       expect(体.截断).toBe(false)
 
       // Ruling AR：共享项目的普通成员扫的是**属主**目录——请求者自己的项目目录根本不存在，
@@ -495,11 +519,13 @@ describe("016 T016 · 报告", () => {
         gates: [],
         warnings: [],
         skippedRows: [],
+        matches: [],
+        转换行数: 12,
         enrich: { 补全数: 2 },
         admission: { 结论: "准入" },
         createdAt: 200,
       })
-      for (const 键 of ["adapterId", "adapterVersion", "ruleVersion", "sourceSha256", "gates", "warnings", "skippedRows", "enrich", "admission", "createdAt"])
+      for (const 键 of ["adapterId", "adapterVersion", "ruleVersion", "sourceSha256", "gates", "warnings", "skippedRows", "matches", "转换行数", "enrich", "admission", "createdAt"])
         expect(键 in 体.report, `缺字段 ${键}`).toBe(true)
 
       const 历史 = yield* 发(成员, `${地址}&历史=1`)

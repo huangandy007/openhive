@@ -27,6 +27,7 @@ import { 表格材料们 } from "../../script/openhive-case-stage0"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 建实体 } from "./openhive-case-fact-fixture"
 import { 建参考库, type 参考库 } from "../../src/server/openhive/case-reference-store"
+import { 最新报告 } from "../../src/server/openhive/case-material-report"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -2006,12 +2007,18 @@ describe("数据源档案接入", () => {
     ],
   })
 
-  async function 种档案(projectId: string, header: string[], mapping: Record<string, string>) {
+  async function 种档案(
+    projectId: string,
+    header: string[],
+    mapping: Record<string, string>,
+    ruleVersion: string | null = null,
+  ) {
     await db().execute(sql`
       insert into auth.case_source_profile
-        (id, project_id, name, type, header_set, mapping, hit_count, created_at, updated_at)
+        (id, project_id, name, type, header_set, mapping, rule_version, hit_count, created_at, updated_at)
       values (${`sp-${projectId}`}, ${projectId}, '测试档案', '资金',
-              ${JSON.stringify(header)}::text::jsonb, ${JSON.stringify(mapping)}::text::jsonb, 0, 0, 0)
+              ${JSON.stringify(header)}::text::jsonb, ${JSON.stringify(mapping)}::text::jsonb,
+              ${ruleVersion}, 0, 0, 0)
     `)
   }
 
@@ -2025,6 +2032,31 @@ describe("数据源档案接入", () => {
     )
     return 行们[0]
   }
+
+  test("A8：命中档案 ⇒ 报告 ruleVersion 取档案的 rule_version；未命中 ⇒ null", async () => {
+    await 种档案(
+      "p-档案规则版",
+      原表头,
+      { 交易时间: "startedAt", 交易金额: "amount", 对方户名: "counterpartyName" },
+      "r7",
+    )
+    文件.set("p-档案规则版/乱序.xlsx", 乱序)
+    const 命中入队 = await 入队("p-档案规则版", "乱序.xlsx", Hash.sha256("p-档案规则版-乱序"))
+    await 跑下一条()
+
+    const 命中报告 = await 最新报告(db(), "p-档案规则版", 命中入队.materialId)
+    if (命中报告 === undefined) throw new Error("档案命中却没有报告")
+    expect(命中报告.adapterId).toBeNull()
+    expect(命中报告.ruleVersion).toBe("r7")
+
+    // 对照：同一份表、没有档案的项目 ⇒ 四层普通识别，ruleVersion 为 null。
+    文件.set("p-档案规则版对照/乱序.xlsx", 乱序)
+    const 对照入队 = await 入队("p-档案规则版对照", "乱序.xlsx", Hash.sha256("p-档案规则版对照-乱序"))
+    await 跑下一条()
+    const 对照报告 = await 最新报告(db(), "p-档案规则版对照", 对照入队.materialId)
+    if (对照报告 === undefined) throw new Error("四层识别却没有报告")
+    expect(对照报告.ruleVersion).toBeNull()
+  })
 
   test("列顺序打乱 ⇒ 档案命中：parse_detail.档案 有值、方法为档案、hit_count +1", async () => {
     await 种档案("p-档案", 原表头, {
@@ -2366,6 +2398,97 @@ await Bun.write("result.json", JSON.stringify({
       adapter_id: "adapter-流水转换",
       adapter_version: "1.2.3",
     })
+  })
+
+  test("A5：退出码 0 但报告有失败闸 ⇒ 未识别:值闸不过:<检查项>，且不写事实行", async () => {
+    // 转换器自认成功（退出码 0），但报告里的值闸明确不过 —— 成功路径也必须判（Ruling X 后半句）。
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [{ sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" }],
+  report: {
+    adapterId: "adapter-流水转换",
+    gates: [{ 检查项: "金额可解析", 分母: 1, 命中: 0, 通过率: 0, 阈值: 0.99 }]
+  }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("值闸成功路径", 脚本)
+    await 入队(projectId, 文件名, Hash.sha256(`${projectId}-值闸成功路径`))
+
+    const { 作业, 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("失败")
+    expect(await countFactRows(db(), projectId)).toBe(0)
+
+    const 材料 = await getMaterial(db(), projectId, 作业.materialId)
+    expect(材料?.parseStatus).toBe("有问题")
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情)) throw new Error("parse_detail 形状不对")
+    expect(详情["reason"]).toBe("未识别:值闸不过:金额可解析")
+    const 作业行 = rowsOf(
+      await db().execute(sql`
+        select status, reason_code from auth.case_ingest_job where id = ${作业.jobId}
+      `),
+    )[0]
+    expect(作业行?.status).toBe("失败")
+    expect(作业行?.reason_code).toBe("未识别:值闸不过:金额可解析")
+  })
+
+  test("A3：两个适配器都过表头闸 ⇒ 报告 matches 含落选者，按 priority desc, id asc", async () => {
+    const { projectId, 文件名, 技能目录 } = await 备料("多命中", 成功脚本)
+    const 底卡 = 卡(技能目录)
+    const 低: 适配器 = {
+      ...底卡,
+      id: "z-低优先",
+      version: "1.0.0",
+      match: { ...底卡.match, priority: 100 },
+    }
+    const 高: 适配器 = {
+      ...底卡,
+      id: "a-高优先",
+      version: "2.0.0",
+      match: { ...底卡.match, priority: 200 },
+    }
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-多命中`))
+    const { 结果 } = await 跑一条(装依赖([低, 高], { n: 0 }))
+    expect(结果).toBe("完成")
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.adapterId).toBe("a-高优先")
+    expect(报告.matches).toEqual([
+      { id: "a-高优先", version: "2.0.0", priority: 200 },
+      { id: "z-低优先", version: "1.0.0", priority: 100 },
+    ])
+  })
+
+  test("A6：转换器报告的 warnings / skippedRows 原样并入报告", async () => {
+    const 脚本 = `
+await Bun.write("result.json", JSON.stringify({
+  rows: [
+    { sheet: "Sheet1", rowNo: 2, startedAt: 1767225600, amount: "100.00", direction: "收" },
+    { sheet: "Sheet1", rowNo: 3, startedAt: 1767225660, amount: "200.00", direction: "付" }
+  ],
+  report: {
+    adapterId: "adapter-流水转换",
+    gates: [],
+    warnings: [{ code: "词表外键", 键: "对方:交易摘要" }],
+    skippedRows: [{ sheet: "Sheet1", rowNo: 5, 原因: "坏行" }]
+  }
+}))
+`
+    const { projectId, 文件名, 技能目录 } = await 备料("告警合并", 脚本)
+    const 入队结果 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-告警合并`))
+    const { 结果 } = await 跑一条(装依赖([卡(技能目录)], { n: 0 }))
+    expect(结果).toBe("完成")
+
+    const 报告 = await 最新报告(db(), projectId, 入队结果.materialId)
+    if (报告 === undefined) throw new Error("转换成功却没有报告")
+    expect(报告.warnings).toContainEqual({ code: "词表外键", 键: "对方:交易摘要" })
+    expect(报告.skippedRows).toContainEqual({ sheet: "Sheet1", rowNo: 5, 原因: "坏行" })
+
+    // A7：转换行数 = 本次实际产生的事实行数。
+    expect(报告.convertedRows).toBe(2)
+    // A3：报告列全部表头闸命中项（单卡夹具 ⇒ 一条）。
+    expect(报告.matches).toEqual([{ id: "adapter-流水转换", version: "1.2.3", priority: 100 }])
   })
 
   test("值闸不过 ⇒ 原因码取第一个失败闸（Ruling X）", async () => {

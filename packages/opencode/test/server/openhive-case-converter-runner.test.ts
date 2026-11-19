@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import { join } from "node:path"
 import type { 转换器结果 } from "../../src/server/openhive/case-converter-runner"
-import { 跑转换器 } from "../../src/server/openhive/case-converter-runner"
+import { 子进程环境, 输入路径环境名, 跑转换器 } from "../../src/server/openhive/case-converter-runner"
 
 /**
  * 016 T007 · N3 转换器执行器。
@@ -13,11 +13,13 @@ import { 跑转换器 } from "../../src/server/openhive/case-converter-runner"
  * 2. 非零退出：detail 带退出码；退出前写了 `{report}` ⇒ 仍交回 `报告`（Ruling X 配套），没写 ⇒ 省略；
  * 3. 超时：到点杀进程树，detail 带「超时」；
  * 4. 输出不合 `converter-output-contract.md`：`direction` 非收/付（第 2 条）、缺 `report`（第 4 条）；
- * 5. 环境：父进程里的 `PG_PASSWORD` **不进**子进程（变异点：去掉环境清理 ⇒ 本条红）；
- * 6. 命令前缀白名单：`python x.py` ⇒ 失败；
+ * 5. 环境：**纯函数靶子** `子进程环境(原件, 来源)` 的键集 = 允许清单 + 输入通道，且任何
+ *    `PG_*` / `DATABASE_URL` / `AUTH_*` 都不出现（变异：改成整体透传来源 ⇒ 本条红）；
+ * 6. 命令前缀白名单与发布闸一致：`bun run` / `node` 前缀；`python x.py`、`bun install` ⇒ 失败；
  * 7. 契约反向：多出 JSON（第 7 条）、`rowNo` 非数字（第 1 条）、`amount` 非正（第 2 条）；
- * 8. 内核退出兜底钩子运行中挂上、结算后注销（监听数回到原值）；
- * 9. 同一技能目录并发执行互不踩输出文件（进程内按目录串行）。
+ * 8. 内核退出兜底钩子运行中挂上、结算后注销（监听数回到原值；变异：删 `process.off` ⇒ 本条红）；
+ * 9. 同一技能目录并发执行互不踩输出文件（进程内按目录串行）；
+ * 10. `output.file` 已存在 ⇒ **不执行、不删**（变异：删「已存在即拒」⇒ 预置文件被删、本条红）。
  *
  * 注意：断言「文件不存在」一律用布尔比较（`#013-12`：`toBeNull()` 在本仓库出现过假绿）。
  */
@@ -226,6 +228,81 @@ await Bun.write(
     expect(结果.ok).toBe(false)
     if (结果.ok) return
     expect(结果.detail).toContain("白名单")
+  })
+
+  test("命令前缀与发布闸一致：`bun install` 不是 `bun run` ⇒ 拒绝且不起子进程", async () => {
+    const 目录 = await 造技能目录(`await Bun.write("ran.marker", "1")\n`)
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录, "bun install"), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) return
+    expect(结果.detail).toContain("白名单")
+    expect(await 存在(join(目录, "ran.marker"))).toBe(false)
+  })
+
+  test("子进程环境：键集 = 允许清单 + 输入通道，不含任何库 / 鉴权变量", () => {
+    const 来源: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      HOME: "/home/tester",
+      TMPDIR: "/tmp",
+      TEMP: "/tmp",
+      TMP: "/tmp",
+      SystemRoot: "C:\\Windows",
+      PATHEXT: ".EXE",
+      APPDATA: "C:\\Users\\t\\AppData\\Roaming",
+      LOCALAPPDATA: "C:\\Users\\t\\AppData\\Local",
+      PG_PASSWORD: "不该出现",
+      PG_DATABASE: "openhive",
+      DATABASE_URL: "postgres://user:pw@host/db",
+      AUTH_SECRET: "不该出现",
+      AUTH_TOKEN: "不该出现",
+    }
+    const 环境 = 子进程环境("D:\\原件.xlsx", 来源)
+    const 键们 = Object.keys(环境).sort()
+
+    expect(键们).toEqual(
+      [
+        "APPDATA",
+        "HOME",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        输入路径环境名,
+      ].sort(),
+    )
+    expect(环境[输入路径环境名]).toBe("D:\\原件.xlsx")
+    for (const 键 of 键们) {
+      const 大写 = 键.toUpperCase()
+      expect(大写.startsWith("PG_")).toBe(false)
+      expect(大写 === "DATABASE_URL").toBe(false)
+      expect(大写.startsWith("AUTH_")).toBe(false)
+    }
+  })
+
+  test("输出文件预置：不执行、原样保留（字节比对）、ok:false", async () => {
+    const 脚本 = `
+await Bun.write("ran.marker", "1")
+await Bun.write("out.json", JSON.stringify({ rows: [], report: {} }))
+`
+    const 目录 = await 造技能目录(脚本)
+    const 输出路径 = join(目录, "out.json")
+    const 预置 = "共享技能包里的既有文件，转换器不许覆盖、更不许删"
+    await fs.writeFile(输出路径, 预置, "utf8")
+
+    const 结果 = await 跑转换器({ 适配器: 适配器(目录), 原件: 原件路径(目录) })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) return
+    expect(结果.detail).toContain("输出文件已存在")
+    expect(结果.detail).toContain("拒绝覆盖")
+    // 字节比对：文件必须原样还在（变异：删「已存在即拒」⇒ 这条与下一条都红，文件被删）。
+    expect(await fs.readFile(输出路径, "utf8")).toBe(预置)
+    // 更硬的证据：转换器根本没被执行。
+    expect(await 存在(join(目录, "ran.marker"))).toBe(false)
   })
 
   test("契约第 7 条：多出一个 JSON 文件 ⇒ 失败并指出文件名", async () => {

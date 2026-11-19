@@ -203,6 +203,19 @@ async function 作业数() {
   return Number(rows[0]?.n ?? 0)
 }
 
+/** A2-7：不只数条数——作业必须指回那份材料、路径能被 worker 读盘、状态真的是排队中。 */
+async function 作业行() {
+  const rows = rowsOf(
+    await 库().execute(sql`
+      select material_id, source_path, status
+        from auth.case_ingest_job
+       where project_id = ${项目}
+       order by queued_at desc, id desc
+    `),
+  )
+  return rows[0]
+}
+
 /** 种一条材料行（指纹由调用方给——「同内容换名」要求它等于上传内容的哈希）。 */
 async function 种材料(input: { path: string; status: string; fingerprint: string }) {
   await 库().execute(sql`
@@ -226,6 +239,13 @@ describe("016 T004 · 上传落 材料/ 自动入队", () => {
         expect(行?.parse_status).toBe("排队中")
         expect(行?.queued_by).toBe(我.id)
         expect(yield* Effect.promise(() => 作业数())).toBe(1)
+        expect(yield* Effect.promise(() => 材料数())).toBe(1)
+
+        // A2-7：作业要真的指向这份材料，`source_path` 是 worker 读盘的唯一依据。
+        const 作业 = yield* Effect.promise(() => 作业行())
+        expect(作业?.material_id).toBe(行?.id)
+        expect(作业?.status).toBe("排队中")
+        expect(作业?.source_path).toBe(`${我.id}/${项目}/材料/话单.xlsx`)
         expect(响应.status).toBe(200)
         expect((yield* 读回包(响应)).path).toBe("材料/话单.xlsx")
       }),

@@ -10,6 +10,7 @@ const 档案 = (over: Partial<档案候选> = {}): 档案候选 => ({
   priority: 100,
   hitCount: 0,
   updatedAt: 1,
+  ruleVersion: null,
   ...over,
 })
 
@@ -23,6 +24,7 @@ describe("匹配数据源档案", () => {
       id: "sp-1",
       name: "微信流水",
       columns: { 0: "counterpartyName", 1: "amount", 2: "startedAt" },
+      ruleVersion: null,
     })
   })
 
@@ -63,7 +65,7 @@ describe("匹配数据源档案", () => {
         表头: [" 交易时间 ", "交易金额", null],
         档案们: [档案({ mapping: { 交易时间: "startedAt", 交易金额: "amount" } })],
       }),
-    ).toEqual({ id: "sp-1", name: "微信流水", columns: { 0: "startedAt", 1: "amount" } })
+    ).toEqual({ id: "sp-1", name: "微信流水", columns: { 0: "startedAt", 1: "amount" }, ruleVersion: null })
   })
 
   test("多候选：映射列数多者优先", () => {

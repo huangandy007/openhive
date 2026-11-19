@@ -95,6 +95,10 @@ const IDS = {
   /** 已发布，两份包 adapter id 相同（启用侧唯一性）。 */
   dupEnableA: "asset_ingest_dup_enable_a",
   dupEnableB: "asset_ingest_dup_enable_b",
+  /** 已启用但操作者看不见（别的部门）的包；adapter id 与下面那份相同。 */
+  hiddenOccupied: "asset_ingest_hidden_occupied",
+  /** 可见的一份，adapter id 与隐藏那份相同（A11：占位不看可见性）。 */
+  visibleDup: "asset_ingest_visible_dup",
 } as const
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "status">): AssetMetadata => ({
@@ -197,6 +201,26 @@ beforeAll(async () => {
   await insertAsset(pg.db, 资产({ id: IDS.badVocabPublish, name: "词表坏包发布", status: "pending_tech" }))
   await insertAsset(pg.db, 资产({ id: IDS.dupEnableA, name: "重复包甲", status: "published", publishedAt: 900 }))
   await insertAsset(pg.db, 资产({ id: IDS.dupEnableB, name: "重复包乙", status: "published", publishedAt: 900 }))
+  // A11：操作者（属主）看不见的「别的部门」资产，已直接启用；adapter id 与后面那份相同。
+  await insertAsset(
+    pg.db,
+    资产({
+      id: IDS.hiddenOccupied,
+      name: "隐藏占用包",
+      status: "published",
+      publishedAt: 900,
+      ownerId: 管理员.id,
+      ownerName: 管理员.name,
+      visibility: "department",
+      department: "别的部门",
+    }),
+  )
+  await insertAsset(pg.db, 资产({ id: IDS.visibleDup, name: "可见重复包", status: "published", publishedAt: 900 }))
+  // 直接写启用行：走启用出口会因 `canReadAsset` 403（看不见就启不了），那正是本用例要绕开的前提。
+  await pg.db.execute(sql`
+    insert into auth.project_asset_enablement (project_id, asset_id, enabled_by, enabled_at)
+    values (${项目}, ${IDS.hiddenOccupied}, ${管理员.id}, 1)
+  `)
 
   写坏包(join(ASSETS_ROOT, "pending", IDS.badPublish), "bad-publish", "坏包发布")
   写好包(join(ASSETS_ROOT, "pending", IDS.goodPublish), "good-publish", "好包发布")
@@ -207,6 +231,8 @@ beforeAll(async () => {
   写好包(join(ASSETS_ROOT, "pending", IDS.badVocabPublish), "vocab-bad", "词表坏包发布", ["对方:不存在键"])
   写好包(join(ASSETS_ROOT, "global", "skills", IDS.dupEnableA), "dup-adapter", "重复包甲")
   写好包(join(ASSETS_ROOT, "global", "skills", IDS.dupEnableB), "dup-adapter", "重复包乙")
+  写好包(join(ASSETS_ROOT, "dept", "别的部门", "skills", IDS.hiddenOccupied), "hidden-adapter", "隐藏占用包")
+  写好包(join(ASSETS_ROOT, "global", "skills", IDS.visibleDup), "hidden-adapter", "可见重复包")
 })
 
 afterAll(async () => {
@@ -363,6 +389,29 @@ describe("016 T002 · 启用闸（项目）", () => {
       const body = yield* json(校验失败响应, 乙)
       expect(body.code).toBe("ingest_gate_failed")
       expect(body.problems.some((项) => 项.includes("dup-adapter"))).toBe(true)
+    }),
+  )
+
+  it.live("F3d. 已启用但操作者看不见的包也占 adapter id ⇒ 409（A11）", () =>
+    Effect.gen(function* () {
+      // 隐藏包（别的部门）已直接写进启用行；操作者读不到它，但它的 adapter id 仍被项目占用。
+      // 不过滤可见性 ⇒ 第二份同 id 包进来会让内核里出现两个同 id 适配器。
+      const 响应 = yield* post(属主, ENABLE, { projectId: 项目, assetId: IDS.visibleDup })
+      expect(响应.status).toBe(409)
+      const body = yield* json(校验失败响应, 响应)
+      expect(body.code).toBe("ingest_gate_failed")
+      expect(body.problems.some((项) => 项.includes("hidden-adapter"))).toBe(true)
+
+      if (!pg) throw new Error("真库没起来")
+      const 行们 = yield* Effect.promise(async () =>
+        rowsOf(
+          await pg!.db.execute(sql`
+            select 1 from auth.project_asset_enablement
+             where project_id = ${项目} and asset_id = ${IDS.visibleDup}
+          `),
+        ),
+      )
+      expect(行们.length).toBe(0)
     }),
   )
 })
