@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import type { JSX } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { createCaseIngestApi } from "./case-ingest-api"
 import { CaseIngestSettings } from "./case-ingest-settings"
@@ -71,6 +71,46 @@ describe("项目入库开关", () => {
     expect(记.写体[0]).toEqual({ projectId: "p1", autoEnqueue: false })
     expect(记.次数).toBe(点前 + 1)
     await 等(() => 入队.checked === false)
+  })
+
+  test("写回包晚到：切到 B 后 A 的设置不覆盖 B、B 的保存中复位（B3）", async () => {
+    let 放行写: (() => void) | undefined
+    const 写闸 = new Promise<void>((resolve) => {
+      放行写 = resolve
+    })
+    const send = async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        await 写闸
+        // A 的回包（若被误接到 B 上，会把 B 的「自动入队」改成 false）。
+        return 回({ autoEnqueue: false, autoEnableTrusted: true, updatedAt: 2 })
+      }
+      if (url.includes("projectId=p1")) return 回({ autoEnqueue: true, autoEnableTrusted: false, updatedAt: 1 })
+      return 回({ autoEnqueue: true, autoEnableTrusted: true, updatedAt: 3 })
+    }
+    const api = createCaseIngestApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => <CaseIngestSettings projectId={项目()} canManage={true} api={api} />)
+    const 入队 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-enqueue']")!
+    await 等(() => 入队.disabled === false && 入队.checked === true)
+
+    // A 项目的写入在途。
+    入队.checked = false
+    入队.dispatchEvent(new Event("change", { bubbles: true }))
+    await 等(() => 入队.disabled === true)
+
+    // 切到 B：B 读到的是 autoEnqueue=true / autoEnableTrusted=true。
+    set项目("p2")
+    const 信任 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-trusted']")!
+    await 等(() => 信任.checked === true)
+    // 切项目必须复位「保存中」，否则 B 的开关被 A 的在途写拖成置灰。
+    expect(入队.disabled).toBe(false)
+
+    放行写!()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    // A 的回包晚到：不得改写 B 的设置（`#010-05` / 代际保护）。
+    expect(入队.checked).toBe(true)
+    expect(入队.disabled).toBe(false)
   })
 
   test("非属主：开关置灰 + 原因可见 + 点击后 send 次数不增（handler 未绑）", async () => {

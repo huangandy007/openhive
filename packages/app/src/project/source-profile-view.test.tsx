@@ -150,6 +150,59 @@ describe("数据源档案视图", () => {
     expect(host.textContent).not.toContain("金额 缺单位")
   })
 
+  test("切项目后，切走前发出的建档回包晚到 ⇒ 错误/问题项不写进新项目（B5）", async () => {
+    let 放行建档: ((response: Response) => void) | undefined
+    const 建档闸 = new Promise<Response>((resolve) => {
+      放行建档 = resolve
+    })
+    let 建档次数 = 0
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/build")) {
+        建档次数 += 1
+        return 建档闸
+      }
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => (
+      <SourceProfileView
+        projectId={项目()}
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m1"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    )
+    await 等(() => 建档次数 === 1)
+
+    // A 的建档还挂着；切到 B，B 的列表已到齐。
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+
+    // A 的回包（失败带问题项）晚到——不得写到 B 的界面上。
+    放行建档!(回({ error: "映射不合法", code: "mapping_invalid", problems: ["金额 缺单位"] }, 400))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // 布尔比较（`#013-12`）：旧项目的错误与问题项都不在新项目上出现。
+    const 有旧错误 = (host.textContent ?? "").includes("映射不合法")
+    const 有旧问题 = (host.textContent ?? "").includes("金额 缺单位")
+    expect(有旧错误).toBe(false)
+    expect(有旧问题).toBe(false)
+    expect(host.querySelector("[data-slot='source-profile-problems']") === null).toBe(true)
+  })
+
   test("切项目后，切走前发出的重拉晚到 ⇒ 不回写旧项目列表（#010-05）", async () => {
     let 放行慢读: ((response: Response) => void) | undefined
     const 慢读 = new Promise<Response>((resolve) => {

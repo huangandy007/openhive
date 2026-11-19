@@ -6,6 +6,7 @@
  *
  * 范式同 `case-materials-api.ts`：同源相对路径 + 可注入 `send` + 10 秒超时 + 失败不抛。
  */
+import { ASSET_STATUSES, type AssetStatus } from "@opencode-ai/asset-service/metadata"
 import { noteStatus } from "../project/openhive-fetch"
 
 export const PATH = {
@@ -18,7 +19,8 @@ export const TIMEOUT_MS = 10_000
 export interface 可信技能行 {
   readonly assetId: string
   readonly name: string
-  readonly status: string
+  /** 闭集（`AssetStatus`）：未知状态按「无法识别」处理，不把脏值带进类型（B7）。 */
+  readonly status: AssetStatus
   readonly addedBy: string
   readonly addedAt: number
 }
@@ -56,6 +58,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const 是非负整数 = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0
 
+/** 状态只认闭集；认不出 ⇒ 该行判坏（列表回错误包，不抛）。 */
+const 是状态 = (value: unknown): value is AssetStatus =>
+  ASSET_STATUSES.some((状态) => 状态 === value)
+
 function 解析行(value: unknown): 可信技能行 | undefined {
   if (!isRecord(value)) return undefined
   const assetId = value["assetId"]
@@ -66,7 +72,7 @@ function 解析行(value: unknown): 可信技能行 | undefined {
   if (
     typeof assetId !== "string" ||
     typeof name !== "string" ||
-    typeof status !== "string" ||
+    !是状态(status) ||
     typeof addedBy !== "string"
   )
     return undefined

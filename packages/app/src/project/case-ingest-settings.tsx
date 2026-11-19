@@ -23,11 +23,20 @@ export function CaseIngestSettings(props: CaseIngestSettingsProps): JSX.Element 
   const [错误, set错误] = createSignal<string>()
   const [保存中, set保存中] = createSignal(false)
 
+  /**
+   * 项目代：切项目即加一。读、写两条路径共用它——切走后晚到的回包一律丢弃，
+   * 不把 A 项目的设置写进 B 的界面（`#010-05`）。切换时必须复位「保存中」，
+   * 否则 B 的开关会被 A 的在途写拖成置灰。
+   */
+  let 项目代 = 0
+
   createEffect(() => {
     const 项目 = props.projectId
     const 客户端 = api()
+    项目代 += 1
     set设置(undefined)
     set错误(undefined)
+    set保存中(false)
     let 作废 = false
     onCleanup(() => {
       作废 = true
@@ -49,19 +58,24 @@ export function CaseIngestSettings(props: CaseIngestSettingsProps): JSX.Element 
 
   async function 改(键: "autoEnqueue" | "autoEnableTrusted", 值: boolean) {
     if (!props.canManage || 保存中()) return
+    const 代 = 项目代
+    const 项目 = props.projectId
     set保存中(true)
     set错误(undefined)
     try {
-      const 结果 = await api().writeSettings({ projectId: props.projectId, [键]: 值 })
+      const 结果 = await api().writeSettings({ projectId: 项目, [键]: 值 })
+      // 切走前发出的写入：代一变就丢弃回包（含错误），不写进新项目（`#010-05`）。
+      if (代 !== 项目代) return
       if (结果.kind === "error") {
         set错误(结果.message)
         return
       }
       set设置(结果.value)
     } catch {
-      set错误("保存失败，请重试")
+      if (代 === 项目代) set错误("保存失败，请重试")
     } finally {
-      set保存中(false)
+      // 只复位自己那一代：旧写的 finally 不能清掉新项目刚置上的「保存中」。
+      if (代 === 项目代) set保存中(false)
     }
   }
 

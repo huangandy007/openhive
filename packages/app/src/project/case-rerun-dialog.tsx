@@ -15,7 +15,7 @@ import {
  * 不 import 模块级信号；壳由调用方挂。`api` 可注入，测试用真客户端 + 计数替身即可验证
  * 「成员点了也没发请求」。
  *
- * ## 成员的置灰三件套（`#005-47`）
+ * ## 非成员的置灰三件套（`#005-47`）
  *
  * `disabled` 只是外观；关键在**不绑 handler**——否则一次 `dispatchEvent`（真实浏览器里
  * 别的手法也能触发）就会绕过置灰。原因文案必须同屏可见，否则用户以为界面坏了。
@@ -23,8 +23,11 @@ import {
  */
 export interface CaseRerunDialogProps {
   readonly projectId: string
-  /** 只有属主能重跑；成员只读扫描结果。 */
-  readonly 是属主: boolean
+  /**
+   * 能否一键重跑＝**项目成员**（契约 `ingest-api-contract.md` §3「权限：项目成员」），
+   * 不是属主。非成员置灰并显示原因；服务端仍会 403（前端只是体验，`#005-24`）。
+   */
+  readonly 能重跑: boolean
   readonly api?: CaseIngestApi
   readonly onClose?: () => void
 }
@@ -53,6 +56,9 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
     set扫描错误(undefined)
     set重跑(undefined)
     set重跑错误(undefined)
+    // 切项目必须复位「忙」：旧项目的重跑还在途时切走，新项目的按钮不能被它拖成
+    // 「正在重跑…」置灰（B5）。回包本身由 `请求代` 丢弃，复位只是界面状态。
+    set忙(false)
     let 作废 = false
     // `createEffect` 不执行返回值，清理必须挂 `onCleanup`（`#005-03`）。
     onCleanup(() => {
@@ -101,7 +107,8 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
       // 注入的 api 不该抛；兜底成一句话，不把异常抛回事件系统。
       if (代 === 请求代) set重跑错误("操作没办成，请重试")
     } finally {
-      set忙(false)
+      // 只复位自己那一代：旧项目的重跑 finally 不能清掉新项目刚置上的「忙」（B5）。
+      if (代 === 请求代) set忙(false)
     }
   }
 
@@ -131,9 +138,9 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
         )}
       </Show>
 
-      <Show when={!props.是属主}>
+      <Show when={!props.能重跑}>
         <p data-slot="case-rerun-reason" class="text-v2-text-text-muted">
-          需要项目属主才能一键重跑
+          需要项目成员才能一键重跑
         </p>
       </Show>
 
@@ -142,8 +149,8 @@ export function CaseRerunDialog(props: CaseRerunDialogProps): JSX.Element {
           type="button"
           data-slot="case-rerun-run"
           class="flex h-6 items-center rounded-[4px] bg-v2-button-primary-background px-2 text-[13px] text-v2-button-primary-foreground hover:bg-v2-button-primary-background-hover disabled:cursor-default disabled:opacity-50"
-          disabled={!props.是属主 || 忙() || 范围().length === 0}
-          {...(props.是属主 ? { onClick: () => void 执行重跑() } : {})}
+          disabled={!props.能重跑 || 忙() || 范围().length === 0}
+          {...(props.能重跑 ? { onClick: () => void 执行重跑() } : {})}
         >
           {忙() ? "正在重跑…" : "一键重跑"}
         </button>

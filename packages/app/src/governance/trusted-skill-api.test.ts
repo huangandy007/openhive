@@ -14,7 +14,7 @@ const 回 = (body: unknown, status = 200) =>
 const 行 = {
   assetId: "a1",
   name: "资金分析",
-  status: "published",
+  status: "published" as const,
   addedBy: "u1",
   addedAt: 1700000000,
 }
@@ -35,6 +35,12 @@ describe("可信技能白名单客户端", () => {
       const api = createTrustedSkillApi(async () => 回(坏))
       expect((await api.list()).kind, JSON.stringify(坏)).toBe("error")
     }
+  })
+
+  test("status 按闭集解析：未知状态 ⇒ 判坏（不抛），不把脏值带进类型（B7）", async () => {
+    const api = createTrustedSkillApi(async () => 回({ list: [{ ...行, status: "神秘状态" }] }))
+    const 结果 = await api.list()
+    expect(结果.kind).toBe("error")
   })
 
   test("add / revoke：POST 体只带 assetId；403 映射成 code=forbidden", async () => {

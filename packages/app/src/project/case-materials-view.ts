@@ -384,9 +384,17 @@ export function 跳过不可用原因(b: 亮灯依据): string | undefined {
 // 在行、徽标、提示里各写一份，改一处漏一处不会报错。
 // ---------------------------------------------------------------------------
 
-/** 探测徽标：`探测中` 半圆、`已识别` 勾、`未识别` 叹号；`null` 表示没有探测结论，不画。 */
+/**
+ * 探测徽标：`探测中` 半圆、`已识别` 勾、`未识别` 叹号；`null` 表示没有探测结论，不画。
+ *
+ * `status` 是**材料当前解析状态**：它仍是排队中 / 解析中时，探测结论可能只是中间态
+ * （转换器还没给出最终认定）⇒ `未识别` 写成「未识别（待确认）」，形状用 `half` 而不是
+ * `alert`——把待确认的中间结论画成最终错误，用户会以为产品已经判死（B6）。
+ * 作业已结束（有问题 / 已解析）才用最终形状。
+ */
 export function 探测徽标(
   probe: 探测结论 | null,
+  status?: 解析状态,
 ): { 文案: string; 形状: "half" | "check" | "alert" } | null {
   if (probe === null) return null
   switch (probe.状态) {
@@ -400,11 +408,31 @@ export function 探测徽标(
       return { 文案: 细节 === undefined ? "已识别" : `已识别 · ${细节}`, 形状: "check" }
     }
     case "未识别": {
+      // 作业还在排队 / 解析中：结论未定，不画成最终错误。
+      if (运行中(status)) return { 文案: "未识别（待确认）", 形状: "half" }
       const 原因 = 原因码文案(probe.原因码 ?? null)
       return { 文案: 原因 === null ? "未识别" : `未识别 · ${原因}`, 形状: "alert" }
     }
   }
   return null
+}
+
+/** FR-054 的聚合口径（纯函数层）：`probe` 非空即算「已探测」。 */
+export interface 探测进度 {
+  readonly 已探测: number
+  readonly 总数: number
+}
+
+export function 探测进度(材料们: readonly 材料视图[]): 探测进度 {
+  return {
+    已探测: 材料们.filter((行) => 行.probe !== null).length,
+    总数: 材料们.length,
+  }
+}
+
+/** 渲染用的唯一文案出处：`已探测 k / N`（`#002-06`）。 */
+export function 已探测文案(进度: 探测进度): string {
+  return `已探测 ${进度.已探测} / ${进度.总数}`
 }
 
 /**

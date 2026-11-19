@@ -1,3 +1,4 @@
+import { ASSET_STATUS_LABELS } from "@opencode-ai/asset-service/metadata"
 import { createEffect, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import { createTrustedSkillApi, type TrustedSkillApi, type 可信技能行, type 错误 } from "./trusted-skill-api"
 
@@ -152,7 +153,7 @@ export function TrustedSkillManage(props: TrustedSkillManageProps): JSX.Element 
                   class="flex items-center justify-between gap-2 rounded-[4px] px-2 py-1 hover:bg-v2-overlay-simple-overlay-hover"
                 >
                   <span class="min-w-0 truncate">
-                    {行.name} · {行.status}
+                    {行.name} · {ASSET_STATUS_LABELS[行.status]}
                   </span>
                   <button
                     type="button"

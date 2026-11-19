@@ -82,6 +82,16 @@ describe("可信技能白名单管理", () => {
     expect(记.撤[0]).toBe("a1")
   })
 
+  test("状态用闭集中文标签：published ⇒ 已发布，原串不直接露出（B7）", async () => {
+    const { api } = 假服务()
+    const host = mount(() => <TrustedSkillManage isAdmin={true} api={api} />)
+    await 等(() => host.querySelector("[data-slot='trusted-skill-row']") !== null)
+    const 行格 = host.querySelector("[data-slot='trusted-skill-row']")!
+    expect(行格.textContent).toContain("已发布")
+    // 布尔比较（`#013-12`）：原生枚举串不该出现在界面上。
+    expect((行格.textContent ?? "").includes("published")).toBe(false)
+  })
+
   test("加入失败 asset_not_published ⇒ 「该技能未发布，不能加入」", async () => {
     const api = createTrustedSkillApi(async (url, init) => {
       if (init?.method === "POST") return 回({ error: "该技能未发布，不能加入", code: "asset_not_published" }, 409)

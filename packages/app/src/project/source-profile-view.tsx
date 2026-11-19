@@ -92,14 +92,19 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
     set忙(true)
     set错误(undefined)
     set问题们([])
+    // 与列表同一守卫口径：动作发出时记下当前代与项目，回包晚到且代已变 ⇒ 整段丢弃
+    // （含错误 / 问题项 / 表单复位），不写进新项目（B5 / `#010-05`）。
+    const 代 = 列表代
+    const 项目 = props.projectId
     try {
       const 结果 = await api().build({
-        projectId: props.projectId,
+        projectId: 项目,
         materialId,
         ...(名称().trim() === "" ? {} : { name: 名称().trim() }),
         ...(工作表().trim() === "" ? {} : { 工作表: 工作表().trim() }),
         ...(覆盖() ? { 覆盖: true } : {}),
       })
+      if (代 !== 列表代) return
       if (结果.kind === "error") {
         set错误(结果.message)
         set问题们(结果.problems ?? [])
@@ -109,9 +114,9 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
       set名称("")
       set工作表("")
       set覆盖(false)
-      await 取清单(api(), props.projectId)
+      await 取清单(api(), 项目)
     } catch {
-      set错误("建档失败，请重试")
+      if (代 === 列表代) set错误("建档失败，请重试")
     } finally {
       set忙(false)
     }
@@ -119,15 +124,18 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
 
   async function 撤销(id: string) {
     if (!props.是属主) return
+    const 代 = 列表代
+    const 项目 = props.projectId
     try {
-      const 结果 = await api().revoke({ projectId: props.projectId, id })
+      const 结果 = await api().revoke({ projectId: 项目, id })
+      if (代 !== 列表代) return
       if (结果.kind === "error") {
         set错误(结果.message)
         return
       }
-      await 取清单(api(), props.projectId)
+      await 取清单(api(), 项目)
     } catch {
-      set错误("撤销失败，请重试")
+      if (代 === 列表代) set错误("撤销失败，请重试")
     }
   }
 
