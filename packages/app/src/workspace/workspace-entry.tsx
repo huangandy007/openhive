@@ -22,9 +22,11 @@ import { archiveName, type ArchiveKind } from "@/project/archive-name"
 import { 入库并提交, 提交审核 } from "@/project/capability-action-api"
 import { CapabilityPanel } from "@/project/capability-panel"
 import { CapabilitySubmitDialog } from "@/project/capability-submit-dialog"
+import type { CaseIngestApi } from "@/project/case-ingest-api"
 import { CaseIngestSettings } from "@/project/case-ingest-settings"
 import { CaseRerunDialog } from "@/project/case-rerun-dialog"
 import { SourceProfileView } from "@/project/source-profile-view"
+import type { SourceProfileApi } from "@/project/source-profile-api"
 import type { CaseMaterials } from "@/project/case-materials-state"
 import { currentProject, 还原启动项目, 读项目cookie, setCurrentProject } from "@/project/current-project"
 import { DualFileTree } from "@/project/dual-file-tree"
@@ -206,6 +208,17 @@ export interface WorkspaceEntryProps {
    * （`createCaseMaterials()` ＋ `bind(当前项目)`）。省略 = 树上不画标记与汇总。
    */
   caseMaterials?: CaseMaterials
+  /**
+   * 【保留的定制 · 同步上游时不要丢】016 组件（016 T021 / R3b，Ruling BX）的接口注入缝。
+   *
+   * `CaseIngestSettings` / `CaseRerunDialog` 内部自建 `createCaseIngestApi`——生产里那是对的
+   * （本组件省略即可）；但本组件被组件测试裸挂，自建客户端会让「离线」这条既有纪律被悄悄打破
+   * （实测：真发 `GET /openhive/case/ingest/settings` 并收到 404）。**省略 = 组件自建**
+   * （生产路径）；注入 ⇒ 用注入的（测试保持离线）。与 `enablement` / `caseMaterials` 同一纪律。
+   */
+  caseIngestApi?: CaseIngestApi
+  /** 同上：`SourceProfileView` 的接口注入缝（省略 = 组件自建 `createSourceProfileApi`）。 */
+  sourceProfileApi?: SourceProfileApi
   /**
    * 【保留的定制 · 同步上游时不要丢】**有权使用的 MCP 清单**（2026-11-03）。
    *
@@ -2244,6 +2257,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                         <CaseIngestSettings
                           projectId={id()}
                           canManage={props.enablement?.canManage() ?? false}
+                          api={props.caseIngestApi}
                         />
                       )}
                     </Show>
@@ -2296,6 +2310,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                               <SourceProfileView
                                 projectId={id()}
                                 是属主={props.enablement?.canManage() ?? false}
+                                api={props.sourceProfileApi}
                                 材料们={
                                   props.caseMaterials
                                     ?.rows()
@@ -2314,6 +2329,7 @@ function WorkspaceBody(props: ParentProps<WorkspaceEntryProps>) {
                           <CaseRerunDialog
                             projectId={id()}
                             能重跑={能重跑()}
+                            api={props.caseIngestApi}
                             onClose={() => set重跑开(false)}
                           />
                         )}
