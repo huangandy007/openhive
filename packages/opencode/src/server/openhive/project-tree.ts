@@ -45,10 +45,10 @@ export * as OpenhiveProjectTree from "./project-tree"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Location } from "@opencode-ai/core/location"
-import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { LocationServiceMap, type LocationServices } from "@opencode-ai/core/location-services"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
 import { User } from "@opencode-ai/core/user"
-import { Cause, Effect, Option } from "effect"
+import { Cause, Effect, Option, type Layer } from "effect"
 import ignore from "ignore"
 import path from "node:path"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
@@ -56,6 +56,84 @@ import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-wo
 import { 扫树, type 条目, type 读目录 } from "./project-tree-scan"
 
 const PATH = "/openhive/project/tree"
+
+/** `建项目读目录` 的依赖：项目服务层 ＋ 全局文件工具（读 ignore 规则用）。 */
+export interface 项目读目录依赖 {
+  /** `locations.get(Location.Ref.make({ directory }))` 的结果。 */
+  层: Layer.Layer<LocationServices>
+  /** 全局文件工具（`FSUtil.Service` 的接口）。 */
+  raw: FSUtil.Interface
+}
+
+/**
+ * 构造项目树读取器：ignore 规则**一趟请求读一次**，返回的 `读目录` 逐层读树。
+ * 规则读不到 ⇒ `undefined`（路由回 `读取文件树失败`）；中断原样抛出。
+ *
+ * 这段是从原路由闭包里**原样抽出**的（T015）：行为零变化，只是让 T016 能复用同一个
+ * `读目录` 去扫描「目录独有」，而不是抄第二份接线。判据的来龙去脉保留在抽出的代码里。
+ */
+export const 建项目读目录 = (依赖: 项目读目录依赖): Effect.Effect<读目录 | undefined> =>
+  Effect.gen(function* () {
+    // 读法与 `handlers/file.ts` 的 `list` 逐字同形——两处漂了就是「树里看得见、列表里看不见」。
+    // ⚠️ 兜底必须 `catchCause`：`层` 是在 `Effect.provide` 时才构建的，而 `filesystem.ts` 的
+    // `baseLayer` 里 `fs.realPath(location.directory)` 是 `Effect.orDie`——目录不存在 / 权限
+    // 不足全是 **defect**，`Effect.catch` 接不住，漏掉就回上游的通用 `UnknownError`，而不是
+    // 本端点承诺的 `{ error: "读取文件树失败" }`。
+    const 规则 = yield* Effect.gen(function* () {
+      const location = yield* Location.Service
+      const ignored = ignore()
+      for (const 名 of [".gitignore", ".ignore"]) {
+        const text = yield* 依赖.raw
+          .readFileString(path.join(location.project.directory, 名))
+          .pipe(Effect.catch(() => Effect.succeed("")))
+        if (text) ignored.add(text)
+      }
+      return ignored
+    }).pipe(
+      Effect.provide(依赖.层),
+      // 中断原样抛出：客户端断开是客户端的事，不该被吞成「整份取不到」。
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.succeed<ReturnType<typeof ignore> | undefined>(undefined),
+      ),
+    )
+    if (规则 === undefined) return undefined
+
+    return (dir: string): Promise<readonly 条目[] | undefined> =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.Service
+          const location = yield* Location.Service
+          // ⚠️ `item.path` 是**相对 `location.directory`** 的（`filesystem.ts` 的 `list`：
+          // `path.relative(target.directory, absolute)`），不是相对 `dir`——所以不用再拼 dir。
+          // 隐藏根判据 100% 依赖这个前提（见 `project-tree-scan.ts` 的 `条目` 注释）。
+          return (yield* fs.list({ path: RelativePath.make(dir) })).map(
+            (item): 条目 => ({
+              path: item.path,
+              type: item.type,
+              ignored: 规则.ignores(
+                path.relative(location.project.directory, path.resolve(location.directory, item.path)) +
+                  (item.type === "directory" ? "/" : ""),
+              ),
+            }),
+          )
+        }).pipe(
+          Effect.provide(依赖.层),
+          // 这一层读不到 ⇒ `undefined`，由 `扫树` 判「整份取不到」——**不交半棵树**
+          // （理由见 design §5：半个清单冒充完整清单是谎）。
+          // ⚠️ 必须 `catchCause`，不能 `catch`：`filesystem.ts` 的 `list` 里 `realPath` /
+          // `stat` / `readDirectoryEntries` 全是 `Effect.orDie`，路径逃逸是 `Effect.die`
+          // ——**都是 defect**，`catch` 只接 typed failure；漏掉的话异常穿出 `扫树`
+          // （它没有 try/catch），变成上游通用 500。中断原样抛出。
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.succeed<readonly 条目[] | undefined>(undefined),
+          ),
+        ),
+      )
+  })
 
 export const routes = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -95,66 +173,10 @@ export const routes = HttpRouter.use((router) =>
 
         const 层 = locations.get(Location.Ref.make({ directory: AbsolutePath.make(目录) }))
 
-        // ignore 规则**一趟请求读一次**（上游 `/file` 是每请求读一次；本端点整棵树只看一次，
-        // 读法与 `handlers/file.ts` 的 `list` 逐字同形——两处漂了就是「树里看得见、列表里看不见」）。
-        // ⚠️ 兜底必须 `catchCause`：`层` 是在 `Effect.provide` 时才构建的，而 `filesystem.ts` 的
-        // `baseLayer` 里 `fs.realPath(location.directory)` 是 `Effect.orDie`——目录不存在 / 权限
-        // 不足全是 **defect**，`Effect.catch` 接不住，漏掉就回上游的通用 `UnknownError`，而不是
-        // 本端点承诺的 `{ error: "读取文件树失败" }`。
-        const 规则 = yield* Effect.gen(function* () {
-          const location = yield* Location.Service
-          const ignored = ignore()
-          for (const 名 of [".gitignore", ".ignore"]) {
-            const text = yield* raw
-              .readFileString(path.join(location.project.directory, 名))
-              .pipe(Effect.catch(() => Effect.succeed("")))
-            if (text) ignored.add(text)
-          }
-          return ignored
-        }).pipe(
-          Effect.provide(层),
-          // 中断原样抛出：客户端断开是客户端的事，不该被吞成「整份取不到」。
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.interrupt
-              : Effect.succeed<ReturnType<typeof ignore> | undefined>(undefined),
-          ),
-        )
-        if (规则 === undefined) return HttpServerResponse.jsonUnsafe({ error: "读取文件树失败" }, { status: 500 })
-
-        const 读: 读目录 = (dir) =>
-          Effect.runPromise(
-            Effect.gen(function* () {
-              const fs = yield* FileSystem.Service
-              const location = yield* Location.Service
-              // ⚠️ `item.path` 是**相对 `location.directory`** 的（`filesystem.ts` 的 `list`：
-              // `path.relative(target.directory, absolute)`），不是相对 `dir`——所以不用再拼 dir。
-              // 隐藏根判据 100% 依赖这个前提（见 `project-tree-scan.ts` 的 `条目` 注释）。
-              return (yield* fs.list({ path: RelativePath.make(dir) })).map(
-                (item): 条目 => ({
-                  path: item.path,
-                  type: item.type,
-                  ignored: 规则.ignores(
-                    path.relative(location.project.directory, path.resolve(location.directory, item.path)) +
-                      (item.type === "directory" ? "/" : ""),
-                  ),
-                }),
-              )
-            }).pipe(
-              Effect.provide(层),
-              // 这一层读不到 ⇒ `undefined`，由 `扫树` 判「整份取不到」——**不交半棵树**
-              // （理由见 design §5：半个清单冒充完整清单是谎）。
-              // ⚠️ 必须 `catchCause`，不能 `catch`：`filesystem.ts` 的 `list` 里 `realPath` /
-              // `stat` / `readDirectoryEntries` 全是 `Effect.orDie`，路径逃逸是 `Effect.die`
-              // ——**都是 defect**，`catch` 只接 typed failure；漏掉的话异常穿出 `扫树`
-              // （它没有 try/catch），变成上游通用 500。中断原样抛出。
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.interrupt
-                  : Effect.succeed<readonly 条目[] | undefined>(undefined),
-              ),
-            ),
-          )
+        // ignore 规则**一趟请求读一次**（抽取进 `建项目读目录`，行为与改前逐字相同；
+        // T016 复用同一个 `读目录` 扫描「目录独有」，不抄第二份接线）。
+        const 读 = yield* 建项目读目录({ 层, raw })
+        if (读 === undefined) return HttpServerResponse.jsonUnsafe({ error: "读取文件树失败" }, { status: 500 })
 
         // `扫树` 是 Promise ⇒ 过桥再拿（`Effect.gen` 里不能 `await`；任务书那段是示意，照抄会直接
         // 抛 `"await" can only be used inside an "async" function`）。
