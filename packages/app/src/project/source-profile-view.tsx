@@ -45,6 +45,11 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
    * 旧回包晚到时直接丢弃，不回写（`#010-05`）。
    */
   let 列表代 = 0
+  /**
+   * 项目代：只在切项目（effect 重跑）时加一。动作回包与 `finally` 都按它判「是否已切走」——
+   * 不能用 `列表代`：成功路径里的 `取清单` 自己也会加 `列表代`，两者的语义不同。
+   */
+  let 项目代 = 0
 
   const 取清单 = async (客户端: SourceProfileApi, 项目: string) => {
     const 代 = ++列表代
@@ -61,8 +66,11 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
     const 项目 = props.projectId
     const 客户端 = api()
     列表代 += 1
+    项目代 += 1
     set档案们(undefined)
     set错误(undefined)
+    // 切项目即换掉在途动作的上下文：新项目可以立刻发起自己的建档（旧回包由守卫丢弃）。
+    set忙(false)
     let 作废 = false
     onCleanup(() => {
       作废 = true
@@ -94,7 +102,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
     set问题们([])
     // 与列表同一守卫口径：动作发出时记下当前代与项目，回包晚到且代已变 ⇒ 整段丢弃
     // （含错误 / 问题项 / 表单复位），不写进新项目（B5 / `#010-05`）。
-    const 代 = 列表代
+    const 代 = 项目代
     const 项目 = props.projectId
     try {
       const 结果 = await api().build({
@@ -104,7 +112,7 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
         ...(工作表().trim() === "" ? {} : { 工作表: 工作表().trim() }),
         ...(覆盖() ? { 覆盖: true } : {}),
       })
-      if (代 !== 列表代) return
+      if (代 !== 项目代) return
       if (结果.kind === "error") {
         set错误(结果.message)
         set问题们(结果.problems ?? [])
@@ -116,26 +124,27 @@ export function SourceProfileView(props: SourceProfileViewProps): JSX.Element {
       set覆盖(false)
       await 取清单(api(), 项目)
     } catch {
-      if (代 === 列表代) set错误("建档失败，请重试")
+      if (代 === 项目代) set错误("建档失败，请重试")
     } finally {
-      set忙(false)
+      // A 的旧回包不许清掉 B 的「忙」：只有代仍是当前项目时才复位。
+      if (代 === 项目代) set忙(false)
     }
   }
 
   async function 撤销(id: string) {
     if (!props.是属主) return
-    const 代 = 列表代
+    const 代 = 项目代
     const 项目 = props.projectId
     try {
       const 结果 = await api().revoke({ projectId: 项目, id })
-      if (代 !== 列表代) return
+      if (代 !== 项目代) return
       if (结果.kind === "error") {
         set错误(结果.message)
         return
       }
       await 取清单(api(), 项目)
     } catch {
-      if (代 === 列表代) set错误("撤销失败，请重试")
+      if (代 === 项目代) set错误("撤销失败，请重试")
     }
   }
 

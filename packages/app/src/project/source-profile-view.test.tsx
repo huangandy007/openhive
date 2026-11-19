@@ -203,6 +203,68 @@ describe("数据源档案视图", () => {
     expect(host.querySelector("[data-slot='source-profile-problems']") === null).toBe(true)
   })
 
+  test("A 建档在途时切到 B 并建档：A 的回包不清 B 的「忙」（轮 2 finding 4；变异：finally 不守卫 ⇒ 本条红）", async () => {
+    let 放行A: ((response: Response) => void) | undefined
+    let 放行B: ((response: Response) => void) | undefined
+    const 闸A = new Promise<Response>((resolve) => {
+      放行A = resolve
+    })
+    const 闸B = new Promise<Response>((resolve) => {
+      放行B = resolve
+    })
+    let 建档次数 = 0
+    let 列表次数 = 0
+    const send = async (url: string) => {
+      if (url.includes("/source-profile/build")) {
+        建档次数 += 1
+        return 建档次数 === 1 ? 闸A : 闸B
+      }
+      if (url.includes("/source-profile/revoke")) return 回({ ok: true })
+      列表次数 += 1
+      if (列表次数 === 1) return 回({ list: [档案行] })
+      return 回({ list: [{ ...档案行, id: "s2", name: "二号项目档案" }] })
+    }
+    const api = createSourceProfileApi(send)
+    const [项目, set项目] = createSignal("p1")
+    const host = mount(() => (
+      <SourceProfileView
+        projectId={项目()}
+        是属主={true}
+        api={api}
+        材料们={[{ id: "m1", path: "资料/流水.xlsx" }]}
+      />
+    ))
+    await 等(() => host.querySelector("[data-slot='source-profile-row']") !== null)
+
+    const 选择 = host.querySelector<HTMLSelectElement>("[data-slot='source-profile-material']")!
+    选择.value = "m1"
+    选择.dispatchEvent(new Event("change", { bubbles: true }))
+    const 提交 = () => host.querySelector<HTMLButtonElement>("[data-slot='source-profile-submit']")!
+    提交().dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await 等(() => 建档次数 === 1)
+    expect(提交().disabled).toBe(true)
+
+    // 切到 B：切项目要复位「忙」，否则 B 永远点不了建档。
+    set项目("p2")
+    await 等(() => (host.textContent ?? "").includes("二号项目档案"))
+    expect(提交().disabled).toBe(false)
+
+    // 在 B 发起第二次建档（此时 B 才是在途的那一个）。
+    提交().dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    await 等(() => 建档次数 === 2)
+    expect(提交().textContent).toContain("正在建档")
+
+    // A 的回包晚到：既不能写错误，也不能把 B 的「忙」清掉。
+    放行A!(回({ error: "映射不合法", code: "mapping_invalid", problems: ["金额 缺单位"] }, 400))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(提交().textContent).toContain("正在建档")
+    expect(提交().disabled).toBe(true)
+    expect((host.textContent ?? "").includes("金额 缺单位")).toBe(false)
+
+    放行B!(回({ id: "s3", created: true }))
+    await 等(() => 提交().disabled === false)
+  })
+
   test("切项目后，切走前发出的重拉晚到 ⇒ 不回写旧项目列表（#010-05）", async () => {
     let 放行慢读: ((response: Response) => void) | undefined
     const 慢读 = new Promise<Response>((resolve) => {
