@@ -7088,4 +7088,62 @@ describe("016 组件接进工作台（T021 / R3b 注入缝）", () => {
       setProjectFiles(undefined)
     }
   })
+
+  /**
+   * R3d：清单**到了**、但没有这个项目的 `role`（＝确实不是成员）——与「清单还没取到」
+   * 是两种语义，必须仍置灰且说默认那句。缺这条时，把 `能重跑` 写成
+   * `projectList() !== undefined`（有清单就当成员）也全绿。
+   */
+  test("清单已到但项目无 role ⇒ 仍置灰、用「需要项目成员」、不说「还没取到」", async () => {
+    const 设置桩: CaseIngestApi = {
+      readSettings: async () => ({
+        kind: "ok",
+        value: { autoEnqueue: false, autoEnableTrusted: false, updatedAt: null },
+      }),
+      writeSettings: async () => ({ kind: "error", message: "本用例不写设置" }),
+      scan: async () => ({
+        kind: "ok",
+        value: {
+          合计: 1,
+          候选: {
+            目录独有: [],
+            未入队: [],
+            未识别: [{ materialId: "m1", path: "资料/待识别.xlsx", 原因码: "unknown" }],
+          },
+          样本: ["资料/待识别.xlsx"],
+          截断: false,
+        },
+      }),
+      rerun: async () => ({ kind: "ok", value: { 已入队: 0, 跳过: [], 失败: [] } }),
+    }
+    const 材料 = 假材料状态({ rows: [视图行({ path: "a.csv", status: "已解析" })] })
+    const host = mount(() => (
+      <WorkspaceEntry caseIngestApi={设置桩} caseMaterials={材料.状态}>
+        中栏
+      </WorkspaceEntry>
+    ))
+
+    try {
+      setCurrentProject({ id: "p1", name: "甲" })
+      setProjectFiles(["a.csv"])
+      // 清单已到：有这一行，但**没有 `role`**（缺键 = 不是成员）。
+      setProjectList([私有("p1", "甲", 1)])
+      await 冲一遍()
+
+      host.querySelector<HTMLButtonElement>("[data-slot='file-tree-open-rerun']")!.click()
+      await 等到(() => host.querySelector("[data-slot='case-rerun-total']") !== null)
+
+      // 扫描回 1 个候选 ⇒ 范围非空，按钮若只被「忙 / 范围」挡住就会暴露成可点。
+      expect(host.querySelector<HTMLButtonElement>("[data-slot='case-rerun-run']")!.disabled).toBe(true)
+      expect(host.querySelector("[data-slot='case-rerun-reason']")?.textContent?.trim()).toBe(
+        "需要项目成员才能一键重跑",
+      )
+      // 布尔比较（`#013-12`）：清单明明到了，不能说「还没取到」。
+      expect((host.textContent ?? "").includes("项目清单还没取到")).toBe(false)
+    } finally {
+      setProjectList(undefined)
+      setCurrentProject(undefined)
+      setProjectFiles(undefined)
+    }
+  })
 })
