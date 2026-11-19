@@ -43,11 +43,10 @@ import { usableSkillAssets } from "./skill-availability"
  * 一份坏包不该让整批探测失败。
  */
 
-export interface 适配器 {
+interface 适配器公共 {
   readonly id: string
   readonly name: string
   readonly version: string
-  readonly kind: "rowRules" | "converter"
   readonly materialType: "资金" | "话单" | "其他"
   readonly attributeKeys: readonly string[]
   readonly match: {
@@ -57,26 +56,55 @@ export interface 适配器 {
   }
   readonly admission: { readonly checks: readonly string[]; readonly thresholds: Record<string, number> }
   readonly rowRules: readonly string[]
-  readonly entry?: { readonly command: string; readonly input: string; readonly output: "json" }
-  readonly output?: { readonly file: string }
   /** 技能目录绝对路径（执行器的 cwd） */
   readonly 目录: string
 }
 
+/**
+ * 按 `kind` 判别：两种 kind 都必须有 `entry.input` / `entry.output` / `output.file`
+ * （契约 §字段规则 46–49 行），只有 `entry.command` 是 converter 专属。
+ * 下游 `适配.kind === "converter"` 即可收窄（T008），**不要**在别处再判一次「converter 才有 entry」。
+ */
+export type 适配器 =
+  | (适配器公共 & {
+      readonly kind: "converter"
+      readonly entry: { readonly command: string; readonly input: string; readonly output: "json" }
+      readonly output: { readonly file: string }
+    })
+  | (适配器公共 & {
+      readonly kind: "rowRules"
+      readonly entry: { readonly command?: string; readonly input: string; readonly output: "json" }
+      readonly output: { readonly file: string }
+    })
+
 export interface 适配器注册表 {
   readonly 适配器: readonly 适配器[]
-  /** 读到了目录/文件但识别卡不可用的资产；**不放行**，交调用方告警（`#006-28` 反面：不吞） */
+  /**
+   * 读到了目录/文件但识别卡不可用的资产；**不放行**。
+   * 事实口径：注册表自己会记一条 WARN（含资产 id，见下方 `console.warn`），调用方可以再记一条；
+   * 不要按「读口不告警」的旧描述把模块内的告警删掉（`#006-28` 反面：不吞）。
+   */
   readonly 跳过: readonly { readonly id: string; readonly 原因: string }[]
 }
 
-type 适配器无目录 = Omit<适配器, "目录">
+/** 对联合分项逐个 Omit，保留 `kind` 判别（`Omit<联合, ...>` 会塌成公共键）。 */
+type 去掉目录<T> = T extends unknown ? Omit<T, "目录"> : never
+type 适配器无目录 = 去掉目录<适配器>
 
 const 识别卡 = "adapter.json"
 const 告警标签 = "[openhive-case-adapter-registry]"
+/** `entry.input` / `entry.output` / `output.file` 是两种 kind 的公共必填；缺失时统一口径。 */
+const 缺入口输出原因 = "识别卡缺少 entry/output（发布闸应已拦截）"
 const 材料类型们 = ["资金", "话单", "其他"] as const
 const 执行方式们 = ["rowRules", "converter"] as const
 
-/** 目录签名缓存。键 = `realpath(项目目录)`。 */
+/**
+ * 目录签名缓存。键 = `realpath(项目目录)`。
+ *
+ * 隐含不变量：签名里包含每份卡片的 `realpath(adapter.json)` 与候选 id 集合 ⇒ 签名相同意味着
+ * 候选集合与文件状态都相同，因此 `viewer` 不必进缓存键；任何把签名简化为「目录级 mtime 汇总」
+ * 的改动都会让跨用户可见性泄漏，**禁止**（`#011-01`：为匹配做的归一化不许进指纹）。
+ */
 const 缓存 = new Map<string, { readonly 签名: string; readonly 值: 适配器注册表 }>()
 
 export async function 读适配器注册表(
@@ -170,9 +198,8 @@ async function 读一份(目录: string): Promise<{ 适配器?: 适配器; 原�
  * - `match.requiredHeaders` 必须**非空**：空数组会让探测命中一切表（fail-closed 的底线）；
  * - `kind=rowRules` 的 `rowRules` 必须非空——内核要拿它执行；`kind=converter` 允许缺省（契约里仅作说明），
  *   缺省按 `[]` 补齐（出参字段非可选）；
- * - `entry` 只有在 `command` 非空时才放进出参（出参形状里 `command` 必填）；`rowRules` 允许不声明
- *   `entry.command`，那种卡仍合法，只是出参不带宽 `entry`；
- * - `kind=converter` 必须有 `entry.command` 与 `output.file`（契约必填）。
+ * - `entry.input` / `entry.output` / `output.file` **两种 kind 都必填**（契约 §字段规则 46–49 行）：
+ *   缺任一即跳过，**不静默丢 `entry`**；只有 `entry.command` 是 `kind=converter` 专属必填。
  */
 function 解析识别卡(值: unknown): { 值?: 适配器无目录; 原因?: string } {
   if (!是对象(值)) return { 原因: "adapter.json 顶层必须是对象" }
@@ -231,51 +258,46 @@ function 解析识别卡(值: unknown): { 值?: 适配器无目录; 原因?: str
     rowRules = 规则原文
   }
 
+  // entry / output：两种 kind 都要（契约 46–49 行）；这里是唯一的「有没有 entry」判定，
+  // 别在调用处再写一份 converter 专属判断。
   const entry原文 = 值["entry"]
-  let entry: 适配器["entry"]
-  if (entry原文 !== undefined) {
-    if (!是对象(entry原文)) return { 原因: "adapter.json：entry 必须是对象" }
-    const input = entry原文["input"]
-    const output = entry原文["output"]
-    const command = entry原文["command"]
-    if (!是非空串(input)) return { 原因: "adapter.json：entry.input 不能为空" }
-    if (output !== "json") return { 原因: 'adapter.json：entry.output 必须是 "json"' }
-    if (command !== undefined && !是非空串(command)) {
-      return { 原因: "adapter.json：entry.command 必须是非空字符串" }
-    }
-    if (是非空串(command)) entry = { command, input, output: "json" }
-  }
-  if (kind === "converter" && entry === undefined) {
-    return { 原因: "adapter.json：kind=converter 时必须声明 entry.command" }
+  if (!是对象(entry原文)) return { 原因: 缺入口输出原因 }
+  const input = entry原文["input"]
+  const entry输出 = entry原文["output"]
+  if (!是非空串(input) || entry输出 !== "json") return { 原因: 缺入口输出原因 }
+  const command = entry原文["command"]
+  if (command !== undefined && !是非空串(command)) {
+    return { 原因: "adapter.json：entry.command 必须是非空字符串" }
   }
 
   const output原文 = 值["output"]
-  let output: { file: string } | undefined
-  if (output原文 !== undefined) {
-    if (!是对象(output原文)) return { 原因: "adapter.json：output 必须是对象" }
-    const 文件 = output原文["file"]
-    if (!是非空串(文件)) return { 原因: "adapter.json：output.file 不能为空" }
-    output = { file: 文件 }
-  }
-  if (kind === "converter" && output === undefined) {
-    return { 原因: "adapter.json：kind=converter 时必须声明 output.file" }
+  if (!是对象(output原文)) return { 原因: 缺入口输出原因 }
+  const 文件 = output原文["file"]
+  if (!是非空串(文件)) return { 原因: 缺入口输出原因 }
+  const output = { file: 文件 }
+
+  const 公共 = {
+    id,
+    name,
+    version,
+    materialType,
+    attributeKeys,
+    match: { requiredHeaders, optionalHeaders, priority },
+    admission: { checks, thresholds },
+    rowRules,
+    output,
   }
 
-  return {
-    值: {
-      id,
-      name,
-      version,
-      kind,
-      materialType,
-      attributeKeys,
-      match: { requiredHeaders, optionalHeaders, priority },
-      admission: { checks, thresholds },
-      rowRules,
-      entry,
-      output,
-    },
+  if (kind === "converter") {
+    if (!是非空串(command)) return { 原因: "adapter.json：kind=converter 时必须声明 entry.command" }
+    return { 值: { ...公共, kind: "converter", entry: { command, input, output: "json" } } }
   }
+
+  // rowRules 的 entry 必须保留进出参（不再因没有 command 被丢）；command 缺就缺。
+  const entry = 是非空串(command)
+    ? { command, input, output: "json" as const }
+    : { input, output: "json" as const }
+  return { 值: { ...公共, kind: "rowRules", entry } }
 }
 
 function 按id(a: { readonly id: string }, b: { readonly id: string }): number {

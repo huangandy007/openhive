@@ -40,6 +40,9 @@ const IDS = {
   noCard: "asset_t005_no_card",
   badJson: "asset_t005_bad_json",
   missingKind: "asset_t005_missing_kind",
+  // 平局决胜（M3）：资产 id 顺序故意与卡 id 顺序相反——排序若丢了 id 决胜就会露馅。
+  tieAssetA: "asset_t005_tie_a",
+  tieAssetB: "asset_t005_tie_b",
 } as const
 
 const 资产 = (over: Partial<AssetMetadata> & Pick<AssetMetadata, "id" | "name" | "status">): AssetMetadata => ({
@@ -99,6 +102,16 @@ function 行规则卡(): Record<string, unknown> {
     rowRules: ["本方 = 主叫 ? 主叫 : 被叫"],
     entry: { input: "xlsx", output: "json" },
     output: { file: "rows.json" },
+  }
+}
+
+/** 平局用例：priority 相同、只有卡 id 不同（都 converter、可解析）。 */
+function 平局卡(卡id: string): Record<string, unknown> {
+  return {
+    ...转换器卡(),
+    id: 卡id,
+    name: `平局${卡id}`,
+    match: { requiredHeaders: ["交易时间"], optionalHeaders: [], priority: 150 },
   }
 }
 
@@ -169,6 +182,9 @@ beforeAll(async () => {
   await insertAsset(pg.db, 资产({ id: IDS.noCard, name: "缺卡戊", status: "published", publishedAt: 900 }))
   await insertAsset(pg.db, 资产({ id: IDS.badJson, name: "坏卡己", status: "published", publishedAt: 900 }))
   await insertAsset(pg.db, 资产({ id: IDS.missingKind, name: "缺字段庚", status: "published", publishedAt: 900 }))
+
+  await insertAsset(pg.db, 资产({ id: IDS.tieAssetA, name: "平局装载甲", status: "published", publishedAt: 900 }))
+  await insertAsset(pg.db, 资产({ id: IDS.tieAssetB, name: "平局装载乙", status: "published", publishedAt: 900 }))
 })
 
 afterAll(async () => {
@@ -212,6 +228,10 @@ describe("016 T005 · 适配器注册表（候选 / 跳过 / 排序）", () => {
     expect(注册表.适配器[1]?.attributeKeys).toEqual(["对方:开户行"])
     expect(注册表.适配器[1]?.entry?.command).toBe("bun run convert.ts")
     expect(注册表.适配器[1]?.output?.file).toBe("result.json")
+    // I1：rowRules 卡没有 command，但 entry 的进出参与 output 仍必须保留（不再被静默丢弃）。
+    expect(注册表.适配器[0]?.entry.input).toBe("xlsx")
+    expect(注册表.适配器[0]?.entry.output).toBe("json")
+    expect(注册表.适配器[0]?.output.file).toBe("rows.json")
   })
 
   it("未发布（draft）与 personal 技能不出现——哪怕目录里放着识别卡", async () => {
@@ -267,6 +287,19 @@ describe("016 T005 · 适配器注册表（候选 / 跳过 / 排序）", () => {
     expect(注册表.适配器.filter((条) => 条.id === "converter-direct")).toHaveLength(1)
   })
 
+  it("priority 相同 ⇒ 按卡 id 字典序决胜（资产 id 顺序相反也不影响）", async () => {
+    清空告警()
+    const 根 = 建根()
+    // 资产 id 排序是 a→b，但卡 id 是 b-tie / a-tie：排序丢掉 id 决胜就会稳定保持 b-tie 在前。
+    建卡(根, IDS.tieAssetA, 平局卡("b-tie"))
+    建卡(根, IDS.tieAssetB, 平局卡("a-tie"))
+
+    const 注册表 = await 读(根)
+
+    expect(注册表.适配器[0]?.id).toEqual("a-tie")
+    expect(注册表.适配器.map((项) => 项.id)).toEqual(["a-tie", "b-tie"])
+  })
+
   it("文件没动连读两次 ⇒ 同一份对象（缓存命中，不依赖时间）", async () => {
     清空告警()
     const 根 = 建根()
@@ -297,5 +330,23 @@ describe("016 T005 · 目录签名缓存", () => {
     const 后 = await 读(根)
     expect(后.适配器.find((项) => 项.id === "converter-direct")?.version).toBe("2.0.0")
     expect(后 === 前).toBe(false)
+  })
+
+  it("缓存键随项目目录隔离：同一 asset id 的两份卡，A 的值不会被 B 覆盖", async () => {
+    清空告警()
+    const A = 建根()
+    const B = 建根()
+    建卡(A, IDS.converter, 转换器卡("1.0.0"))
+    建卡(B, IDS.converter, 转换器卡("2.0.0"))
+
+    const 甲 = await 读(A)
+    expect(甲.适配器.find((项) => 项.id === "converter-direct")?.version).toEqual("1.0.0")
+
+    const 乙 = await 读(B)
+    expect(乙.适配器.find((项) => 项.id === "converter-direct")?.version).toEqual("2.0.0")
+
+    // 重点：读过 B 之后再读 A，仍必须是 A 自己的值（缓存不得把 B 的值回给 A）。
+    const 甲再 = await 读(A)
+    expect(甲再.适配器.find((项) => 项.id === "converter-direct")?.version).toEqual("1.0.0")
   })
 })
