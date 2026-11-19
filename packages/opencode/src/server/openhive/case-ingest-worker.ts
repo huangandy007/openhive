@@ -2,13 +2,17 @@ export * as OpenhiveCaseIngestWorker from "./case-ingest-worker"
 
 import { readFile } from "node:fs/promises"
 import { Cause, Effect, Layer } from "effect"
+import { sql } from "drizzle-orm"
+import { rowsOf } from "@opencode-ai/auth/migrate"
 import { Config as CoreConfig } from "@/config/config"
 import { InstanceStore } from "@/project/instance-store"
 import { Provider } from "@/provider/provider"
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
+import { 读适配器注册表 } from "./case-adapter-registry"
 import { 建调用模型 } from "./case-extract-ai"
 import { 建表头识别器 as 建表头识别器AI } from "./case-header-ai"
 import { claimNextJob, runJob, 作业项目目录, 沙箱内路径, type ClaimedJob } from "./case-ingest"
+import type { Queryable } from "./case-store"
 import { 解析启动模型 } from "./model-resolve"
 import { OpenhivePg } from "./pg"
 
@@ -32,6 +36,8 @@ import { OpenhivePg } from "./pg"
  * 作业不必反查用户与项目，进程重启后照跑。
  */
 export const 轮询间隔ms = 500
+
+const 告警标签 = "[openhive-case-ingest-worker]"
 
 /** `connect(env)` 拼连接串要的变量。缺任一 ⇒ 这台部署不接业务 PG。 */
 const PG_ENV = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const
@@ -155,6 +161,29 @@ export const layer = Layer.effectDiscard(
             },
             建抽取器,
             建表头识别器,
+            根目录: config.root,
+            // Ruling J：注册表由 worker 注入；可见性判定一律走 `读适配器注册表`，这里不重写。
+            读适配器: async (job) => {
+              const 项目目录 = 作业项目目录(config.root, job.sourcePath, job.projectId)
+              if (项目目录 === undefined) {
+                console.warn(`${告警标签} 作业落点不合法，适配器注册表按空处理：${job.sourcePath}`)
+                return { 适配器: [], 跳过: [] }
+              }
+              const viewer = {
+                userId: job.queuedBy ?? "",
+                department: await 读取部门(db, job.queuedBy ?? ""),
+              }
+              const 注册表 = await 读适配器注册表(db, viewer, 项目目录)
+              // Ruling AB：`跳过` 是 `global` 档适配器（默认不在项目目录建链接）唯一的排障线索。
+              if (注册表.跳过.length > 0) {
+                console.warn(
+                  `${告警标签} 适配器注册表跳过（不放行）：${注册表.跳过
+                    .map((项) => `${项.id}: ${项.原因}`)
+                    .join("；")}`,
+                )
+              }
+              return 注册表
+            },
           },
           job,
         )
@@ -171,3 +200,14 @@ export const layer = Layer.effectDiscard(
     yield* Effect.forkScoped(Effect.forever(Effect.sleep(轮询间隔ms).pipe(Effect.andThen(跑一个))))
   }),
 )
+
+/**
+ * 读者部门（`AssetViewer` 判「同部门」要用它）。读不到 ⇒ 空串：只剩全局那一支。
+ *
+ * 同一取法照 `access.ts` 的 `departmentOf`（私有函数，不复制它的整段判据，只复制这一条查询）。
+ */
+async function 读取部门(db: Queryable, userId: string): Promise<string> {
+  const rows = rowsOf(await db.execute(sql`select dept from auth.user where id = ${userId}`))
+  const 部门 = rows[0]?.["dept"]
+  return typeof 部门 === "string" ? 部门 : ""
+}
