@@ -45,7 +45,7 @@
 
 ## D4 · 探测的读盘方式：复用 `readSheets`，小窗口
 
-**Decision**: 探测用 `readSheets(bytes, { maxSheets: 1, maxRowsPerSheet: 5 })` 取表头 + 5 行样本；两道闸（表头闸 / 值闸）都只在这份小窗口上跑。**只对表格材料探测**；文本材料（`.txt` / `.md` / `.log` / `.docx`）不走适配器探测，沿用既有抽取链（文本没有表头，注册表无判据可用）。
+**Decision**: 探测用 `readSheets(bytes, { maxSheets: 1, maxRowsPerSheet: 5 })` 取表头；探测**只跑表头闸**，值验证闸归作业链（转换成功返回后读转换器 `report.gates`，Ruling X/AV），不在这份小窗口上另跑一份。**只对表格材料探测**；文本材料（`.txt` / `.md` / `.log` / `.docx`）不走适配器探测，沿用既有抽取链（文本没有表头，注册表无判据可用）。
 
 **Rationale**: `case-sheet.ts` 刻意不用 SheetJS 的 `sheetRows`（文件头写明理由：扫描面积闸要按声明区域算，防整列格式化文件把内核拖死）。小窗口让探测的「识别」与作业链的「识别」用**同一份读表函数**（`#002-06`：同一前提单一出处），不另写一条 header peek。已知代价：`XLSX.read` 仍整本解析容器，超大文件探测可能超 1 秒——按「已知风险 2」处理，不放大承诺。
 
@@ -67,7 +67,7 @@
 
 **Decision**: `case-converter-runner.ts` 用 `node:child_process` 的 `spawn`（既有先例 `governance-mcp-supervisor.ts:1`）；`cwd` = 已启用技能目录（`作业项目目录/.opencode/skill/<assetId>`）；命令来自 `adapter.json` 的 `entry.command`（只允许白名单前缀：`bun run` / `node`）；输入只读原件路径（由内核复制 / 只读挂载不必要——直接给原件绝对路径，子进程只读）；输出写技能目录内 `output.file`（技能包是共享资产：运行前已存在即拒，只删本次新建的输出）；超时（默认 60 秒，可按作业覆盖）；环境变量**剔除 `PG_*` 与数据库连接串**，只给 `PATH` / `HOME` / 临时目录等最小集。`kind` 闭集 `{"rowRules","converter"}`：`rowRules` 由内核按声明的规则执行（FR-011，不起子进程）；`converter` 走本执行器，`rowRules` 字段在 `converter` 包里仅作评审与回归说明，不执行。
 
-**Rationale**: 需求 §7.2 要求「不注入 PG 凭据、只读输入、只写临时输出、有超时」；既有 supervisor 已把 spawn / 环境白名单 / 超时的坑踩过一遍，照形状写比重新发明安全。`kind` 必须区分，否则 FR-011 与 FR-012 无法分别验证。
+**Rationale**: 需求 §7.2 要求「不注入 PG 凭据、只读输入、只写临时输出、有超时」；本设计按 Ruling AS 落成「只写本次新建的输出文件（技能包是共享资产：运行前已存在即拒，不覆盖、不删除既有文件）」，崩溃残留由运行标记自愈（Ruling BJ）；既有 supervisor 已把 spawn / 环境白名单 / 超时的坑踩过一遍，照形状写比重新发明安全。`kind` 必须区分，否则 FR-011 与 FR-012 无法分别验证。
 
 **Alternatives considered**: ① `Bun.spawn`——可用，但与既有先例不一致，测试桩也要另写一份；② 进程内 `import()` 执行 convert.ts——外部代码拿到内核进程的全部环境（含 DB 凭据），直接违反 §7.2。
 
