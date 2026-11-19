@@ -54,8 +54,10 @@ import {
   upsertEntity,
   删除本材料的事实,
 } from "./case-fact-store"
-import { 翻译资金, 跳过原因们, type 翻译结果 } from "./case-translate"
+import { 翻译资金, 跳过原因们, type 属性观察, type 翻译结果 } from "./case-translate"
 import { 清本材料翻译, 写入翻译结果, 重建关系, 本材料转账对, type 关系对 } from "./case-translate-store"
+import { 富化, 查案件库账号, type 富化结果 } from "./case-enrich"
+import { 建参考库, type 参考库, type 外部核验服务 } from "./case-reference-store"
 import { 确保内置模板, 是用户模板id, 建议模板, 资金模板id, type 模板行 } from "./case-card-template"
 import { 记模板命中, 读模板行, 列出模板 } from "./case-card-template-store"
 import { 翻译模板 } from "./case-template-translate"
@@ -310,6 +312,13 @@ export interface RunDeps {
    * 原四层逻辑一字不改（既有调用方与用例零改动）。
    */
   读适配器?: (job: ClaimedJob) => Promise<适配器注册表>
+  /**
+   * 富化参考库（T012）。不注入 ⇒ 每次作业建一个「内置-空」库：参考类全部走「查不到 +
+   * 告警」的兜底（FR-052 不阻塞入库），行为与「没有数据源」一致。
+   */
+  参考库?: 参考库
+  /** 外部核验服务（T012）。不注入 ⇒ 身份类键一律进「待确认」。 */
+  外部服务?: 外部核验服务
 }
 
 /** `runJob` 的运行选项（单次调用，不是部署配置）。 */
@@ -468,6 +477,21 @@ function 合并翻译结果(结果们: readonly 翻译结果[]): 翻译结果 {
     别名们: 结果们.flatMap((结果) => 结果.别名们),
     属性们: 结果们.flatMap((结果) => 结果.属性们),
     跳过们: 结果们.flatMap((结果) => 结果.跳过们),
+  }
+}
+
+/**
+ * 把富化产出的属性观察并入翻译结果（T012）。**仍在唯一写入口之前**——事务里不另写一份
+ * attrs（`#002-06`）。按 `(归属,键,值,出处)` 去重：既有的属性观察先到先得。
+ */
+function 并入属性观察(翻译: 翻译结果, 属性们: readonly 属性观察[]): void {
+  const 键 = (a: 属性观察) => `${a.归属}\u0000${a.键}\u0000${a.值}\u0000${a.出处}`
+  const 已见 = new Set(翻译.属性们.map(键))
+  for (const a of 属性们) {
+    const k = 键(a)
+    if (已见.has(k)) continue
+    已见.add(k)
+    翻译.属性们.push(a)
   }
 }
 
@@ -828,6 +852,35 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
     翻译模板({ projectId: job.projectId, materialId: job.materialId, template: 套.模板, rows: 套.表.rows }),
   )
   const 资金翻译 = 识别.类型 === "资金" ? 翻译资金({ projectId: job.projectId, materialId: job.materialId, rows: 资金行 }) : undefined
+
+  /**
+   * 016 T012 · 富化（Ruling B：`翻译资金` 之后、事务之前；Ruling L：只接资金材料）。
+   *
+   * 富化失败**不拖垮作业**：参考库 / 外部服务是增强通道，不是入库必经环节（FR-052）。
+   * 但异常必须留痕（`#006-28`），不写裸 catch。属性观察并入 `资金翻译` 后仍由
+   * `写入翻译结果` 这一条写入口落库——事务里不另写一份 attrs。
+   */
+  let 富化结果: 富化结果 | undefined
+  if (识别.类型 === "资金" && 资金行.length > 0) {
+    if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 0, 总数: 资金行.length })
+    try {
+      富化结果 = await 富化(
+        { projectId: job.projectId, materialId: job.materialId, rows: 资金行 },
+        {
+          参考库: deps.参考库 ?? 建参考库(async () => ({ 版本: "内置-空", 条目: [] })),
+          ...(deps.外部服务 === undefined ? {} : { 外部服务: deps.外部服务 }),
+          案件库: (值们) => 查案件库账号(db, job.projectId, 值们),
+        },
+      )
+      if (资金翻译 !== undefined) 并入属性观察(资金翻译, 富化结果.属性们)
+    } catch (error) {
+      console.warn(
+        `[openhive-case-ingest] 富化失败（不影响作业）：${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (选项.dryRun !== true) await 写进度(db, job, { 阶段: "富化", 已处理: 资金行.length, 总数: 资金行.length })
+  }
+
   const 翻译 = 资金翻译 === undefined && 模板翻译们.length === 0 ? undefined : 合并翻译结果([
     ...(资金翻译 === undefined ? [] : [资金翻译]),
     ...模板翻译们,
@@ -935,6 +988,8 @@ async function 跑表格(db: Queryable, deps: RunDeps, job: ClaimedJob, 选项: 
         // 根级（不进 `翻译`）：非资金材料也要能说清「哪张表为什么不产卡片」（I3 / G4）。
         ...(未翻译表.length === 0 ? {} : { 未翻译表 }),
         ...(卡片模板明细.length === 0 ? {} : { 卡片模板: 卡片模板明细 }),
+        // T012 富化：统计给报告五要素用；补全明细（依据 / 置信度 / 版本）供 T013 取样。
+        ...(富化结果 === undefined ? {} : { 富化: 富化结果.统计, 补全明细们: 富化结果.补全明细们 }),
         ...(翻译回执 === undefined || 翻译 === undefined
           ? {}
           : {

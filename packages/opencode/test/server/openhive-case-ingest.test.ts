@@ -25,6 +25,7 @@ import type { 材料识别 } from "../../src/server/openhive/case-recognize"
 import { 表格材料们 } from "../../script/openhive-case-stage0"
 import { 建假抽取器 } from "./openhive-case-extract-fixture"
 import { 建实体 } from "./openhive-case-fact-fixture"
+import { 建参考库, type 参考库 } from "../../src/server/openhive/case-reference-store"
 
 /**
  * 起夹具的方式与理由见 `openhive-case-schema.test.ts` 文件头（本包没有 pglite 依赖）。
@@ -2462,5 +2463,87 @@ process.exit(3)
     const 对照侧 = await 取行(对照项目)
     expect(适配侧.length).toBeGreaterThan(0)
     expect(适配侧).toEqual(对照侧)
+  })
+})
+
+/**
+ * 016 T012 · 富化接入（Ruling B：`翻译资金` 之后、事务之前；Ruling L：只接资金材料）。
+ *
+ * 钉两件事：① 富化的属性观察**经唯一写入口**（`写入翻译结果`）落到 `case_entity.attrs`，
+ * 出处是 `<materialId>#<sheet>#<rowNo>`；② 参考库查不到**不影响入库**——材料仍「已解析」、
+ * 事实行照旧，只在 `parse_detail.富化.未补全数` 里留痕（FR-052：参考类不阻塞）。
+ */
+describe("富化接入", () => {
+  const 本方账号 = "6217001234567896514"
+  const 对方账号 = "6222021234567890123"
+  const 资金表 = 造工作簿({
+    Sheet1: [
+      ["交易时间", "交易金额", "本方账号", "对方账号", "对方户名", "收付标志"],
+      ["2026-02-01 10:00:00", "100.00", 本方账号, 对方账号, "李四", "付"],
+    ],
+  })
+
+  beforeEach(async () => {
+    // `claimNextJob` 是全局 FIFO：别组留下的排队行会盖住本组判据（`#005-34` 的污染）。
+    await db().execute(sql`delete from auth.case_ingest_job where status = '排队中'`)
+  })
+
+  /** 入队一份资金表并认领 → 在基线 `deps` 上叠加注入项跑完。 */
+  async function 跑资金(projectId: string, depsOver: { 参考库?: 参考库 }) {
+    const 文件名 = "流水.xlsx"
+    文件.set(`${projectId}/${文件名}`, 资金表)
+    const 入 = await 入队(projectId, 文件名, Hash.sha256(`${projectId}-富化`))
+    const 作业 = await claimNextJob(db())
+    if (!作业) throw new Error("队列是空的")
+    const 结果 = await runJob(db(), { ...deps, ...depsOver }, 作业)
+    return { 入, 结果 }
+  }
+
+  /** jsonb 读回：PGlite 给 JSON 文本，别的驱动可能给对象（既有用例同口径）。 */
+  function 解析属性(原始: unknown): Record<string, unknown> | undefined {
+    const 值 = typeof 原始 === "string" ? JSON.parse(原始) : 原始
+    return 是对象(值) ? 值 : undefined
+  }
+
+  test("用例 9 · 参考类命中：开户行经 attrs 落库，parse_detail.富化 有统计", async () => {
+    const projectId = "p-富化命中"
+    const 参考库 = 建参考库(async () => ({
+      版本: "ref-v1",
+      条目: [{ 类别: "开户行" as const, 值: 本方账号, 结果: "招商银行" }],
+    }))
+    const { 入, 结果 } = await 跑资金(projectId, { 参考库 })
+    expect(结果).toBe("完成")
+
+    const 实体们 = rowsOf(
+      await db().execute(sql`
+        select canonical_value, attrs from auth.case_entity
+         where project_id = ${projectId} and type = '账户' and canonical_value = ${本方账号}
+      `),
+    )
+    expect(实体们).toHaveLength(1)
+    const attrs = 解析属性(实体们[0]?.attrs)
+    if (attrs === undefined) throw new Error("attrs 形状不对")
+    expect(attrs["开户行"]).toEqual([{ 值: "招商银行", 出处: `${入.materialId}#Sheet1#2` }])
+
+    const 材料 = await getMaterial(db(), projectId, 入.materialId)
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || !是对象(详情["富化"])) throw new Error("parse_detail.富化 形状不对")
+    expect(Number(详情["富化"]["补全数"])).toBeGreaterThan(0)
+    expect(详情["富化"]["参考库版本"]).toBe("ref-v1")
+  })
+
+  test("用例 10 · 参考类未命中不影响入库：仍已解析、事实行照旧，未补全数 > 0", async () => {
+    const projectId = "p-富化空库"
+    const 参考库 = 建参考库(async () => ({ 版本: "内置-空", 条目: [] }))
+    const { 入, 结果 } = await 跑资金(projectId, { 参考库 })
+    expect(结果).toBe("完成")
+
+    const 材料 = await getMaterial(db(), projectId, 入.materialId)
+    expect(材料?.parseStatus).toBe("已解析")
+    expect(await countFactRows(db(), projectId)).toBe(1)
+    const 详情 = 材料?.parseDetail
+    if (!是对象(详情) || !是对象(详情["富化"])) throw new Error("parse_detail.富化 形状不对")
+    expect(Number(详情["富化"]["未补全数"])).toBeGreaterThan(0)
+    expect(详情["富化"]["参考库版本"]).toBe("内置-空")
   })
 })
