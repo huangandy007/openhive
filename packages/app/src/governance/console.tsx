@@ -28,6 +28,8 @@ import { OrgTree } from "./org-tree"
 import type { ProjectApi } from "./project-api"
 import { filterGovernanceSections, GOVERNANCE_SECTIONS, type GovernanceSection } from "./sections"
 import type { TemplateApi } from "./template-api"
+import type { TrustedSkillApi } from "./trusted-skill-api"
+import { TrustedSkillManage } from "./trusted-skill-manage"
 import type { UsageApi } from "./usage-cost-api"
 import { TemplateLib } from "./template-lib"
 import { UsageCost } from "./usage-cost"
@@ -58,6 +60,13 @@ export interface GovernanceConsoleProps {
   templateApi?: TemplateApi
   /** 数据源配置接口（T012）。省略 = 数据源页显示占位（还没接线）。 */
   dataSourceApi?: DataSourceApi
+  /**
+   * 【保留的定制 · 同步上游时不要丢】可信技能白名单接口（016 T021）。
+   * 与 `categoryApi` 同属 `asset-governance` 板块，省略 = 不画白名单区。
+   */
+  trustedSkillApi?: TrustedSkillApi
+  /** 当前账号是否单位管理员（016 T021）：白名单区按它决定是否渲染管理动作。 */
+  isAdmin?: boolean
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
 }
@@ -187,6 +196,8 @@ export function GovernanceConsole(props: GovernanceConsoleProps) {
               auditApi={props.auditApi}
               templateApi={props.templateApi}
               dataSourceApi={props.dataSourceApi}
+              trustedSkillApi={props.trustedSkillApi}
+              isAdmin={props.isAdmin}
               selfId={props.selfId}
             />
           )}
@@ -215,6 +226,8 @@ function 页面(props: {
   auditApi?: AuditApi
   templateApi?: TemplateApi
   dataSourceApi?: DataSourceApi
+  trustedSkillApi?: TrustedSkillApi
+  isAdmin?: boolean
   selfId?: string
 }) {
   return (
@@ -240,6 +253,11 @@ function 页面(props: {
         {/* 【保留的定制 · 同步上游时不要丢】（需求 4）：业务分类维护与资产治理同属
             `asset-governance` 板块，渲染在资产队列下面。接口省略时整块不画（不是画一个空表）。 */}
         <Show when={props.categoryApi}>{(api) => <CategoryManage api={api()} />}</Show>
+        {/* 016 T021：可信技能白名单（平台级，仅单位管理员）。接口省略时整块不画
+            （不是画一个空表）——与 `categoryApi` 同一条纪律。 */}
+        <Show when={props.trustedSkillApi}>
+          {(api) => <TrustedSkillManage isAdmin={props.isAdmin ?? false} api={api()} />}
+        </Show>
       </Match>
       <Match when={props.section.id === "data-project-perm"}>
         <Show when={props.projectApi} fallback={<占位 section={props.section} />}>

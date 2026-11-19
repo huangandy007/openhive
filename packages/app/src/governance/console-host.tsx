@@ -18,6 +18,7 @@ import type { DataSourceApi } from "./data-source-api"
 import type { OrgApi } from "./org-api"
 import type { ProjectApi } from "./project-api"
 import type { TemplateApi } from "./template-api"
+import type { TrustedSkillApi } from "./trusted-skill-api"
 import type { UsageApi } from "./usage-cost-api"
 
 export interface GovernanceConsoleHostProps {
@@ -43,6 +44,10 @@ export interface GovernanceConsoleHostProps {
   templateApi?: TemplateApi
   /** 数据源配置接口（T012）。省略 = 该页显示占位。 */
   dataSourceApi?: DataSourceApi
+  /** 【保留的定制 · 同步上游时不要丢】可信技能白名单接口（016 T021）。省略 = 不画白名单区。 */
+  trustedSkillApi?: TrustedSkillApi
+  /** 当前账号是否单位管理员（016 T021）。 */
+  isAdmin?: boolean
   /** 当前登录账号 id：自己那行不能停用。 */
   selfId?: string
   /** 被盖住的工作区（生产里是 `WorkspaceEntry`）。 */
@@ -94,6 +99,8 @@ export function GovernanceConsoleHost(props: GovernanceConsoleHostProps) {
           auditApi={props.auditApi}
           templateApi={props.templateApi}
           dataSourceApi={props.dataSourceApi}
+          trustedSkillApi={props.trustedSkillApi}
+          isAdmin={props.isAdmin}
           selfId={props.selfId}
         />
       </Show>
