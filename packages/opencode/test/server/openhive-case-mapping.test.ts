@@ -3,6 +3,7 @@ import {
   classifyMaterialType,
   detectMapping,
   formatFingerprint,
+  识别版本,
   type FactField,
 } from "../../src/server/openhive/case-mapping"
 import { 候选字段集 } from "../../src/server/openhive/case-field-registry"
@@ -375,6 +376,12 @@ describe("detectMapping · 认不出来也入库", () => {
 })
 
 describe("formatFingerprint", () => {
+  test("识别版本已递增：改识别规则必须让旧格式缓存不可达（#011-01）", () => {
+    // 016 改了两条识别规则（账号形状放宽 @wx.tenpay.com、裸属性副本不认）；
+    // 版本不进指纹 ⇒ 存量项目的 case_table_format 缓存继续命中，detectMapping 根本不跑。
+    expect(识别版本).toBe("11")
+  })
+
   test("同表头同列类型 ⇒ 同指纹（与具体取值无关）", () => {
     const a = formatFingerprint(["主叫号码", "金额"], [["13800000000", "1.00"]], 0)
     const b = formatFingerprint(["主叫号码", "金额"], [["13911111111", "2.50"]], 0)
@@ -579,7 +586,7 @@ describe("R11：修饰语只约束账号/户名三个字段", () => {
 
   test("修饰语 + 词典里没有的词尾：本方银行账户 归 ownerAccount", () => {
     // 「账户」不是 ownerAccount 的同义词（只有「本方账户」）⇒ 只能走合成分支；
-    // 这条才真正钉住 ownerAccount 的合成规则（「本方银行卡号」靠同义词「卡号」就能过）。
+    // 这条才真正钉住 ownerAccount 的合成规则（「本方银行卡号」现按裸属性副本挡下，FR-032）。
     const r = detectMapping(["本方银行账户"], [["6222999"]])
     expect(r.columns).toEqual({ 0: "ownerAccount" })
   })

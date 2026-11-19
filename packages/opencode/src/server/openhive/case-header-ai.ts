@@ -11,9 +11,10 @@ import {
   是识别字段,
   形状命中率,
   是无信息列,
+  规范化,
   type 识别字段,
 } from "./case-field-registry"
-import { 待确认原因们, type MappingResult, type 待确认原因 } from "./case-mapping"
+import { 是裸属性副本, 待确认原因们, type MappingResult, type 待确认原因 } from "./case-mapping"
 
 /**
  * 触发模型调用的待确认原因：**显式白名单**。
@@ -261,6 +262,9 @@ export function 合并模型结果(
     if (columns[i] !== undefined) continue // 规则/别名已认领，模型不许覆盖
     // 属性列只进 `已定`、不在 `columns` 里 ⇒ 上面那条守卫对它无效（05 §4.3）。
     if (是属性列(表头[i] ?? null)) continue
+    // 裸属性副本：规则层已不认（FR-032），模型层必须过同一判据（`#002-06`），
+    // 否则模型一条建议就把属性值当账号造出错误实体。`h` 口径与 `case-mapping` 调用点一致。
+    if (是裸属性副本(规范化(表头[i] ?? null))) continue
     if (!是识别字段(字段名)) continue
     // extras 字段没有可验证的形状证据：靠模型自由发挥会污染 extras（本期模型只认标准列）。
     if (字段目录[字段名].落点 !== "列") continue
