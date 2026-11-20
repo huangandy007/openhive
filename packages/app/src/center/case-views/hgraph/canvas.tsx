@@ -29,14 +29,16 @@
  * 当前视口，测试注入恒等/线性映射。注意注入函数的返回值是**内容坐标**（已逆过视口变换）。
  */
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
-import { 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
+import { 属性们, 是事件节点, type 边, type 图文件, type 节点, type 文字 } from "./file"
 import { 边线型 } from "./edge"
 import { 是输入目标 } from "./keys"
 import {
   适配视口,
   截断标签,
+  是截断名称,
   标签取舍,
   框选命中,
+  框选命中文字,
   连线目标,
   边档,
   边偏移,
@@ -51,7 +53,9 @@ import {
   type 等距轴,
 } from "./geometry"
 import { 图例 } from "./legend"
-import { 字号像素, 折行行们 } from "./text-fold"
+import { 字号像素, 文字盒, 折行行们 } from "./text-fold"
+import { 节点引用文本 } from "./node-reference"
+import { 发送到会话, 发送失败提示 } from "@/ai-session/send-to-session"
 import { 填充, 类型描边, 默认节点填充, 面板让位平移x, 面板宽, 面板边距 } from "../graph"
 import { 节点图标, 节点图标组 } from "../graph-icons"
 import type { 图节点 } from "../../case-detail-api"
@@ -85,6 +89,9 @@ export function 尺寸变化保中心(旧: 画布可视尺寸, 新: 画布可视
 }
 /** 手抖 1px 不算拖动（同 `graph.tsx` 的死区），否则「点一下看选中」会变成「挪半步」。 */
 const 拖动阈值 = 3
+/** 悬停备注页的最大宽度与贴边留白（2026-11-20：宽不能过长，文字多行折）。 */
+const 备注宽 = 240
+const 备注边距 = 8
 
 /**
  * 事件卡（FR-056）：尺寸**固定 96×34、rx=6**，不做随名伸缩——几何与命中测试都按这个
@@ -96,7 +103,7 @@ const 事件卡圆角 = 6
 
 /** 读保留属性键（`金额` / `时间精度`）；空串按缺失处理，不把空值拼进文案。 */
 const 属性值 = (点: 节点, 键: string): string | undefined => {
-  const 值 = (点.属性 ?? []).find((行) => 行.键 === 键)?.值
+  const 值 = 属性们(点).find((行) => 行.键 === 键)?.值
   return typeof 值 === "string" && 值 !== "" ? 值 : undefined
 }
 
@@ -592,6 +599,31 @@ export function 画布(props: 画布Props): JSX.Element {
 
   /** 悬停节点（R71）：低缩放下悬停也显示它自己的标签。 */
   const [悬停id, set悬停id] = createSignal<string | undefined>()
+
+  /**
+   * 长名称的悬停备注页（2026-11-20 用户提出）：只有**被截断**的节点才弹；拖动中不弹
+   * （指针一直压着节点，弹一块跟着走的浮层只会挡视线）。判据复用 `是截断名称`。
+   */
+  const 备注节点 = createMemo(() => {
+    if (拖影().size > 0) return undefined
+    const 点 = props.文档.节点.find((行) => 行.id === 悬停id())
+    if (点 === undefined) return undefined
+    return 是截断名称(点.名称 ?? "") ? 点 : undefined
+  })
+  /** 内容坐标 → 画布容器内 CSS px（与 `默认换算` 同一套 viewBox 映射，方向相反）。 */
+  const 内容到容器 = (x: number, y: number) => {
+    const 矩 = 读矩形()
+    const 尺 = 画布尺寸()
+    const 视 = 视口()
+    const 视x = x * 视.缩放 + 视.x
+    const 视y = y * 视.缩放 + 视.y
+    const 比 = 矩 !== undefined && 矩.width > 0 && 矩.height > 0 ? Math.min(矩.width / 尺.宽, 矩.height / 尺.高) : 0
+    if (比 <= 0) return { x: 视x, y: 视y }
+    return {
+      x: (矩!.width - 尺.宽 * 比) / 2 + 视x * 比,
+      y: (矩!.height - 尺.高 * 比) / 2 + 视y * 比,
+    }
+  }
   /** 运动帧（拖动 / 滚轮 / 平移中）：标签全隐，停下后 `恢复毫秒` 再恢复。 */
   const [运动中, set运动中] = createSignal(false)
   let 恢复计时: ReturnType<typeof setTimeout> | undefined
@@ -992,6 +1024,18 @@ export function 画布(props: 画布Props): JSX.Element {
       const 行 = props.文档.文字.find((文) => 文.id === 文字id)
       if (行 === undefined) return
       const 已选中 = props.选中.includes(文字id)
+      // 2026-11-20：Shift / Ctrl / ⌘ 都是「追加或取消」（与节点 Shift 同一口径）。
+      const 追加 = 事件.shiftKey || 事件.ctrlKey || 事件.metaKey
+      /**
+       * 整组拖动：按在已选中的文字上 ⇒ 所有选中的文字一起走（与节点整组拖动同语义）；
+       * 否则只走这一段。文字没有 `锁定`，不额外过滤。
+       */
+      const 组 =
+        已选中 && !追加
+          ? props.文档.文字
+              .filter((文) => props.选中.includes(文.id))
+              .map((文) => ({ id: 文.id, x: 数(文.x), y: 数(文.y) }))
+          : [{ id: 行.id, x: 数(行.x), y: 数(行.y) }]
       指针 = {
         类型: "对象",
         类别: "文字",
@@ -1000,10 +1044,10 @@ export function 画布(props: 画布Props): JSX.Element {
         起点屏y: 事件.clientY,
         起点x: 内容.x,
         起点y: 内容.y,
-        shift: 事件.shiftKey,
+        shift: 追加,
         已选中,
-        可拖: !事件.shiftKey,
-        组: [{ id: 行.id, x: 数(行.x), y: 数(行.y) }],
+        可拖: !追加,
+        组,
         移动: false,
       }
       return
@@ -1116,6 +1160,26 @@ export function 画布(props: 画布Props): JSX.Element {
 
     if (现.类型 === "对象") {
       if (现.移动) {
+        /**
+         * 拖进右栏 AI 输入框（2026-11-20 用户提出）：松手点落在 `session-hero`（输入区）上
+         * ⇒ 不移动节点，改为把选中节点写成引用文本插进输入框。画布内松手仍是正常移动。
+         * 多选时按文档顺序每行一颗（与选中集的语义一致）。
+         */
+        if (现.类别 === "节点") {
+          const 落元素 = 屏幕命中元素(事件.clientX, 事件.clientY)
+          if (落元素 !== null && 落元素.closest("[data-slot='session-hero']") !== null) {
+            set拖影(new Map())
+            const 引用点们 = 现.已选中
+              ? props.文档.节点.filter((点) => props.选中.includes(点.id))
+              : props.文档.节点.filter((点) => 点.id === 现.id)
+            const 文本 = 节点引用文本(引用点们)
+            if (文本 !== "") {
+              const 结果 = 发送到会话(文本)
+              if (!结果.ok) set松手提示(发送失败提示(结果.原因))
+            }
+            return
+          }
+        }
         const 影 = 拖影()
         const 目标 = 现.组.map((项) => {
           const 落 = 影.get(项.id)
@@ -1138,9 +1202,13 @@ export function 画布(props: 画布Props): JSX.Element {
       const 框现 = 框()
       set框(undefined)
       if (现.移动 && 框现 !== undefined) {
-        // `框选命中` 的 `已选` 是并集口径：Shift 追加时传当前选中，否则传空数组（替换）。
         // 只框可见节点：隔离/筛选后不可见的节点不能被选中（否则 Delete/对齐会作用到看不见的对象）。
-        props.动作.选择(框选命中(框现, 可见节点们(), 现.追加 ? props.选中 : []), false)
+        // 2026-11-20：文字也参与框选（按估算包围盒），与节点命中合并；Shift 仍是并集追加。
+        const 节点命中 = 框选命中(框现, 可见节点们(), [])
+        const 文字命中 = 框选命中文字(框现, props.文档.文字, [])
+        const 本次 = [...节点命中, ...文字命中]
+        const 结果 = 现.追加 ? [...new Set([...props.选中, ...本次])].sort() : [...new Set(本次)].sort()
+        props.动作.选择(结果, false)
       } else {
         props.动作.选择([], false)
       }
@@ -1401,6 +1469,39 @@ export function 画布(props: 画布Props): JSX.Element {
         >
           {松手提示()}
         </div>
+      </Show>
+
+      {/* 长名称悬停备注页（2026-11-20）：限宽 240、多行折行；贴边时夹回容器内。 */}
+      <Show when={备注节点()}>
+        {(点) => {
+          const 位 = () => 内容到容器(数(点().x), 数(点().y))
+          const 左 = () =>
+            Math.min(
+              Math.max(位().x - 备注宽 / 2, 备注边距),
+              Math.max(备注边距, 画布尺寸().宽 - 备注宽 - 备注边距),
+            )
+          const 上 = () => 位().y - 28
+          const 下方 = () => 上() < 备注边距
+          return (
+            <div
+              data-slot="hgraph-node-tooltip"
+              role="tooltip"
+              class="pointer-events-none absolute z-20 max-w-[240px] whitespace-normal break-words rounded-md border border-v2-border-border-strong bg-v2-background-bg-layer-03 px-2 py-1.5 text-[12px] leading-snug text-v2-text-text-base shadow-lg"
+              style={{
+                left: `${左()}px`,
+                top: `${下方() ? 位().y + 26 : 上()}px`,
+                ...(下方() ? {} : { transform: "translateY(-100%)" }),
+              }}
+            >
+              <div data-slot="hgraph-node-tooltip-name">{点().名称}</div>
+              <Show when={(点().类型 ?? "") !== ""}>
+                <div data-slot="hgraph-node-tooltip-type" class="mt-0.5 text-[11px] text-v2-text-text-muted">
+                  {点().类型}
+                </div>
+              </Show>
+            </div>
+          )
+        }}
       </Show>
 
       <svg
@@ -1678,32 +1779,59 @@ export function 画布(props: 画布Props): JSX.Element {
           <For each={props.文档.文字}>
             {(行: 文字) => {
               const 位 = () => 文字位(行)
+              const 选中 = () => props.选中.includes(行.id)
+              // 高亮框必须跟 `文字位` 走（拖动中读 `拖影`），否则拖的时候框留在原地。
+              const 盒 = () => 文字盒({ ...行, x: 位().x, y: 位().y })
               return (
-                <text
-                  data-slot="hgraph-text"
+                <g
+                  data-slot="hgraph-text-node"
                   data-text-id={行.id}
-                  data-selected={props.选中.includes(行.id) ? "true" : undefined}
-                  x={位().x}
-                  y={位().y}
-                  font-size={`${字号像素(行.字号)}`}
-                  font-weight={行.加粗 === true ? "700" : "400"}
-                  text-anchor={行.对齐 === "左" ? "start" : 行.对齐 === "右" ? "end" : "middle"}
-                  fill={文字色(行.颜色)}
+                  data-selected={选中() ? "true" : undefined}
                   class={对象光标()}
                 >
                   {/*
-                    FR-024 / R-F11：按 `宽度` 折行（估算，见 `text-fold.ts`）。每行一个
-                    `tspan`；`x` 在每行重设（居中/右对齐逐行生效），`dy` 第一行为 0（基线
-                    就是元素 y），后续按 字号 × 1.35 下移。
+                    2026-11-20 用户提出：文字选中要有明显高亮。画布拿不到真实 `getBBox`，
+                    所以用 `文字盒` 的同一套估算垫一块淡金底 + 品牌金描边，与节点选中同色。
                   */}
-                  <For each={折行行们(行.内容, 行.宽度, 行.字号)}>
-                    {(行文, 序) => (
-                      <tspan x={位().x} dy={序() === 0 ? 0 : 字号像素(行.字号) * 1.35}>
-                        {行文}
-                      </tspan>
-                    )}
-                  </For>
-                </text>
+                  <Show when={选中()}>
+                    <rect
+                      data-slot="hgraph-text-selection"
+                      x={盒().x}
+                      y={盒().y}
+                      width={盒().width}
+                      height={盒().height}
+                      rx={4}
+                      fill="var(--v2-brand-gold)"
+                      fill-opacity="0.18"
+                      stroke="var(--v2-brand-gold-deep)"
+                      stroke-width="1"
+                    />
+                  </Show>
+                  <text
+                    data-slot="hgraph-text"
+                    data-text-id={行.id}
+                    data-selected={选中() ? "true" : undefined}
+                    x={位().x}
+                    y={位().y}
+                    font-size={`${字号像素(行.字号)}`}
+                    font-weight={行.加粗 === true ? "700" : "400"}
+                    text-anchor={行.对齐 === "左" ? "start" : 行.对齐 === "右" ? "end" : "middle"}
+                    fill={文字色(行.颜色)}
+                  >
+                    {/*
+                      FR-024 / R-F11：按 `宽度` 折行（估算，见 `text-fold.ts`）。每行一个
+                      `tspan`；`x` 在每行重设（居中/右对齐逐行生效），`dy` 第一行为 0（基线
+                      就是元素 y），后续按 字号 × 1.35 下移。
+                    */}
+                    <For each={折行行们(行.内容, 行.宽度, 行.字号)}>
+                      {(行文, 序) => (
+                        <tspan x={位().x} dy={序() === 0 ? 0 : 字号像素(行.字号) * 1.35}>
+                          {行文}
+                        </tspan>
+                      )}
+                    </For>
+                  </text>
+                </g>
               )
             }}
           </For>

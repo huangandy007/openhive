@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { render } from "solid-js/web"
+import { 订阅会话输入 } from "@/ai-session/send-to-session"
 import type { 边, 图文件, 节点, 设置, 文字 } from "./file"
 import { 画布, 尺寸变化保中心, 是双指平移, type 画布动作, type 模式, type 坐标换算 } from "./canvas"
 import { 适配视口 } from "./geometry"
@@ -1538,5 +1539,264 @@ describe("FR-033 · 外环双通道（类型色 + 连接数角标）", () => {
     expect(环 !== null).toBe(true)
     expect(环!.getAttribute("data-ring-tier")).toBe("3")
     expect(角标("a") === null).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2026-11-20 · 坏 `属性` 形状（AI 把属性写成对象）不能把整块画布带崩
+// ---------------------------------------------------------------------------
+
+describe("坏 `属性` 形状（AI 常写成对象）", () => {
+  test("节点 `属性` 是对象 ⇒ 画布照常渲染该节点（事件判据不抛，不整块白屏）", () => {
+    挂(
+      造图(
+        [
+          造节点("n1", 10, 20, {
+            类型: "转账",
+            属性: { 时间精度: "分" },
+          } as unknown as Partial<节点>),
+        ],
+        [],
+      ),
+    )
+
+    expect(节点组("n1") !== null).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2026-11-20 · 长名称悬停备注 / 文字选中高亮与多选 / 拖进 AI 输入框
+// ---------------------------------------------------------------------------
+
+const 文字行 = (id: string) => 取(`[data-slot='hgraph-text'][data-text-id='${id}']`)
+const 备注 = () => 取("[data-slot='hgraph-node-tooltip']")
+const 悬停 = (元素: Element) => {
+  元素.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false }))
+}
+const 离开 = (元素: Element) => {
+  元素.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false }))
+}
+
+describe("长名称悬停备注（用户 2026-11-20 第 1 条）", () => {
+  const 长名 = "一二三四五六七八九十甲乙丙"
+
+  test("悬停被截断的节点 ⇒ 备注页出现，显示完整名称 + 类型，且限宽多行", () => {
+    挂(造图([造节点("n1", 100, 100, { 名称: 长名, 类型: "账户" })], []))
+    // 前提：标签确实被截断了，这条用例才在验「备注」而不是「没截断」。
+    expect(取("[data-slot='hgraph-node-label']")!.textContent).toBe("一二三四五六七八九十甲乙…")
+
+    悬停(节点组("n1")!)
+
+    const 页 = 备注()
+    expect(页 !== null).toBe(true)
+    expect(页!.textContent).toContain(长名)
+    expect(页!.textContent).toContain("账户")
+    // 限宽 + 多行：宽有上限，长文字自然折行，不是一条无限长的横条。
+    expect(页!.className).toContain("max-w-[240px]")
+    expect(页!.className).toContain("whitespace-normal")
+    expect(页!.className).toContain("break-words")
+
+    离开(节点组("n1")!)
+    expect(备注() === null).toBe(true)
+  })
+
+  test("短名称节点不弹备注（只有被截断的才需要）", () => {
+    挂(造图([造节点("n1", 100, 100, { 名称: "张三" })], []))
+    悬停(节点组("n1")!)
+    expect(备注() === null).toBe(true)
+  })
+
+  test("备注不挡操作：pointer-events-none，且位置落在画布容器内", () => {
+    挂(造图([造节点("n1", 700, 30, { 名称: 长名 })], []), undefined, {
+      容器尺寸: { 宽: 760, 高: 680 },
+    })
+    悬停(节点组("n1")!)
+    const 页 = 备注()
+    expect(页 !== null).toBe(true)
+    if (!(页 instanceof HTMLElement)) throw new Error("备注页不是 HTMLElement")
+    expect(页.className).toContain("pointer-events-none")
+    // 贴右边：左沿被夹到 760 − 240 − 8 = 512，不跑出容器。
+    expect(页.style.left).toBe("512px")
+  })
+})
+
+describe("文字节点：选中高亮 / 多选 / 整组拖动 / 框选（用户 2026-11-20 第 3 条）", () => {
+  const 两段文字 = () =>
+    造图(
+      [],
+      [],
+      {},
+      [
+        造文字("甲乙", { id: "t1", x: 100, y: 100 }),
+        造文字("丙丁", { id: "t2", x: 200, y: 200 }),
+      ],
+    )
+
+  test("选中的文字渲染高亮底框；未选中不渲染", () => {
+    挂(两段文字(), undefined, { 选中: ["t1", "t2"] })
+    const 框们 = 全部("[data-slot='hgraph-text-selection']")
+    expect(框们.length).toBe(2)
+    expect(框们[0].getAttribute("fill")).toBe("var(--v2-brand-gold)")
+    expect(框们[0].getAttribute("stroke")).toBe("var(--v2-brand-gold-deep)")
+  })
+
+  test("未选中的文字没有高亮框", () => {
+    挂(两段文字())
+    expect(取("[data-slot='hgraph-text-selection']") === null).toBe(true)
+  })
+
+  test("Shift 点击未选中的文字 ⇒ 追加到选中（不替换）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两段文字(), undefined, { 动作, 选中: ["t1"] })
+    按一下(文字行("t2")!, { x: 200, y: 200 }, { shiftKey: true })
+    expect(计数.选择).toEqual([[["t1", "t2"], false]])
+  })
+
+  test("Ctrl 点击已选中的文字 ⇒ 从选中移除（与 Shift 同一口径）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两段文字(), undefined, { 动作, 选中: ["t1", "t2"] })
+    按一下(文字行("t1")!, { x: 100, y: 100 }, { ctrlKey: true })
+    expect(计数.选择).toEqual([[["t2"], false]])
+  })
+
+  test("拖动中高亮框跟着文字走（不是松手后才跳过去）", () => {
+    const { 动作 } = 记动作表()
+    挂(两段文字(), undefined, { 动作, 选中: ["t1"] })
+    const 框 = 取("[data-slot='hgraph-text-selection']")!
+    expect(框.getAttribute("x")).toBe("84")
+
+    文字行("t1")!.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        button: 0,
+        buttons: 1,
+        clientX: 100,
+        clientY: 100,
+      }),
+    )
+    文字行("t1")!.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        buttons: 1,
+        clientX: 130,
+        clientY: 120,
+      }),
+    )
+
+    expect(框.getAttribute("x")).toBe("114")
+  })
+
+  test("选中多段后拖其中一段 ⇒ 整组一起移动（一次「移动」带两段）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(两段文字(), undefined, { 动作, 选中: ["t1", "t2"] })
+    拖一下(文字行("t1")!, { x: 100, y: 100 }, { x: 130, y: 120 })
+    expect(计数.移动).toEqual([
+      [
+        [
+          { 类别: "文字", id: "t1", x: 130, y: 120 },
+          { 类别: "文字", id: "t2", x: 230, y: 220 },
+        ],
+      ],
+    ])
+  })
+
+  test("框选能圈中文字（按文字包围盒），与节点命中合并", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(
+      造图([造节点("n1", 120, 100)], [], {}, [造文字("甲乙", { id: "t1", x: 100, y: 100 })]),
+      undefined,
+      { 动作 },
+    )
+    拖一下(取("[data-slot='hgraph-canvas']")!, { x: 40, y: 40 }, { x: 180, y: 160 })
+    expect(计数.选择).toEqual([[["n1", "t1"], false]])
+  })
+})
+
+describe("节点拖进右栏 AI 输入框（用户 2026-11-20 第 2 条）", () => {
+  function 放区() {
+    const 区 = document.createElement("div")
+    区.setAttribute("data-slot", "session-hero")
+    const 内 = document.createElement("div")
+    区.appendChild(内)
+    document.body.appendChild(区)
+    return { 区, 内 }
+  }
+
+  test("单选：拖节点到输入框 ⇒ 不移动节点，填入「节点ID ｜ 节点名称」一行", () => {
+    const { 动作, 计数 } = 记动作表()
+    const { 区, 内 } = 放区()
+    const 收到: string[] = []
+    const 收回 = 订阅会话输入((文本) => 收到.push(文本))
+    try {
+      挂(造图([造节点("n1", 100, 100, { 名称: "张三" })], []), undefined, {
+        动作,
+        屏幕命中: () => 内,
+      })
+
+      拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 400, y: 400 })
+
+      expect(计数.移动 === undefined).toBe(true)
+      expect(收到).toEqual(["节点ID：n1 ｜ 节点名称：张三"])
+    } finally {
+      收回()
+      区.remove()
+    }
+  })
+
+  test("多选：拖动选区里的一颗 ⇒ 每个节点一行，按文档顺序", () => {
+    const { 动作, 计数 } = 记动作表()
+    const { 区, 内 } = 放区()
+    const 收到: string[] = []
+    const 收回 = 订阅会话输入((文本) => 收到.push(文本))
+    try {
+      挂(
+        造图(
+          [造节点("n1", 100, 100, { 名称: "张三" }), 造节点("n2", 200, 100, { 名称: "李四" })],
+          [],
+        ),
+        undefined,
+        { 动作, 选中: ["n2", "n1"], 屏幕命中: () => 内 },
+      )
+
+      拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 400, y: 400 })
+
+      expect(计数.移动 === undefined).toBe(true)
+      expect(收到).toHaveLength(1)
+      expect(收到[0].split("\n")).toEqual([
+        "节点ID：n1 ｜ 节点名称：张三",
+        "节点ID：n2 ｜ 节点名称：李四",
+      ])
+    } finally {
+      收回()
+      区.remove()
+    }
+  })
+
+  test("落在输入框以外 ⇒ 仍是普通移动（只在输入框上才改成引用）", () => {
+    const { 动作, 计数 } = 记动作表()
+    挂(造图([造节点("n1", 100, 100)], []), undefined, { 动作, 屏幕命中: () => null })
+
+    拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 130, y: 120 })
+
+    expect(计数.移动).toEqual([[[{ 类别: "节点", id: "n1", x: 130, y: 120 }]]])
+  })
+
+  test("右栏没开会话 ⇒ 不移动节点，提示「先在右栏开一个会话」", () => {
+    const { 动作, 计数 } = 记动作表()
+    const { 区, 内 } = 放区()
+    try {
+      挂(造图([造节点("n1", 100, 100)], []), undefined, { 动作, 屏幕命中: () => 内 })
+
+      拖一下(节点组("n1")!, { x: 100, y: 100 }, { x: 400, y: 400 })
+
+      expect(计数.移动 === undefined).toBe(true)
+      expect(取("[data-slot='hgraph-connect-hint']")?.textContent?.trim()).toBe("先在右栏开一个会话")
+    } finally {
+      区.remove()
+    }
   })
 })

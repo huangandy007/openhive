@@ -32,6 +32,44 @@ function 字符宽(字: string, 像素: number): number {
   return 全角字符.test(字) ? 像素 : 像素 * 0.55
 }
 
+/** 一行文字的估算宽度；与 `折行行们` 同一套字宽口径（`#002-06`）。 */
+export function 行宽(行文: string, 字号: 文字["字号"]): number {
+  const 像素 = 字号像素(字号)
+  let 宽 = 0
+  for (const 字 of Array.from(行文)) 宽 += 字符宽(字, 像素)
+  return 宽
+}
+
+/** 文字块在画布上的估算包围盒（内容坐标）。 */
+export interface 文字盒 {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** 行高固定为 1.35 字高（与 `<tspan dy>` 同一个数）。 */
+const 行高倍 = 1.35
+/** 基线到字顶约 0.9 字高；字底再留 0.3（≈1.2 总量）。 */
+const 上沿倍 = 0.9
+const 下沿倍 = 0.3
+
+/**
+ * 文字包围盒（2026-11-20 用户提出：文字要能选中高亮、能被框选、能一起拖）。
+ *
+ * 画布是 SVG，拿不到真实 `getBBox`（happy-dom 也没有布局），所以按 `折行行们` 的同一套
+ * 估算算：宽 = 最长一行，高 = 行距 ×（行数 − 1）+ 1.2 字高。`x` 随对齐方式落到
+ * 左 / 中 / 右；`y` 是首行基线往上 0.9 字高。只用于高亮与框选，不参与导出几何。
+ */
+export function 文字盒(行: 文字): 文字盒 {
+  const 像素 = 字号像素(行.字号)
+  const 行们 = 折行行们(行.内容, 行.宽度, 行.字号)
+  const 宽 = Math.max(...行们.map((行文) => 行宽(行文, 行.字号)), 0)
+  const 高 = (行们.length - 1) * 像素 * 行高倍 + 像素 * (上沿倍 + 下沿倍)
+  const x = 行.对齐 === "左" ? 行.x : 行.对齐 === "右" ? 行.x - 宽 : 行.x - 宽 / 2
+  return { x, y: 行.y - 像素 * 上沿倍, width: 宽, height: 高 }
+}
+
 /**
  * 把一段文字按 `宽度` 折成多行（估算）。`宽度` 是**内容的限宽**（像素），不是盒子宽。
  * 返回至少一项，调用方逐项渲染 `<tspan>`。
