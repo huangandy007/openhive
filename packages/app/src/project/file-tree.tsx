@@ -509,9 +509,42 @@ export function FileTree(props: FileTreeProps) {
    * ② **清单重取**（`props.paths` 换了新数据，见下面那个 `createEffect`）。两处都在本文件里，不跨层。
    */
   const [行话, set行话] = createSignal<{ 路径: string; 话: string }>()
-  // 清单换了新数据 ⇒ 上一轮那句话过期（树上的真相永远是重取那一份）。
-  // `defer: true`：挂载那一次不算「换了新数据」。
-  createEffect(on(() => props.paths, () => set行话(undefined), { defer: true }))
+  /**
+   * 清单换了新数据 ⇒ ①上一轮那句话过期；②**选中态按新清单裁一刀**。
+   *
+   * ① 树上的真相永远是重取那一份，旧话不挂着。
+   *
+   * ② 2026-11-20 用户实报「新建文件夹 ⇒ 目标目录不存在」的根因就在这一条：
+   * `workspace-entry` 切项目后**只换本组件的 `props.paths`**（本组件看不见「项目」这个更大的
+   * 东西），而 `selected` / `选中集` / `锚点` 原样留着 ⇒ `落点()` 拿上一个项目的那一行算落点
+   * （路径不在节点表里，按「文件」取了 dirname）⇒ 弹窗写着「建在：A 的目录」，提交却落到 B。
+   *
+   * **裁**而不是清：同项目重取（新建 / 改名成功后的重取）清单内容不变，用户正在看的那一行
+   * 不能凭空掉选；只有「新清单里已经不存在的」才丢。换项目那一路先落到 `undefined`
+   * （`workspace-entry` 切项目先 `setProjectFiles(undefined)`、再取新的一份），那一刀正好清空。
+   *
+   * `on()` 的回调不进依赖追踪 ⇒ 回调里读这三只选中信号**不会**把本 effect 挂到它们身上
+   * （否则每次点行都跑一遍裁剪）。
+   *
+   * `defer: true`：挂载那一次不算「换了新数据」。
+   */
+  createEffect(
+    on(
+      () => props.paths,
+      () => {
+        set行话(undefined)
+        const 在 = new Set(props.paths ?? [])
+        const 旧集 = 选中集()
+        const 新集 = new Set([...旧集].filter((path) => 在.has(path)))
+        if (新集.size !== 旧集.size) set选中集(新集)
+        const 焦点 = selected()
+        if (焦点 !== undefined && !在.has(焦点)) setSelected(undefined)
+        const 连选起点 = 锚点()
+        if (连选起点 !== undefined && !在.has(连选起点)) set锚点(undefined)
+      },
+      { defer: true },
+    ),
+  )
   /**
    * 右键点在哪个节点上（`undefined` = 没点在行上：空态、或行以外的空白）。
    *

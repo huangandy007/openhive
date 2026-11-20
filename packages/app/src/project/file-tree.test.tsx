@@ -1196,6 +1196,72 @@ describe("FileTree 文件树（FR-005）", () => {
     })
 
     /**
+     * 换了一份清单（＝切了项目）⇒ 上一个项目的选中行**必须作废**（2026-11-20 用户实报）。
+     *
+     * 现场：在项目 A 里选中 `流水测试/财付通/xxx.xlsx`，切到项目 B 后点「＋ 新建文件夹」——
+     * 弹窗写着「建在：流水测试/财付通」，提交落到 B ⇒ 服务端如实回「目标目录不存在」。
+     * `workspace-entry` 切项目后只换 `props.paths`（本组件看不见「项目」这个更大的东西），
+     * 而 `selected`/`选中集`/`锚点` 原样留着 ⇒ `落点()` 把上一个项目的行当成落点。
+     *
+     * 判据取两处：弹窗里那句「建在」（用户眼前）与 `onCreate` 收到的 `parent`（服务端要落的）。
+     * 两处都得回到根才算修好——只看其中一处，另一处照样能把请求发歪（`#002-06`）。
+     *
+     * 用**没有交集**的两份清单：这正是「换项目」的形状；同项目重取（新建/改名后的重取）不在这里断。
+     */
+    test("换了一份清单（切了项目）⇒ 旧项目的选中行作废，落点回到项目根", async () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const [路径们, set路径们] = createSignal(树("流水测试/财付通/x.xlsx"))
+      const host = mount(() => <FileTree paths={路径们()} onCreate={(i) => { 记.push(i) }} />)
+      动作(host, "expand-all")?.click() // 默认全收缩 ⇒ 先全打开，深层那行才点得到
+
+      点行(host, "流水测试/财付通/x.xlsx")
+      await 歇一拍()
+
+      set路径们(树("原始材料/y.txt")) // 换了项目：新清单与上一份没有任何交集
+      await 歇一拍()
+
+      点加号(host)
+      await 歇一拍()
+      点菜单行("directory")
+      await 歇一拍()
+
+      // 前提：弹窗真的开在这一刻（不然下面两句断的是「没有弹窗」这个空转）
+      expect(document.body.querySelector("[data-slot='file-create-parent']")?.textContent?.trim()).toBe("建在：项目根目录")
+
+      弹窗填("001")
+      弹窗提交()
+
+      expect(记).toEqual([{ kind: "directory", parent: "", name: "001" }])
+      // 收尾等弹窗**真摘掉**：`close()` 是 100ms 后才 `dispose()`（`context/dialog.tsx`），
+      // 不等它，那个定时器会开火在后面的用例上（本文件头上记着这条账）。
+      for (let i = 0; i < 40 && 有新建弹窗(); i += 1) await new Promise((r) => setTimeout(r, 16))
+    })
+
+    /** 同项目**重取**（清单换了一份新数组、内容不变）⇒ 选中行留着：用户正在看的那一行不能凭空掉选。 */
+    test("清单重取但选中行还在 ⇒ 选中不被误清（别把「换清单」一律当成「换项目」）", async () => {
+      const 记: { kind: string; parent: string; name: string }[] = []
+      const [路径们, set路径们] = createSignal(树("资料/a.txt"))
+      const host = mount(() => <FileTree paths={路径们()} onCreate={(i) => { 记.push(i) }} />)
+      动作(host, "expand-all")?.click()
+
+      点行(host, "资料/a.txt")
+      await 歇一拍()
+
+      set路径们(树("资料/a.txt")) // 同路径、新身份（`workspace-entry` 重取清单就是这个形状）
+      await 歇一拍()
+
+      点加号(host)
+      await 歇一拍()
+      点菜单行("file")
+      await 歇一拍()
+      弹窗填("b.txt")
+      弹窗提交()
+
+      expect(记).toEqual([{ kind: "file", parent: "资料", name: "b.txt" }])
+      for (let i = 0; i < 40 && 有新建弹窗(); i += 1) await new Promise((r) => setTimeout(r, 16))
+    })
+
+    /**
      * **空文件夹**（2026-10-10，用户实报「新建的文件夹建完就看不见」）。
      *
      * 它在下游是一条**带尾分隔符**的路径（`资料\`，`openhive-files.ts` 补的那条）。本层要看见
