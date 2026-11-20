@@ -6996,7 +6996,11 @@ describe("016 组件接进工作台（T021 / R3b 注入缝）", () => {
       setProjectFiles(["a.csv"])
       await new Promise((r) => setTimeout(r, 0))
 
-      // 1) 入库设置面板显示的是**桩**的返回值：true / false（不是默认的 false / false）。
+      // 1) 入库设置面板默认收起：先点开，再核对桩的返回值（true / false，不是默认的 false / false）。
+      tabpane(host, "capability")
+        ?.querySelector<HTMLButtonElement>("[data-slot='case-ingest-settings-toggle']")
+        ?.click()
+      await new Promise((r) => setTimeout(r, 0))
       const 自动入队 = tabpane(host, "capability")?.querySelector<HTMLInputElement>(
         "[data-slot='case-ingest-auto-enqueue']",
       )

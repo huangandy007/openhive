@@ -24,6 +24,12 @@ function mount(element: () => JSX.Element) {
   render(element, host)
   return host
 }
+/** 入库设置默认收起：用例要先点开才看得到开关。找不到按钮就当场报，别让后面等成超时。 */
+function 展开(host: HTMLElement) {
+  const 开关 = host.querySelector<HTMLButtonElement>("[data-slot='case-ingest-settings-toggle']")
+  if (开关 === null) throw new Error("找不到入库设置的展开按钮")
+  开关.click()
+}
 afterEach(() => {
   document.body.innerHTML = ""
 })
@@ -49,6 +55,7 @@ describe("项目入库开关", () => {
   test("读数上屏：两个开关按服务端值渲染", async () => {
     const { api } = 假服务()
     const host = mount(() => <CaseIngestSettings projectId="p1" canManage={true} api={api} />)
+    展开(host)
     await 等(() => {
       const 入队 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-enqueue']")
       return 入队 !== null && 入队.disabled === false
@@ -60,6 +67,7 @@ describe("项目入库开关", () => {
   test("属主切换开关 ⇒ POST 只带改动的那个键，回包刷新显示", async () => {
     const { 记, api } = 假服务()
     const host = mount(() => <CaseIngestSettings projectId="p1" canManage={true} api={api} />)
+    展开(host)
     const 入队 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-enqueue']")!
     await 等(() => 入队.disabled === false)
 
@@ -90,6 +98,7 @@ describe("项目入库开关", () => {
     const api = createCaseIngestApi(send)
     const [项目, set项目] = createSignal("p1")
     const host = mount(() => <CaseIngestSettings projectId={项目()} canManage={true} api={api} />)
+    展开(host)
     const 入队 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-enqueue']")!
     await 等(() => 入队.disabled === false && 入队.checked === true)
 
@@ -116,6 +125,7 @@ describe("项目入库开关", () => {
   test("非属主：开关置灰 + 原因可见 + 点击后 send 次数不增（handler 未绑）", async () => {
     const { 记, api } = 假服务()
     const host = mount(() => <CaseIngestSettings projectId="p1" canManage={false} api={api} />)
+    展开(host)
     const 入队 = host.querySelector<HTMLInputElement>("[data-slot='case-ingest-auto-enqueue']")!
     await 等(() => host.querySelector("[data-slot='case-ingest-reason']") !== null)
 
@@ -130,5 +140,38 @@ describe("项目入库开关", () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(记.次数 === 点前).toBe(true)
     expect(记.写体.length === 0).toBe(true)
+  })
+
+  test("默认收起：只露标题一行，两个开关不在 DOM 里", () => {
+    const { api } = 假服务()
+    const host = mount(() => <CaseIngestSettings projectId="p1" canManage={true} api={api} />)
+    const 开关 = host.querySelector<HTMLButtonElement>("[data-slot='case-ingest-settings-toggle']")
+    expect(开关 === null).toBe(false)
+    expect(开关!.textContent).toContain("入库设置")
+    // 与能力组头同一套图标：左侧 ◆、右侧 ›/⌄。
+    expect(开关!.textContent).toContain("◆")
+    expect(开关!.textContent).toContain("›")
+    expect(开关!.getAttribute("aria-expanded")).toBe("false")
+    // `#013-12`：DOM「不存在」用布尔比较。
+    expect(host.querySelector("[data-slot='case-ingest-auto-enqueue']") === null).toBe(true)
+    expect(host.querySelector("[data-slot='case-ingest-auto-trusted']") === null).toBe(true)
+  })
+
+  test("点开才出现两个开关与说明，再点收起", async () => {
+    const { api } = 假服务()
+    const host = mount(() => <CaseIngestSettings projectId="p1" canManage={true} api={api} />)
+    const 开关 = host.querySelector<HTMLButtonElement>("[data-slot='case-ingest-settings-toggle']")!
+    开关.click()
+    await 等(() => host.querySelector("[data-slot='case-ingest-auto-enqueue']") !== null)
+
+    expect(开关.getAttribute("aria-expanded")).toBe("true")
+    expect(开关.textContent).toContain("⌄")
+    // 说明要让用户知道「开 / 关」各自意味着什么，不是只有标签。
+    expect(host.textContent).toContain("自动排队解析")
+    expect(host.textContent).toContain("可信白名单")
+
+    开关.click()
+    await 等(() => host.querySelector("[data-slot='case-ingest-auto-enqueue']") === null)
+    expect(开关.getAttribute("aria-expanded")).toBe("false")
   })
 })

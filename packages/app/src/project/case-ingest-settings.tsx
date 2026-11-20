@@ -1,5 +1,6 @@
-import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createEffect, createSignal, createUniqueId, onCleanup, Show, type JSX } from "solid-js"
 import { createCaseIngestApi, type CaseIngestApi, type 入库设置 } from "./case-ingest-api"
+import { 组头样式 } from "./capability-header-style"
 
 /**
  * 016 T017 · 项目入库开关（`GET / POST /openhive/case/ingest/settings`）。
@@ -18,6 +19,10 @@ export interface CaseIngestSettingsProps {
 export function CaseIngestSettings(props: CaseIngestSettingsProps): JSX.Element {
   let 默认api: CaseIngestApi | undefined
   const api = () => props.api ?? (默认api ??= createCaseIngestApi())
+
+  /** 默认收起（低频设置）：收起时只占标题一行，点开才露出开关与说明。 */
+  const [展开, set展开] = createSignal(false)
+  const 体id = createUniqueId()
 
   const [设置, set设置] = createSignal<入库设置>()
   const [错误, set错误] = createSignal<string>()
@@ -82,48 +87,82 @@ export function CaseIngestSettings(props: CaseIngestSettingsProps): JSX.Element 
   const 可用 = () => props.canManage && 设置() !== undefined && !保存中()
 
   return (
-    <div
-      data-slot="case-ingest-settings"
-      class="flex w-full flex-col gap-2 rounded-[6px] border border-v2-border-border-muted p-3 text-[13px] text-v2-text-text-base"
-    >
-      <h3 class="text-[14px] font-semibold">入库设置</h3>
+    <div data-slot="case-ingest-settings" class="flex w-full flex-col text-[13px] text-v2-text-text-base">
+      <button
+        type="button"
+        data-slot="case-ingest-settings-toggle"
+        aria-expanded={展开()}
+        aria-controls={体id}
+        class={组头样式}
+        onClick={() => set展开(!展开())}
+      >
+        <span aria-hidden="true">◆</span>
+        <span class="font-semibold">入库设置</span>
+        <span class="ml-auto" aria-hidden="true">
+          {展开() ? "⌄" : "›"}
+        </span>
+      </button>
 
-      <label class="flex items-center gap-2">
-        <input
-          type="checkbox"
-          data-slot="case-ingest-auto-enqueue"
-          checked={设置()?.autoEnqueue ?? false}
-          disabled={!可用()}
-          {...(props.canManage
-            ? { onChange: (e: Event & { currentTarget: HTMLInputElement }) => void 改("autoEnqueue", e.currentTarget.checked) }
-            : {})}
-        />
-        新文件自动入队
-      </label>
+      <Show when={展开()}>
+        <div id={体id} class="flex w-full flex-col gap-2 px-2 pt-1 pb-2">
+          <label class="flex items-start gap-2">
+            <input
+              type="checkbox"
+              data-slot="case-ingest-auto-enqueue"
+              class="mt-0.5"
+              checked={设置()?.autoEnqueue ?? false}
+              disabled={!可用()}
+              {...(props.canManage
+                ? {
+                    onChange: (e: Event & { currentTarget: HTMLInputElement }) =>
+                      void 改("autoEnqueue", e.currentTarget.checked),
+                  }
+                : {})}
+            />
+            <span class="flex min-w-0 flex-col gap-0.5">
+              <span>
+                新文件自动入队<span class="text-v2-text-text-muted">（默认开）</span>
+              </span>
+              <span data-slot="case-ingest-auto-enqueue-hint" class="text-[12px] text-v2-text-text-muted">
+                打开：拖进「材料」目录的文件会自动排队解析，不用再手动点。关闭：文件只保存，需要手动入队或扫描。
+              </span>
+            </span>
+          </label>
 
-      <label class="flex items-center gap-2">
-        <input
-          type="checkbox"
-          data-slot="case-ingest-auto-trusted"
-          checked={设置()?.autoEnableTrusted ?? false}
-          disabled={!可用()}
-          {...(props.canManage
-            ? {
-                onChange: (e: Event & { currentTarget: HTMLInputElement }) =>
-                  void 改("autoEnableTrusted", e.currentTarget.checked),
-              }
-            : {})}
-        />
-        自动启用可信技能
-      </label>
+          <label class="flex items-start gap-2">
+            <input
+              type="checkbox"
+              data-slot="case-ingest-auto-trusted"
+              class="mt-0.5"
+              checked={设置()?.autoEnableTrusted ?? false}
+              disabled={!可用()}
+              {...(props.canManage
+                ? {
+                    onChange: (e: Event & { currentTarget: HTMLInputElement }) =>
+                      void 改("autoEnableTrusted", e.currentTarget.checked),
+                  }
+                : {})}
+            />
+            <span class="flex min-w-0 flex-col gap-0.5">
+              <span>
+                自动启用可信技能<span class="text-v2-text-text-muted">（默认关）</span>
+              </span>
+              <span data-slot="case-ingest-auto-trusted-hint" class="text-[12px] text-v2-text-text-muted">
+                打开：平台管理员放进可信白名单、且已发布的技能，会随上传自动为项目启用（仍按项目属主身份，最多 20
+                个）。关闭：新技能需要手动启用。
+              </span>
+            </span>
+          </label>
 
-      <Show when={!props.canManage}>
-        <p data-slot="case-ingest-reason" class="text-v2-text-text-muted">
-          只有项目属主能修改入库设置
-        </p>
+          <Show when={!props.canManage}>
+            <p data-slot="case-ingest-reason" class="text-v2-text-text-muted">
+              只有项目属主能修改入库设置
+            </p>
+          </Show>
+
+          <Show when={错误()}>{(话) => <p class="text-v2-state-fg-danger">{话()}</p>}</Show>
+        </div>
       </Show>
-
-      <Show when={错误()}>{(话) => <p class="text-v2-state-fg-danger">{话()}</p>}</Show>
     </div>
   )
 }

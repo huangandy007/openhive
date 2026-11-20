@@ -5,6 +5,7 @@ import { ASSET_STATUS_LABELS, type AssetStatus } from "@opencode-ai/asset-servic
 import type { 内核技能, 被覆盖技能 } from "@/ai-assets/enable-api"
 import type { McpCapabilityItem } from "@/ai-assets/mcp-capability"
 import { 合并能力, 计数, 阶段, type 能力条目, type 库内条目, type 自带条目 } from "./capability-source"
+import { 贴底组头样式 as 贴底头, 组头样式 as 头 } from "./capability-header-style"
 import { 技能句子, 技能载荷, 技能载荷型 } from "@/ai-session/skill-drop"
 
 /**
@@ -91,9 +92,7 @@ export interface CapabilityPanelProps {
   readonly onLoadMcps?: () => void
 }
 
-const 头 =
-  "flex h-7 w-full shrink-0 cursor-pointer items-center gap-1.5 px-2 text-[13px] text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
-const 贴底头 = `border-t border-v2-border-border-muted ${头}`
+// 组头样式（`头` / `贴底头`）在 `capability-header-style.ts`：与「入库设置」标题共用一份。
 // 悬停灰底（2026-10-28 用户要求）：用项目统一的 hover 覆盖层令牌，与组头、资产卡同一档灰，
 // 不另造颜色（品牌化走 tokens，不硬编码）。
 const 条目框 =
