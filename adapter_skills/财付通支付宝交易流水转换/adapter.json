@@ -1,7 +1,7 @@
 {
   "id": "wechat-wallet-statement",
-  "name": "微信账户交易流水",
-  "version": "1.1.1",
+  "name": "财付通/支付宝交易流水转换",
+  "version": "1.2.1",
   "kind": "converter",
   "materialType": "资金",
   "attributeKeys": ["对方:开户行", "对方:银行卡号", "本方:开户行", "本方:银行卡号"],
@@ -17,15 +17,30 @@
       "收款方银行卡号",
       "收款方的商户号",
       "收款方的商户名称",
-      "备注"
+      "备注",
+      "交易流水号",
+      "支付机构内部订单号",
+      "收单机构名称",
+      "收单机构金融机构编码",
+      "二级商户名称",
+      "二级商户号",
+      "清算机构名称"
     ],
     "priority": 100
   },
+  "channel": {
+    "wechatKeywords": ["@wx.tenpay.com", "微信", "财付通", "tenpay", "微众"],
+    "alipayKeywords": ["alipay", "支付宝", "蚂蚁"],
+    "bankNameDeny": ["alipay", "支付宝", "财付通", "tenpay", "微信支付", "微信"],
+    "alipayOrderIdRatio": 0.9,
+    "alipayPhoneAccountRatio": 0.9
+  },
   "admission": {
-    "checks": ["查询账号非空", "借贷标志合法", "金额可解析", "时间可解析", "方向与本方一致", "卡行成对", "开户人可分类"],
+    "checks": ["查询账号非空", "借贷标志合法", "金额可解析", "时间可解析", "方向与本方一致", "卡行成对", "开户人可分类", "通道可判定"],
     "thresholds": {
       "时间可解析": 0.99,
       "方向与本方一致": 0.98,
+      "通道可判定": 1.0,
       "其余": 1.0
     }
   },
@@ -35,7 +50,8 @@
     "对方账号只取对方方支付帐号；为空时：借方按收款方商户号（直连/间连）取，提现/充值按交易类型取本方账号",
     "金额取绝对值、两位小数字符串；借贷决定方向：借=付、贷=收",
     "交易时间按 Asia/Shanghai 解释，输出 Unix 秒",
-    "本方户名 → extras.ownerName；对方户名 → counterpartyName；银行卡号/开户行 → extras 的 属性:<归属>:<键>"
+    "本方户名 → extras.ownerName；对方户名 → counterpartyName；银行卡号/开户行 → extras 的 属性:<归属>:<键>",
+    "通道由数据信号判定（微信/财付通、支付宝、通用）；两类信号同时命中 ⇒ 整份拒收（通道可判定）"
   ],
   "entry": {
     "command": "bun run convert.ts",

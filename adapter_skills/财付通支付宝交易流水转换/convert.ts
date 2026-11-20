@@ -1,5 +1,8 @@
 /**
- * 微信账户交易流水 → 事实行（result.json）
+ * 微信/财付通/支付宝账户交易流水 → 事实行（result.json）
+ *
+ * 通道：三类流水的表头可以完全一致，只能按数据信号判定（见 `adapter.json` 的 channel）；
+ * 两类信号同时命中 ⇒ 整份拒收，绝不猜。括号包裹的掩码账号保持原样，不建实体。
  *
  * 契约（`016-adaptive-format-ingest/contracts/`）：
  *   - 内核以 cwd = 技能目录启动：`bun run convert.ts <原件绝对路径>`
@@ -60,6 +63,9 @@ export interface 闸结果 {
   阈值: number
 }
 
+/** 数据信号判出的支付通道；`冲突` 只用于整份拒收的报告。 */
+export type 通道名 = "微信/财付通" | "支付宝" | "通用" | "冲突"
+
 export interface 报告 {
   adapterId: string
   adapterVersion: string
@@ -70,10 +76,15 @@ export interface 报告 {
     工作表们: { 名称: string; 表头行: number; 数据行: number }[]
   }
   headerGate: { 通过: boolean; 缺列: string[] }
+  /** 表头闸就失败时没有数据可判定，省略此字段。 */
+  通道?: 通道名
   gates: 闸结果[]
   counts: { 总行: number; 产出: number; 跳过: number }
   warnings: { sheet: string; rowNo: number; code: string; detail: string }[]
-  skippedRows: { sheet: string; rowNo: number; 原因: string }[]
+  /** 跳过行的金额只在源文件该格可解析时出现；合计行/空行没有金额。 */
+  skippedRows: { sheet: string; rowNo: number; 原因: string; 金额?: string }[]
+  /** 按原因聚合的跳过行数与金额（绝对值，两位小数）；整份拒收时为空。 */
+  跳过汇总: { 原因: string; 行数: number; 金额合计: string }[]
 }
 
 export interface 转换结果 {
@@ -88,6 +99,13 @@ export interface 识别卡 {
   version: string
   attributeKeys: string[]
   match: { requiredHeaders: string[]; optionalHeaders: string[]; priority: number }
+  channel: {
+    wechatKeywords: string[]
+    alipayKeywords: string[]
+    bankNameDeny: string[]
+    alipayOrderIdRatio: number
+    alipayPhoneAccountRatio: number
+  }
   admission: { checks: string[]; thresholds: Record<string, number> }
   output: { file: string }
 }
@@ -241,6 +259,22 @@ export function 读识别卡(目录: string = 技能目录()): 识别卡 {
   }
   if (typeof 卡.output?.file !== "string" || 卡.output.file.trim() === "") {
     throw new Error("adapter.json：output.file 必须是非空字符串")
+  }
+  const 通道 = 卡.channel
+  if (typeof 通道 !== "object" || 通道 === null) throw new Error("adapter.json：channel 必须是对象")
+  for (const 键 of ["wechatKeywords", "alipayKeywords"] as const) {
+    if (!Array.isArray(通道[键]) || 通道[键].length === 0 || 通道[键].some((词) => typeof 词 !== "string" || 词.trim() === "")) {
+      throw new Error(`adapter.json：channel.${键} 必须是非空字符串数组`)
+    }
+  }
+  if (!Array.isArray(通道.bankNameDeny) || 通道.bankNameDeny.some((词) => typeof 词 !== "string" || 词.trim() === "")) {
+    throw new Error("adapter.json：channel.bankNameDeny 必须是字符串数组")
+  }
+  for (const 键 of ["alipayOrderIdRatio", "alipayPhoneAccountRatio"] as const) {
+    const 值 = 通道[键]
+    if (typeof 值 !== "number" || !Number.isFinite(值) || 值 < 0 || 值 > 1) {
+      throw new Error(`adapter.json：channel.${键} 必须是 0–1 的数字`)
+    }
   }
   return 卡
 }
@@ -488,6 +522,107 @@ interface 名册 {
   值: Map<string, Set<string>>
 }
 
+// ─────────────────────────────────────────────────────────────
+// 通道识别：表头相同，只能看数据
+// ─────────────────────────────────────────────────────────────
+
+/** 参与通道判定的列；缺列时自动跳过（老 28 列样本没有收单机构等列）。 */
+const 通道列 = [
+  "查询账号",
+  "付款方支付帐号",
+  "收款方支付帐号",
+  "付款方银行卡所属行",
+  "收款方银行卡所属行",
+  "收单机构名称",
+  "清算机构名称",
+  "二级商户名称",
+] as const
+
+export interface 通道统计 {
+  行数: number
+  微信命中: number
+  支付宝命中: number
+  手机号查询: number
+  流水号一致: number
+}
+
+export function 统计通道(行们: readonly 行计划[], 卡: 识别卡): 通道统计 {
+  const 微信词 = 卡.channel.wechatKeywords.map((词) => 词.toLowerCase())
+  const 支付宝词 = 卡.channel.alipayKeywords.map((词) => 词.toLowerCase())
+  const 统计: 通道统计 = { 行数: 0, 微信命中: 0, 支付宝命中: 0, 手机号查询: 0, 流水号一致: 0 }
+  for (const 行 of 行们) {
+    统计.行数 += 1
+    const 片段: string[] = []
+    for (const 列名 of 通道列) {
+      const 下标 = 行.列.get(列名)
+      if (下标 !== undefined) 片段.push(文本值(行.cells.cells[下标]))
+    }
+    const 拼 = 片段.join("|").toLowerCase()
+    if (微信词.some((词) => 拼.includes(词))) 统计.微信命中 += 1
+    if (支付宝词.some((词) => 拼.includes(词))) 统计.支付宝命中 += 1
+    if (/^\d{11}$/.test(归一化账号(单元格(行.cells, 行.列, "查询账号")))) 统计.手机号查询 += 1
+    const 流水 = 单元格(行.cells, 行.列, "交易流水号")
+    const 单号 = 单元格(行.cells, 行.列, "支付机构内部订单号")
+    if (流水 !== "" && 流水 === 单号) 统计.流水号一致 += 1
+  }
+  return 统计
+}
+
+/**
+ * 微信/财付通：命中 `@wx.tenpay.com`/微信/财付通/微众等标记；
+ * 支付宝：命中 alipay/支付宝/蚂蚁，或「手机号查询账号 + 流水号==内部订单号」两项比例都达标。
+ * 两类同时命中 ⇒ 冲突（fail-closed）；都没有 ⇒ 通用（保留老样本/其他统一格式的兼容）。
+ */
+export function 判定通道(统计: 通道统计, 卡: 识别卡): 通道名 {
+  const 比例 = (分子: number) => (统计.行数 === 0 ? 0 : 分子 / 统计.行数)
+  const 支付宝结构 =
+    统计.行数 > 0 &&
+    比例(统计.流水号一致) >= 卡.channel.alipayOrderIdRatio &&
+    比例(统计.手机号查询) >= 卡.channel.alipayPhoneAccountRatio
+  const 是微信 = 统计.微信命中 > 0
+  const 是支付宝 = 统计.支付宝命中 > 0 || 支付宝结构
+  if (是微信 && 是支付宝) return "冲突"
+  if (是微信) return "微信/财付通"
+  if (是支付宝) return "支付宝"
+  return "通用"
+}
+
+/** 开户行里的通道标记（alipay 等）不是银行名，不能入库。 */
+export function 是禁用开户行(原值: string, 禁用词: readonly string[]): boolean {
+  const 小写 = 原值.trim().toLowerCase()
+  return 小写 !== "" && 禁用词.some((词) => 小写.includes(词.toLowerCase()))
+}
+
+function 元转分(金额: string): bigint {
+  const 负 = 金额.startsWith("-")
+  const 净 = 负 ? 金额.slice(1) : 金额
+  const [整数 = "0", 小数 = ""] = 净.split(".")
+  const 分 = BigInt(整数) * 100n + BigInt((小数 + "00").slice(0, 2))
+  return 负 ? -分 : 分
+}
+
+function 分转元(分: bigint): string {
+  const 元 = 分 / 100n
+  return `${元}.${String(分 % 100n).padStart(2, "0")}`
+}
+
+/** 按原因聚合跳过行数与金额（绝对值）；金额用整数分累加，避免浮点漂移。 */
+export function 汇总跳过(跳过: 报告["skippedRows"]): 报告["跳过汇总"] {
+  const 表 = new Map<string, { 行数: number; 分: bigint }>()
+  for (const 项 of 跳过) {
+    const 现 = 表.get(项.原因) ?? { 行数: 0, 分: 0n }
+    现.行数 += 1
+    if (项.金额 !== undefined) {
+      const 分 = 元转分(项.金额)
+      现.分 += 分 < 0n ? -分 : 分
+    }
+    表.set(项.原因, 现)
+  }
+  return [...表.entries()]
+    .map(([原因, 计]) => ({ 原因, 行数: 计.行数, 金额合计: 分转元(计.分) }))
+    .sort((甲, 乙) => 乙.行数 - 甲.行数 || (甲.原因 < 乙.原因 ? -1 : 甲.原因 > 乙.原因 ? 1 : 0))
+}
+
 export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果 {
   const 必需列 = 卡.match.requiredHeaders
   const 警告: 报告["warnings"] = []
@@ -540,6 +675,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
         counts: { 总行: 0, 产出: 0, 跳过: 0 },
         warnings: 警告,
         skippedRows: [],
+        跳过汇总: [],
       },
       拒收: true,
     }
@@ -555,6 +691,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     "方向与本方一致",
     "卡行成对",
     "开户人可分类",
+    "通道可判定",
   ])
   for (const 项 of 卡.admission.checks) {
     if (!已实现检查项.has(项)) throw new Error(`convert.ts 未实现 adapter.json 声明的检查项：${项}`)
@@ -690,6 +827,13 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     return [...集][0]!
   }
 
+  // 通道是文件级判定：分母固定 1，冲突即 0；阈值来自 adapter.json。
+  const 通道 = 判定通道(统计通道(计划行们, 卡), 卡)
+  const 通道计 = 闸计数.get("通道可判定")
+  if (通道计 === undefined) throw new Error("convert.ts 未实现 adapter.json 声明的检查项：通道可判定")
+  通道计.分母 = 1
+  通道计.命中 = 通道 === "冲突" ? 0 : 1
+
   const 闸们: 闸结果[] = 卡.admission.checks.map((项) => {
     const 计 = 闸计数.get(项)
     if (计 === undefined) throw new Error(`convert.ts 未实现 adapter.json 声明的检查项：${项}`)
@@ -716,10 +860,12 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
         sourceSha256: 源.sha256,
         source: { 文件名: "", 字节数: 源.字节数, 工作表们 },
         headerGate: { 通过: true, 缺列: [] },
+        通道,
         gates: 闸们,
         counts: { 总行, 产出: 0, 跳过: 0 },
         warnings: 警告,
         skippedRows: [],
+        跳过汇总: [],
       },
       拒收: true,
     }
@@ -732,21 +878,37 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
   for (const 计划 of 计划行们) {
     const 列 = 计划.列
     const row = 计划.cells
+    // 跳过的金额能解析就带上：报告按原因汇总「跳过多少行、多少钱」。
+    const 记跳过 = (原因: string, 金额?: string | null) => {
+      跳过.push({
+        sheet: 计划.表名,
+        rowNo: 计划.rowNo,
+        原因,
+        ...(金额 === undefined || 金额 === null ? {} : { 金额 }),
+      })
+    }
     const 借贷 = 原始单元格(row, 列, "借贷标志")
     const 方向 = 解析方向(借贷)
+    const 金额 = 解析金额(原始单元格(row, 列, "交易金额"))
     if (方向 === undefined) {
-      跳过.push({ sheet: 计划.表名, rowNo: 计划.rowNo, 原因: "方向不明" })
+      记跳过("方向不明", 金额)
       continue
     }
-    const 金额 = 解析金额(原始单元格(row, 列, "交易金额"))
     if (金额 === null) {
-      跳过.push({ sheet: 计划.表名, rowNo: 计划.rowNo, 原因: "金额无法解析" })
+      记跳过("金额无法解析")
+      continue
+    }
+    // 内核契约第 2 条要求 `amount > 0`：支付宝「支付账户消费 0.00 芝麻信用专享支付」这类
+    // 零金额行没有资金流动，留在 rows 里会让**整份材料**被契约拒收（实得：
+    // `rows[66].amount 必须是正数`）。逐行跳过、金额照带，让用户在跳过汇总里看见。
+    if (/^-?0+\.0{2}$/.test(金额)) {
+      记跳过("金额为零", 金额)
       continue
     }
     const 时间文 = 原始单元格(row, 列, "交易时间")
     const 时间 = 解析时间(时间文)
     if (时间 === undefined) {
-      跳过.push({ sheet: 计划.表名, rowNo: 计划.rowNo, 原因: "时间无法解析" })
+      记跳过("时间无法解析", 金额)
       continue
     }
 
@@ -765,7 +927,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     const 对方账号原文 = 归一化账号(对方支付原文)
 
     if (查询账号 === "" || 本方账号 === "") {
-      跳过.push({ sheet: 计划.表名, rowNo: 计划.rowNo, 原因: "缺本方账号" })
+      记跳过("缺本方账号", 金额)
       continue
     }
 
@@ -800,7 +962,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       }
     }
     if (对方账号 === "") {
-      跳过.push({ sheet: 计划.表名, rowNo: 计划.rowNo, 原因: "缺对方账号" })
+      记跳过("缺对方账号", 金额)
       continue
     }
 
@@ -837,6 +999,15 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     // 只是没有卡号可配对；有卡无行会被「卡行成对」闸整份拒收，到不了这里。
     const 记开户行 = (归属: "本方" | "对方", 值: string) => {
       if (值 === "") return
+      if (是禁用开户行(值, 卡.channel.bankNameDeny)) {
+        警告.push({
+          sheet: 计划.表名,
+          rowNo: 计划.rowNo,
+          code: "开户行疑似通道标记",
+          detail: `开户行「${值}」是支付通道标记而不是银行名，未写入 属性:${归属}:开户行`,
+        })
+        return
+      }
       if (是开户行名称(值)) {
         extras[`属性:${归属}:开户行`] = 值
         return
@@ -938,10 +1109,12 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       sourceSha256: 源.sha256,
       source: { 文件名: "", 字节数: 源.字节数, 工作表们 },
       headerGate: { 通过: true, 缺列: [] },
+      通道,
       gates: 闸们,
       counts: { 总行, 产出: 行们.length, 跳过: 总数(跳过) },
       warnings: 警告,
       skippedRows: 跳过,
+      跳过汇总: 汇总跳过(跳过),
     },
     拒收: false,
   }

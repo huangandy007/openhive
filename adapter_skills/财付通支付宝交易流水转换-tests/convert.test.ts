@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import * as XLSX from "../vendor/xlsx.mjs"
+import * as XLSX from "../财付通支付宝交易流水转换/vendor/xlsx.mjs"
 import {
   转换文件,
   是账户形状,
@@ -16,11 +16,12 @@ import {
   读识别卡,
   type 事实行,
   type 转换结果,
-} from "../convert"
+} from "../财付通支付宝交易流水转换/convert"
 
-const 技能目录 = dirname(import.meta.dir)
-const 夹具 = (名: string) => join(技能目录, "test", "fixtures", 名)
-const 期望 = (名: string) => join(技能目录, "test", "expected", 名)
+// 测试与夹具已移出发布目录（资产草稿是整目录复制，26MB 测试不进上线包）。
+const 技能目录 = join(dirname(import.meta.dir), "财付通支付宝交易流水转换")
+const 夹具 = (名: string) => join(import.meta.dir, "fixtures", 名)
+const 期望 = (名: string) => join(import.meta.dir, "expected", 名)
 const 识别卡 = 读识别卡(技能目录)
 const 真实文件 = 夹具("脱敏-微信流水.xls")
 const 临时目录们: string[] = []
@@ -623,7 +624,151 @@ describe("性能", () => {
 })
 
 // ─────────────────────────────────────────────────────────────
-// 8. 静态约束：纯转换器 + 识别卡字段
+// 8. 通道识别：微信/财付通 vs 支付宝（v1.2.0）
+// ─────────────────────────────────────────────────────────────
+
+describe("通道识别", () => {
+  test("旧脱敏样本：微信/财付通；跳过汇总 511 行 / 744,501.82 元", () => {
+    const r = 转换文件(真实文件, 识别卡)
+    expect(r.report.通道).toBe("微信/财付通")
+    expect(r.report.跳过汇总).toEqual([{ 原因: "缺对方账号", 行数: 511, 金额合计: "744501.82" }])
+    // 跳过行带金额，汇总才有分母可核；金额取绝对值、两位小数。
+    expect(r.report.skippedRows.every((行) => /^\d+\.\d{2}$/.test(行.金额 ?? ""))).toBe(true)
+  })
+
+  test("无通道信号：边界夹具按「通用」转换，不误判成支付宝/微信", () => {
+    const r = 转换文件(夹具("边界.csv"), 识别卡)
+    expect(r.report.通道).toBe("通用")
+    expect(r.report.跳过汇总.map((项) => 项.行数).reduce((和, 数) => 和 + 数, 0)).toBe(
+      r.report.counts.跳过,
+    )
+  })
+
+  test("财付通样本：识别为微信/财付通，掩码账号保留原样并告警", () => {
+    const r = 转换文件(夹具("财付通-脱敏.csv"), 识别卡)
+    expect(r.report.通道).toBe("微信/财付通")
+    expect(r.report.counts).toEqual({ 总行: 7, 产出: 6, 跳过: 1 })
+    expect(r.report.跳过汇总).toEqual([{ 原因: "缺对方账号", 行数: 1, 金额合计: "10.00" }])
+    // 括号账号是掩码，不剥括号、不当真实账户建实体；仍产出 counterparty 原文。
+    const 掩码 = r.rows.find((行) => 行.counterparty === "(1700000001)")
+    expect(掩码 !== undefined).toBe(true)
+    expect(r.report.warnings.some((w) => w.code === "账号形状可疑")).toBe(true)
+    // 正常银行名不被黑名单误伤。
+    expect(r.rows.find((行) => 行.rowNo === 2)!.extras["属性:本方:开户行"]).toBe("微众银行")
+  })
+
+  test("支付宝样本：识别为支付宝；alipay 不当开户行；缺付款方的入账跳过并汇总金额", () => {
+    const r = 转换文件(夹具("支付宝-脱敏.csv"), 识别卡)
+    expect(r.report.通道).toBe("支付宝")
+    expect(r.report.counts).toEqual({ 总行: 6, 产出: 4, 跳过: 2 })
+    expect(r.report.跳过汇总).toEqual([{ 原因: "缺对方账号", 行数: 2, 金额合计: "77.77" }])
+    for (const 行 of r.rows) {
+      expect(行.extras["属性:本方:开户行"]).not.toBe("alipay")
+      expect(行.extras["属性:对方:开户行"]).not.toBe("alipay")
+    }
+    expect(r.report.warnings.some((w) => w.code === "开户行疑似通道标记")).toBe(true)
+    // 支付宝基金邮箱仍不是内核账户形状：产物保留、告警照记，不静默吞掉。
+    expect(r.rows.some((行) => 行.counterparty === "fund@example.com")).toBe(true)
+    expect(
+      r.report.warnings.filter((w) => w.code === "账号形状可疑").length,
+    ).toBe(1)
+  })
+
+  test("零金额行：跳过并汇总（内核契约第 2 条要求 amount > 0）", () => {
+    // 支付宝「支付账户消费 0.00 芝麻信用专享支付」这类行没有资金流动；留在 rows 里会让
+    // 整份材料被内核契约拒收（`rows[i].amount 必须是正数`），所以逐行跳过、金额照带。
+    const 目录 = 临时目录()
+    const 路径 = join(目录, "零金额.csv")
+    writeFileSync(
+      路径,
+      [
+        "查询账号,付款方支付帐号,收款方支付帐号,借贷标志,交易金额,交易余额,交易时间,收款方的商户名称",
+        "1000000001,1000000001,2000000001,借,0.00,0.00,20260101000000,张三（个人）",
+        "1000000001,1000000001,2000000001,借,1.00,1.00,20260101000100,张三（个人）",
+        "1000000001,2000000001,1000000001,贷,0,0.00,20260101000200,李四（个人）",
+      ].join("\r\n") + "\r\n",
+    )
+    const r = 转换文件(路径, 识别卡)
+    expect(r.拒收).toBe(false)
+    expect(r.report.counts).toEqual({ 总行: 3, 产出: 1, 跳过: 2 })
+    expect(r.rows.map((行) => 行.amount)).toEqual(["1.00"])
+    expect(r.report.skippedRows.map((行) => [行.rowNo, 行.原因, 行.金额])).toEqual([
+      [2, "金额为零", "0.00"],
+      [4, "金额为零", "0.00"],
+    ])
+    expect(r.report.跳过汇总).toEqual([{ 原因: "金额为零", 行数: 2, 金额合计: "0.00" }])
+  })
+
+  test("支付宝结构信号：手机号账号 + 流水号==内部订单号（无 alipay 字样）也认支付宝", () => {
+    const 目录 = 临时目录()
+    const 路径 = join(目录, "支付宝-无标记.csv")
+    const 头 = [
+      "查询账号",
+      "付款方支付帐号",
+      "收款方支付帐号",
+      "借贷标志",
+      "交易金额",
+      "交易余额",
+      "交易时间",
+      "交易流水号",
+      "支付机构内部订单号",
+    ]
+    writeFileSync(
+      路径,
+      [
+        头,
+        ["13800000000", "13800000000", "13900000001", "借", "1.00", "1.00", "20260101000000", "A1", "A1"],
+        ["13800000000", "13900000002", "13800000000", "贷", "2.00", "3.00", "20260102000000", "B1", "B1"],
+      ]
+        .map((行) => 行.join(","))
+        .join("\r\n") + "\r\n",
+    )
+    expect(转换文件(路径, 识别卡).report.通道).toBe("支付宝")
+  })
+
+  test("只有手机号账号、流水号与内部订单号不一致 ⇒ 通用（不误判成支付宝）", () => {
+    const 目录 = 临时目录()
+    const 路径 = join(目录, "手机号-非支付宝.csv")
+    const 头 = [
+      "查询账号",
+      "付款方支付帐号",
+      "收款方支付帐号",
+      "借贷标志",
+      "交易金额",
+      "交易余额",
+      "交易时间",
+      "交易流水号",
+      "支付机构内部订单号",
+    ]
+    writeFileSync(
+      路径,
+      [
+        头,
+        ["13800000000", "13800000000", "13900000001", "借", "1.00", "1.00", "20260101000000", "A1", "X1"],
+        ["13800000000", "13900000002", "13800000000", "贷", "2.00", "3.00", "20260102000000", "B1", "X2"],
+      ]
+        .map((行) => 行.join(","))
+        .join("\r\n") + "\r\n",
+    )
+    expect(转换文件(路径, 识别卡).report.通道).toBe("通用")
+  })
+
+  test("通道信号冲突：整份拒收（exit 3，闸门写明「通道可判定」）", () => {
+    const 目录 = 临时目录()
+    const { 码 } = 跑CLI([夹具("通道冲突.csv"), "--out", 目录])
+    expect(码).toBe(3)
+    const 原文 = 读JSON<{ rows: 事实行[]; report: 转换结果["report"] }>(join(目录, "result.json"))
+    expect(原文.rows).toEqual([])
+    expect(原文.report.通道).toBe("冲突")
+    const 闸 = 原文.report.gates.find((项) => 项.检查项 === "通道可判定")
+    expect(闸 !== undefined).toBe(true)
+    expect(闸!.通过率).toBe(0)
+    expect(闸!.阈值).toBe(1)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────
+// 9. 静态约束：纯转换器 + 识别卡字段
 // ─────────────────────────────────────────────────────────────
 
 describe("静态约束", () => {
@@ -654,6 +799,20 @@ describe("静态约束", () => {
           Object.hasOwn(识别卡.admission.thresholds, "其余"),
       ).toBe(true)
     }
+  })
+
+  test("adapter.json 的通道配置：关键词非空、比例在 [0,1]、闸门声明一致", () => {
+    expect(识别卡.channel.wechatKeywords.length).toBeGreaterThan(0)
+    expect(识别卡.channel.alipayKeywords.length).toBeGreaterThan(0)
+    expect(Array.isArray(识别卡.channel.bankNameDeny)).toBe(true)
+    for (const 比例 of [
+      识别卡.channel.alipayOrderIdRatio,
+      识别卡.channel.alipayPhoneAccountRatio,
+    ]) {
+      expect(比例 >= 0 && 比例 <= 1).toBe(true)
+    }
+    expect(识别卡.admission.checks).toContain("通道可判定")
+    expect(识别卡.admission.thresholds["通道可判定"]).toBe(1)
   })
 
   test("技能目录里没有第二份阈值数字（唯一出处是 adapter.json）", () => {
