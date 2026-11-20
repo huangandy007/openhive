@@ -58,7 +58,7 @@
  *   `外环色表` 的 7 个预设 + 「自动」（自动 = 删键）。
  */
 import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js"
-import { 是事件节点, type 图文件, type 节点, type 边, type 文字, type 属性 } from "./file"
+import { 属性们, 是事件节点, type 图文件, type 节点, type 边, type 文字, type 属性 } from "./file"
 import { 是角色边 } from "./edge"
 import { 外环色表, 文字色表, type 画布动作 } from "./canvas"
 import { 等距们, 对齐们 } from "./geometry"
@@ -202,7 +202,7 @@ function 来源文本(来源: 节点["来源"] | undefined): string {
 }
 
 const 属性文本 = (点: 节点) =>
-  (点.属性 ?? []).length === 0 ? "—" : (点.属性 ?? []).map((行) => `${行.键}：${行.值}`).join("、")
+  属性们(点).length === 0 ? "—" : 属性们(点).map((行) => `${行.键}：${行.值}`).join("、")
 
 /**
  * 事件两态（T011 / data-model §5）：`来源.kind === "事件"` = 绑定库事件 ⇒ 九格只读，
@@ -244,7 +244,7 @@ function 参与方行们(点: 节点, 文档: 图文件): 参与方行[] {
     if (名字 === "") continue
     行们.push({ 角色: 条.标签, 名字, 已对上: true })
   }
-  for (const 属性项 of 点.属性 ?? []) {
+  for (const 属性项 of 属性们(点)) {
     if (!属性项.键.startsWith(参与方键前缀)) continue
     const 角色 = 属性项.键.slice(参与方键前缀.length)
     if (角色 === "") continue
@@ -264,7 +264,7 @@ const 是保留属性键 = (键: string): boolean =>
   键 === "金额" || 键 === "时间精度" || 键.startsWith(参与方键前缀)
 
 /** 「其他」属性 = 除保留键外的全部属性，顺序沿用原文。 */
-const 其他属性们 = (点: 节点): 属性[] => (点.属性 ?? []).filter((项) => !是保留属性键(项.键))
+const 其他属性们 = (点: 节点): 属性[] => 属性们(点).filter((项) => !是保留属性键(项.键))
 
 /** 按唯一键去重：同一键只保留一项（serde 端属性按 `键` 配对，重复键会抢同一行）。 */
 function 同键去重(属性们: readonly 属性[]): 属性[] {
@@ -529,21 +529,21 @@ export function 检查器(props: 检查器Props): JSX.Element {
   // -------------------------------------------------------------------------
 
   /** 属性整数组只走一个补丁出口；值没变不发写（与 `字段补丁` 同口径）。 */
-  const 提交属性们 = (点: 节点, 属性们: readonly 属性[]) => {
-    const 去重 = 同键去重(属性们)
-    if (JSON.stringify(去重) === JSON.stringify(点.属性 ?? [])) return
+  const 提交属性们 = (点: 节点, 新属性们: readonly 属性[]) => {
+    const 去重 = 同键去重(新属性们)
+    if (JSON.stringify(去重) === JSON.stringify(属性们(点))) return
     props.动作表.改字段("节点", 点.id, { 属性: 去重.length === 0 ? null : 去重 })
   }
 
   /** `值 === undefined` ⇒ 删键；否则有则改、无则追加（保留原有 `出处` 等未知字段）。 */
   const 改写属性 = (点: 节点, 键: string, 值: string | undefined): 属性[] => {
-    const 原 = 点.属性 ?? []
+    const 原 = 属性们(点)
     if (值 === undefined) return 原.filter((项) => 项.键 !== 键)
     if (原.some((项) => 项.键 === 键)) return 原.map((项) => (项.键 === 键 ? { ...项, 值 } : 项))
     return [...原, { 键, 值 }]
   }
 
-  const 属性值 = (点: 节点, 键: string) => (点.属性 ?? []).find((项) => 项.键 === 键)?.值 ?? ""
+  const 属性值 = (点: 节点, 键: string) => 属性们(点).find((项) => 项.键 === 键)?.值 ?? ""
 
   const 提交时间 = (点: 节点, 键: "首" | "末", 值: string) => {
     if (值 === (点.时间?.[键] ?? "")) return
@@ -569,10 +569,10 @@ export function 检查器(props: 检查器Props): JSX.Element {
     const 新键 = 原值.trim()
     if (新键 === "" || 新键 === 原键) return
     // fail-closed：保留键 / 已有同名键都不写，避免把两条属性抢到同一行。
-    if (是保留属性键(新键) || (点.属性 ?? []).some((项) => 项.键 === 新键)) return
+    if (是保留属性键(新键) || 属性们(点).some((项) => 项.键 === 新键)) return
     提交属性们(
       点,
-      (点.属性 ?? []).map((项) => (项.键 === 原键 ? { ...项, 键: 新键 } : 项)),
+      属性们(点).map((项) => (项.键 === 原键 ? { ...项, 键: 新键 } : 项)),
     )
   }
 
@@ -580,23 +580,23 @@ export function 检查器(props: 检查器Props): JSX.Element {
     if (原值 === 属性值(点, 键)) return
     提交属性们(
       点,
-      (点.属性 ?? []).map((项) => (项.键 === 键 ? { ...项, 值: 原值 } : 项)),
+      属性们(点).map((项) => (项.键 === 键 ? { ...项, 值: 原值 } : 项)),
     )
   }
 
   const 删除其他 = (点: 节点, 键: string) =>
     提交属性们(
       点,
-      (点.属性 ?? []).filter((项) => 项.键 !== 键),
+      属性们(点).filter((项) => 项.键 !== 键),
     )
 
   /** 增一行：用不和保留键/已有键冲突的占位名，用户再改键与值。 */
   const 新增其他 = (点: 节点) => {
-    const 已有 = new Set((点.属性 ?? []).map((项) => 项.键))
+    const 已有 = new Set(属性们(点).map((项) => 项.键))
     let 键 = "新属性"
     let 序 = 2
     while (已有.has(键) || 是保留属性键(键)) 键 = `新属性${序++}`
-    提交属性们(点, [...(点.属性 ?? []), { 键, 值: "" }])
+    提交属性们(点, [...属性们(点), { 键, 值: "" }])
   }
 
   const 提交参与方名字 = (点: 节点, 行: 参与方行, 原值: string) => {
@@ -605,14 +605,14 @@ export function 检查器(props: 检查器Props): JSX.Element {
     if (名字 === "") {
       提交属性们(
         点,
-        (点.属性 ?? []).filter((项) => 项.键 !== 行.原键),
+        属性们(点).filter((项) => 项.键 !== 行.原键),
       )
       return
     }
-    if (名字 === (点.属性 ?? []).find((项) => 项.键 === 行.原键)?.值) return
+    if (名字 === 属性们(点).find((项) => 项.键 === 行.原键)?.值) return
     提交属性们(
       点,
-      (点.属性 ?? []).map((项) => (项.键 === 行.原键 ? { ...项, 值: 名字 } : 项)),
+      属性们(点).map((项) => (项.键 === 行.原键 ? { ...项, 值: 名字 } : 项)),
     )
   }
 
@@ -622,10 +622,10 @@ export function 检查器(props: 检查器Props): JSX.Element {
     if (角色 === "") return
     const 新键 = `${参与方键前缀}${角色}`
     if (新键 === 行.原键) return
-    if ((点.属性 ?? []).some((项) => 项.键 === 新键)) return
+    if (属性们(点).some((项) => 项.键 === 新键)) return
     提交属性们(
       点,
-      (点.属性 ?? []).map((项) => (项.键 === 行.原键 ? { ...项, 键: 新键 } : 项)),
+      属性们(点).map((项) => (项.键 === 行.原键 ? { ...项, 键: 新键 } : 项)),
     )
   }
 
@@ -635,8 +635,8 @@ export function 检查器(props: 检查器Props): JSX.Element {
     const 名字 = 名字原值.trim()
     if (角色 === "" || 名字 === "") return
     const 键 = `${参与方键前缀}${角色}`
-    if ((点.属性 ?? []).some((项) => 项.键 === 键)) return
-    提交属性们(点, [...(点.属性 ?? []), { 键, 值: 名字 }])
+    if (属性们(点).some((项) => 项.键 === 键)) return
+    提交属性们(点, [...属性们(点), { 键, 值: 名字 }])
   }
 
   const [参与方高亮, set参与方高亮] = createSignal(false)
@@ -1367,8 +1367,8 @@ export function 检查器(props: 检查器Props): JSX.Element {
                 <span class={标签}>属性</span>
                 <span data-slot="hgraph-readonly-属性" class={值样式}>
                   {/* T6：属性自己的出处单独可点；未注入 / 无出处 ⇒ 与旧文本一字不差。 */}
-                  <Show when={(点().属性 ?? []).length > 0} fallback={<>{属性展示(点())}</>}>
-                    <For each={点().属性 ?? []}>
+                  <Show when={属性们(点()).length > 0} fallback={<>{属性展示(点())}</>}>
+                    <For each={属性们(点())}>
                       {(属性项, 序) => (
                         <>
                           <Show when={序() > 0}>、</Show>

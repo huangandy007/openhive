@@ -1085,3 +1085,50 @@ describe("MCP 分发", () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2026-11-20 · `属性` 形状闸（真栈坏图的来源：AI 把它写成对象映射）
+// ---------------------------------------------------------------------------
+
+/**
+ * 走**真实工具入口**（不是直接调校验），钉住「新 session 里 AI 建图」这条路：
+ * `graph_add` 的节点草稿与 `graph_update` 的字段补丁都必须把 `属性` 写成
+ * `[{键, 值}]`；写成对象 ⇒ 整批 `bad_input`、盘上一个字节都不动，话术点明写法。
+ */
+describe("属性形状（图文件 `属性` 必须是 [{键, 值}]）", () => {
+  test("graph_add 把 `属性` 写成对象 ⇒ bad_input，一条都不写", async () => {
+    const 绝对 = 摆图("add/属性形状.hgraph", 空图("属性形状"))
+    const 前 = 字节哈希(绝对)
+
+    const 错误 = await 取工具错误(() =>
+      graph_add(ctx(), {
+        路径: "add/属性形状.hgraph",
+        节点: [手写节点("张三", { 属性: { 金额: "12000" } })],
+      }),
+    )
+
+    expect(错误.code).toBe("bad_input")
+    expect(错误.message).toContain("[{键")
+    expect(字节哈希(绝对)).toBe(前)
+    expect(读回图("add/属性形状.hgraph").节点).toHaveLength(0)
+  })
+
+  test("graph_update 把节点 `属性` 改成对象 ⇒ bad_input，文件字节不变", async () => {
+    const 绝对 = 摆图("update/属性形状.hgraph", {
+      ...空图("属性形状"),
+      节点: [手写节点("张三", { id: "n1", x: 10, y: 20 })],
+    })
+    const 前 = 字节哈希(绝对)
+
+    const 错误 = await 取工具错误(() =>
+      graph_update(ctx(), {
+        路径: "update/属性形状.hgraph",
+        目标: [{ 类别: "节点", id: "n1", 字段: { 属性: { 金额: "12000" } } }],
+      }),
+    )
+
+    expect(错误.code).toBe("bad_input")
+    expect(错误.message).toContain("[{键")
+    expect(字节哈希(绝对)).toBe(前)
+  })
+})

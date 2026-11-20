@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { 空骨架, 序列化图, 解析图, 默认设置, 校验来源 } from "../../src/server/openhive/hgraph-file"
+import {
+  事件兜底名称,
+  空骨架,
+  序列化图,
+  解析图,
+  默认设置,
+  校验属性,
+  校验来源,
+  type 节点,
+} from "../../src/server/openhive/hgraph-file"
 
 /**
  * T003 · `.hgraph` 解析与未知字段保真（012 data-model §1–§5 / contracts/hgraph-format §1、§3）。
@@ -664,5 +673,69 @@ describe("FR-037 · 事件时间不得为空", () => {
 
   test("非事件来源不受影响：手写节点的空时间照常通过", () => {
     expect(校验来源({ 来源: { kind: "手写" }, 时间: { 首: "", 末: "" } })).toEqual({ ok: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2026-11-20 · 坏 `属性` 形状（AI 在新 session 里把属性写成对象映射）
+// ---------------------------------------------------------------------------
+
+/**
+ * 真栈证据：AI 的 `graph_add` 入参是 `"属性": {"时间精度": "分"}`。写侧没拒 ⇒ 落盘；
+ * 前端渲染时 `(点.属性 ?? []).some is not a function` 整块画布白屏。
+ *
+ * 两层各守一件：读口（`属性值` / `是事件节点`）对历史坏文件 fail-soft；写闸（`校验属性`）
+ * 拒新坏数据，话术要让模型能照着改。
+ */
+describe("坏 `属性` 形状：读口按「没有属性」处理；写闸点名写法", () => {
+  test("`事件兜底名称`：属性是对象 ⇒ 不抛，按「没有属性」兜底", () => {
+    const 点 = {
+      id: "n1",
+      名称: "",
+      类型: "转账",
+      来源: { kind: "事件", 实体: "ev_1" },
+      属性: { 金额: "12000" },
+      时间: { 首: "2026-01-01", 末: "" },
+      x: 0,
+      y: 0,
+    } as unknown as 节点
+
+    expect(事件兜底名称(点)).toBe("转账 · 2026-01-01")
+  })
+
+  test("`校验属性`：属性是对象 ⇒ BAD_SHAPE，话术点明写成 [{键, 值}]", () => {
+    const 结果 = 校验属性({ 属性: { 时间精度: "分" } })
+
+    expect(结果.ok).toBe(false)
+    if (结果.ok) throw new Error("不该通过")
+    expect(结果.code).toBe("BAD_SHAPE")
+    expect(结果.话术).toContain("[{键")
+    expect(结果.话术).toContain("对象")
+  })
+
+  test("`校验属性`：字符串数组 / null 元素 / 非字符串值 / 非字符串键 ⇒ 都拒", () => {
+    const 坏们: unknown[] = [
+      ["时间精度=分"],
+      [null],
+      [{ 键: "金额", 值: 12000 }],
+      [{ 键: "", 值: "12000" }],
+      [{ 值: "12000" }],
+      [{ 键: "金额", 值: "12000", 出处: "mat_x#Sheet1#12" }],
+    ]
+
+    for (const 属性 of 坏们) {
+      const 结果 = 校验属性({ 属性 })
+      expect(结果.ok).toBe(false)
+      if (结果.ok) throw new Error(`不该通过：${JSON.stringify(属性)}`)
+      expect(结果.code).toBe("BAD_SHAPE")
+      expect(结果.话术).toContain("[{键")
+    }
+  })
+
+  test("`校验属性`：缺省 / null / 空数组 / 合法数组（含出处）⇒ 通过", () => {
+    expect(校验属性({})).toEqual({ ok: true })
+    expect(校验属性({ 属性: null })).toEqual({ ok: true })
+    expect(校验属性({ 属性: [] })).toEqual({ ok: true })
+    expect(校验属性({ 属性: [{ 键: "时间精度", 值: "分", 出处: ["mat_x#Sheet1#12"] }] })).toEqual({ ok: true })
   })
 })

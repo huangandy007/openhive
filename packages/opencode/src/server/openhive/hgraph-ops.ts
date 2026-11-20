@@ -12,7 +12,17 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { AnchorWorkspace } from "../routes/instance/httpapi/middleware/anchor-workspace"
 import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
 import { 应用操作, type 操作, type 应用结果 } from "./hgraph-edit"
-import { 事件兜底名称, 必填字段, 空骨架, 解析图, 序列化图, 是事件节点, 校验来源, type 图文件 } from "./hgraph-file"
+import {
+  事件兜底名称,
+  必填字段,
+  空骨架,
+  校验属性,
+  校验来源,
+  是事件节点,
+  解析图,
+  序列化图,
+  type 图文件,
+} from "./hgraph-file"
 import { 串行 } from "./hgraph-lock"
 import { OpenhivePg } from "./pg"
 import { 成员角色, 项目属主 } from "./project-actor"
@@ -406,8 +416,10 @@ function 建表(对象们: readonly unknown[]): Map<string, Record<string, unkno
  * 写盘前的三道兜底（contracts/hgraph-format §2 / data-model §6 V-02、V-04~V-06、V-09）：
  *
  * 1. 每个**新增或改过**的对象过 `校验来源`（`文字` 没有来源字段，不判）；
- * 2. 全图 id 唯一；
- * 3. 必填字段（`必填字段` 是唯一出处）；缺 ⇒ `BAD_SHAPE` 并点名字段。
+ * 2. 同一批对象再过 `校验属性`（`属性` 必须是 `[{键, 值}]`：AI 在新 session 里常写成
+ *    对象映射，前端消费端会因此崩）；
+ * 3. 全图 id 唯一；
+ * 4. 必填字段（`必填字段` 是唯一出处）；缺 ⇒ `BAD_SHAPE` 并点名字段。
  *
  * 只校验「动过的对象」而不是全图：老文件里可能躺着本 feature 之前写下的不规范对象，
  * 全图重判会让「改个备注」被一份陈年坏数据永远挡住。悬空边与 id 唯一是**全图**判据，
@@ -421,6 +433,8 @@ function 校验全图(前: 图文件, 后: 图文件): 核心失败 | undefined 
       if (!动过(前表.get(String(对象.id)), 对象)) continue
       const 结果 = 校验来源(对象)
       if (!结果.ok) return { ok: false, code: 结果.code, 话术: 结果.话术 }
+      const 属性结果 = 校验属性(对象)
+      if (!属性结果.ok) return { ok: false, code: 属性结果.code, 话术: 属性结果.话术 }
     }
   }
 
