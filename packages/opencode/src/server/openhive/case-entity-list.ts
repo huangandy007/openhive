@@ -4,8 +4,6 @@ import type { Queryable } from "./case-store"
 import {
   事件归属条件,
   事件文本归属条件,
-  实体关系归属,
-  账户归属集数组,
   账户展示名,
   户名对齐,
   关系归属口径,
@@ -14,6 +12,7 @@ import {
   内部往来归属条件,
   归属歧义归属条件,
   已排除规范值,
+  唯一户名对齐对,
 } from "./case-party"
 import { 引用们, type 引用视图 } from "./case-fact-read"
 import { 细类 } from "./case-subtype"
@@ -95,48 +94,6 @@ const 事件上限 = 100
  */
 export const 引用上限 = 500
 
-/**
- * 有效关系度数：清单的 `关联数` 与分组计数共用这一份谓词（`#002-06`），
- * 归属口径与 `实体档案` 共用 `实体关系归属`（基 2 账户 XOR / 基 1 端点相等）。
- * 只有一层 SQL 片段函数、没有第二个实现；改口径只改这里。
- *
- * 归属集由外层 `cross join lateral (... 账户归属集数组 ...) 归属集` 预算成数组（`归属集.ids`）：
- * 相关子查询在某类计划下会被错算，见 `账户归属集数组`（`#013-05`）。
- */
-const 关系度数 = () => {
-  const { 归属, from属于 } = 实体关系归属({
-    projectId: sql`e.project_id`,
-    实体id: sql`e.id`,
-    类型: sql`e.type`,
-    从: sql`r.from_id`,
-    到: sql`r.to_id`,
-    归属集数组: sql`归属集.ids`,
-  })
-  return sql`(
-    select count(*)::int
-      from auth.case_relation r
-     where r.project_id = e.project_id
-       and r.trust_state <> '已排除'
-       and ${归属}
-       and ${另一端未排除({ projectId: sql`e.project_id`, from属于, 从: sql`r.from_id`, 到: sql`r.to_id` })}
-  )`
-}
-
-/**
- * 事件参与数：事件未排除、参与者按基 1 归属（与 `实体档案` 共用 `事件归属条件`）。与分组计数共用。
- *
- * 仅 HTTP 分组计数 / 实体清单使用，不过滤未验证模板卡；若日后有 AI 出口复用它，必须另传
- * `模板可见条件`（`#002-06` 同类：同一读口的两个消费者口径不能只改一处）。
- */
-const 事件参与数 = () =>
-  sql`(
-    select count(*)::int
-      from auth.case_event
-     where project_id = e.project_id
-       and trust_state <> '已排除'
-       and ${事件归属条件(sql`e.project_id`, sql`e.id`)}
-  )`
-
 /** 人确认过的状态：核心判据与「同权重已确认优先」共用，避免两处字面各写一遍。 */
 const 已确认或修正 = () => sql`trust_state in ('已确认','已修正')`
 
@@ -148,40 +105,33 @@ const 已确认或修正 = () => sql`trust_state in ('已确认','已修正')`
  */
 const 核心判据 = () => sql`(关联数 > 0 or 事件参与数 > 0 or ${已确认或修正()})`
 
-export async function 分组计数(db: Queryable, projectId: string): Promise<分组计数> {
-  const 行 = rowsOf(
-    await db.execute(sql`
-      select count(*) filter (
-               where ${核心判据()}
-             )::int as 核心,
-             count(*) filter (
-               where not ${核心判据()}
-             )::int as 提及
-        from (
-          select e.trust_state,
-                 ${关系度数()} as 关联数,
-                 ${事件参与数()} as 事件参与数
-            from auth.case_entity e
-            cross join lateral (select ${账户归属集数组(sql`e.project_id`, sql`e.id`)} as ids) 归属集
-           where e.project_id = ${projectId} and e.trust_state <> '已排除'
-        ) t
-    `),
-  )[0]!
-  return { 核心: Number(行.核心), 提及: Number(行.提及) }
+export interface 实体面板结果 {
+  /** 全量分组计数（不受 `q` / `分组` / `limit` 影响）。 */
+  readonly 分组: 分组计数
+  readonly 清单: 实体清单结果
 }
 
-export async function 实体清单(db: Queryable, input: 实体清单入参): Promise<实体清单结果> {
+/**
+ * 实体面板：分组计数与当页清单**一次**集合聚合（`#013-11` 的慢查询优化）。
+ *
+ * 从前两件事各写一条 SQL，且对**每个实体**跑「关系度数 / 事件参与数」两个相关子查询；
+ * 9,811 实体 × 2 在 PGlite 上 >7 分钟，真 PG 上也被规划成 Nested Loop（实测 Join Filter
+ * 去掉 7.18 亿行）。这里改成集合式：
+ *
+ * - `归属对`：实体 → 归属实体集（自己 ∪ 唯一户名对齐方），由 `唯一户名对齐对` 一次算出；
+ * - `关系度数`：非账户按端点 group by；账户按「关系 × 落在归属集里的端点」分组、`count(*) = 1`
+ *   即 XOR，再数对方未排除的条数；
+ * - `事件命中`：参与者表按 id join；文本回退把 `事件文本` 与 `归属值` 两个物化集合做等值 join
+ *   （不物化会被做成 Nested Loop + Join Filter）；
+ * - `逐实体` / `带分组` 物化后，`组` 与 `页` 都只读这一份派生表。
+ *
+ * 口径与 `实体档案` 的逐实体相关子查询是同一套（账户 XOR / 参与者表 ∪ 文本回退 / 同名歧义
+ * fail-closed），由 `openhive-case-count-consistency` 与面板用例逐实体对账守住（`#002-06`）。
+ * 实测（5,001 实体）：真 PG 212–246ms（旧口径两条合计约 196ms）；PGlite 9,811 实体 3.1s
+ * （旧口径单条 >420s）。
+ */
+export async function 实体面板(db: Queryable, input: 实体清单入参): Promise<实体面板结果> {
   const 上限 = Math.min(Math.max(1, Math.trunc(input.limit ?? 清单上限)), 清单上限)
-  const 条件: SQL[] = [sql`e.project_id = ${input.projectId}`, sql`e.trust_state <> '已排除'`]
-  const 词 = input.q?.trim()
-  if (词 !== undefined && 词 !== "") {
-    // `q` 是用户输入：`%` / `_` / `\` 不转义就会当通配符（搜「100%」不该命中一切）。
-    const 模式 = `%${转义模糊(词)}%`
-    条件.push(
-      sql`(e.canonical_value ilike ${模式} escape '\\'
-           or exists (select 1 from unnest(e.aliases) as 别名 where 别名 ilike ${模式} escape '\\'))`,
-    )
-  }
   const 排序 = input.sort ?? "涉案"
   // 分组 / 权重是在派生表里算的，排序必须引用外层别名 `行`。
   const 顺序 =
@@ -190,34 +140,158 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
       : 排序 === "时间"
         ? sql`行.created_at desc, 行.id asc`
         : sql`行.权重 desc, (${已确认或修正()}) desc, 行.canonical_value asc, 行.id asc`
-  const 分组条件 = input.分组 === undefined ? sql`true` : sql`行.分组 = ${input.分组}`
+  // 页条件只作用于清单；分组计数固定全量（与旧 `分组计数(projectId)` 同语义）。
+  const 页条件: SQL[] = [input.分组 === undefined ? sql`true` : sql`行.分组 = ${input.分组}`]
+  const 词 = input.q?.trim()
+  if (词 !== undefined && 词 !== "") {
+    // `q` 是用户输入：`%` / `_` / `\` 不转义就会当通配符（搜「100%」不该命中一切）。
+    const 模式 = `%${转义模糊(词)}%`
+    页条件.push(
+      sql`(行.canonical_value ilike ${模式} escape '\\'
+           or exists (select 1 from unnest(行.aliases) as 别名 where 别名 ilike ${模式} escape '\\'))`,
+    )
+  }
 
   const 行们 = rowsOf(
     await db.execute(sql`
-      select 行.id, 行.type, 行.canonical_value, 行.attrs, 行.trust_state, 行.created_at,
-             行.关联数, 行.事件参与数, 行.权重, 行.分组,
-             count(*) over() as 总数
-        from (
-          select t.*,
-                 (t.关联数 + t.事件参与数) as 权重,
-                 case when ${核心判据()} then '核心' else '提及' end as 分组
-            from (
-              select e.id, e.type, e.canonical_value, e.attrs, e.trust_state, e.created_at,
-                     ${关系度数()} as 关联数,
-                     ${事件参与数()} as 事件参与数
-                from auth.case_entity e
-                cross join lateral (select ${账户归属集数组(sql`e.project_id`, sql`e.id`)} as ids) 归属集
-               where ${sql.join(条件, sql` and `)}
-            ) t
-        ) 行
-       where ${分组条件}
-       order by ${顺序}
-       limit ${上限}
+      with 实体 as (
+        select id, type, canonical_value, aliases, attrs, trust_state, created_at
+          from auth.case_entity
+         where project_id = ${input.projectId} and trust_state <> '已排除'
+      ),
+      -- 唯一户名对齐的集合形态（与档案逐实体的「对齐到账户」同一前提，见 case-party）。
+      唯一对齐 as (
+        ${唯一户名对齐对(input.projectId)}
+      ),
+      -- 归属对（实体 x → 成员 m）：m ∈ 归属实体集(x) —— 自己 ∪ 唯一户名对齐的另一方。
+      归属对 as (
+        select id as 实体id, id as 成员id from 实体
+        union all
+        select 人id, 账户id from 唯一对齐
+        union all
+        select 账户id, 人id from 唯一对齐
+      ),
+      -- 关系度数按集合聚合，代替逐实体相关子查询（3.4k 实体 × 2 个 count 在 PGlite 上 >6 分钟）。
+      关系度数 as materialized (
+        -- 非账户：端点相等（自环按 distinct 只算一次）。
+        select 端点.实体id, count(distinct r.id)::int as 数
+          from auth.case_relation r
+          cross join lateral (values (r.from_id), (r.to_id)) as 端点(实体id)
+          join 实体 自己 on 自己.id = 端点.实体id and 自己.type <> '账户'
+          join auth.case_entity 对方
+            on 对方.project_id = r.project_id
+           and 对方.id = case when r.from_id = 端点.实体id then r.to_id else r.from_id end
+           and 对方.trust_state <> '已排除'
+         where r.project_id = ${input.projectId} and r.trust_state <> '已排除'
+         group by 端点.实体id
+        union all
+        -- 账户：恰好一端在归属集（XOR），另一端（对方）未排除。
+        -- 先把「关系 × 落在某账户归属集里的端点」摊平，再按关系/账户分组数端点数——
+        -- 不用逐关系「not exists」扫无索引的 CTE（实测那是 79s 里的主要耗时）。
+        select 命中.账户id, count(distinct 命中.rel_id)::int
+          from (
+            select 端.rel_id, 端.账户id,
+                   case when sum(case when 端.是from then 1 else 0 end) = 1 then max(端.to_id) else max(端.from_id) end as 对方id
+              from (
+                select r.id as rel_id, r.from_id, r.to_id, fo.实体id as 账户id, true as 是from
+                  from auth.case_relation r
+                  join 归属对 fo on fo.成员id = r.from_id
+                  join 实体 fo账户 on fo账户.id = fo.实体id and fo账户.type = '账户'
+                 where r.project_id = ${input.projectId} and r.trust_state <> '已排除'
+                union all
+                select r.id, r.from_id, r.to_id, to对.实体id, false
+                  from auth.case_relation r
+                  join 归属对 to对 on to对.成员id = r.to_id
+                  join 实体 to账户 on to账户.id = to对.实体id and to账户.type = '账户'
+                 where r.project_id = ${input.projectId} and r.trust_state <> '已排除'
+              ) 端
+             group by 端.rel_id, 端.账户id
+            having count(*) = 1
+          ) 命中
+          join 实体 对方 on 对方.id = 命中.对方id
+         group by 命中.账户id
+      ),
+      -- 同名跨类型 fail-closed（与档案的「歧义值集」同口径）。
+      歧义值 as (
+        select canonical_value as 值
+          from auth.case_entity
+         where project_id = ${input.projectId} and trust_state <> '已排除'
+         group by canonical_value
+        having count(*) > 1
+      ),
+      -- 归属值（实体 x → 其归属实体集里每个成员的规范值 ∪ 别名）。
+      -- 物化：不物化时规划器把文本回退做成 Nested Loop + Join Filter，
+      -- 实测去掉 7.18 亿行（72,652 参与者 × 9,881 归属值），一条查询 >300s（#013-11 同族）。
+      归属值 as materialized (
+        select distinct d.实体id, v.值
+          from 归属对 d
+          join 实体 m on m.id = d.成员id
+          cross join lateral unnest(array[m.canonical_value] || coalesce(m.aliases, '{}')) as v(值)
+      ),
+      -- 事件参与者值摊平后单独物化，与归属值做两个物化集合之间的等值 join（可 hash）。
+      事件文本 as materialized (
+        select ev.id as event_id, v.参与者
+          from auth.case_event ev
+          cross join lateral unnest(ev.participants) as v(参与者)
+         where ev.project_id = ${input.projectId} and ev.trust_state <> '已排除'
+      ),
+      -- 事件命中：参与者表（按 id）∪「participants」文本回退（按值，歧义值剔除）。
+      事件命中 as (
+        select d.实体id, p.event_id
+          from auth.case_event_participant p
+          join 归属对 d on d.成员id = p.entity_id
+          join auth.case_event ev on ev.project_id = p.project_id and ev.id = p.event_id
+         where p.project_id = ${input.projectId} and ev.trust_state <> '已排除'
+        union
+        select d.实体id, t.event_id
+          from 事件文本 t
+          join 归属值 d on d.值 = t.参与者
+          left join 歧义值 q on q.值 = t.参与者
+         where q.值 is null
+      ),
+      事件度数 as materialized (
+        select 实体id, count(*)::int as 数 from 事件命中 group by 实体id
+      ),
+      逐实体 as materialized (
+        select e.id, e.type, e.canonical_value, e.aliases, e.attrs, e.trust_state, e.created_at,
+               coalesce(rd.数, 0) as 关联数,
+               coalesce(ed.数, 0) as 事件参与数
+          from 实体 e
+          left join 关系度数 rd on rd.实体id = e.id
+          left join 事件度数 ed on ed.实体id = e.id
+      ),
+      带分组 as materialized (
+        select t.*,
+               (t.关联数 + t.事件参与数) as 权重,
+               case when ${核心判据()} then '核心' else '提及' end as 分组
+          from 逐实体 t
+      ),
+      组 as (
+        select count(*) filter (where 分组 = '核心')::int as 核心,
+               count(*) filter (where 分组 = '提及')::int as 提及
+          from 带分组
+      ),
+      页 as (
+        select 行.*, count(*) over() as 总数
+          from 带分组 行
+         where ${sql.join(页条件, sql` and `)}
+         order by ${顺序}
+         limit ${上限}
+      )
+      select 组.核心, 组.提及, 页.*
+        from 组
+        left join 页 on true
     `),
   )
+  const 首行 = 行们[0]
+  const 分组: 分组计数 = {
+    核心: Number(首行?.核心 ?? 0),
+    提及: Number(首行?.提及 ?? 0),
+  }
+  const 页行们 = 行们.filter((行) => 行.id !== null && 行.id !== undefined)
   // `count(*) over()` 在 LIMIT 之前算：正好装下最后一页（总数 === 上限）时**不算截断**。
-  const 总数 = 行们.length === 0 ? 0 : Number(行们[0]!.总数)
-  const 排好 = 行们.map((行) => ({
+  const 总数 = 页行们.length === 0 ? 0 : Number(页行们[0]!.总数)
+  const 排好 = 页行们.map((行) => ({
     id: String(行.id),
     type: String(行.type),
     subtype: 细类(String(行.type), String(行.canonical_value), 行.attrs),
@@ -231,7 +305,17 @@ export async function 实体清单(db: Queryable, input: 实体清单入参): Pr
   }))
 
   const 缺口 = 总数 > 上限 ? [`已显示前 ${上限} 条，共 ${总数} 条，请用搜索或分组缩小范围`] : []
-  return { 行们: 排好, 总数, 缺口 }
+  return { 分组, 清单: { 行们: 排好, 总数, 缺口 } }
+}
+
+/** 分组计数 = 面板投影；保留这个出口给只关心分组的调用方（同一 SQL，`#002-06`）。 */
+export async function 分组计数(db: Queryable, projectId: string): Promise<分组计数> {
+  return (await 实体面板(db, { projectId, limit: 1 })).分组
+}
+
+/** 实体清单 = 面板投影；保留这个出口给只关心清单的调用方（同一 SQL，`#002-06`）。 */
+export async function 实体清单(db: Queryable, input: 实体清单入参): Promise<实体清单结果> {
+  return (await 实体面板(db, input)).清单
 }
 
 export interface 档案关系 {

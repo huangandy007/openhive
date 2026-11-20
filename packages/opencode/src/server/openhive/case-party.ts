@@ -125,6 +125,25 @@ export function 歧义到账户(projectId: string | SQL, 账户ids: 账户id集�
   return 名字对齐到账户(projectId, 账户ids, sql`>= 2`)
 }
 
+/**
+ * `对齐到账户` 的**集合形态**：一次算出全项目所有「唯一户名对齐」的 (人id, 账户id)。
+ *
+ * 与 `名字对齐到账户(…, = 1)` 同一前提（`户名来源`、人/组织、未排除、候选账户恰好 1），
+ * 供需要按实体批量聚合的读端用（实体面板）。单实体读端（档案 / 关系圈）仍走相关子查询
+ * 形态；两形态改口径必须一起改（`#002-06`）。
+ */
+export function 唯一户名对齐对(projectId: string | SQL): SQL {
+  return sql`(select pe.id as 人id, min(a.entity_id) as 账户id
+                from auth.case_entity pe, ${户名来源(projectId)}
+                 and pe.project_id = ${projectId}
+                 and pe.type in ('人', '组织')
+                 and pe.trust_state <> '已排除'
+                 and ae.type = '账户'
+                 and a.value = pe.canonical_value
+               group by pe.id
+              having count(distinct a.entity_id) = 1)`
+}
+
 /** `对齐到账户` / `歧义到账户` 的共同前提，只差候选数的比较符（`#002-06`）。 */
 function 名字对齐到账户(
   projectId: string | SQL,

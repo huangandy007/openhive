@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { 生成提醒, 标记已读, 提醒清单 } from "./case-alerts"
 import { 产物复核, 登记产物引用 } from "./case-artifact-citations"
-import { 实体档案, 实体清单, 分组计数, type 实体分组, type 排序 } from "./case-entity-list"
+import { 实体档案, 实体面板, type 实体分组, type 排序 } from "./case-entity-list"
 import { 关系图, 关系图强度们 } from "./case-graph"
 import { 材料事实清单 } from "./case-material-facts"
 import { aggregate_money, query_events, 工具错误 } from "./case-mcp-tools"
@@ -240,19 +240,17 @@ function handleEntities(request: HttpServerRequest.HttpServerRequest, deps: Deps
     const limit原文 = 读整数(参数.get("limit"))
     if (limit原文 === null) return fail(400, "limit 必须是整数", "bad_request")
 
-    const [groups, list] = yield* Effect.promise(() =>
-      Promise.all([
-        分组计数(deps.pg(), projectId!),
-        实体清单(deps.pg(), {
-          projectId: projectId!,
-          分组: 分组值,
-          q,
-          sort: 排序值,
-          limit: limit原文,
-        }),
-      ]),
+    // 分组计数与清单共用一次逐实体扫描：拆成两个 DAO 会被同一请求算两遍（`#013-11` 的慢查询）。
+    const 面板 = yield* Effect.promise(() =>
+      实体面板(deps.pg(), {
+        projectId: projectId!,
+        分组: 分组值,
+        q,
+        sort: 排序值,
+        limit: limit原文,
+      }),
     )
-    return ok({ groups, list })
+    return ok({ groups: 面板.分组, list: 面板.清单 })
   })
 }
 
