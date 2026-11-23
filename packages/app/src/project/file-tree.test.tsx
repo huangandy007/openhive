@@ -3824,7 +3824,7 @@ describe("FileTree 文件树（FR-005）", () => {
       expect(节点?.getAttribute("aria-label")).toBe("已解析 · 12 条事实 · 3 个号码")
     })
 
-    test("未入队 / 已跳过不画标记，靠行上的 title 解释「能解析 / 系统不解析 / 你跳过的」", () => {
+    test("未入队 / 已跳过不画标记，行上也不再挂原生 title（解释改由名字格卡片给）", () => {
       const 假 = 假材料状态({
         rows: [
           视图行({ path: "跳过.xlsx", status: "已跳过" }),
@@ -3836,10 +3836,75 @@ describe("FileTree 文件树（FR-005）", () => {
       ))
 
       expect(标记(host, "话单.csv") === null).toBe(true)
-      expect(行按路径(host, "话单.csv").getAttribute("title")).toBe("未入队 · 右键「解析」可入库")
       expect(标记(host, "跳过.xlsx") === null).toBe(true)
-      expect(行按路径(host, "跳过.xlsx").getAttribute("title")).toBe("已跳过 · 你手动跳过了解析")
-      expect(行按路径(host, "笔录.pdf").getAttribute("title")).toBe("未入队 · 系统不解析这类文件")
+      // 句子本身由 `悬停明细状态` 的纯规则用例守着；这里钉「原生 title 不许回来」——
+      // 它和明细卡片并存会前后冒两层气泡。
+      for (const path of ["话单.csv", "跳过.xlsx", "笔录.pdf"]) {
+        expect(行按路径(host, path).hasAttribute("title")).toBe(false)
+        const 名 = 行按路径(host, path).querySelector("[data-slot='file-tree-name']")
+        expect(名?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
+      }
+    })
+
+    test("名字格套在 tooltip 触发壳里，行上不再挂原生 title（明细卡片替代慢速灰气泡）", () => {
+      const 假 = 假材料状态({
+        rows: [视图行({ path: "话单.csv", status: "已解析", factCount: 1, numberCount: 1 })],
+      })
+      const host = mount(() => <FileTree paths={["话单.csv"]} caseMaterials={假.状态} />)
+
+      const 行 = 行按路径(host, "话单.csv")
+      const 名 = 行.querySelector<HTMLElement>("[data-slot='file-tree-name']")
+      // 「元素在」先立前提（布尔比较，`#013-12`）
+      expect(名 === null).toBe(false)
+      expect(名?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
+      // 原生 title 与 TooltipV2 并存会前后冒两层气泡 ⇒ 行上必须没有 title
+      expect(行.hasAttribute("title")).toBe(false)
+    })
+
+    test("行尾徽标不再自带气泡：同一行只留名字格那一层（避免两层浮层）", () => {
+      const 假 = 假材料状态({ rows: [视图行({ path: "话单.csv", status: "已解析" })] })
+      const host = mount(() => <FileTree paths={["话单.csv"]} caseMaterials={假.状态} />)
+
+      const 徽标 = 标记(host, "话单.csv")
+      expect(徽标 === null).toBe(false)
+      expect(徽标?.closest("[data-component='tooltip-v2-trigger']") === null).toBe(true)
+    })
+
+    test("悬停名字格 400ms 出明细卡片：第一行完整名称、第二行状态，走 portal", async () => {
+      const 长名 = "2026年10月电信诈骗案件被害人通话记录明细表.xlsx"
+      const 假 = 假材料状态({
+        rows: [视图行({ path: 长名, status: "已解析", factCount: 12, numberCount: 3 })],
+      })
+      const host = mount(() => <FileTree paths={[长名]} caseMaterials={假.状态} />)
+
+      const 名 = 行按路径(host, 长名).querySelector<HTMLElement>("[data-slot='file-tree-name']")
+      expect(名 === null).toBe(false)
+      const 触发 = 名?.closest("[data-component='tooltip-v2-trigger']")
+      expect(触发 === null).toBe(false)
+      // `pointerenter` 不冒泡，必须派到 Trigger 本身（先例 `hgraph/toolbar.test.tsx:116-122`）
+      触发?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerType: "mouse" }))
+
+      await new Promise((解) => setTimeout(解, 450))
+      const 卡 = document.body.querySelector<HTMLElement>("[data-slot='file-tree-hover-card']")
+      expect(卡 === null).toBe(false)
+      expect(卡?.querySelector("[data-slot='file-tree-hover-card-name']")?.textContent).toBe(长名)
+      expect(卡?.querySelector("[data-slot='file-tree-hover-card-status']")?.textContent).toBe(
+        "已解析 · 12 条事实 · 3 个号码",
+      )
+    })
+
+    test("文件夹行的名字格也挂卡片（目录汇总进卡片第二行）", () => {
+      const 假 = 假材料状态({ rows: [视图行({ path: "资料/a.csv", status: "已解析" })] })
+      const host = mount(() => (
+        <FileTree paths={["资料/a.csv", "资料/b.xlsx"]} caseMaterials={假.状态} />
+      ))
+      动作(host, "expand-all")?.click()
+
+      const 行 = 行按路径(host, "资料")
+      const 名 = 行.querySelector<HTMLElement>("[data-slot='file-tree-name']")
+      expect(名 === null).toBe(false)
+      expect(名?.closest("[data-component='tooltip-v2-trigger']") != null).toBe(true)
+      expect(行.hasAttribute("title")).toBe(false)
     })
 
     /**
@@ -3847,12 +3912,12 @@ describe("FileTree 文件树（FR-005）", () => {
      * `return`，不建材料行）⇒ 上面那条用伪造的 `parseable:false` 行读到的句子在生产中
      * 永远不出现（「绿但不可达」）。这里**不造材料行**，钉住真正会走的那条分支。
      */
-    test("不可解析文件且**没有材料行** ⇒ title 仍说「系统不解析这类文件」", () => {
+    test("不可解析文件且**没有材料行** ⇒ 也不挂原生 title（句子由 `悬停明细状态` 守）", () => {
       const 假 = 假材料状态({ rows: [] })
       const host = mount(() => <FileTree paths={["资料/笔录.pdf"]} caseMaterials={假.状态} />)
       动作(host, "expand-all")?.click()
 
-      expect(行按路径(host, "资料/笔录.pdf").getAttribute("title")).toBe("系统不解析这类文件")
+      expect(行按路径(host, "资料/笔录.pdf").hasAttribute("title")).toBe(false)
     })
 
     test("目录行的 3/12 用**全量清单**算：折叠时子项不可见，汇总仍然对", () => {

@@ -64,6 +64,36 @@ export function 悬停文案(row: 材料视图, extensions: readonly string[]): 
   }
 }
 
+/**
+ * 行悬停明细卡片的第二行（第一行是完整名称，由组件直接取行名）。
+ *
+ * 口径与行尾徽标**同源**：有材料行时直接交给 `悬停文案`（`#002-06`）——同一份文件在
+ * 徽标的读屏文案与明细卡片里各写一句话，改一处忘一处就会自相矛盾。
+ *
+ * 清单还没读到（`rowsLoaded === false`）⇒ `undefined`：此时「未入队」只是**还不知道**，
+ * 不能冒充已知结论（`#002-02` 同族）。卡片仍会画名称那一行。
+ */
+export function 悬停明细状态(input: {
+  path: string
+  isFile: boolean
+  rowsLoaded: boolean
+  extensions: readonly string[]
+  row?: 材料视图
+  dirSummary?: 目录汇总
+}): string | undefined {
+  if (!input.rowsLoaded) return undefined
+  if (input.row !== undefined) return 悬停文案(input.row, input.extensions)
+  if (!input.isFile) {
+    const 汇 = input.dirSummary
+    if (汇 === undefined) return "文件夹内暂无可解析的文件"
+    return `已解析 ${汇.已解析} / 共 ${汇.总数} 份`
+  }
+  // 没有材料行的文件在生产里有两种：不可解析的类型（根本没有材料行），
+  // 以及可解析但还没入队。口径与 `悬停文案` 的「未入队」两句逐字对齐。
+  if (!可解析路径(input.path, input.extensions)) return "系统不解析这类文件"
+  return "未入队 · 右键「解析」可入库"
+}
+
 /** 子菜单触发项右边的当前状态（不是标记；目录说「文件夹」，没接入说「未接入」）。 */
 export function 状态文案(input: {
   row?: 材料视图
@@ -89,7 +119,7 @@ export function 状态文案(input: {
   if (!input.loaded) return input.readFailed === true ? "读取失败" : "读取中"
   if (input.row !== undefined) return input.row.status
   // N3：生产里不可解析的文件**没有材料行**（`file.ts` 对它们直接 return，不建行）。
-  // 这一档若回「未入队」，就与行提示的「系统不解析这类文件」自相矛盾——同一份文件两句话。
+  // 这一档若回「未入队」，就与名字格明细卡片的「系统不解析这类文件」自相矛盾——同一份文件两句话。
   if (input.path !== undefined && !可解析路径(input.path, input.extensions ?? []))
     return "系统不解析这类文件"
   return "未入队"

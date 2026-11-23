@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { 原因码文案, 探测徽标, 探测进度, 已探测文案, 进度文案, 队列位置文案 } from "./case-materials-view"
+import { 原因码文案, 探测徽标, 探测进度, 已探测文案, 悬停明细状态, 进度文案, 队列位置文案 } from "./case-materials-view"
 import { 视图行 } from "./case-materials.test-support"
 
 /**
@@ -99,5 +99,69 @@ describe("FR-054 探测进度（已探测 k / N）", () => {
     }
     expect(上次).toBe(3)
     expect(已探测文案(探测进度(行们))).toBe("已探测 3 / 3")
+  })
+})
+
+/**
+ * 行悬停明细卡片的**第二行**（第一行是完整名称，由组件直接取行名）。
+ *
+ * 口径必须与行尾徽标的 `悬停文案` 同源（`#002-06`）：同一份文件在气泡里和卡片里
+ * 说两句话，用户会以为状态变了。
+ */
+describe("悬停明细状态（卡片第二行）", () => {
+  const 扩展名 = [".xlsx", ".xls", ".csv"]
+
+  test("有材料行 ⇒ 与行尾气泡逐字同源", () => {
+    expect(
+      悬停明细状态({
+        path: "话单.csv",
+        isFile: true,
+        rowsLoaded: true,
+        extensions: 扩展名,
+        row: 视图行({ path: "话单.csv", status: "已解析", factCount: 12, numberCount: 3 }),
+      }),
+    ).toBe("已解析 · 12 条事实 · 3 个号码")
+    expect(
+      悬停明细状态({
+        path: "跳过.xlsx",
+        isFile: true,
+        rowsLoaded: true,
+        extensions: 扩展名,
+        row: 视图行({ path: "跳过.xlsx", status: "已跳过" }),
+      }),
+    ).toBe("已跳过 · 你手动跳过了解析")
+  })
+
+  test("没有材料行的文件：可解析 ⇒ 未入队提示；不可解析 ⇒ 系统不解析", () => {
+    expect(
+      悬停明细状态({ path: "话单.csv", isFile: true, rowsLoaded: true, extensions: 扩展名 }),
+    ).toBe("未入队 · 右键「解析」可入库")
+    expect(
+      悬停明细状态({ path: "资料/笔录.pdf", isFile: true, rowsLoaded: true, extensions: 扩展名 }),
+    ).toBe("系统不解析这类文件")
+  })
+
+  test("文件夹：有汇总 ⇒ 已解析/总数；没有可解析表格 ⇒ 明说", () => {
+    expect(
+      悬停明细状态({
+        path: "资料",
+        isFile: false,
+        rowsLoaded: true,
+        extensions: 扩展名,
+        dirSummary: { 已解析: 3, 总数: 12, 有问题: 1 },
+      }),
+    ).toBe("已解析 3 / 共 12 份")
+    expect(
+      悬停明细状态({ path: "资料", isFile: false, rowsLoaded: true, extensions: 扩展名 }),
+    ).toBe("文件夹内暂无可解析的文件")
+  })
+
+  test("清单还没读到 ⇒ undefined（不拿「未入队」冒充已知）", () => {
+    expect(
+      悬停明细状态({ path: "话单.csv", isFile: true, rowsLoaded: false, extensions: 扩展名 }),
+    ).toBeUndefined()
+    expect(
+      悬停明细状态({ path: "资料", isFile: false, rowsLoaded: false, extensions: 扩展名 }),
+    ).toBeUndefined()
   })
 })

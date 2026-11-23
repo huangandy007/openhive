@@ -16,15 +16,16 @@ import { FileOpError } from "./file-op-error"
 import type { 人工解析动作, 材料视图 } from "./case-materials-api"
 import type { CaseMaterials } from "./case-materials-state"
 import { CaseStatusBadge } from "./case-status-badge"
+import { 文件行悬停卡片 } from "./file-tree-hover-card"
 import {
   入队不可用原因,
   取消不可用原因,
-  可解析路径,
   查看不可用原因,
   标记形状,
   汇总全部,
   目录下待入队,
   悬停文案,
+  悬停明细状态,
   选中集入队范围,
   跳过不可用原因,
   重新解析不可用原因,
@@ -562,7 +563,7 @@ export function FileTree(props: FileTreeProps) {
   /**
    * 路径 → 材料行，按 `rows()` 建一次索引。
    *
-   * 行提示与行标记会**逐行**问「这一行的材料行是哪一条」；每 3 秒轮询一次 `rows`，若每次线性
+   * 行明细与行标记会**逐行**问「这一行的材料行是哪一条」；每 3 秒轮询一次 `rows`，若每次线性
    * `find` 就是 O(文件数 × 材料数)。memo 只依赖 `材料()` 与它的 `rows()`（Solid 信号），
    * 父组件换对象、轮询换数组都会让它重算（不是一次性快照，`#006-21`）。
    */
@@ -597,26 +598,22 @@ export function FileTree(props: FileTreeProps) {
   }
 
   /**
-   * 未标记行的解释（原生 `title`）。
+   * 行悬停明细的**第二行**（第一行是完整名称，由卡片直接取行名）。
    *
-   * 为什么未标记的才挂 `title`：有标记的那三种由 `TooltipV2` 负责，同一行再挂一个原生
-   * 气泡就会前后冒出两层（同工具栏那条注释）。
+   * 2026-11-23 之前这里是原生 `title`，且只解释「未标记的行」——有徽标的三行悬停名字
+   * 什么都不出；现在所有行统一走 `TooltipV2` 明细卡片（`file-tree-hover-card.tsx`），
+   * 状态句交给纯规则 `悬停明细状态`：有材料行时与行尾徽标同一句（`#002-06`），
+   * 文件夹回答「已解析几份」，清单没读到则不说（`#002-02` 同族）。
    */
-  const 行提示 = (path: string) => {
-    const 状态 = 材料()
-    if (状态 === undefined || !状态.loaded()) return undefined
-    const row = 视图行(path)
-    if (row === undefined) {
-      if (节点表().get(path)?.type !== "file") return undefined
-      // 生产里不可解析的文件**没有材料行**（`file.ts` 对这类类型直接 return，不建行）⇒
-      // 这一支才是 PDF 真正走的那条。口径与 `悬停文案` 的未入队句一致，但不加「未入队 · 」
-      // 前缀：它根本没进过队列，说「未入队」会暗示「以后会入」。
-      if (!可解析路径(path, 扩展名())) return "系统不解析这类文件"
-      return "未入队 · 右键「解析」可入库"
-    }
-    if (标记形状(row.status) !== undefined) return undefined
-    return 悬停文案(row, 扩展名())
-  }
+  const 行明细 = (path: string) =>
+    悬停明细状态({
+      path,
+      isFile: 节点表().get(path)?.type === "file",
+      rowsLoaded: 材料()?.loaded() ?? false,
+      extensions: 扩展名(),
+      row: 视图行(path),
+      dirSummary: 各目录汇总().get(path),
+    })
 
   /**
    * 全部目录（含根 `""`）的汇总——**只算一次**，根进度与各行目录汇总都从它取。
@@ -1223,7 +1220,6 @@ export function FileTree(props: FileTreeProps) {
                       aria-expanded={
                         row.node.type === "directory" ? (展开(row.node.path) ? "true" : "false") : undefined
                       }
-                      title={行提示(row.node.path)}
                       role="treeitem"
                       // 可聚焦 + `onKeyDown`：鼠标不是唯一的路（`click-events-have-key-events` 要的正是这两样）。
                       // 每一行都可 Tab 到，而不是 roving tabindex——后者若不补齐 ↑↓ 区间导航，键盘用户反而
@@ -1266,17 +1262,27 @@ export function FileTree(props: FileTreeProps) {
                       />
                       {/* 改名态就地换掉**名字那一格**（T018）：图钉、箭头、缩进都还在原处，
                           用户看得见自己在改哪一行。图标与箭头不重画——它们与名字是同一行的三个独立格子。 */}
-                      {/* ⚠️ 名字那格上的 `flex-1` 不能省（2026-10-17 用户实报）：行的 `flex-wrap` 是给
+                      {/* ⚠️ 名字那格的 `flex-1` 不能省（2026-10-17 用户实报）：行的 `flex-wrap` 是给
                           `FileOpError` 占整行用的，而名字是 `nowrap` 的、`auto` basis 让它的假设尺寸
                           等于整串文字的宽度 ⇒ 长名会**被换到第二行**（图标与名字上下分家，行高 24→44px）。
                           `flex-1`（basis 0）让它先按「可压缩」参与第一行的排布，再用 `truncate` 收成
-                          省略号。`min-w-0` 仍然要——basis 0 也要能缩到 0。 */}
+                          省略号。`min-w-0` 仍然要——basis 0 也要能缩到 0。
+                          2026-11-23：`flex-1` 挪到 `TooltipV2` 的触发壳上（它替名字那格参与行的排布，
+                          壳的基样式就是 `display:flex`），名字本身改成 `block w-full`。 */}
                       <Show
                         when={改名的() === row.node.path}
                         fallback={
-                          <span data-slot="file-tree-name" class="min-w-0 flex-1 truncate">
-                            <高亮 name={row.node.name} keyword={词()} />
-                          </span>
+                          /* 悬停名字 ⇒ 明细卡片：第一行完整名称（补上 `truncate` 截掉的）、
+                             第二行入队/解析状态。替代原先的行级原生 `title`（浏览器慢速灰气泡），
+                             也替代行尾徽标自带的单句气泡——同一行只留这一层浮层。 */
+                          <TooltipV2
+                            class="min-w-0 flex-1"
+                            value={<文件行悬停卡片 名称={row.node.name} 状态={行明细(row.node.path)} />}
+                          >
+                            <span data-slot="file-tree-name" class="block w-full truncate">
+                              <高亮 name={row.node.name} keyword={词()} />
+                            </span>
+                          </TooltipV2>
                         }
                       >
                         <就地改名输入
@@ -1306,7 +1312,8 @@ export function FileTree(props: FileTreeProps) {
                         )}
                       </Show>
                       {/* 行尾状态标记：只对排队中 / 解析中 / 已解析 / 有问题画；未入队与已跳过
-                          靠行上的 `title` 解释（见 `行提示`）。 */}
+                          靠名字格的明细卡片解释（见 `行明细`）。徽标本身不再挂气泡——同一行只留
+                          名字格那一层，否则鼠标扫过徽标会前后冒出两层浮层。 */}
                       <Show when={行标记(row.node.path)}>
                         {(标记) => <CaseStatusBadge status={标记().status} 文案={标记().文案} />}
                       </Show>
