@@ -7,7 +7,7 @@ import {
   type MarkdownWorkerState,
 } from "./markdown-worker-protocol"
 import { createWorkerTransport } from "./markdown-worker-transport"
-import type { Projection } from "./markdown-stream"
+import { project, type Projection } from "./markdown-stream"
 
 type HighlightPending = {
   key: string
@@ -36,6 +36,9 @@ const parses = new Map<number, ParsePending>()
 const states = new Map<string, MarkdownWorkerState>()
 const keys = new Set<string>()
 const latest = new Map<string, number>()
+/** worker 不可用时的主线程投影状态（对齐 worker 里同名的 `projections`）。 */
+const fallbackProjections = new Map<string, Projection>()
+let fallbackWarned = false
 const transport = createWorkerTransport<Extract<MarkdownWorkerRequest, { type: "highlight" }>>({
   post: (request) => worker!.postMessage(request),
   supersede: (request) => {
@@ -65,7 +68,17 @@ export function parseMarkdown(text: string) {
 }
 
 export function projectMarkdown(key: string, text: string, live: boolean) {
-  getWorker()
+  try {
+    getWorker()
+  } catch (error) {
+    /**
+     * worker 脚本加载失败后 `disabled` 永不复位（只有整页刷新才重建）。
+     * `projectMarkdown` 是 `createResource` 的 fetcher：在这里**同步抛**会把异常带进 Solid 的
+     * `createComputed`，整块 markdown 变成报错。⇒ 降级到主线程 `project()`（纯函数，与 worker
+     * 里跑的是同一份），保证渲染不中断；提醒只打一次，别让流式更新把控制台刷满。
+     */
+    return Promise.resolve(fallbackProject(key, text, live, error))
+  }
   const id = ++nextID
   return new Promise<Projection>((resolve, reject) => {
     projects.set(id, { key, resolve, reject })
@@ -73,8 +86,19 @@ export function projectMarkdown(key: string, text: string, live: boolean) {
   })
 }
 
+function fallbackProject(key: string, text: string, live: boolean, error: unknown): Projection {
+  if (!fallbackWarned) {
+    fallbackWarned = true
+    console.warn("Markdown worker unavailable, projecting on the main thread", error)
+  }
+  const next = project(fallbackProjections.get(key), text, live)
+  fallbackProjections.set(key, next)
+  return next
+}
+
 export function disposeMarkdownProjection(key: string) {
   projectTransport.dispose(key)
+  fallbackProjections.delete(key)
   projects.forEach((request, id) => {
     if (request.key !== key) return
     projects.delete(id)
