@@ -15,10 +15,17 @@
  * （测试注入固定表）。**解析不到的变量保留原样并记进 `缺口`**，由真栈验收（T019）看现场。
  * `font-family` 内联到 `<svg>` 根上。中文字体是否掉字，happy-dom 验不了——只进缺口表。
  *
- * ## 尺寸两档
+ * ## 尺寸与取景（2026-11-24 修复）
  *
- * 屏幕 = 760×2 × 680×2 = 1520×1360；A3 = 3508×4961（300 DPI）。白底 `<rect>` 显式插在
- * viewport 之前；内容按 `xMidYMid meet` 等比放进目标画布（A3 四周留白）。
+ * 三档纸张：屏幕 1520×1360、A4 2480×3508、A3 3508×4961（竖版基准，300 DPI）。
+ * A4/A3 **按内容宽高比自动换横竖**：宽图出横版（如 A3 4961×3508），其余竖版。
+ *
+ * 取景框是**内容包围盒**，不是固定的逻辑画布 760×680。旧实现拿 760×680 当取景框，
+ * 节点被拖到窗口外就整块裁掉（2026-11-24 现场：22 个节点里 6 个 x>760、9 个 y>680，
+ * 导出图右侧与底部缺人）；而且缩放基准也错，图既铺不满也不居中。现在按节点/文字/标签的
+ * 真实范围算盒，等比装进纸张、居中；纸张四周留 **2cm 页边距**（300 DPI ⇒ 236px，用户裁定），
+ * 图例并进内容组跟着同一个缩放走（旧实现钉在页面 (12,48)，A3 上小到不可读）。
+ * 空图没有可量的内容 ⇒ 退回旧的 760×680 取景，行为不变。
  *
  * ## 顺序固定（R67）
  *
@@ -34,17 +41,35 @@ import { createComponent } from "solid-js"
 import { render } from "solid-js/web"
 import type { 结果 } from "@/project/entity-api"
 import { 画布, type 画布动作 } from "./canvas"
-import type { 边, 图文件, 节点, 来源 } from "./file"
+import { 是事件节点, type 边, type 图文件, type 节点, type 来源 } from "./file"
+import { 截断标签 } from "./geometry"
+import { 图例高, 图例宽 } from "./legend"
+import { 文字盒 } from "./text-fold"
 
 const SVGNS = "http://www.w3.org/2000/svg"
 
-/** 两档输出尺寸（设计 §8 / research R10）。 */
+/** 三档输出尺寸（设计 §8 / research R10；A4 于 2026-11-24 加入）。竖版是基准，横版在组装时由 `出纸尺寸` 换算。 */
 export const 尺寸表 = {
   屏幕: { 宽: 1520, 高: 1360 },
+  A4: { 宽: 2480, 高: 3508 },
   A3: { 宽: 3508, 高: 4961 },
 } as const
 
 export type 导出尺寸 = keyof typeof 尺寸表
+
+/** 纸张四周页边距：2cm @300 DPI（2 ÷ 2.54 × 300 ≈ 236.2，取 236）。用户 2026-11-24 裁定。 */
+export const 纸张页边距 = 236
+/** 屏幕档不是纸，只留一圈小边距。 */
+const 屏幕边距 = 24
+/** 内容坐标里的额外留量：边标签、角标、线宽外沿（节点本体按外沿另计）。 */
+const 内容留白 = 24
+/** 节点外沿：外环 r18 + 最粗描边 4/2。 */
+const 节点外沿 = 20
+/** 事件卡 96×34（canvas.tsx 同一组常量；导出只用来算包围盒）。 */
+const 事件卡半宽 = 48
+const 事件卡半高 = 17
+/** 节点标签：基线 y=32、12px 字，下沿留到 36。 */
+const 标签下沿 = 36
 
 export interface 导出选项 {
   readonly 尺寸: 导出尺寸
@@ -276,6 +301,94 @@ function 原尺寸(svg: SVGSVGElement): { readonly 宽: number; readonly 高: nu
   return { 宽, 高 }
 }
 
+/** 内容坐标里的轴对齐包围盒。 */
+interface 盒 {
+  readonly 最小x: number
+  readonly 最小y: number
+  readonly 最大x: number
+  readonly 最大y: number
+}
+
+const 盒宽 = (盒: 盒) => 盒.最大x - 盒.最小x
+const 盒高 = (盒: 盒) => 盒.最大y - 盒.最小y
+
+function 并(甲: 盒, 乙: 盒): 盒 {
+  return {
+    最小x: Math.min(甲.最小x, 乙.最小x),
+    最小y: Math.min(甲.最小y, 乙.最小y),
+    最大x: Math.max(甲.最大x, 乙.最大x),
+    最大y: Math.max(甲.最大y, 乙.最大y),
+  }
+}
+
+/**
+ * 内容包围盒（内容坐标）。空图 ⇒ `undefined`（走旧的 760×680 取景）。
+ *
+ * 覆盖：节点外沿、事件卡、节点标签（12px、≤12 字，宽按画布同一份 `截断标签` 估）、
+ * 自由文字（`文字盒`），最后外扩 `内容留白` 盖住边标签与线宽外沿。
+ */
+function 内容盒(文档: 图文件): 盒 | undefined {
+  let 最小x = Number.POSITIVE_INFINITY
+  let 最小y = Number.POSITIVE_INFINITY
+  let 最大x = Number.NEGATIVE_INFINITY
+  let 最大y = Number.NEGATIVE_INFINITY
+  let 有 = false
+  const 纳 = (左: number, 上: number, 右: number, 下: number) => {
+    if (![左, 上, 右, 下].every(Number.isFinite)) return
+    有 = true
+    最小x = Math.min(最小x, 左)
+    最小y = Math.min(最小y, 上)
+    最大x = Math.max(最大x, 右)
+    最大y = Math.max(最大y, 下)
+  }
+
+  for (const 点 of 文档.节点) {
+    const 事件 = 是事件节点(点)
+    const 标半 = (Array.from(截断标签(点.名称 ?? "")).length * 12) / 2
+    const 半宽 = Math.max(事件 ? 事件卡半宽 : 节点外沿, 标半)
+    const 半高 = 事件 ? 事件卡半高 : 节点外沿
+    纳(点.x - 半宽, 点.y - 半高, 点.x + 半宽, 点.y + 标签下沿)
+  }
+  for (const 行 of 文档.文字 ?? []) {
+    const 盒 = 文字盒({
+      ...行,
+      x: Number.isFinite(行.x) ? 行.x : 0,
+      y: Number.isFinite(行.y) ? 行.y : 0,
+    })
+    纳(盒.x, 盒.y, 盒.x + 盒.width, 盒.y + 盒.height)
+  }
+  if (!有) return undefined
+  return { 最小x: 最小x - 内容留白, 最小y: 最小y - 内容留白, 最大x: 最大x + 内容留白, 最大y: 最大y + 内容留白 }
+}
+
+/**
+ * 实际出纸尺寸：A4/A3 按**内容宽高比**自动换横竖（内容更宽 ⇒ 横版），屏幕档固定。
+ * 空图没有方向依据 ⇒ 竖版。
+ */
+function 出纸尺寸(尺寸: 导出尺寸, 内容: 盒 | undefined): { readonly 宽: number; readonly 高: number } {
+  const 纸 = 尺寸表[尺寸]
+  if (尺寸 === "屏幕" || 内容 === undefined) return 纸
+  return 盒宽(内容) > 盒高(内容) ? { 宽: 纸.高, 高: 纸.宽 } : 纸
+}
+
+/**
+ * 把盒子等比装进纸张（扣掉页边距）并居中。允许放大——画布「适配」那条 ≤1 的上限
+ * 是屏幕语义，导出要铺满纸张，不适用。2cm 是**最小**边距；宽高比不符时另一侧会多于 2cm。
+ */
+function 出图变换(盒: 盒, 纸: { readonly 宽: number; readonly 高: number }, 边距: number) {
+  const 可用宽 = Math.max(1, 纸.宽 - 2 * 边距)
+  const 可用高 = Math.max(1, 纸.高 - 2 * 边距)
+  const 缩放 = Math.min(可用宽 / Math.max(1, 盒宽(盒)), 可用高 / Math.max(1, 盒高(盒)))
+  return {
+    缩放,
+    x: 边距 + (可用宽 - 盒宽(盒) * 缩放) / 2 - 盒.最小x * 缩放,
+    y: 边距 + (可用高 - 盒高(盒) * 缩放) / 2 - 盒.最小y * 缩放,
+  }
+}
+
+/** 变换数字落成属性串：保留 3 位小数，避免浮点尾巴进 SVG。 */
+const 数 = (值: number) => String(Math.round(值 * 1000) / 1000)
+
 /**
  * 在离屏 `<svg>` 上组装导出画面：目标尺寸、白底、等比内容、可选标题块。
  * 返回序列化后的串与未解析主题变量（替换在最后一步做）。
@@ -289,9 +402,10 @@ function 组装SVG(
   现在: Date,
   解析变量: (名: string) => string | undefined,
   根字体: string,
-): { readonly 串: string; readonly 缺口: readonly string[] } {
+): { readonly 串: string; readonly 缺口: readonly string[]; readonly 宽: number; readonly 高: number } {
   const 原 = 原尺寸(svg)
-  const { 宽, 高 } = 尺寸表[选项.尺寸]
+  const 内容 = 内容盒(文档)
+  const { 宽, 高 } = 出纸尺寸(选项.尺寸, 内容)
 
   svg.setAttribute("width", String(宽))
   svg.setAttribute("height", String(高))
@@ -309,15 +423,38 @@ function 组装SVG(
   白底.setAttribute("fill", "#ffffff")
   svg.insertBefore(白底, svg.firstChild)
 
-  // 内容等比放进目标画布（xMidYMid meet 的等价变换，写在 DOM 上便于断言顺序）。
+  // 内容按包围盒等比铺进纸张（空图退回 760×680 窗口），图例并进同一个组一起缩放。
   const 视口 = svg.querySelector<SVGGElement>('[data-slot="hgraph-viewport"]')
   if (视口 !== null) {
-    const 比 = Math.min(宽 / 原.宽, 高 / 原.高)
+    const 图例 = svg.querySelector<SVGGElement>('[data-slot="hgraph-legend"]')
+    let 变换: { readonly 缩放: number; readonly x: number; readonly y: number }
+    let 图例位: { readonly x: number; readonly y: number } | undefined
+    if (内容 !== undefined) {
+      // 图例放在内容左上角上方（与屏幕观感一致），占位计入包围盒，跟着同一个缩放走。
+      const 图例盒: 盒 = {
+        最小x: 内容.最小x,
+        最小y: 内容.最小y - 12 - 图例高,
+        最大x: 内容.最小x + 图例宽,
+        最大y: 内容.最小y - 12,
+      }
+      变换 = 出图变换(并(内容, 图例盒), { 宽, 高 }, 选项.尺寸 === "屏幕" ? 屏幕边距 : 纸张页边距)
+      图例位 = { x: 图例盒.最小x, y: 图例盒.最小y }
+    } else {
+      const 比 = Math.min(宽 / 原.宽, 高 / 原.高)
+      变换 = { 缩放: 比, x: (宽 - 原.宽 * 比) / 2, y: (高 - 原.高 * 比) / 2 }
+    }
     const 外 = 建元素("g")
     外.setAttribute("data-slot", "hgraph-export-content")
-    外.setAttribute("transform", `translate(${(宽 - 原.宽 * 比) / 2} ${(高 - 原.高 * 比) / 2}) scale(${比})`)
+    外.setAttribute(
+      "transform",
+      `translate(${数(变换.x)} ${数(变换.y)}) scale(${数(变换.缩放)})`,
+    )
     视口.replaceWith(外)
     外.appendChild(视口)
+    if (图例 !== null && 图例位 !== undefined) {
+      图例.setAttribute("transform", `translate(${数(图例位.x)} ${数(图例位.y)})`)
+      外.appendChild(图例)
+    }
   }
 
   // 标题块（可选、默认关）：一排文字，画在顶部新增的条带上；不进文档、不写盘。
@@ -352,7 +489,7 @@ function 组装SVG(
   }
 
   const 序列化 = new XMLSerializer().serializeToString(svg)
-  return 替换主题变量(序列化, 解析变量)
+  return { ...替换主题变量(序列化, 解析变量), 宽, 高 }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +575,7 @@ function 渲染SVG(
   现在: Date,
   解析变量: (名: string) => string | undefined,
   根字体: string,
-): { readonly 串: string; readonly 缺口: readonly string[] } {
+): { readonly 串: string; readonly 缺口: readonly string[]; readonly 宽: number; readonly 高: number } {
   const 容器 = document.createElement("div")
   容器.setAttribute("data-slot", "hgraph-export-offscreen")
   容器.setAttribute("aria-hidden", "true")
@@ -496,15 +633,15 @@ export async function 导出PNG(输入: 导出输入): Promise<导出结果> {
   const 现在 = (依赖.现在 ?? (() => new Date()))()
   const 解析变量 = 依赖.解析变量 ?? 默认解析变量
   const 根字体 = (依赖.根字体 ?? 默认根字体)()
-  let 组装: { readonly 串: string; readonly 缺口: readonly string[] }
+  let 组装: { readonly 串: string; readonly 缺口: readonly string[]; readonly 宽: number; readonly 高: number }
   try {
     组装 = 渲染SVG(输入.文档, 输入.选项, 输入.项目名, 输入.导出人, 现在, 解析变量, 根字体)
   } catch (错误) {
     return { kind: "error", message: `导出失败：${消息(错误)}` }
   }
 
-  // ③ 光栅化。
-  const { 宽, 高 } = 尺寸表[输入.选项.尺寸]
+  // ③ 光栅化。宽高取组装时定下的**实际纸张**（A4/A3 可能已按内容换成横版）。
+  const { 宽, 高 } = 组装
   let png: Blob
   try {
     png = await (依赖.光栅化 ?? 默认光栅化)(组装.串, 宽, 高)

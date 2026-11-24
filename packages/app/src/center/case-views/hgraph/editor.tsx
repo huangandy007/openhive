@@ -2432,10 +2432,12 @@ export function 编辑器(props: 编辑器Props): JSX.Element {
               value={导出尺寸()}
               onChange={(事件) => {
                 const 值 = 事件.currentTarget.value
-                if (值 === "屏幕" || 值 === "A3") set导出尺寸(值)
+                // 尺寸档只有 `尺寸表` 一份口径；横竖由导出按内容宽高比自动选，这里不另设方向开关。
+                if (值 === "屏幕" || 值 === "A4" || 值 === "A3") set导出尺寸(值)
               }}
             >
               <option value="屏幕">屏幕</option>
+              <option value="A4">A4</option>
               <option value="A3">A3</option>
             </select>
           </label>

@@ -4242,7 +4242,7 @@ describe("T015 · 导出 PNG 面板", () => {
     expect(写们.length).toBe(0)
   })
 
-  test("尺寸 A3 / 标题块 / 附附录 都传下去：宽高 3508×4961、标题含项目与导出人、第二个下载是 .md", async () => {
+  test("尺寸 A3 / 标题块 / 附附录 都传下去：宽图自动出横版 4961×3508、标题含项目与导出人、第二个下载是 .md", async () => {
     const { api } = 导出api()
     const { 依赖, 下载们, 光栅化们 } = 记账依赖()
     挂导出(api, 依赖)
@@ -4263,7 +4263,7 @@ describe("T015 · 导出 PNG 面板", () => {
     await flush()
 
     expect(光栅化们.length).toBe(1)
-    expect(光栅化们[0]).toMatchObject({ 宽: 3508, 高: 4961 })
+    expect(光栅化们[0]).toMatchObject({ 宽: 4961, 高: 3508 })
     expect(光栅化们[0]!.svg).toContain("专案A")
     expect(光栅化们[0]!.svg).toContain("测试图")
     expect(光栅化们[0]!.svg).toContain("王警官")

@@ -260,19 +260,131 @@ describe("尺寸（R64）", () => {
     expect(a3串.indexOf('fill="#ffffff"')).toBeLessThan(a3串.indexOf('data-slot="hgraph-viewport"'))
   })
 
-  test("内容按**逻辑画布** 760×680 放大，不跟窗口（屏幕档 1520 ⇒ 正好 2 倍）", async () => {
+  test("空图：仍按逻辑画布 760×680 兜底（屏幕档正好 2 倍）", async () => {
     const 账 = 记账依赖()
+    const 空图: 图文件 = { ...整份文档(), 节点: [], 边: [], 文字: [] }
     const 回 = await 跑导出({
+      文档: 空图,
       选项: { 尺寸: "屏幕", 标题块: false, 附附录: false },
       依赖: 账.依赖,
     })
     expect(回.kind).toBe("ok")
-    // 画布 viewBox 现在随中栏变（canvas.tsx `画布尺寸`）；导出这条路径靠 `渲染SVG` 里
-    // 固定 760×680 的离屏容器把尺寸锁回逻辑画布，再按 viewBox 等比放大：
-    // 1520 / 760 = 2、1360 / 680 = 2 ⇒ 平移 0、缩放 2。
+    // 没有内容可量 ⇒ 退回旧的逻辑画布取景：1520 / 760 = 2、1360 / 680 = 2。
     expect(账.账.光栅化们[0]!.svg).toContain(
       'data-slot="hgraph-export-content" transform="translate(0 0) scale(2)"',
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5b. 按内容包围盒铺满纸张（2026-11-24 修复：导出被裁 / 不居中）
+// ---------------------------------------------------------------------------
+
+/** 2cm @300 DPI（300 / 2.54 × 2 ≈ 236.2）。 */
+const 页边距 = 236
+
+/** 从导出串里取内容组的 translate/scale（导出唯一一处动态变换）。 */
+function 取内容变换(svg: string): { x: number; y: number; 缩放: number } {
+  const 捉 = svg.match(
+    /data-slot="hgraph-export-content"\s+transform="translate\((-?[\d.]+) (-?[\d.]+)\) scale\((-?[\d.]+)\)"/,
+  )
+  if (捉 === null) throw new Error(`导出串里没有 content 变换：${svg.slice(0, 300)}`)
+  return { x: Number(捉[1]), y: Number(捉[2]), 缩放: Number(捉[3]) }
+}
+
+function 坐标文档(点们: ReadonlyArray<readonly [string, number, number]>): 图文件 {
+  return {
+    ...整份文档(),
+    节点: 点们.map(([id, x, y]) => 造节点(id, id, "人", { x, y })),
+    边: [],
+    文字: [],
+  }
+}
+
+/** 真栈文件 `大宅门_聚缘轩两平台核心人员关系图.hgraph` 的实测形状：x 80..1180、y 60..840。 */
+function 宽高都超的图(): 图文件 {
+  return 坐标文档([
+    ["a", 80, 60],
+    ["b", 500, 60],
+    ["c", 1180, 60],
+    ["d", 80, 840],
+    ["e", 1180, 840],
+    ["f", 600, 450],
+  ])
+}
+
+describe("按内容铺满纸张（2026-11-24）", () => {
+  test("A4 档：宽图出横版 3508×2480；高图出竖版 2480×3508", async () => {
+    const 宽账 = 记账依赖()
+    await 跑导出({
+      文档: 宽高都超的图(),
+      选项: { 尺寸: "A4", 标题块: false, 附附录: false },
+      依赖: 宽账.依赖,
+    })
+    expect(宽账.账.光栅化们[0]).toMatchObject({ 宽: 3508, 高: 2480 })
+
+    const 高账 = 记账依赖()
+    await 跑导出({
+      文档: 坐标文档([
+        ["a", 100, 100],
+        ["b", 100, 800],
+      ]),
+      选项: { 尺寸: "A4", 标题块: false, 附附录: false },
+      依赖: 高账.依赖,
+    })
+    expect(高账.账.光栅化们[0]).toMatchObject({ 宽: 2480, 高: 3508 })
+  })
+
+  test("节点坐标超出 760×680 也全部入画，且不越过 2cm 页边距", async () => {
+    const 账 = 记账依赖()
+    const 结果 = await 跑导出({
+      文档: 宽高都超的图(),
+      选项: { 尺寸: "A3", 标题块: false, 附附录: false },
+      依赖: 账.依赖,
+    })
+    expect(结果.kind).toBe("ok")
+    const svg = 账.账.光栅化们[0]!.svg
+    // 宽图 ⇒ A3 横版 4961×3508。
+    expect(账.账.光栅化们[0]).toMatchObject({ 宽: 4961, 高: 3508 })
+    const 变换 = 取内容变换(svg)
+    const 点们 = 宽高都超的图().节点
+    for (const 点 of 点们) {
+      const 映x = 点.x * 变换.缩放 + 变换.x
+      const 映y = 点.y * 变换.缩放 + 变换.y
+      expect(映x).toBeGreaterThanOrEqual(页边距)
+      expect(映x).toBeLessThanOrEqual(4961 - 页边距)
+      expect(映y).toBeGreaterThanOrEqual(页边距)
+      expect(映y).toBeLessThanOrEqual(3508 - 页边距)
+    }
+    // 铺满：较长的那条边要占可用尺寸的 7 成以上（旧实现只剩 760 窗口那一小条）。
+    const xs = 点们.map((点) => 点.x)
+    const ys = 点们.map((点) => 点.y)
+    const 占比 = Math.max(
+      ((Math.max(...xs) - Math.min(...xs)) * 变换.缩放) / (4961 - 2 * 页边距),
+      ((Math.max(...ys) - Math.min(...ys)) * 变换.缩放) / (3508 - 2 * 页边距),
+    )
+    expect(占比).toBeGreaterThan(0.7)
+  })
+
+  test("图例随内容一起缩放，不再钉在页面 (12,48)，且落在页边距内", async () => {
+    const 账 = 记账依赖()
+    await 跑导出({
+      文档: 宽高都超的图(),
+      选项: { 尺寸: "A3", 标题块: false, 附附录: false },
+      依赖: 账.依赖,
+    })
+    const svg = 账.账.光栅化们[0]!.svg
+    expect(svg.includes('data-slot="hgraph-legend"')).toBe(true)
+    expect(svg.includes('transform="translate(12 48)"')).toBe(false)
+    const 捉 = svg.match(/data-slot="hgraph-legend"(?: transform="translate\((-?[\d.]+) (-?[\d.]+)\)")?/)
+    expect(捉).not.toBeNull()
+    const 变换 = 取内容变换(svg)
+    const 映x = Number(捉![1]) * 变换.缩放 + 变换.x
+    const 映y = Number(捉![2]) * 变换.缩放 + 变换.y
+    expect(映x).toBeGreaterThanOrEqual(页边距 - 1)
+    expect(映y).toBeGreaterThanOrEqual(页边距 - 1)
+    expect(映x).toBeLessThanOrEqual(4961 - 页边距)
+    expect(映y).toBeLessThanOrEqual(3508 - 页边距)
   })
 })
 
@@ -316,14 +428,16 @@ describe("主题变量内联（R65）", () => {
 // ---------------------------------------------------------------------------
 
 describe("图例导出（T018 / R74 / R108）", () => {
-  test("导出串含展开图例 4 条，且在 hgraph-svg 内、坐标 (12,48)", async () => {
+  test("导出串含展开图例 4 条，且在 hgraph-svg 内；2026-11-24 起随内容缩放，不再钉 (12,48)", async () => {
     const { 依赖, 账 } = 记账依赖()
     const 结果 = await 跑导出({ 文档: 单节点文档(), 依赖 })
     expect(结果.kind).toBe("ok")
     const svg = 账.光栅化们[0].svg
     expect(svg.match(/data-slot="hgraph-legend-item"/g)?.length ?? 0).toBe(4)
     expect(svg).toContain('data-slot="hgraph-legend"')
-    expect(svg).toContain('transform="translate(12 48)"')
+    // 固定屏幕坐标的图例在 A3 上小到不可读；现在它并进内容组、跟着同一个 scale 走。
+    expect(svg.includes('transform="translate(12 48)"')).toBe(false)
+    expect(svg.indexOf('data-slot="hgraph-export-content"')).toBeLessThan(svg.indexOf('data-slot="hgraph-legend"'))
   })
 })
 
