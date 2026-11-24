@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import * as XLSX from "xlsx"
 import type { 解析限制 } from "./sheet-model"
 import { 解析工作簿, type 解析回调 } from "./sheet-parse-core"
+import { 单格Dimension工作簿 } from "../__fixtures__/xlsx"
 
 function 工作簿字节(表: unknown[][], 名 = "明细"): Uint8Array<ArrayBuffer> {
   const book = XLSX.utils.book_new()
@@ -226,6 +227,33 @@ describe("解析：xlsx", () => {
     const c = 收集()
     await 解析工作簿(工作簿字节([["<img src=x onerror=alert(1)>"]]), c.回调, 小限制())
     expect(c.meta[0].preview[0][0]).toBe("<img src=x onerror=alert(1)>")
+  })
+
+  test("dimension 写成单格（ref=\"A1\"）时仍读出真实总行数，不把首屏当全表", async () => {
+    // 真文件形状：三湘平台 ref="G27006"、支付宝/财付通导出 ref="A1"（都不含冒号）。
+    // SheetJS 认不出这种 dimension ⇒ sheetRows 截断后不给 !fullref ⇒ 旧实现把 201 当成总行数。
+    const c = 收集()
+    await 解析工作簿(
+      单格Dimension工作簿(300),
+      c.回调,
+      小限制({
+        首屏行数: 200,
+        预览行数: 1000,
+        预览列数: 64,
+        全量行上限: 1000,
+        全量格上限: 4_000_000,
+        全量列上限: 256,
+        分块行数: 100,
+      }),
+    )
+
+    expect(c.errors).toEqual([])
+    expect(c.meta[0].totalRows).toBe(300)
+    expect(c.meta[0].preview).toHaveLength(201) // 表头 + 200 数据行
+    expect(c.chunks).toHaveLength(1)
+    expect(c.chunks[0].start).toBe(201)
+    expect(c.chunks[0].rows).toHaveLength(99)
+    expect(c.done).toEqual([["full", { rows: 0, cols: 0 }]])
   })
 })
 

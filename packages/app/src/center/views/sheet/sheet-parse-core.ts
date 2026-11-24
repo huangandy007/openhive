@@ -222,10 +222,39 @@ async function 解析二进制(
   })
   const sheets = 工作表清单(first)
   const sheetName = 选表(sheets, 目标表)
-  const firstSheet = first.Sheets[sheetName]
-  // 探针（2026-10-18）：xlsx 与 xls(biff8) 在 sheetRows 下都保留 !fullref。
-  const 全范围 = XLSX.utils.decode_range(String(firstSheet["!fullref"] ?? firstSheet["!ref"] ?? "A1"))
-  const totalRows = 全范围.e.r - 全范围.s.r + 1
+  let firstSheet = first.Sheets[sheetName]
+  /**
+   * 探针（2026-10-18）：xlsx 与 xls(biff8) 在 sheetRows 下**通常**保留 `!fullref`。
+   *
+   * ⚠️ 2026-11-24 反例（三湘平台 27,005 行流水、支付宝/财付通导出）：导出工具把 `<dimension>`
+   * 写成**单格且不含冒号**（`ref="G27006"` / `ref="A1"`）。SheetJS 的 `dimregex` 要求冒号
+   * （`xlsx.mjs:15859`），认不出 ⇒ `sheetRows` 截断时**不设** `!fullref`。此时拿 `!ref` 当总范围，
+   * 27,006 行的表会被当成 201 行：不续读、`truncated` 还是 0/0，连「只显示前 N 行」都不提示。
+   */
+  let 全范围 = XLSX.utils.decode_range(String(firstSheet["!fullref"] ?? firstSheet["!ref"] ?? "A1"))
+  let totalRows = 全范围.e.r - 全范围.s.r + 1
+  /**
+   * 读到的行数正好顶到首屏上限 ⇒ 无法区分「真只有这么多」与「被截断且没给全量范围」。
+   * 唯一可靠的区分办法是补读一次。代价只落在「dimension 写坏」的文件上（它们本来也读不到全量）；
+   * 有 `!fullref` 的正常文件仍走首屏快路径。补读结果留作数据源，全量档不再读第二遍。
+   *
+   * ⚠️ 补读**必须带 `sheetRows` 上限**（用「全量行上限 + 1」）：不带上限等于把整本工作簿读进内存，
+   * 超大表会直接吃爆内存（用户 2026-11-24 明确要求避免）。封顶后，超过全量行上限的表会落到
+   * 预览档——总行数最多报到 `全量行上限 + 1`，偏小但**不再假装只有首屏那么多**，横幅照常出现。
+   */
+  let 已全读 = false
+  if (firstSheet["!fullref"] === undefined && totalRows >= limits.首屏行数 + 1) {
+    const 全本 = XLSX.read(bytes, {
+      type: "array",
+      codepage: 65001,
+      cellNF: true,
+      sheetRows: limits.全量行上限 + 1,
+    })
+    firstSheet = 全本.Sheets[sheetName]
+    全范围 = XLSX.utils.decode_range(firstSheet["!ref"] ?? "A1")
+    totalRows = 全范围.e.r - 全范围.s.r + 1
+    已全读 = true
+  }
   const totalCols = 全范围.e.c - 全范围.s.c + 1
   const mode = 判档(totalRows, totalCols, limits)
   const displayedCols = Math.min(totalCols, mode === "preview" ? limits.预览列数 : limits.全量列上限)
@@ -272,7 +301,7 @@ async function 解析二进制(
   }
 
   let 数据源 = firstSheet
-  if (!首屏已全) {
+  if (!首屏已全 && !已全读) {
     await 让出() // 首屏 meta 已交出，再全量解析
     数据源 = XLSX.read(bytes, { type: "array", codepage: 65001, cellNF: true }).Sheets[sheetName]
   }
