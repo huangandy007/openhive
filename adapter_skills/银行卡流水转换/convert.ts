@@ -97,6 +97,11 @@ export interface 识别卡 {
   attributeKeys: string[]
   match: { requiredHeaders: string[]; optionalHeaders: string[]; priority: number }
   status: { success: string[]; failure: string[] }
+  /**
+   * 借贷标志里的「非交易」值（如广发信用卡的 `O` = 年费减免等无资金变动行）。
+   * 只认这里声明的字面值：它们不进方向闸分母、逐行跳过；未声明的值仍按整份拒收处理。
+   */
+  nonTransactionFlags?: string[]
   bankNameDeny: string[]
   admission: { checks: string[]; thresholds: Record<string, number> }
   output: { file: string }
@@ -235,6 +240,15 @@ export function 解析方向(原值: string): "收" | "付" | undefined {
   return undefined
 }
 
+/**
+ * adapter.json 声明的「非交易」方向标志（如广发信用卡的 `O`：年费减免等无资金变动行）。
+ * 只认声明过的字面值——这条是 fail-closed 的缩小，不是放宽：没声明的值仍让整份文件拒收。
+ */
+export function 是非交易标志(原值: string, 卡: 识别卡): boolean {
+  const v = 原值.trim()
+  return v !== "" && (卡.nonTransactionFlags ?? []).includes(v)
+}
+
 /** 交易状态：只在 adapter.json 声明的两个集合里判定；不在集合里即不可识别（fail-closed）。 */
 export function 判定状态(原值: string, 卡: 识别卡): "成功" | "失败" | undefined {
   const v = 原值.trim()
@@ -270,6 +284,13 @@ export function 读识别卡(目录: string = 技能目录()): 识别卡 {
   }
   if (!Array.isArray(卡.bankNameDeny) || 卡.bankNameDeny.some((词) => typeof 词 !== "string" || 词.trim() === "")) {
     throw new Error("adapter.json：bankNameDeny 必须是非空字符串数组")
+  }
+  if (
+    卡.nonTransactionFlags !== undefined &&
+    (!Array.isArray(卡.nonTransactionFlags) ||
+      卡.nonTransactionFlags.some((值) => typeof 值 !== "string" || 值.trim() === ""))
+  ) {
+    throw new Error("adapter.json：nonTransactionFlags 必须是非空字符串数组")
   }
   if (!Array.isArray(卡.admission?.checks)) throw new Error("adapter.json：admission.checks 必须是数组")
   if (typeof 卡.admission?.thresholds !== "object" || 卡.admission.thresholds === null) {
@@ -492,6 +513,8 @@ interface 行计划 {
   列: Map<string, number>
   /** 同表紧邻的下一行；流水按时间倒序，下一行的余额是上一笔交易后的余额。 */
   下一行?: 网格行
+  /** 借贷标志是 adapter.json 声明的非交易值（无方向可言）：不进方向闸分母，逐行跳过。 */
+  非交易: boolean
 }
 
 function 元转分(金额: string): bigint {
@@ -655,16 +678,19 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       const 金额 = 解析金额(原始单元格(row, 列, "交易金额"))
       const 时间 = 解析时间(原始单元格(row, 列, "交易时间"))
       const 查询账号 = 归一化账号(原始单元格(row, 列, "查询账号"))
-      const 方向 = 解析方向(原始单元格(row, 列, "借贷标志"))
+      const 方向原文 = 原始单元格(row, 列, "借贷标志")
+      const 方向 = 解析方向(方向原文)
+      const 非交易 = 方向 === undefined && 是非交易标志(方向原文, 卡)
       const 状态 = 判定状态(原始单元格(row, 列, "交易是否成功"), 卡)
 
       加闸("查询账号非空", 查询账号 !== "")
-      加闸("借贷标志合法", 方向 !== undefined)
+      // 声明的非交易值不进方向闸分母（它不是资金交易，没有方向）；未声明的值照旧进分母。
+      if (!非交易) 加闸("借贷标志合法", 方向 !== undefined)
       加闸("金额可解析", 金额 !== null)
       加闸("时间可解析", 时间 !== undefined)
       加闸("交易状态可识别", 状态 !== undefined)
 
-      计划行们.push({ 表名: 计划.表.名称, rowNo: row.rowNo, cells: row, 列, 下一行: 数据行们[i + 1] })
+      计划行们.push({ 表名: 计划.表.名称, rowNo: row.rowNo, cells: row, 列, 下一行: 数据行们[i + 1], 非交易 })
     }
   }
 
@@ -722,7 +748,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     const 方向 = 解析方向(原始单元格(row, 列, "借贷标志"))
     const 金额 = 解析金额(原始单元格(row, 列, "交易金额"))
     if (方向 === undefined) {
-      记跳过("方向不明", 金额)
+      记跳过(计划.非交易 ? "非交易行" : "方向不明", 金额)
       continue
     }
     if (金额 === null) {

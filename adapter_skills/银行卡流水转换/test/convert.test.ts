@@ -57,7 +57,8 @@ function 告警数(结果: ReturnType<typeof 转换文件>, code: string) {
 describe("识别卡", () => {
   test("发布口径", () => {
     expect(识别卡.id).toBe("bank-card-statement")
-    expect(识别卡.version).toBe("1.0.0")
+    expect(识别卡.version).toBe("1.0.1")
+    expect(识别卡.nonTransactionFlags).toEqual(["O"])
     expect(识别卡.output.file).toBe("result.json")
     expect(识别卡.attributeKeys).toEqual(["对方:开户行", "对方:证件号"])
     expect(识别卡.match.requiredHeaders).toEqual([
@@ -236,6 +237,32 @@ describe("小夹具：边界与拒收", () => {
     expect(告警数(结果, "冲正方向按余额修正")).toBe(2)
     expect(告警数(结果, "冲正余额未核对")).toBe(1)
     expect(汇总表(结果)["对方账号为全零占位"]).toEqual({ 原因: "对方账号为全零占位", 行数: 1, 金额合计: "9.00" })
+  })
+
+  test("非交易标志 O：逐行跳过、不进方向闸分母，文件不拒收", () => {
+    const 结果 = 转换文件(夹具("非交易.csv"), 识别卡)
+    expect(结果.拒收).toBe(false)
+    expect(结果.report.counts).toEqual({ 总行: 3, 产出: 2, 跳过: 1 })
+    const 按行 = new Map(结果.rows.map((行) => [行.rowNo, 行]))
+    expect(按行.get(2)).toMatchObject({ direction: "付", amount: "5.00" })
+    expect(按行.get(4)).toMatchObject({ direction: "收", amount: "12.34" })
+    const 闸 = 结果.report.gates.find((项) => 项.检查项 === "借贷标志合法")!
+    expect({ 分母: 闸.分母, 命中: 闸.命中, 通过率: 闸.通过率 }).toEqual({ 分母: 2, 命中: 2, 通过率: 1 })
+    expect(结果.report.skippedRows.map((项) => 项.原因)).toEqual(["非交易行"])
+    expect(汇总表(结果)["非交易行"]).toEqual({ 原因: "非交易行", 行数: 1, 金额合计: "0.00" })
+  })
+
+  test("未声明的方向值：仍然整份拒收（不为 O 放宽闸门）", () => {
+    const 结果 = 转换文件(夹具("未知方向.csv"), 识别卡)
+    expect(结果.拒收).toBe(true)
+    expect(结果.rows).toEqual([])
+    const 闸 = 结果.report.gates.find((项) => 项.检查项 === "借贷标志合法")!
+    expect({ 分母: 闸.分母, 命中: 闸.命中, 通过率: 闸.通过率, 阈值: 闸.阈值 }).toEqual({
+      分母: 2,
+      命中: 1,
+      通过率: 0.5,
+      阈值: 1,
+    })
   })
 
   test("缺必需列：表头闸整份拒收", () => {
