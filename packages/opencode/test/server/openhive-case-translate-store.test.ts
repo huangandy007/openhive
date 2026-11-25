@@ -116,6 +116,32 @@ describe("写入翻译结果", () => {
     expect(实体.every((e) => e.type === "账户")).toBe(true)
   })
 
+  test("时间类型落 case_event.time_type：明细行标「记录」照抄，未标为 null", async () => {
+    // 独立项目：其它用例按 `project_id = 项目` 数事件总数，多写一行就会红（`#005-34`）。
+    const 项目tt = "prj-store-timetype"
+    const templateId = await 确保内置模板(db(), 项目tt)
+    const rows = [
+      行({ projectId: 项目tt, materialId: "m-tt", rowNo: 2, timeType: "记录" }),
+      行({ projectId: 项目tt, materialId: "m-tt", rowNo: 3, startedAt: 1731117403, startedRaw: "2024-11-09 09:16:43" }),
+    ]
+    await 写入翻译结果(db(), {
+      projectId: 项目tt,
+      materialId: "m-tt",
+      templateId,
+      翻译: 翻译资金({ projectId: 项目tt, materialId: "m-tt", rows }),
+    })
+    const 事件 = rowsOf(
+      await db().execute(sql`
+        select occurred_raw, time_type from auth.case_event
+         where project_id = ${项目tt} order by occurred_raw
+      `),
+    )
+    expect(事件.map((行) => [行.occurred_raw, 行.time_type])).toEqual([
+      ["2024-11-09 09:15:03", "记录"],
+      ["2024-11-09 09:16:43", null],
+    ])
+  })
+
   test("同一账号多行只查库一次（内存 Map）", async () => {
     const 多行 = Array.from({ length: 5 }, (_, i) => 行({ materialId: "m2", rowNo: 2 + i }))
     const r = await 写("m2", 多行)

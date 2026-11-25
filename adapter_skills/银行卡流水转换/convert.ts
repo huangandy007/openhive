@@ -38,7 +38,8 @@ export interface 事实行 {
   startedAt: number
   startedRaw: string
   precision: 精度
-  timeType: "发生"
+  /** 「发生」= 真实交易时刻；「记录」= 系统批处理记账时刻（见 adapter.json 的 batchRows）。 */
+  timeType: "发生" | "记录"
   amount: string
   balance?: string
   direction: "收" | "付"
@@ -102,6 +103,15 @@ export interface 识别卡 {
    * 只认这里声明的字面值：它们不进方向闸分母、逐行跳过；未声明的值仍按整份拒收处理。
    */
   nonTransactionFlags?: string[]
+  /**
+   * 余额占位政策：非零行占「可解析行」的比值低于阈值 ⇒ 整列判为占位（0 不是真实余额）。
+   * 缺省 = 不判占位，余额照旧写。
+   */
+  balancePolicy?: { placeholderNonZeroRatio: number }
+  /** 账号形态阈值：≥internalMinDigits 位的纯数字视为行内账户；同一账号下 ≥channelMinNames 个户名视为共享通道。 */
+  accountShape?: { internalMinDigits: number; channelMinNames: number }
+  /** 系统批处理行的判据：交易类型在白名单且对方是行内账户 ⇒ timeType 记这里声明的值。 */
+  batchRows?: { timeType: "记录"; types: string[] }
   bankNameDeny: string[]
   admission: { checks: string[]; thresholds: Record<string, number> }
   output: { file: string }
@@ -291,6 +301,33 @@ export function 读识别卡(目录: string = 技能目录()): 识别卡 {
       卡.nonTransactionFlags.some((值) => typeof 值 !== "string" || 值.trim() === ""))
   ) {
     throw new Error("adapter.json：nonTransactionFlags 必须是非空字符串数组")
+  }
+  if (卡.balancePolicy !== undefined) {
+    const 比 = 卡.balancePolicy.placeholderNonZeroRatio
+    if (typeof 比 !== "number" || !(比 > 0 && 比 <= 1)) {
+      throw new Error("adapter.json：balancePolicy.placeholderNonZeroRatio 必须是 (0, 1] 内的数")
+    }
+  }
+  if (卡.accountShape !== undefined) {
+    const { internalMinDigits, channelMinNames } = 卡.accountShape
+    if (!Number.isInteger(internalMinDigits) || internalMinDigits < 6) {
+      throw new Error("adapter.json：accountShape.internalMinDigits 必须是 ≥6 的整数")
+    }
+    if (!Number.isInteger(channelMinNames) || channelMinNames < 2) {
+      throw new Error("adapter.json：accountShape.channelMinNames 必须是 ≥2 的整数")
+    }
+  }
+  if (卡.batchRows !== undefined) {
+    if (卡.batchRows.timeType !== "记录") {
+      throw new Error("adapter.json：batchRows.timeType 只能是「记录」")
+    }
+    if (
+      !Array.isArray(卡.batchRows.types) ||
+      卡.batchRows.types.length === 0 ||
+      卡.batchRows.types.some((值) => typeof 值 !== "string" || 值.trim() === "")
+    ) {
+      throw new Error("adapter.json：batchRows.types 必须是非空字符串数组")
+    }
   }
   if (!Array.isArray(卡.admission?.checks)) throw new Error("adapter.json：admission.checks 必须是数组")
   if (typeof 卡.admission?.thresholds !== "object" || 卡.admission.thresholds === null) {
@@ -530,6 +567,36 @@ function 分转元(分: bigint): string {
   return `${元}.${String(分 % 100n).padStart(2, "0")}`
 }
 
+const 零金额形状 = /^-?0+\.0{2}$/
+
+/**
+ * 余额列覆盖统计（材料级）：可解析行数、其中非零行数、非零行的时间范围。
+ * 只做统计，不判断「0 是不是真的」——判占位的阈值在 adapter.json 里，不写魔数。
+ */
+function 统计余额(计划们: readonly 表计划[]): { 可解析: number; 非零: number; 最早: string; 最晚: string } {
+  let 可解析 = 0
+  let 非零 = 0
+  let 最早 = ""
+  let 最晚 = ""
+  for (const 计划 of 计划们) {
+    for (const row of 计划.数据行们) {
+      const 余额文 = 原始单元格(row, 计划.列, "交易余额")
+      if (余额文 === "") continue
+      const 余额 = 解析金额(余额文)
+      if (余额 === null) continue
+      可解析++
+      if (零金额形状.test(余额)) continue
+      非零++
+      const 时间文 = 原始单元格(row, 计划.列, "交易时间")
+      if (时间文 === "") continue
+      // 交易时间是 `YYYY-MM-DD HH:MM:SS` 定长串，码元序即时间序（不引 localeCompare）。
+      if (最早 === "" || 时间文 < 最早) 最早 = 时间文
+      if (最晚 === "" || 时间文 > 最晚) 最晚 = 时间文
+    }
+  }
+  return { 可解析, 非零, 最早, 最晚 }
+}
+
 /** 按原因聚合跳过行数与金额（绝对值）；金额用整数分累加，避免浮点漂移。 */
 export function 汇总跳过(跳过: 报告["skippedRows"]): 报告["跳过汇总"] {
   const 表 = new Map<string, { 行数: number; 分: bigint }>()
@@ -711,6 +778,26 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     数据行: 计划.数据行们.length,
   }))
 
+  // ── 余额占位（材料级，先于逐行产出判定）──
+  // 仅当 adapter.json 声明了 balancePolicy 才判：阈值不写进源码，样本之间口径一致。
+  const 余额统计 = 统计余额(表计划们)
+  const 占位阈值 = 卡.balancePolicy?.placeholderNonZeroRatio
+  const 余额占位 =
+    占位阈值 !== undefined && 余额统计.可解析 > 0 && 余额统计.非零 / 余额统计.可解析 < 占位阈值
+  if (余额占位) {
+    警告.push({
+      sheet: "",
+      rowNo: 0,
+      code: "余额整列占位",
+      detail:
+        `余额列非零 ${余额统计.非零} / 可解析 ${余额统计.可解析}（低于 ${占位阈值}）；` +
+        `整列判为占位，balance 一律不写，不得用于冲正/资金池/连续性验真；` +
+        (余额统计.非零 === 0
+          ? "整列没有非零值，无可参照时间"
+          : `非零行时间范围 ${余额统计.最早 === "" ? "无" : 余额统计.最早}~${余额统计.最晚 === "" ? "无" : 余额统计.最晚}`),
+    })
+  }
+
   if (!闸全过) {
     return {
       rows: [],
@@ -733,6 +820,10 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
   // ── 逐行产出 ──
   const 行们: 事实行[] = []
   let 缺对方户名行数 = 0
+  let 记录行数 = 0
+  let 行内账户行数 = 0
+  // 对方账号 → 户名集合 / 行数 / 金额分：产出行才进（跳过行不污染通道判定）。
+  const 通道候选 = new Map<string, { 户名们: Set<string>; 行数: number; 分: bigint }>()
   for (const 计划 of 计划行们) {
     const 列 = 计划.列
     const row = 计划.cells
@@ -756,7 +847,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       continue
     }
     // 内核契约要求 `amount > 0`：零金额行没有资金流动，留在 rows 里会让整份材料被拒收。
-    if (/^-?0+\.0{2}$/.test(金额)) {
+    if (零金额形状.test(金额)) {
       记跳过("金额为零", 金额)
       continue
     }
@@ -826,9 +917,19 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     const 证件号 = 单元格(row, 列, "交易对方证件号码")
     if (证件号 !== "") extras["属性:对方:证件号"] = 证件号
 
+    // 行内账户：≥internalMinDigits 位纯数字的对方账号（卡中心/分期子户等），不是外部可识别账户。
+    const 行内账户位数 = 卡.accountShape?.internalMinDigits
+    const 是行内账户 =
+      行内账户位数 !== undefined && /^\d+$/.test(对方账号) && 对方账号.length >= 行内账户位数
+    // 批处理行：类型在白名单 + 对方是行内账户 ⇒ 时间是系统记账时刻，不是交易发生时刻。
+    const 是批处理 = 是行内账户 && 卡.batchRows !== undefined && 卡.batchRows.types.includes(交易类型)
+    if (是行内账户) 行内账户行数++
+    if (是批处理) 记录行数++
+
+    // 余额占位时整列都不可信：不写 balance，也就不报逐行「无法解析」，冲正宽核拿不到余额。
     const 余额文 = 原始单元格(row, 列, "交易余额")
-    const 余额 = 余额文 === "" ? null : 解析金额(余额文)
-    if (余额文 !== "" && 余额 === null) {
+    const 余额 = 余额占位 || 余额文 === "" ? null : 解析金额(余额文)
+    if (!余额占位 && 余额文 !== "" && 余额 === null) {
       警告.push({
         sheet: 计划.表名,
         rowNo: 计划.rowNo,
@@ -840,7 +941,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     // 冲正宽核：只对「摘要/类型含冲正 + 相邻余额精确矛盾」的行按余额翻向。
     const 摘要 = 单元格(row, 列, "交易摘要")
     const 下一余额文 = 计划.下一行 === undefined ? "" : 原始单元格(计划.下一行, 列, "交易余额")
-    const 下一余额 = 下一余额文 === "" ? null : 解析金额(下一余额文)
+    const 下一余额 = 余额占位 || 下一余额文 === "" ? null : 解析金额(下一余额文)
     const 下一账号 = 计划.下一行 === undefined ? "" : 归一化账号(原始单元格(计划.下一行, 列, "查询账号"))
     const 核对 = 核对冲正(方向, 金额, 余额, 下一余额, 下一账号, 查询账号, 摘要, 交易类型)
     const 最终方向 = 核对.修正 ?? 方向
@@ -862,7 +963,7 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       startedAt: 时间.秒,
       startedRaw: 时间文,
       precision: 时间.精度,
-      timeType: "发生",
+      timeType: 是批处理 ? 卡.batchRows!.timeType : "发生",
       // 金额永远正数；方向默认由借贷列决定，只有冲正宽核能改（见 核对冲正）。
       amount: 金额.replace(/^-/, ""),
       direction: 最终方向,
@@ -880,6 +981,11 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
     } else {
       缺对方户名行数++
     }
+    const 通道 = 通道候选.get(对方账号) ?? { 户名们: new Set<string>(), 行数: 0, 分: 0n }
+    通道.行数++
+    通道.分 += 元转分(事实行.amount)
+    if (对方户名 !== "") 通道.户名们.add(对方户名)
+    通道候选.set(对方账号, 通道)
     if (!是账户形状(查询账号) || !是账户形状(对方账号)) {
       警告.push({
         sheet: 计划.表名,
@@ -898,6 +1004,40 @@ export function 转换工作簿(源: 源工作簿, 卡: 识别卡): 转换结果
       code: "户名缺失",
       detail: `${缺对方户名行数} 行的『交易对方名称』为空或为 -；counterpartyName 留空，不臆造`,
     })
+  }
+  if (记录行数 > 0) {
+    警告.push({
+      sheet: "",
+      rowNo: 0,
+      code: "记账时间行",
+      detail:
+        `${记录行数} 行的交易类型属系统批处理（${卡.batchRows!.types.join("、")}）且对方为行内账户：` +
+        `timeType 记「${卡.batchRows!.timeType}」，作息/到账时点分析应剔除这些行`,
+    })
+  }
+  if (行内账户行数 > 0) {
+    警告.push({
+      sheet: "",
+      rowNo: 0,
+      code: "行内账户行",
+      detail:
+        `${行内账户行数} 行对方账号是 ≥${卡.accountShape!.internalMinDigits} 位纯数字行内账户（卡中心/分期子户等）：` +
+        `按对方账号建实体做归并会失真`,
+    })
+  }
+  const 通道阈值 = 卡.accountShape?.channelMinNames
+  if (通道阈值 !== undefined) {
+    for (const [账号, 通道] of 通道候选) {
+      if (通道.户名们.size < 通道阈值) continue
+      警告.push({
+        sheet: "",
+        rowNo: 0,
+        code: "对方账号疑似共享通道",
+        detail:
+          `对方账号 ${账号} 下 ${通道.户名们.size} 个不同户名：${[...通道.户名们].join("、")}；` +
+          `${通道.行数} 行、金额合计 ${分转元(通道.分)}。疑似收单通道/聚合账户，未改账号、未建共享实体`,
+      })
+    }
   }
 
   // 稳定排序：工作表原顺序 + rowNo 升序。字符串比较用码元序而非 localeCompare：

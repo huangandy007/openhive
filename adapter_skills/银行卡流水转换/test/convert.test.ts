@@ -57,8 +57,14 @@ function 告警数(结果: ReturnType<typeof 转换文件>, code: string) {
 describe("识别卡", () => {
   test("发布口径", () => {
     expect(识别卡.id).toBe("bank-card-statement")
-    expect(识别卡.version).toBe("1.0.1")
+    expect(识别卡.version).toBe("1.1.0")
     expect(识别卡.nonTransactionFlags).toEqual(["O"])
+    expect(识别卡.balancePolicy).toEqual({ placeholderNonZeroRatio: 0.5 })
+    expect(识别卡.accountShape).toEqual({ internalMinDigits: 20, channelMinNames: 2 })
+    expect(识别卡.batchRows).toEqual({
+      timeType: "记录",
+      types: ["消费利息账单入账", "信用卡瞬时通手续费", "余额分期", "余额分期利息", "逾期还款违约金", "年费"],
+    })
     expect(识别卡.output.file).toBe("result.json")
     expect(识别卡.attributeKeys).toEqual(["对方:开户行", "对方:证件号"])
     expect(识别卡.match.requiredHeaders).toEqual([
@@ -263,6 +269,40 @@ describe("小夹具：边界与拒收", () => {
       通过率: 0.5,
       阈值: 1,
     })
+  })
+
+  test("余额整列占位：0 不写成真实余额，报告记材料级缺口", () => {
+    const 结果 = 转换文件(夹具("余额占位.csv"), 识别卡)
+    expect(结果.拒收).toBe(false)
+    expect(结果.rows).toHaveLength(3)
+    expect(结果.rows.every((行) => 行.balance === undefined)).toBe(true)
+    const 警 = 结果.report.warnings.find((项) => 项.code === "余额整列占位")!
+    expect(警.sheet).toBe("")
+    expect(警.rowNo).toBe(0)
+    expect(警.detail).toContain("非零 1 / 可解析 3")
+    expect(警.detail).toContain("2026-01-04")
+  })
+
+  test("批处理行标『记录』：类型白名单 + 行内账户，作息分析应剔除", () => {
+    const 结果 = 转换文件(夹具("批处理.csv"), 识别卡)
+    expect(结果.拒收).toBe(false)
+    const 按行 = new Map(结果.rows.map((行) => [行.rowNo, 行]))
+    expect(按行.get(2)!.timeType).toBe("记录")
+    expect(按行.get(3)!.timeType).toBe("发生")
+    expect(告警数(结果, "记账时间行")).toBe(1)
+    expect(告警数(结果, "行内账户行")).toBe(1)
+  })
+
+  test("共享通道：同一账号多个户名 → 材料级告警（不建实体、不改账号）", () => {
+    const 结果 = 转换文件(夹具("共享通道.csv"), 识别卡)
+    expect(结果.拒收).toBe(false)
+    expect(结果.rows.map((行) => 行.counterparty)).toEqual(["1100000000", "1100000000"])
+    const 警 = 结果.report.warnings.find((项) => 项.code === "对方账号疑似共享通道")!
+    expect(警.sheet).toBe("")
+    expect(警.rowNo).toBe(0)
+    expect(警.detail).toContain("1100000000")
+    expect(警.detail).toContain("2 个不同户名")
+    expect(警.detail).toContain("17347.00")
   })
 
   test("缺必需列：表头闸整份拒收", () => {

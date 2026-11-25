@@ -297,6 +297,11 @@ export interface 事件写入 {
   occurredRaw: string | null
   precision: string | null
   /**
+   * 时间类型：`发生` = 真实交易时刻，`记录` = 系统批处理记账时刻（如银行 02:00 的利息入账）。
+   * 作息/到账时点分析必须剔除 `记录`；来源未声明时为 null（不臆造 `发生`）。
+   */
+  timeType?: "发生" | "记录" | "入库" | null
+  /**
    * 金额，`numeric(18,2)` 一律字符串传（`#002-01`），**永远正数**（01 §3.5 / §4.0.5 坑 2）。
    * 非资金类事件（住宿、话单）为 null。列在迁移 `0039:89`，T7 的 `sum(e.amount)` 依赖它——
    * 漏写这一列，聚合会恒为 0 而不报错。
@@ -339,14 +344,14 @@ export async function insertEvent(db: Queryable, input: 事件写入): Promise<v
 const INSERT_CHUNK = 500
 
 const 事件列 = sql`
-  id, project_id, type, occurred_at, occurred_raw, precision, amount, participants, summary,
+  id, project_id, type, occurred_at, occurred_raw, precision, time_type, amount, participants, summary,
   trust_state, created_at, occurred_end, attrs, currency, template_id,
   purpose, purpose_l1, purpose_basis
 `
 
 function 事件值(e: 事件写入) {
   return sql`(${e.id}, ${e.projectId}, ${e.type}, ${e.occurredAt}, ${e.occurredRaw},
-              ${e.precision}, ${e.amount ?? null}, ${文本数组(e.participants)}, ${e.summary}, ${e.trustState},
+              ${e.precision}, ${e.timeType ?? null}, ${e.amount ?? null}, ${文本数组(e.participants)}, ${e.summary}, ${e.trustState},
               ${nowSeconds()}, ${e.occurredEnd ?? null},
               ${JSON.stringify(e.attrs ?? {})}::text::jsonb, ${e.currency ?? "CNY"},
               ${e.templateId ?? null},

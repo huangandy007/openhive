@@ -1,7 +1,7 @@
 {
   "id": "bank-card-statement",
   "name": "银行卡流水转换",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "kind": "converter",
   "materialType": "资金",
   "attributeKeys": ["对方:开户行", "对方:证件号"],
@@ -51,6 +51,12 @@
     "failure": ["失败", "交易失败"]
   },
   "nonTransactionFlags": ["O"],
+  "balancePolicy": { "placeholderNonZeroRatio": 0.5 },
+  "accountShape": { "internalMinDigits": 20, "channelMinNames": 2 },
+  "batchRows": {
+    "timeType": "记录",
+    "types": ["消费利息账单入账", "信用卡瞬时通手续费", "余额分期", "余额分期利息", "逾期还款违约金", "年费"]
+  },
   "bankNameDeny": ["alipay", "支付宝", "财付通", "tenpay", "微信支付", "微信", "银联", "网联"],
   "admission": {
     "checks": ["查询账号非空", "借贷标志合法", "金额可解析", "时间可解析", "交易状态可识别"],
@@ -63,6 +69,9 @@
     "查询账号 = 本方账号；交易对方账卡号 = 对方账号（平台统一 41 列格式）",
     "借贷决定方向：借=付、贷=收；仅当摘要/类型含「冲正」且相邻余额差精确等于金额时按余额翻向（实测 2 笔冲正标借实收）",
     "借贷标志 O 是非资金变动标记（广发信用卡年费减免等）：逐行跳过、不进方向闸分母；未声明的方向值仍整份拒收",
+    "交易余额非零行占比低于 placeholderNonZeroRatio ⇒ 整列判为占位：balance 一律不写，报告记材料级缺口（0 不是真实余额）",
+    "交易类型在 batchRows.types 且对方账号是 ≥internalMinDigits 位行内账户 ⇒ 系统批处理行，timeType 记「记录」而不是「发生」",
+    "同一对方账号下出现 ≥channelMinNames 个不同户名 ⇒ 收单通道/聚合账户嫌疑，报告记材料级告警（不建实体、不改账号）",
     "金额取绝对值、两位小数字符串，不用负号暗示方向",
     "交易时间按 Asia/Shanghai 解释，输出 Unix 秒",
     "对方户名取『交易对方名称』（『商户名称』是摘要/分期说明，不是户名，不写）",

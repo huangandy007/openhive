@@ -63,6 +63,8 @@ export interface 卡片草稿 {
   occurredAt: number | null
   occurredRaw: string | null
   precision: "到日" | "到分" | "到秒" | null
+  /** 时间类型：照抄明细行（`记录` 是批处理记账时刻）；来源未声明为 null，模板卡同样为 null。 */
+  timeType?: "发生" | "记录" | "入库" | null
   /** `numeric(18,2)` 一律字符串传（`#002-01`）。永远正数（§4.0.5 坑 2）。 */
   amount: string | null
   currency: string
@@ -313,6 +315,7 @@ export function 翻译资金(input: 翻译资金输入): 翻译结果 {
       occurredAt: row.startedAt,
       occurredRaw: row.startedRaw ?? "",
       precision: row.precision ?? "到日",
+      timeType: row.timeType ?? null,
       amount: 金额,
       currency: row.currency ?? "CNY",
       attrs,

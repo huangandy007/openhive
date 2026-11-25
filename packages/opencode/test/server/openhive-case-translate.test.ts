@@ -60,6 +60,20 @@ describe("资金卡片：一行一张", () => {
     })
   })
 
+  test("时间类型照抄明细行：不重判、不臆造", () => {
+    // 表格路径（toFactRows）有时间就默认「发生」；翻译层只透传，不改判。
+    const rows = 明细(表头, [借行])
+    expect(rows[0]!.timeType).toBe("发生")
+    expect(跑(rows).卡片们[0]!.timeType).toBe("发生")
+
+    rows[0]!.timeType = "记录"
+    expect(跑(rows).卡片们[0]!.timeType).toBe("记录")
+
+    // 来源没声明（转换器缺字段 / 无时间列）：落 null，而不是补一个「发生」。
+    delete rows[0]!.timeType
+    expect(跑(rows).卡片们[0]!.timeType).toBeNull()
+  })
+
   test("贷 ⇒ 本方收款方、对方付款方", () => {
     const r = 跑(明细(表头, [贷行]))
     const 卡 = r.卡片们[0]

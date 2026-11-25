@@ -182,6 +182,7 @@ export async function 写入翻译结果(
     occurredAt: 卡.occurredAt,
     occurredRaw: 卡.occurredRaw,
     precision: 卡.precision,
+    timeType: 卡.timeType ?? null,
     // 原样落库：翻译层已保证是正数字符串（§3.5 / §4.0.5 坑 2），这里不做数值处理。
     amount: 卡.amount,
     participants: 卡.participants.map((p) => p.规范值),
