@@ -42,7 +42,7 @@
 
 - [ ] T002 [P] 29 份模板：`skills/case-staff/assets/*.template.md`（22 份初始化模板 + 7 份按需，清单见 data-model §1）。**入参**：设计 §7 模板规格 + data-model §1 → **出参**：29 份模板文件。**判据**：`scripts/tests/test_templates.py`（新）断言文件名**精确集合 29 份**，且关键小节存在——四段式日报、溯源块九项、抓捕对象清单 12 列、D 表 9 列、阶段看板 8 列（`TR-012`）。**变异**：删四段式日报的一段 ⇒ 该模板用例红。
 
-- [ ] T003 [P] 脚本共用件：`skills/case-staff/scripts/lib/`——`tables.py`（表头 + 分隔行 + 数据行，表头必须与 data-model 一致，不一致报错不猜列序）、`ids.py`（`next_id(prefix, text)` 取 max+1；调用方写入前**重读**再取一次）、`blocks.py`（只认 `<!-- AUTO:BEGIN <名> -->` / `AUTO:END`，解析失败抛 `BlockError`）、`fingerprint.py`（`source_digest(rows)` 按 data-model §5.2 规范化后取 `sha256` 前 16 位）、`__init__.py`。**入参**：Markdown 文本 / 行列表 → **出参**：行字典列表 / 新编号 / 块对 / 16 位十六进制串。**判据**：`scripts/tests/test_lib.py`（新）——max+1 连续；**写前重读**（先取号 → 外部追加一行 → 重读再取，得到新号，`TR-008` 第二对）；表头不符报错；块不配对抛 `BlockError`；同一行集指纹稳定、顺序无关。**变异**：去掉「重读」只取一次 max+1 ⇒ 撞号用例红。
+- [ ] T003 [P] 脚本共用件：`skills/case-staff/scripts/lib/`——`tables.py`（表头 + 分隔行 + 数据行，表头必须与 data-model 一致，不一致报错不猜列序）、`ids.py`（`next_id(prefix, text)` 取 max+1；调用方写入前**重读**再取一次）、`blocks.py`（只认 `<!-- AUTO:BEGIN <名> -->` / `AUTO:END`，解析失败抛 `BlockError`）、`fingerprint.py`（`source_digest(rows)` 按 data-model §5.2 规范化后取 `sha256` 前 16 位）、`constants.py`（data-model §9 状态字面量总表，模板与校验器共用的唯一一份）、`__init__.py`。**入参**：Markdown 文本 / 行列表 → **出参**：行字典列表 / 新编号 / 块对 / 16 位十六进制串。**判据**：`scripts/tests/test_lib.py`（新）——max+1 连续；**写前重读**（先取号 → 外部追加一行 → 重读再取，得到新号，`TR-008` 第二对）；表头不符报错；块不配对抛 `BlockError`；同一行集指纹稳定、顺序无关；`scripts/tests/test_constants.py`（新）与 29 份模板实际字面量逐项比对（data-model §9）。**变异**：去掉「重读」只取一次 max+1 ⇒ 撞号用例红。
 
 **Checkpoint**: 技能包可被 loader 读到、模板齐全、四个脚本有同一份共用件。
 
@@ -50,12 +50,12 @@
 
 ## Phase 2: US1 - 一句话把案件工作区建好（P1）
 
-**Goal**: 幂等、非覆盖、可预演的初始化；精确产出 38 目录 / 22 文件 / 27 `.gitkeep`。
+**Goal**: 幂等、非覆盖、可预演的初始化；精确产出 39 目录 / 22 文件 / 27 `.gitkeep`。
 
 **Independent Test**: 空目录跑两次 ⇒ 第二次 `created_*` 全空、内容哈希不变；`--dry-run` 零写入；
 含无关文件的项目被拒；symlink 越界被拒。
 
-- [ ] T004 [US1] `skills/case-staff/scripts/init_case.py` 实现 + `scripts/tests/test_init_case.py` + `scripts/tests/fixtures/` 夹具：参数 `--root` / `--case-name` / `--case-no` / `--dry-run` / `--json`（契约 §1）；预检五条（可写、无关文件、已是工作区、非法字符/保留字、symlink 越界），失败退出码 1 且**磁盘零改动**；成功退出码 0，`created_directories` / `created_files` / `kept_files` 为项目相对路径且字典序。**入参**：项目根 → **出参**：契约 §1 的 JSON + 精确集合（38 / 22 / 27，data-model §1）。**判据**：`TR-002` 六项全绿（幂等、非覆盖、dry-run、无关文件、非法目录名、symlink 越界）＋三个上传依赖结构存在（`材料/00-待归档/`、`材料/00-材料登记表.md`、`专案协同/00-原始记录/`）＋ `TR-003` 精确集合。**变异**：`--dry-run` 仍写盘 ⇒ 零写入用例红；接受无关文件 ⇒ 拒绝用例红。
+- [ ] T004 [US1] `skills/case-staff/scripts/init_case.py` 实现 + `scripts/tests/test_init_case.py` + `scripts/tests/fixtures/` 夹具：参数 `--root` / `--case-name` / `--case-no` / `--dry-run` / `--json`（契约 §1）；预检五条（可写、无关文件、已是工作区、非法字符/保留字、symlink 越界），失败退出码 1 且**磁盘零改动**；成功退出码 0，`created_directories` / `created_files` / `kept_files` 为项目相对路径且字典序。**入参**：项目根 → **出参**：契约 §1 的 JSON + 精确集合（39 / 22 / 27，data-model §1）。**判据**：`TR-002` 六项全绿（幂等、非覆盖、dry-run、无关文件、非法目录名、symlink 越界）＋三个上传依赖结构存在（`材料/00-待归档/`、`材料/00-材料登记表.md`、`专案协同/00-原始记录/`）＋ `TR-003` 精确集合。**变异**：`--dry-run` 仍写盘 ⇒ 零写入用例红；接受无关文件 ⇒ 拒绝用例红。
 
 **Checkpoint**: 空项目一条命令建好工作区；重复执行无副作用。
 
@@ -69,7 +69,7 @@
 
 - [ ] T005 [US6] `skills/case-staff/scripts/validate_case.py` 核心检查 + `scripts/tests/test_validate_core.py`：引用（`E` / `A` / `L` / `T` 均存在）、编号（同前缀唯一、文件名与索引一致）、E、A、L/V/T、D、M（登记表路径在盘上；`材料/` 下每份文件有 M 行）、阶段（五态、阶段行齐全）。输出契约 §2 的 `{ok, errors, warnings, counts}`；有错误退出码 2，干净退出码 0。**入参**：`--root` / `--json` → **出参**：上述 JSON。**判据**：每类各一条夹具红转绿；**反向**：登记表自身与 `.gitkeep` 不报缺行。**变异**：去掉「E→M 存在」检查 ⇒ 该夹具漏报红。
 
-- [ ] T006 [US6] `skills/case-staff/scripts/validate_case.py` 规则类检查 + `scripts/tests/test_validate_rules.py`：命名（§4.1 正则、禁用词、目录白名单，外部来件豁免）、积压（`00-待归档/`、`待归类`、原始记录缺「已整理」）、逾期（`T_OVERDUE`：`未完成`/`进行中` 且期限早于当天）、跨文档矛盾（`X_CONFLICT`：P 姓名/角色、阶段看板↔阶段行；汇总数字差异为警告）、`--strict`（警告计为失败、退出码 1）。**入参**：`--root` / `--json` / `--strict` → **出参**：契约 §2 JSON（code 稳定枚举）。**判据**：`TR-004` 剩余检查全覆盖 + 反向两条（登记表/占位文件、外部来件命名）；`--strict` 下警告退出码 1。**变异**：取消外部来件命名豁免 ⇒ 合法上传件被判非法名（`TR-008` 第三对）红。
+- [ ] T006 [US6] `skills/case-staff/scripts/validate_case.py` 规则类检查 + `scripts/tests/test_validate_rules.py`：命名（§4.1 正则、禁用词、目录白名单，外部来件豁免）、积压（`00-待归档/`、`待归类`、原始记录缺「已整理」）、逾期（`T_OVERDUE`：`待办`/`进行中` 且期限早于当天）、跨文档矛盾（`X_CONFLICT`：P 姓名/角色、阶段看板↔阶段行；汇总数字差异为警告）、`--strict`（警告计为失败、退出码 1）。**入参**：`--root` / `--json` / `--strict` → **出参**：契约 §2 JSON（code 稳定枚举）。**判据**：`TR-004` 剩余检查全覆盖 + 反向两条（登记表/占位文件、外部来件命名）；`--strict` 下警告退出码 1。**变异**：取消外部来件命名豁免 ⇒ 合法上传件被判非法名（`TR-008` 第三对）红。
 
 **Checkpoint**: `validate_case.py` 可独立跑出错误/警告清单。
 
