@@ -164,11 +164,10 @@ ARREST_RECORD = "侦查/收网抓捕/00-收网记录.md"
 SUMMARY_TOTAL_KEY = "对象总数"
 SUMMARY_ARRIVED_KEY = "到案人数"
 SUMMARY_AT_LARGE_KEY = "在逃人数"
-P_ARRIVED_STATUS = "已到案"
-P_AT_LARGE_STATUS = "在逃"
 
 # data-model §4.1：我方新建文件命名正则（外部来件豁免）。
 NAME_DAILY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-每日动态\.md$")
+NAME_COMMUNICATION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-沟通记录-.+\.md$")
 NAME_MEETING_RE = re.compile(r"^C\d{3}-\d{4}-\d{2}-\d{2}-.+\.md$")
 NAME_TASK_RE = re.compile(r"^T\d{3}-.+\.md$")
 NAME_CLUE_RE = re.compile(r"^L\d{3}-.+\.md$")
@@ -182,29 +181,43 @@ NAME_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+-发放版\.md$")
 NAME_PERSON_DIR_RE = re.compile(r"^[PO]\d{3}-.+$")
 CHART_DIRECTORY = "图表"
 
-# 目录 → 文件命名正则；表外的业务目录只做非法字符 / 禁用词检查。
+ID_PREFIX_RE = re.compile(r"^([TLAPVCD])\d{3,}-")
+
+
+def _claims_id(name, *prefixes):
+    """文件名以该类编号前缀开头（``T001-…``）才算自证类型。"""
+    match = ID_PREFIX_RE.match(name)
+    return match is not None and match.group(1) in prefixes
+
+
+def _claims_keyword(name, *keywords):
+    return any(keyword in name for keyword in keywords)
+
+
+# 目录 → (文件命名正则, 自证判定)：只有文件名自称该类型（编号前缀或关键词）时才套正则，
+# 其余只查硬规则——否则「讯问提纲-张三.md」「抓捕补充.md」会被误判（评审 #7）。
 FILE_NAME_RULES = {
-    "专案协同/01-每日动态": NAME_DAILY_RE,
-    "专案协同/02-专案会议": NAME_MEETING_RE,
-    "专案协同/03-任务盯办": NAME_TASK_RE,
-    "专案协同/04-线索流转": NAME_CLUE_RE,
-    "专案协同/05-印证核实": NAME_VERIFY_RE,
-    "专案协同/06-人员与组织": NAME_PERSON_RE,
-    "专案协同/07-抓捕筹备": NAME_RELEASE_RE,
-    "专案协同/07-抓捕筹备/04-对象资料": NAME_PERSON_RE,
-    "研判/01-专题研判": NAME_ANALYSIS_RE,
-    "研判/02-综合研判": NAME_ANALYSIS_RE,
-    "侦查/询问讯问": NAME_TRANSCRIPT_RE,
-    "侦查/收网抓捕/04-案后处理": NAME_POST_CASE_RE,
+    "专案协同/01-每日动态": (NAME_DAILY_RE, lambda name: _claims_keyword(name, "每日动态")),
+    "专案协同/02-专案会议": (NAME_MEETING_RE, lambda name: _claims_id(name, "C")),
+    "专案协同/03-任务盯办": (NAME_TASK_RE, lambda name: _claims_id(name, "T")),
+    "专案协同/04-线索流转": (NAME_CLUE_RE, lambda name: _claims_id(name, "L")),
+    "专案协同/05-印证核实": (NAME_VERIFY_RE, lambda name: _claims_id(name, "V")),
+    "专案协同/06-人员与组织": (NAME_PERSON_RE, lambda name: _claims_id(name, "P")),
+    "专案协同/07-抓捕筹备": (NAME_RELEASE_RE, lambda name: _claims_keyword(name, "发放版")),
+    "专案协同/07-抓捕筹备/04-对象资料": (NAME_PERSON_RE, lambda name: _claims_id(name, "P")),
+    "研判/01-专题研判": (NAME_ANALYSIS_RE, lambda name: _claims_id(name, "A")),
+    "研判/02-综合研判": (NAME_ANALYSIS_RE, lambda name: _claims_id(name, "A")),
+    "侦查/询问讯问": (NAME_TRANSCRIPT_RE, lambda name: _claims_keyword(name, "笔录")),
+    "侦查/收网抓捕/04-案后处理": (
+        NAME_POST_CASE_RE,
+        lambda name: _claims_keyword(name, "案后处理清单"),
+    ),
 }
 
 # data-model §4.1 硬规则：禁空格、括号、`#`、`?`、`*`（另含 win32 非法字符）。
 ILLEGAL_NAME_CHARS = frozenset(' \\/:*?"<>|()（）#')
 
 DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-# data-model §6.3 / §7：只有未完成状态参与逾期派生。
-OPEN_TASK_STATUSES = ("待办", "进行中")
 
 
 class Entry(object):
@@ -414,11 +427,7 @@ def check_references(ctx, data):
             if not name.endswith(".md") or name in EXCLUDED_BASENAMES:
                 continue
             rel = _project_relative(os.path.join(dirpath, name), root)
-            if any(
-                _compare_key(rel) == _compare_key(excluded)
-                or _compare_key(rel).startswith(_compare_key(excluded) + "/")
-                for excluded in EXCLUDED_DIRECTORIES
-            ):
+            if _is_external_path(rel):
                 continue
             _scan_references(ctx, data, rel)
     # 材料目录整体豁免（原件保留原文）；登记表只按行扫「关联E」列，
@@ -430,7 +439,7 @@ def _is_excluded_directory(dirpath, name, root):
     rel = _project_relative(os.path.join(dirpath, name), root)
     return any(
         _compare_key(rel) == _compare_key(excluded)
-        or _compare_key(rel).startswith(_compare_key(excluded) + "/")
+        or _compare_key(rel).startswith(_compare_key(excluded) + os.sep)
         for excluded in EXCLUDED_DIRECTORIES
     )
 
@@ -964,7 +973,8 @@ def _is_external_path(rel):
     key = _compare_key(rel)
     for excluded in EXCLUDED_DIRECTORIES:
         base = _compare_key(excluded)
-        if key == base or key.startswith(base + "/"):
+        # ``_compare_key`` 走 ``os.path.normcase``，Windows 下分隔符已变成 ``os.sep``。
+        if key == base or key.startswith(base + os.sep):
             return True
     return False
 
@@ -981,19 +991,23 @@ def _name_issues(name):
 
 
 def _directory_allowed(rel, name):
-    return (
-        rel in init_case.DIRECTORIES
-        or name == CHART_DIRECTORY
-        or NAME_PERSON_DIR_RE.match(name) is not None
-    )
+    if rel in init_case.DIRECTORIES:
+        return True
+    # 三级目录只允许 `图表/` 与 `P###-姓名/`（data-model §4.2；评审 #8）。
+    if rel.count("/") == 2 and (
+        name == CHART_DIRECTORY or NAME_PERSON_DIR_RE.match(name) is not None
+    ):
+        return True
+    return False
 
 
 def _file_name_rule(rel_dir):
+    """返回 ``(正则, 自证判定)``；文书目录按 D 编号自证。"""
     rule = FILE_NAME_RULES.get(rel_dir)
     if rule is not None:
         return rule
     if rel_dir == "文书" or rel_dir.startswith("文书/"):
-        return NAME_DOCUMENT_RE
+        return NAME_DOCUMENT_RE, lambda name: _claims_id(name, "D")
     return None
 
 
@@ -1007,17 +1021,35 @@ def _check_directory_name(ctx, rel, name):
 
 def _check_file_name(ctx, rel_dir, name):
     rel = name if rel_dir == "." else rel_dir + "/" + name
+    if rel in init_case.TEMPLATE_BY_TARGET:
+        return
+    if rel_dir == ORIGINAL_RECORDS_DIR.rstrip("/"):
+        # 内部碰头手记必须按 `YYYY-MM-DD-沟通记录-主题.md`；转写稿/外部文档保留原名
+        # （FR-061 / design:527；评审 #4）。
+        if name.endswith(".md") and NAME_COMMUNICATION_RE.match(name) is None:
+            ctx.add(
+                rel,
+                0,
+                "NAME_ILLEGAL",
+                "文件名不合规：原始记录手记须命名为 YYYY-MM-DD-沟通记录-主题.md",
+            )
+        return
+    if _is_external_path(rel_dir):
+        # `材料/` 下原件与外部来件保留原文件名（FR-082），只豁免文件名；
+        # 目录白名单照样检查（评审 #3）。
+        return
     issues = _name_issues(name)
-    if rel not in init_case.TEMPLATE_BY_TARGET:
-        rule = _file_name_rule(rel_dir)
-        if rule is not None and rule.match(name) is None:
+    rule = _file_name_rule(rel_dir)
+    if rule is not None:
+        pattern, claims = rule
+        if claims(name) and pattern.match(name) is None:
             issues.append("不符合该目录的文件命名规则")
     if issues:
         ctx.add(rel, 0, "NAME_ILLEGAL", "文件名不合规：%s" % "；".join(issues))
 
 
 def check_naming(ctx, data):
-    """data-model §4.1：非法字符 / 禁用词 / 目录白名单；外部来件整枝豁免。"""
+    """data-model §4.1：非法字符 / 禁用词 / 目录白名单；外部来件只豁免文件名。"""
     root = ctx.ws.root
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = _project_relative(dirpath, root)
@@ -1026,8 +1058,6 @@ def check_naming(ctx, data):
             if name.startswith("."):
                 continue
             rel = name if rel_dir == "." else rel_dir + "/" + name
-            if _is_external_path(rel):
-                continue
             _check_directory_name(ctx, rel, name)
             kept.append(name)
         dirnames[:] = kept
@@ -1057,7 +1087,7 @@ def check_backlog(ctx, data):
     ledger = data.ledger("M")
     if ledger is not None:
         for entry in ledger.entries:
-            if entry.row.get(M_STATUS, "").strip() == "待归类":
+            if entry.row.get(M_STATUS, "").strip() in constants.M_PENDING_STATUSES:
                 mid = entry.row.get(M_ID, "").strip()
                 ctx.add_warning(
                     ledger.rel, entry.line, "M_PENDING", "%s 状态为待归类" % mid
@@ -1069,15 +1099,15 @@ def check_backlog(ctx, data):
             continue
         rel = _project_relative(full, ctx.ws.root)
         text = ctx.ws.read(rel)
-        if text is None:
+        # 读不成 UTF-8 的二进制转写稿/.pdf 同样「缺已整理标记」，不能静默跳过（评审 #2）。
+        if text is not None and ORIGINAL_RECORD_MARKER in text:
             continue
-        if ORIGINAL_RECORD_MARKER not in text:
-            ctx.add_warning(
-                rel,
-                0,
-                "M_PENDING",
-                "原始记录缺「%s」标记" % ORIGINAL_RECORD_MARKER,
-            )
+        ctx.add_warning(
+            rel,
+            0,
+            "M_PENDING",
+            "原始记录缺「%s」标记" % ORIGINAL_RECORD_MARKER,
+        )
 
 
 def _parse_date(value):
@@ -1096,7 +1126,7 @@ def check_overdue(ctx, data):
     if ledger is None:
         return
     for entry in ledger.entries:
-        if entry.row.get(T_STATUS, "").strip() not in OPEN_TASK_STATUSES:
+        if entry.row.get(T_STATUS, "").strip() not in constants.T_OPEN_STATUSES:
             continue
         deadline = entry.row.get(T_DEADLINE, "").strip()
         parsed = _parse_date(deadline)
@@ -1123,18 +1153,17 @@ def _compare_identity(ctx, line, pid, field, ledger_value, arrest_value):
 
 
 def _load_arrest_table(ctx):
-    """读取并解析抓捕对象清单；缺失/表头不匹配返回 None，坏表报 TABLE_INVALID。"""
+    """读取并解析抓捕对象清单；缺失返回 None，坏表/表头不匹配报 TABLE_INVALID。"""
     if not ctx.ws.isfile(ARREST_LIST):
         return None
     text = ctx.ws.read(ARREST_LIST)
     if text is None:
+        ctx.add(ARREST_LIST, 0, "TABLE_INVALID", "无法以 UTF-8 读取：%s" % ARREST_LIST)
         return None
     try:
-        table = tables.find_table(text, ARREST_HEADER)
+        table = tables.require_table(text, ARREST_HEADER)
     except tables.TableError as exc:
         ctx.add(ARREST_LIST, 0, "TABLE_INVALID", str(exc))
-        return None
-    if table is None:
         return None
     lines = _row_line_numbers(text, ARREST_HEADER)
     if len(lines) != len(table.rows):
@@ -1164,10 +1193,10 @@ def _summary_number(text, key):
     return None
 
 
-def _ledger_status_count(ledger, status):
+def _ledger_status_count(ledger, statuses):
     count = 0
     for entry in ledger.entries:
-        if entry.row.get(P_STATUS, "").strip() == status:
+        if entry.row.get(P_STATUS, "").strip() in statuses:
             count += 1
     return count
 
@@ -1208,14 +1237,14 @@ def _check_summary_numbers(ctx, arrest, data):
             ctx,
             text,
             SUMMARY_ARRIVED_KEY,
-            _ledger_status_count(people, P_ARRIVED_STATUS),
+            _ledger_status_count(people, constants.P_ARRIVED_STATUSES),
             "人员台账已到案",
         )
         _summary_warning(
             ctx,
             text,
             SUMMARY_AT_LARGE_KEY,
-            _ledger_status_count(people, P_AT_LARGE_STATUS),
+            _ledger_status_count(people, constants.P_AT_LARGE_STATUSES),
             "人员台账在逃",
         )
 
@@ -1366,7 +1395,7 @@ def _write_stream(stream, text):
         stream.write(text)
 
 
-def emit(payload, as_json):
+def emit(payload, as_json, strict=False):
     if as_json:
         _write_stream(
             sys.stdout, json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -1374,10 +1403,17 @@ def emit(payload, as_json):
         return
     counts = payload["counts"]
     if payload["ok"]:
-        _write_stream(
-            sys.stdout,
-            "校验通过：0 个错误，%d 个警告\n" % counts["warnings"],
-        )
+        if strict and counts["warnings"]:
+            # 只有警告但 --strict：如实说「判失败」，不写「校验通过」（评审 #9）。
+            _write_stream(
+                sys.stdout,
+                "警告 %d 条，strict 判失败（退出码 1）\n" % counts["warnings"],
+            )
+        else:
+            _write_stream(
+                sys.stdout,
+                "校验通过：0 个错误，%d 个警告\n" % counts["warnings"],
+            )
         return
     lines = ["校验发现问题：%d 个错误，%d 个警告" % (counts["errors"], counts["warnings"])]
     for item in payload["errors"]:
@@ -1423,7 +1459,7 @@ def main(argv=None):
         )
         code = 2
 
-    emit(payload, args.json)
+    emit(payload, args.json, args.strict)
     return code
 
 

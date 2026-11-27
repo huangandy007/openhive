@@ -34,6 +34,14 @@ T_DERIVED_STATUSES = ("逾期",)
 
 P_STATUSES = ("在逃", "已到案", "已处理", "待定")
 
+# 校验器派生口径（从上面的受控状态派生，检查函数不再另写状态字面量）：
+# 逾期只认未完成状态（data-model §6.3/§7）；到案 = 已到案 ∪ 已处理（§7 汇总校验）；
+# 积压只认「待归类」行。
+T_OPEN_STATUSES = tuple(status for status in T_STATUSES if status in ("待办", "进行中"))
+M_PENDING_STATUSES = tuple(status for status in M_STATUSES if status in ("待归类",))
+P_ARRIVED_STATUSES = tuple(status for status in P_STATUSES if status in ("已到案", "已处理"))
+P_AT_LARGE_STATUSES = tuple(status for status in P_STATUSES if status in ("在逃",))
+
 D_STATUSES = ("草稿", "待法制审核", "已签发", "已发放")
 
 STAGE_STATUSES = ("未开始", "进行中", "已完成", "受阻", "退回")

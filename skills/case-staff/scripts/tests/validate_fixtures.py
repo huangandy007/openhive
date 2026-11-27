@@ -251,6 +251,15 @@ class ValidateTestBase(unittest.TestCase):
         self.assertTrue(payload["errors"])
         return payload
 
+    def run_clean(self):
+        """零错误**且零警告**——「匹配即不报」的负向用例必须用它（#005-18）。"""
+        code, payload, stderr = call_json(self.root)
+        self.assertEqual(0, code, msg=self._excerpt(payload, stderr))
+        self.assertEqual(True, payload["ok"])
+        self.assertEqual([], payload["errors"])
+        self.assertEqual([], payload["warnings"])
+        return payload
+
     @staticmethod
     def _excerpt(payload, stderr):
         return "stderr=%s errors=%r" % (stderr, payload.get("errors"))

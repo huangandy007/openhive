@@ -20,6 +20,7 @@ from scripts.tests.validate_fixtures import (
     append_row,
     arrest_row,
     call_json,
+    call_main,
     call_run_at,
     codes_of,
     insert_before,
@@ -83,13 +84,76 @@ class NamingTest(ValidateTestBase):
         )
         self.run_ok()
 
-    def test_rule_named_file_in_wrong_directory_is_illegal(self):
+    def test_type_claiming_file_with_wrong_extension_is_illegal(self):
+        # 自证类型（含「每日动态」关键词）但扩展名不对 ⇒ 仍套该目录正则。
         write_text(
-            project_path(self.root, "专案协同/01-每日动态/随手记.md"),
+            project_path(self.root, "专案协同/01-每日动态/2026-11-27-每日动态.txt"),
             "",
         )
         payload = self.run_with_errors()
         self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertIn("命名规则", payload["errors"][0]["message"])
+
+    def test_uncommon_file_name_in_rule_directory_is_allowed(self):
+        # 未自证类型（无前缀/关键词）⇒ 只查硬规则，不套目录正则（评审 #7）。
+        write_text(
+            project_path(self.root, "侦查/询问讯问/讯问提纲-张三.md"),
+            "提纲\n",
+        )
+        self.run_clean()
+
+    def test_release_file_with_keyword_is_validated(self):
+        write_text(
+            project_path(
+                self.root, "专案协同/07-抓捕筹备/2026-11-27-第一次行动-发放版.md"
+            ),
+            "快照\n",
+        )
+        self.run_clean()
+
+    def test_new_material_category_directory_is_illegal(self):
+        # 外部来件豁免只作用于文件名；目录白名单照查（评审 #3）。
+        path = "材料/09-新类别/说明.txt"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertIn("材料/09-新类别/", [item["file"] for item in payload["errors"]])
+
+    def test_communication_record_naming_is_legal(self):
+        rel = ORIGINAL_RECORDS + "2026-11-27-沟通记录-收网碰头.md"
+        write_text(project_path(self.root, rel), "碰头正文\n")
+        code, payload, _ = call_json(self.root)
+        self.assertEqual(0, code, msg=payload)
+        self.assertEqual(set(), codes_of(payload["errors"]))
+        self.assertEqual({"M_PENDING"}, codes_of(payload["warnings"]))
+
+    def test_original_record_md_with_wrong_name_is_illegal(self):
+        rel = ORIGINAL_RECORDS + "碰头记录.md"
+        write_text(project_path(self.root, rel), "碰头正文\n")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual(rel, payload["errors"][0]["file"])
+
+    def test_original_record_non_md_keeps_original_name(self):
+        rel = ORIGINAL_RECORDS + "转写稿 (1).docx"
+        write_text(project_path(self.root, rel), "x")
+        code, payload, _ = call_json(self.root)
+        self.assertEqual(0, code, msg=payload)
+        self.assertEqual(set(), codes_of(payload["errors"]))
+        self.assertEqual({"M_PENDING"}, codes_of(payload["warnings"]))
+
+    def test_chart_directory_only_allowed_at_third_level(self):
+        write_text(project_path(self.root, "图表/说明.md"), "x")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual("图表/", payload["errors"][0]["file"])
+
+    def test_person_directory_only_allowed_at_third_level(self):
+        write_text(project_path(self.root, "P009-某人/说明.txt"), "x")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual("P009-某人/", payload["errors"][0]["file"])
 
     def test_external_incoming_file_keeps_original_name(self):
         name = "现场照片 (1).jpg"
@@ -151,7 +215,7 @@ class BacklogTest(ValidateTestBase):
         self.assertGreater(items[0]["line"], 0)
 
     def test_original_record_without_marker_is_pending(self):
-        rel = ORIGINAL_RECORDS + "碰头手记.md"
+        rel = ORIGINAL_RECORDS + "2026-11-27-沟通记录-碰头手记.md"
         write_text(project_path(self.root, rel), "手记正文，无整理标记。\n")
         code, payload, _ = call_json(self.root)
         self.assertEqual(0, code, msg=payload)
@@ -161,11 +225,23 @@ class BacklogTest(ValidateTestBase):
 
     def test_original_record_with_marker_is_clean(self):
         write_text(
-            project_path(self.root, ORIGINAL_RECORDS + "碰头手记.md"),
+            project_path(self.root, ORIGINAL_RECORDS + "2026-11-27-沟通记录-碰头手记.md"),
             "手记正文。\n\n已整理：C001 / T001 / L001（2026-11-27）\n",
         )
-        payload = self.run_ok()
-        self.assertEqual([], payload["warnings"])
+        self.run_clean()
+
+    def test_original_record_binary_without_marker_is_pending(self):
+        # 二进制 .docx 读不成 UTF-8，按「缺已整理标记」计积压（评审 #2）。
+        rel = ORIGINAL_RECORDS + "转写稿.docx"
+        path = project_path(self.root, rel)
+        with open(path, "wb") as handle:
+            handle.write(b"\x00\xff\xfe\x80PK\x03\x04")
+        code, payload, _ = call_json(self.root)
+        self.assertEqual(0, code, msg=payload)
+        self.assertEqual(set(), codes_of(payload["errors"]))
+        items = [item for item in payload["warnings"] if item["file"] == rel]
+        self.assertEqual(1, len(items))
+        self.assertEqual("M_PENDING", items[0]["code"])
 
     def test_gitkeep_is_not_counted_as_backlog(self):
         payload = self.run_ok()
@@ -264,7 +340,18 @@ class CrossDocumentTest(ValidateTestBase):
     def test_matching_person_is_clean(self):
         self._seed_people(p_row(pid="P001", name="张三", role="主犯"))
         self._seed_arrests(arrest_row(pid="P001", name="张三", role="主犯"))
-        self.run_ok()
+        self.run_clean()
+
+    def test_broken_arrest_header_is_table_invalid(self):
+        # 表头被改 ⇒ 结构化报错，不静默跳过（与 load_ledger 同先例；评审 #1）。
+        path = project_path(self.root, ARREST_FILE)
+        text = read_text(path)
+        old = "| 序号 | P编号 | 抓捕对象 |"
+        self.assertIn(old, text)
+        write_text(path, text.replace(old, "| 编号 | P编号 | 抓捕对象 |", 1))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"TABLE_INVALID"})
+        self.assertEqual(ARREST_FILE, payload["errors"][0]["file"])
 
     def test_arrest_person_absent_from_ledger_is_ref_missing(self):
         self._seed_arrests(arrest_row(pid="P002", name="李四", role="从犯"))
@@ -303,7 +390,7 @@ class CrossDocumentTest(ValidateTestBase):
         self._seed_people(p_row(pid="P001", name="张三", role="主犯"))
         self._seed_arrests(arrest_row(seq="1", pid="P001", name="张三", role="主犯"))
         self._write_summary_total(1)
-        self.run_ok()
+        self.run_clean()
 
     def _seed_two_targets(self):
         self._seed_people(
@@ -337,7 +424,21 @@ class CrossDocumentTest(ValidateTestBase):
         self._seed_two_targets()
         self._write_summary("到案人数", 1)
         self._write_summary("在逃人数", 1)
-        self.run_ok()
+        self.run_clean()
+
+    def test_processed_person_counts_as_arrived(self):
+        # 到案口径 = 已到案 ∪ 已处理（评审裁定；再改回只认已到案 ⇒ 本用例红）。
+        self._seed_people(
+            p_row(pid="P001", name="张三", role="主犯", status="已处理"),
+            p_row(pid="P002", name="李四", role="从犯", status="在逃"),
+        )
+        self._seed_arrests(
+            arrest_row(seq="1", pid="P001", name="张三", role="主犯"),
+            arrest_row(seq="2", pid="P002", name="李四", role="从犯"),
+        )
+        self._write_summary("到案人数", 1)
+        self._write_summary("在逃人数", 1)
+        self.run_clean()
 
 
 class StrictModeTest(ValidateTestBase):
@@ -373,6 +474,18 @@ class StrictModeTest(ValidateTestBase):
         self.assertEqual(2, code)
         self.assertEqual(False, payload["ok"])
 
+    def test_strict_plain_text_does_not_claim_pass(self):
+        # 只有警告且 --strict：纯文本不得写「校验通过」（评审 #9）。
+        self._seed_warning()
+        code, stdout, _ = call_main(["--root", self.root])
+        self.assertEqual(0, code)
+        self.assertIn("校验通过", stdout)
+        code, stdout, _ = call_main(["--root", self.root, "--strict"])
+        self.assertEqual(1, code)
+        self.assertNotIn("校验通过", stdout)
+        self.assertIn("警告", stdout)
+        self.assertIn("strict", stdout)
+
 
 class WarningContractTest(ValidateTestBase):
     def test_warnings_have_same_shape_and_are_sorted(self):
@@ -393,7 +506,10 @@ class WarningContractTest(ValidateTestBase):
                 status="待归类",
             ),
         )
-        write_text(project_path(self.root, ORIGINAL_RECORDS + "手记.md"), "正文\n")
+        write_text(
+            project_path(self.root, ORIGINAL_RECORDS + "2026-11-27-沟通记录-手记.md"),
+            "正文\n",
+        )
         append_row(
             self.root,
             T_LEDGER,
