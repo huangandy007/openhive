@@ -309,6 +309,49 @@ test("用例 5 · 目标目录不存在 ⇒ bad_input，零副作用", async () 
   expect(existsSync(join(根, "材料", "00-待归档", "x.txt"))).toBe(true)
 })
 
+test("补 · 台账大小写变体（win32 同一文件）也必须拒，台账留原处", async () => {
+  const projectId = "p-移动-台账变体"
+  const 根 = 建项目(projectId)
+  const 台账 = 写文件(根, "材料/00-材料登记表.md", "# 台账\n")
+
+  // win32/NTFS 大小写不敏感：`00-材料登记表.MD` 与规范名 `00-材料登记表.md` 是**同一个文件**
+  // （`#006-23`）。判据必须比文件同一性（dev/ino），不能按字面比路径——`realpath` 在 win32
+  // 保留调用方大小写，同样不能当判据。POSIX 上它是不存在的另一个名字，这里会因「源文件不存在」
+  // 同样得到 bad_input（不红，但也不会假绿成「搬走了」）。
+  const 错误 = await 取错误(() =>
+    move_material(工具ctx({ userId: 属主, projectId }), {
+      路径: "材料/00-材料登记表.MD",
+      目标目录: "材料/01-接报案",
+    }),
+  )
+  expect(错误).toBeInstanceOf(Error)
+  expect(错误).toMatchObject({ code: "bad_input" })
+  // 原件还在原处；目标目录里两个写法都没有（`#013-12`：布尔比较，不靠假绿的元素断言）。
+  expect(readFileSync(台账, "utf8")).toBe("# 台账\n")
+  expect(existsSync(join(根, "材料", "01-接报案", "00-材料登记表.MD"))).toBe(false)
+  expect(existsSync(join(根, "材料", "01-接报案", "00-材料登记表.md"))).toBe(false)
+})
+
+test("补 · 目标目录是 材料/ 根 ⇒ bad_input（schema 要求「材料/」下子目录），零副作用", async () => {
+  const projectId = "p-移动-目标根"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/00-待归档/根目标.txt", "内容")
+
+  // schema（契约 §1.1）写的是「已存在的『材料/』下**子目录**」；§3 第 7 步只说「存在且是目录」，
+  // 不足以表达「子」。按 schema 口径拒绝，别把文件搬到台账所在的那一层。
+  const 错误 = await 取错误(() =>
+    move_material(工具ctx({ userId: 属主, projectId }), {
+      路径: "材料/00-待归档/根目标.txt",
+      目标目录: "材料",
+    }),
+  )
+  expect(错误).toBeInstanceOf(Error)
+  expect(错误).toMatchObject({ code: "bad_input" })
+
+  expect(existsSync(join(根, "材料", "00-待归档", "根目标.txt"))).toBe(true)
+  expect(existsSync(join(根, "材料", "根目标.txt"))).toBe(false)
+})
+
 test("用例 6 · 源是 材料/00-材料登记表.md ⇒ bad_input，台账留在原处", async () => {
   const projectId = "p-移动-登记表"
   const 根 = 建项目(projectId)

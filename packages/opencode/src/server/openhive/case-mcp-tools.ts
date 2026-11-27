@@ -2991,6 +2991,23 @@ function 移动沙箱根(ctx: 工具上下文): string {
 const 归一相对 = (根: string, 绝对: string): string => relative(根, 绝对).split(sep).join("/")
 
 /**
+ * 两个路径是否**同一个文件**（同一性判据，`#006-23`）。
+ *
+ * 按字面比路径在 win32 上挡不住 `材料/00-材料登记表.MD`（NTFS 大小写不敏感）；`realpath`
+ * 也不能当判据——它保留调用方的大小写。`dev`/`ino` 用 `{ bigint: true }` 取**精确值**
+ * （win32 的 ino 会超过 2^53，普通 `Number` 已被四舍五入）。任一侧 `stat` 失败 ⇒ 不是同一文件。
+ */
+async function 是同一文件(甲: string, 乙: string): Promise<boolean> {
+  const [甲信息, 乙信息] = await Promise.all([
+    stat(甲, { bigint: true }).catch(() => undefined),
+    stat(乙, { bigint: true }).catch(() => undefined),
+  ])
+  return (
+    甲信息 !== undefined && 乙信息 !== undefined && 甲信息.dev === 乙信息.dev && 甲信息.ino === 乙信息.ino
+  )
+}
+
+/**
  * 把 `材料/` 下的一份普通文件移到另一个已存在的材料子目录（017 FR-028 / FR-029）。
  *
  * 契约 `contracts/move-material-tool.md` §3 的 11 步**按序**执行：归档冻结 → 按属主拼项目根 →
@@ -3036,9 +3053,16 @@ export async function move_material(
     throw new 工具错误("bad_input", GIT_LOCKED)
 
   // ⑤ 台账是材料目录内唯一可写文件，不得被移走；`材料/` 根是目录，不是一份文件。
+  //    判**文件同一性**（dev/ino），不按字面比路径：win32 大小写不敏感，`00-材料登记表.MD`
+  //    与规范名是同一个文件（`#006-23`）；`realpath` 在 win32 保留调用方大小写，不能当判据。
+  //    字面比较保留在或的前面：源不存在时 `stat` 拿不到，仍按规范写法给出同一条拒因。
   const 相对源 = 归一相对(项目根, 源)
-  if (相对源 === 材料目录名) throw new 工具错误("bad_input", `不能移动「${材料目录名}/」目录本身`)
-  if (相对源 === `${材料目录名}/00-材料登记表.md`)
+  if (相对源 === 材料目录名 || (await 是同一文件(源, join(项目根, 材料目录名))))
+    throw new 工具错误("bad_input", `不能移动「${材料目录名}/」目录本身`)
+  if (
+    相对源 === `${材料目录名}/00-材料登记表.md` ||
+    (await 是同一文件(源, join(项目根, 材料目录名, "00-材料登记表.md")))
+  )
     throw new 工具错误("bad_input", "材料登记表不能移动")
 
   // ⑥ 源必须是**普通文件**：`lstat` 不跟链接 ⇒ 符号链接与目录都落在这条之外（本工具只搬文件，
@@ -3051,6 +3075,11 @@ export async function move_material(
   const 目录信息 = await stat(目标目录).catch(() => undefined)
   if (目录信息 === undefined || !目录信息.isDirectory())
     throw new 工具错误("bad_input", "目标目录不存在")
+  // schema（契约 §1.1）要的是「『材料/』下**子目录**」：`材料/` 根本身不是落点（§3 第 7 步只说
+  // 「存在且是目录」，措辞不足）。同一性判据与台账守卫同源，`材料/` 的大小写/别名变体一并挡住。
+  const 相对目标目录 = 归一相对(项目根, 目标目录)
+  if (相对目标目录 === 材料目录名 || (await 是同一文件(目标目录, join(项目根, 材料目录名))))
+    throw new 工具错误("bad_input", `目标目录必须是「${材料目录名}/」下的子目录`)
 
   // ⑧ 词法上在项目里 ≠ 真身在项目里。`realInside` 要**已存在**的路径，故排在 `stat` 之后；
   //    调用方式照 `hgraph-ops.ts`：`Effect.runPromise(realInside(...))`，不在工具层重写判据。
