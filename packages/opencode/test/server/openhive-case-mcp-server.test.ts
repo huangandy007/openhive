@@ -151,7 +151,7 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图工具逐字一致", async () => {
+test("tools/list 返回 20 个工具，名字与设计 §7.1 + T012 的 5 个图工具 + 017 的 move_material 逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
@@ -166,6 +166,7 @@ test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图
     "graph_update",
     "list_source_profiles",
     "money_flow",
+    "move_material",
     "query_entities",
     "query_events",
     "query_relations",
@@ -186,14 +187,18 @@ const 三段标记 = ["什么时候用：", "什么时候别用：", "返回后�
 const 探索原语名 = ["query_rows", "query_timeline", "explore_entity", "money_flow"] as const
 
 test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 / 返回后照抄，且顺序固定", async () => {
+  // `move_material` 的模型可见描述由 017 契约 §1.2 定稿（只有「什么时候用 / 别用」两段），
+  // 不按 015 的三段式写；它的七字段口径在契约 §4，不靠描述补第三段。T013 曾整条把它排除，
+  // T014 收窄成**两段可断言**：仍检查它写了什么、顺序对不对，但只检查它合同上的那两段（M1）。
   const tools = (await client.listTools()).tools.filter((条) => !条.name.startsWith("graph_"))
-  // 19 个工具里 5 个图工具不在本文件：剩下 14 个信封工具，一个都不能漏。
-  expect(tools).toHaveLength(14)
+  // 20 个工具里 5 个图工具不在本文件 ⇒ 15 个信封工具，一个都不能漏。
+  expect(tools).toHaveLength(15)
   for (const 工具 of tools) {
     const 描述 = 工具.description ?? ""
-    const 位置 = 三段标记.map((标记) => 描述.indexOf(标记))
+    const 应有 = 工具.name === "move_material" ? 三段标记.slice(0, 2) : 三段标记
+    const 位置 = 应有.map((标记) => 描述.indexOf(标记))
     // 失败时把工具名与缺的段一起打出来：只报「false」看不出是谁缺。
-    expect({ 工具: 工具.name, 缺段: 三段标记.filter((_, 序) => 位置[序] < 0) }).toEqual({
+    expect({ 工具: 工具.name, 缺段: 应有.filter((_, 序) => 位置[序] < 0) }).toEqual({
       工具: 工具.name,
       缺段: [],
     })
@@ -202,7 +207,9 @@ test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 
       工具: 工具.name,
       位置: [...位置].sort((甲, 乙) => 甲 - 乙),
     })
-    expect(三段标记.map((标记) => 描述.split(标记).length - 1)).toEqual([1, 1, 1])
+    expect(应有.map((标记) => 描述.split(标记).length - 1)).toEqual(应有.map(() => 1))
+    // 例外不是「不查」：它的第三段必须**明确不写**（写了却不对齐 015 的格式才该被发现）。
+    if (工具.name === "move_material") expect(描述).not.toContain("返回后照抄：")
   }
 })
 

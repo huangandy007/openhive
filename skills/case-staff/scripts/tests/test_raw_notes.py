@@ -1,0 +1,388 @@
+"""T010 原始记录整理的结构用例（US4 / FR-061、FR-082 一带）。
+
+**不依赖真实 AI**：`fixtures/raw_notes/手记.md` 固定一份内部碰头手记，
+`fixtures/raw_notes/外部来件.txt` 固定一份外部来件，
+`fixtures/raw_notes/expected.json` 固定人工拆解出的期望结构（``类型`` / ``编号`` / ``字段``）。
+用例按 `references/内勤工作流.md`「原始记录整理」的规则，用 `scripts/lib/ids.py` 与
+`scripts/lib/tables.py` 把期望结构落成台账行，再回读逐字段比对。
+
+覆盖的判据：
+- 原文只读：整理前后正文字节相等，只在末尾多出「已整理」追加段（不重写、不合并段落）；
+- 分流 E/L/T：事实→E 草稿、推断→L、待办→T，字段逐列等于期望 JSON；
+- 标记格式：`已整理：L001 / T001（2026-11-27）`，只列 C/T/L/V、E 编号不得进标记；
+- 幂等：已标记的不重复追加、不重复写台账行；
+- 外部来件（可读文本）：正文与文件名不变，末尾追加标记，整理后不再积压；
+- 校验联动：整理后同一 `validate_case.run` 对整个夹具不再报 `M_PENDING`。
+
+**缺口（如实声明）**：结构化内容来自夹具的人工拆解，本文件只证明
+「库能力 + 规则可落地 + 形状可验证」，不证明模型解析自然语言的准确率。
+"""
+
+import datetime
+import hashlib
+import io
+import json
+import os
+import tempfile
+import unittest
+
+from scripts import validate_case
+from scripts.lib import ids, tables
+from scripts.tests.validate_fixtures import (
+    E_LEDGER,
+    L_LEDGER,
+    M_LEDGER,
+    T_LEDGER,
+    append_row,
+    call_init,
+    call_run_at,
+    project_path,
+    read_text,
+    write_text,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SKILL_DIR = os.path.dirname(os.path.dirname(HERE))
+FIXTURE_DIR = os.path.join(HERE, "fixtures", "raw_notes")
+EXPECTED_JSON = os.path.join(FIXTURE_DIR, "expected.json")
+REFERENCE_MD = os.path.join(SKILL_DIR, "references", "内勤工作流.md")
+
+ORIGINAL_DIR = validate_case.ORIGINAL_RECORDS_DIR.rstrip("/")
+MARKER_TOKEN = validate_case.ORIGINAL_RECORD_MARKER
+
+LEDGERS = {
+    "M": M_LEDGER,
+    "E": E_LEDGER,
+    "L": L_LEDGER,
+    "T": T_LEDGER,
+}
+ID_COLUMNS = {"M": "M编号", "E": "E编号", "L": "L编号", "T": "T编号"}
+SEED_KEYS = {"M": "材料登记表"}
+# 写入端：data-model §6.4 只把 C/T/L/V 编号写进原文标记；E 草稿在证据索引另行确认。
+# 期望端不从本常量推导（I1 假绿），见 marker_numbers_from_fixture() 与 E 排除断言。
+MARKER_PREFIXES = ("C", "T", "L", "V")
+
+
+def load_expected():
+    with io.open(EXPECTED_JSON, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+class RawNotesTestBase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self._tmp.name, "case")
+        os.mkdir(self.root)
+        code, payload, stderr = call_init(self.root)
+        self.assertEqual(0, code, msg="stderr=%s" % stderr)
+        self.assertTrue(payload["ok"])
+
+        self.fixture = load_expected()
+        self.today = self.fixture["日期"]
+        self.items = self.fixture["条目"]
+
+        note = self.fixture["原始记录"]["手记"]
+        self.note_rel = ORIGINAL_DIR + "/" + note["文件名"]
+        external = self.fixture["原始记录"]["外部来件"]
+        self.external_rel = ORIGINAL_DIR + "/" + external["文件名"]
+
+        self._seed_materials()
+        self._seed_records()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    # ---- 夹具落盘 -------------------------------------------------------
+
+    def _seed_materials(self):
+        for fields in self.fixture["种子"][SEED_KEYS["M"]]:
+            self.append_fields("M", fields)
+        for rel in self.fixture["种子"]["材料文件"]:
+            write_text(project_path(self.root, rel), "fixture\n")
+
+    def _seed_records(self):
+        for key in ("手记", "外部来件"):
+            entry = self.fixture["原始记录"][key]
+            source = os.path.join(FIXTURE_DIR, entry["夹具"])
+            target = project_path(self.root, ORIGINAL_DIR + "/" + entry["文件名"])
+            write_text(target, read_text(source))
+
+    # ---- 台账读写 -------------------------------------------------------
+
+    def ledger_path(self, prefix):
+        return project_path(self.root, LEDGERS[prefix])
+
+    def ledger_text(self, prefix):
+        return read_text(self.ledger_path(prefix))
+
+    def header(self, prefix):
+        parsed = tables.parse_tables(self.ledger_text(prefix))
+        self.assertEqual(1, len(parsed), msg="%s 应只有一张台账表" % LEDGERS[prefix])
+        return parsed[0].header
+
+    def append_fields(self, prefix, fields):
+        header = self.header(prefix)
+        self.assertEqual(set(header), set(fields), msg="字段与表头不一致：%r" % (fields,))
+        append_row(
+            self.root,
+            LEDGERS[prefix],
+            "| " + " | ".join(fields[column] for column in header) + " |",
+        )
+
+    def read_rows(self, prefix):
+        return tables.parse_rows(self.ledger_text(prefix), self.header(prefix))
+
+    def ledger_hashes(self):
+        return {
+            prefix: hashlib.sha256(read_bytes(self.ledger_path(prefix))).hexdigest()
+            for prefix in LEDGERS
+        }
+
+    def allocate(self, prefix):
+        """按参考文档取号：`ids.allocate_id` 写入前重读（FR-042）。"""
+        path = self.ledger_path(prefix)
+        return ids.allocate_id(prefix, lambda: read_text(path))
+
+    # ---- 原始记录整理流程 -----------------------------------------------
+
+    def marker_numbers_from_fixture(self):
+        """期望端独立推导：all non-E 条目编号（不复用写入端 MARKER_PREFIXES）。"""
+        return [item["编号"] for item in self.items if item["类型"] != "E"]
+
+    def evidence_numbers_from_fixture(self):
+        return [item["编号"] for item in self.items if item["类型"] == "E"]
+
+    def marker_text(self, numbers):
+        meta = self.fixture["标记"]
+        return (
+            meta["前缀"]
+            + meta["分隔"].join(numbers)
+            + meta["左括号"]
+            + self.today
+            + meta["右括号"]
+        )
+
+    def append_marker(self, rel, numbers):
+        path = project_path(self.root, rel)
+        text = read_text(path)
+        if not text.endswith("\n"):
+            text += "\n"
+        write_text(path, text + "\n" + self.marker_text(numbers) + "\n")
+
+    def organize(self):
+        """整理原始记录：手记先落 E/L/T 再追加标记；外部可读文本只追加标记。
+
+        幂等入口：原文已含「已整理」标记 ⇒ 该文件本次什么都不做
+        （不追加、不重写台账行）。
+        """
+        note_text = read_text(project_path(self.root, self.note_rel))
+        external_text = read_text(project_path(self.root, self.external_rel))
+        if MARKER_TOKEN in note_text and MARKER_TOKEN in external_text:
+            return []
+
+        written = []
+        numbers = []
+        if MARKER_TOKEN not in note_text:
+            for item in self.items:
+                prefix = item["类型"]
+                fields = dict(item["字段"])
+                fields[ID_COLUMNS[prefix]] = self.allocate(prefix)
+                self.append_fields(prefix, fields)
+                written.append(fields)
+                if prefix in MARKER_PREFIXES:
+                    numbers.append(fields[ID_COLUMNS[prefix]])
+            self.append_marker(self.note_rel, numbers)
+        if MARKER_TOKEN not in external_text:
+            # 外部来件本夹具无 C/T/L/V 落账 ⇒ 只写「已整理：（日期）」。
+            self.append_marker(self.external_rel, [])
+        return written
+
+    def pending_files(self, payload):
+        return [
+            item["file"]
+            for item in payload["warnings"]
+            if item["code"] == "M_PENDING"
+        ]
+
+
+class SplitRowsTest(RawNotesTestBase):
+    def test_fact_inference_and_todo_land_in_expected_ledgers(self):
+        self.organize()
+        for prefix in ("E", "L", "T"):
+            with self.subTest(prefix=prefix):
+                expected = [
+                    item["字段"] for item in self.items if item["类型"] == prefix
+                ]
+                self.assertEqual(expected, self.read_rows(prefix))
+
+    def test_each_type_keeps_its_initial_status(self):
+        self.organize()
+        self.assertEqual("草稿", self.read_rows("E")[0]["状态"])
+        self.assertEqual("待核查", self.read_rows("L")[0]["状态"])
+        self.assertEqual("待办", self.read_rows("T")[0]["状态"])
+
+
+class OriginalUnchangedTest(RawNotesTestBase):
+    def test_body_is_byte_identical_and_only_marker_is_appended(self):
+        before = read_bytes(project_path(self.root, self.note_rel))
+        self.organize()
+        after = read_bytes(project_path(self.root, self.note_rel))
+
+        self.assertEqual(before, after[: len(before)], msg="原文正文被改写")
+        appended = after[len(before):].decode("utf-8")
+        self.assertEqual(True, bool(appended.strip()), msg="末尾没有追加段")
+        self.assertEqual(True, MARKER_TOKEN in appended)
+
+        original_text = before.decode("utf-8")
+        after_text = after.decode("utf-8")
+        paragraphs = [line for line in original_text.splitlines() if line.strip()]
+        self.assertEqual(True, bool(paragraphs))
+        for line in paragraphs:
+            with self.subTest(line=line):
+                self.assertEqual(1, after_text.count(line), msg="段落被重写/合并/重复")
+
+        last_line = [line for line in after_text.splitlines() if line.strip()][-1]
+        self.assertEqual(True, MARKER_TOKEN in last_line, msg="标记不在末尾")
+
+
+class ExternalRecordTest(RawNotesTestBase):
+    """外部可读文本：正文与文件名不变，只在末尾追加标记，整理后不再积压。"""
+
+    def test_external_readable_text_gets_marker_only_at_the_end(self):
+        path = project_path(self.root, self.external_rel)
+        before = read_bytes(path)
+        names_before = sorted(os.listdir(project_path(self.root, ORIGINAL_DIR)))
+
+        self.organize()
+
+        after = read_bytes(path)
+        self.assertEqual(before, after[: len(before)], msg="外部来件正文被改写")
+        appended = after[len(before):].decode("utf-8")
+        # 本夹具的外部来件没有 C/T/L/V 落账 ⇒ 只写日期型标记。
+        self.assertEqual("\n" + self.marker_text([]) + "\n", appended)
+        self.assertEqual(True, MARKER_TOKEN in appended)
+
+        self.assertEqual(
+            names_before, sorted(os.listdir(project_path(self.root, ORIGINAL_DIR)))
+        )
+
+        code, payload = call_run_at(self.root, datetime.date.fromisoformat(self.today))
+        self.assertEqual(0, code, msg=payload.get("errors"))
+        self.assertEqual(False, self.external_rel in self.pending_files(payload))
+
+
+class MarkerFormatTest(RawNotesTestBase):
+    def test_marker_is_exactly_the_expected_string(self):
+        self.organize()
+        text = read_text(project_path(self.root, self.note_rel))
+        lines = [line for line in text.splitlines() if MARKER_TOKEN in line]
+        self.assertEqual(1, len(lines), msg="应恰好一行「已整理」标记")
+        self.assertEqual("已整理：L001 / T001（2026-11-27）", lines[0])
+
+    def test_marker_numbers_are_derived_from_fixture_and_exclude_e(self):
+        self.organize()
+        text = read_text(project_path(self.root, self.note_rel))
+        marker = [line for line in text.splitlines() if MARKER_TOKEN in line][0]
+
+        expected_numbers = self.marker_numbers_from_fixture()
+        self.assertEqual(["L001", "T001"], expected_numbers)
+        for number in expected_numbers:
+            with self.subTest(编号=number):
+                self.assertEqual(True, number in marker)
+
+        evidence_numbers = self.evidence_numbers_from_fixture()
+        self.assertEqual(1, len(evidence_numbers))
+        for number in evidence_numbers:
+            with self.subTest(E编号=number):
+                # 布尔比较，不用 assertFalse/assertNotIn（#013-12）。
+                self.assertEqual(
+                    False, number in marker, msg="E 编号不得进原文标记"
+                )
+
+
+class IdempotencyTest(RawNotesTestBase):
+    def test_second_organize_appends_nothing_and_writes_no_rows(self):
+        self.organize()
+        note_after_first = read_bytes(project_path(self.root, self.note_rel))
+        external_after_first = read_bytes(project_path(self.root, self.external_rel))
+        ledgers_after_first = self.ledger_hashes()
+
+        second = self.organize()
+
+        self.assertEqual([], second)
+        self.assertEqual(
+            note_after_first, read_bytes(project_path(self.root, self.note_rel))
+        )
+        self.assertEqual(
+            external_after_first, read_bytes(project_path(self.root, self.external_rel))
+        )
+        self.assertEqual(ledgers_after_first, self.ledger_hashes())
+        text = read_text(project_path(self.root, self.note_rel))
+        self.assertEqual(1, text.count(MARKER_TOKEN), msg="「已整理」被重复追加")
+        external_text = read_text(project_path(self.root, self.external_rel))
+        self.assertEqual(
+            1, external_text.count(MARKER_TOKEN), msg="外部来件标记被重复追加"
+        )
+
+
+class ValidationLinkTest(RawNotesTestBase):
+    def test_organized_records_are_no_longer_pending_for_the_same_validator(self):
+        code, before = call_run_at(self.root, datetime.date.fromisoformat(self.today))
+        self.assertEqual(0, code, msg=before.get("errors"))
+        self.assertEqual(True, self.note_rel in self.pending_files(before))
+        self.assertEqual(True, self.external_rel in self.pending_files(before))
+
+        self.organize()
+
+        code, after = call_run_at(self.root, datetime.date.fromisoformat(self.today))
+        self.assertEqual(0, code, msg=after.get("errors"))
+        self.assertEqual([], after["errors"])
+        self.assertEqual([], self.pending_files(after))
+        # 同一 check_backlog 调用路径：整理前的期望清单见 before，整理后整体清空。
+
+
+class FixtureConsistencyTest(unittest.TestCase):
+    """夹具自洽：手记里每一条不被落账的内容都要在 expected.json 里声明原因。"""
+
+    def test_unmapped_note_line_is_declared_with_reason(self):
+        fixture = load_expected()
+        source = read_text(
+            os.path.join(FIXTURE_DIR, fixture["原始记录"]["手记"]["夹具"])
+        )
+        unmapped = fixture["未落账"]
+        self.assertEqual(1, len(unmapped))
+        for entry in unmapped:
+            with self.subTest(内容=entry["内容"]):
+                self.assertEqual(True, entry["内容"] in source)
+                self.assertEqual(True, bool(entry["原因"].strip()))
+
+
+class ReferenceRulesTest(unittest.TestCase):
+    """规则本体在参考文档里；删掉约束句会让本用例红（变异用）。"""
+
+    REQUIRED_TOKENS = (
+        "不重写、不合并段落、不调整顺序",
+        "E 草稿在证据索引另行确认，不进原文标记",
+        "只在末尾追加标记，正文与文件名不改",
+        "不重复追加标记，也不重复写台账行",
+        "E / L / T 的分流、状态初值与撰写规则同",
+    )
+
+    def test_raw_notes_section_keeps_the_binding_rules(self):
+        text = read_text(REFERENCE_MD)
+        start = text.index("## 原始记录整理")
+        rest = text[start + len("## 原始记录整理"):]
+        end = rest.find("\n## ")
+        section = rest if end == -1 else rest[:end]
+        for token in self.REQUIRED_TOKENS:
+            with self.subTest(token=token):
+                self.assertEqual(True, token in section)
+
+
+if __name__ == "__main__":
+    unittest.main()
