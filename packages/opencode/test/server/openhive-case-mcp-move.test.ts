@@ -283,6 +283,8 @@ test("用例 4 · 源不在 材料/ 下 ⇒ bad_input，零副作用", async () 
   )
   expect(错误).toBeInstanceOf(Error)
   expect(错误).toMatchObject({ code: "bad_input" })
+  // 契约 §3.3 未规定文案，只要求「顶层目录必须是 材料」；「材料」二字是**代理断言**
+  // （正确的实现不会用一句不提材料的话拒绝），别把它当成契约文案钉死。
   expect(错误文案(错误)).toContain("材料")
 
   expect(existsSync(join(根, "资料", "证据.txt"))).toBe(true)
@@ -330,7 +332,9 @@ test("用例 9 · 目标目录经链接指向项目外 ⇒ bad_input(LINK_ESCAPE
   const 根 = 建项目(projectId)
   写文件(根, "材料/00-待归档/密件.txt", "不许出去")
   // 项目外的落点：同一属主沙箱下的**兄弟目录**（junction 只需目录已存在）。
-  const 项目外 = join(沙箱根, 属主, "移动项目外")
+  // ⚠️ 目录名按用例区分：用例 14 也用「项目外」夹具，共用会让 `--randomize` 下
+  // 先跑 14 时本条 `外部无密件.txt` 假红（`#005-34`）。
+  const 项目外 = join(沙箱根, 属主, "移动项目外-链接")
   mkdirSync(项目外, { recursive: true })
   symlinkSync(项目外, join(根, "材料", "逃逸"), "junction")
 
@@ -405,7 +409,8 @@ test("用例 13 · 源是一个目录 ⇒ bad_input(\"移动只能对普通文�
 test("用例 14 · 源是符号链接（指向材料外）⇒ bad_input，链接与目标都不动", async () => {
   const projectId = "p-移动-符号源"
   const 根 = 建项目(projectId)
-  const 项目外 = join(沙箱根, 属主, "移动项目外")
+  // 外部目录按用例区分（与用例 9 的 `移动项目外-链接` 不共享，`#005-34`）。
+  const 项目外 = join(沙箱根, 属主, "移动项目外-符号源")
   mkdirSync(项目外, { recursive: true })
   const 外部文件 = join(项目外, "密件.txt")
   writeFileSync(外部文件, "外部正文")
@@ -427,20 +432,33 @@ test("用例 14 · 源是符号链接（指向材料外）⇒ bad_input，链接
 
 // ─────────────────────── 工具层探针：项目根恒按**属主**拼，不是按调用者 ───────────────────────
 
-test("探针 · 非属主成员经工具层移动：文件在属主沙箱里也必须找得到（按调用者拼会回「源文件不存在」）", async () => {
+test("探针 · 非属主成员经工具层移动：文件与材料行都在属主沙箱/同 project，也必须找得到", async () => {
   const projectId = "p-移动-探针"
   // 目录与文件都建在**属主**沙箱：共享项目的材料就在那里。
   const 属主根 = 建项目(projectId)
-  写文件(属主根, "材料/00-待归档/探针.txt", "共享项目里的文件")
+  写文件(属主根, "材料/00-待归档/探针.xlsx", "共享项目里的文件")
+  // 材料行属**同一 project**：契约 §6 探针要求「文件在属主目录、材料行也属该项目」，
+  // 只建盘上文件时 `材料路径已同步=true` 只证「没抛」，证不了「材料行被迁走」。
+  await createMaterial(库(), {
+    id: "m-移动-探针",
+    projectId,
+    fileName: "探针.xlsx",
+    kind: "资金",
+    fingerprint: "fp-移动-探针",
+    path: "材料/00-待归档/探针.xlsx",
+  })
 
   const 结果 = await move_material(工具ctx({ userId: 成员, projectId }), {
-    路径: "材料/00-待归档/探针.txt",
+    路径: "材料/00-待归档/探针.xlsx",
     目标目录: "材料/01-接报案",
   })
 
-  expect(existsSync(join(属主根, "材料", "01-接报案", "探针.txt"))).toBe(true)
-  expect(existsSync(join(属主根, "材料", "00-待归档", "探针.txt"))).toBe(false)
+  expect(existsSync(join(属主根, "材料", "01-接报案", "探针.xlsx"))).toBe(true)
+  expect(existsSync(join(属主根, "材料", "00-待归档", "探针.xlsx"))).toBe(false)
   expect(移动行们(结果)[0].材料路径已同步).toBe(true)
+  // 材料行跟着文件走（projectId 来自身份，与「谁的目录」无关）。
+  const 材料 = await getMaterial(库(), projectId, "m-移动-探针")
+  expect(材料?.path).toBe("材料/01-接报案/探针.xlsx")
   // 调用者自己的沙箱里根本没有这个项目目录：按调用者拼的实现会在这里做不成事。
   expect(existsSync(项目根(projectId, 成员))).toBe(false)
 })
@@ -460,7 +478,9 @@ test("用例 7 · 非成员 ⇒ not_a_member，零副作用", async () => {
 
   expect(结果.isError).toBe(true)
   expect(错误体(结果).error).toBe("not_a_member")
+  // 零副作用成对断言（源在 + 目标无）：只查源在挡不住「复制过去再留着源」。
   expect(existsSync(join(根, "材料", "00-待归档", "不动.txt"))).toBe(true)
+  expect(existsSync(join(根, "材料", "01-接报案", "不动.txt"))).toBe(false)
 })
 
 test("用例 8 · 已归档项目 ⇒ forbidden，零副作用", async () => {
@@ -496,6 +516,7 @@ test("用例 11 · 参数含白名单外的键 ⇒ bad_input(\"不认识的参�
   expect(体.error).toBe("bad_input")
   expect(体.message).toContain("不认识的参数：改名")
   expect(existsSync(join(根, "材料", "00-待归档", "键.txt"))).toBe(true)
+  expect(existsSync(join(根, "材料", "01-接报案", "键.txt"))).toBe(false)
 })
 
 test("用例 12 · 留痕：每次调用一行，成功 / 失败都有", async () => {
@@ -531,6 +552,9 @@ test("用例 12 · 留痕：每次调用一行，成功 / 失败都有", async (
   expect(失败行.工具).toBe("move_material")
   expect(失败行.ok).toBe(false)
   expect(失败行.错误码).toBe("bad_input")
+  // 失败那一行同样带身份（身份门之后才失败的调用不该缺 userId/projectId）。
+  expect(失败行.userId).toBe(属主)
+  expect(失败行.projectId).toBe(projectId)
 
   expect(existsSync(join(根, "材料", "01-接报案", "留痕.txt"))).toBe(true)
 })
