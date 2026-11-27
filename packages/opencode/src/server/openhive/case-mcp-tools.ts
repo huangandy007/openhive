@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm"
 import { rowsOf } from "@opencode-ai/auth/migrate"
-import { rolesOf } from "@opencode-ai/auth/project-member"
+import { archiveStatesOf, rolesOf } from "@opencode-ai/auth/project-member"
+import { ProjectMembership } from "@opencode-ai/core/project/membership"
 import {
   默认限制,
   最大限制,
@@ -2962,4 +2963,31 @@ export async function revoke_source_profile(
     出处: [],
     下一步: [],
   }
+}
+
+// ───────────────────────── 017 US2：材料移动（write） ─────────────────────────
+
+/**
+ * 把 `材料/` 下的一份普通文件移到另一个已存在的材料子目录（017 FR-028 / FR-029）。
+ *
+ * T013 只落地**注册与归档冻结**；路径守卫、同名拒、rename 与材料路径迁移由 T014 补齐。
+ *
+ * 本工具**有意不加入** `写工具名`（`case-mcp-server.ts` 的 ②b 属主门）：HTTP 的移动 / 改名是
+ * 成员级，加入会变成「UI 能移、AI 不能移」的第二套口径（契约 §2 末段）。
+ */
+export async function move_material(
+  ctx: 工具上下文,
+  args: { 路径: string; 目标目录: string },
+): Promise<工具结果> {
+  // ⑥ 归档冻结：MCP 入口没有 HTTP 的 `projectLocationLayer`，写操作必须自己补。落在**任何
+  // 文件系统访问之前**——路径在不在，只有过了这道门才该被问到。判据只此一份：
+  // `archiveStatesOf` 的「键缺席 = 未归档」，再交给核心的 `ProjectMembership.frozen`，
+  // 不在这里写第二份 `archived === true`（`#002-06`）。
+  const 归档 = await archiveStatesOf(ctx.db, [ctx.身份.projectId])
+  if (ProjectMembership.frozen(归档.get(ctx.身份.projectId)?.archived ?? false)) {
+    throw new 工具错误("forbidden", "项目已归档，不能改动")
+  }
+  // 占位刻意**不是** `工具错误`：它会折成 `tool_failed`，未实现期间用例 1–6/9/10/13/14 与探针
+  // 必须继续红，不能被一句 `bad_input` 演成假绿（T013 的范围只到注册与冻结）。
+  throw new Error("move_material 的移动逻辑尚未实现（T014）")
 }

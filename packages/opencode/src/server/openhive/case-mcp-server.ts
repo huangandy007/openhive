@@ -25,6 +25,7 @@ import {
   get_citation,
   list_source_profiles,
   money_flow,
+  move_material,
   query_entities,
   query_events,
   query_relations,
@@ -90,6 +91,8 @@ export const 工具名 = [
   "graph_add",
   "graph_update",
   "graph_remove",
+  // 017 T013：材料移动（写工具；**有意不入** `写工具名`，口径见 case-mcp-tools.ts 的同名注释）。
+  "move_material",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -591,6 +594,29 @@ const TOOLS: readonly Tool[] = [
       required: ["目标"],
     },
   },
+  {
+    name: "move_material",
+    // 契约 §1.2 定稿口径（017）；三段式描述由 015 的夹具对本工具放行，理由见该用例的过滤注释。
+    description:
+      "把 `材料/` 下的一份文件移到另一个已存在的材料子目录。只换位置、不改名、不覆盖同名文件；" +
+      "移动后平台会同步材料路径。什么时候用：收件箱归档、材料放错来源目录需要纠正时（一份一次）。" +
+      "什么时候别用：搬目录、改名、批量移动、移动 `材料/` 以外的文件，删除——都用不上它。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: {
+          type: "string",
+          description:
+            "要移动的文件，项目相对路径，必须是「材料/」下的一份普通文件（不搬目录、不搬符号链接），例如 材料/00-待归档/张三建行流水.pdf",
+        },
+        目标目录: {
+          type: "string",
+          description: "目标目录，项目相对路径，必须是已存在的「材料/」下子目录，例如 材料/06-话单与资金",
+        },
+      },
+      required: ["路径", "目标目录"],
+    },
+  },
 ]
 
 /**
@@ -696,6 +722,8 @@ export const 分发表: Record<
       ctx,
       收参数<Parameters<typeof graph_remove>[1]>(args, ["路径", "批次", "幂等键"], [], [], ["目标"]),
     ),
+  move_material: (ctx, args) =>
+    move_material(ctx, 收参数<Parameters<typeof move_material>[1]>(args, ["路径", "目标目录"], [], [])),
 }
 
 /**

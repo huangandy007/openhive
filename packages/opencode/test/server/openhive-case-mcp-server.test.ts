@@ -151,7 +151,7 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图工具逐字一致", async () => {
+test("tools/list 返回 20 个工具，名字与设计 §7.1 + T012 的 5 个图工具 + 017 的 move_material 逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
@@ -166,6 +166,7 @@ test("tools/list 返回 19 个工具，名字与设计 §7.1 + T012 的 5 个图
     "graph_update",
     "list_source_profiles",
     "money_flow",
+    "move_material",
     "query_entities",
     "query_events",
     "query_relations",
@@ -186,8 +187,12 @@ const 三段标记 = ["什么时候用：", "什么时候别用：", "返回后�
 const 探索原语名 = ["query_rows", "query_timeline", "explore_entity", "money_flow"] as const
 
 test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 / 返回后照抄，且顺序固定", async () => {
-  const tools = (await client.listTools()).tools.filter((条) => !条.name.startsWith("graph_"))
-  // 19 个工具里 5 个图工具不在本文件：剩下 14 个信封工具，一个都不能漏。
+  // `move_material` 的模型可见描述由 017 契约 §1.2 定稿（只有「什么时候用 / 别用」两段），
+  // 不按 015 的三段式写；这是有意的例外，不让本用例把它当成缺第三段。
+  const tools = (await client.listTools()).tools.filter(
+    (条) => !条.name.startsWith("graph_") && 条.name !== "move_material",
+  )
+  // 20 个工具里 5 个图工具不在本文件、1 个是上面的契约例外：剩下 14 个信封工具，一个都不能漏。
   expect(tools).toHaveLength(14)
   for (const 工具 of tools) {
     const 描述 = 工具.description ?? ""
