@@ -49,7 +49,9 @@ def project_path(root, relative):
 
 
 def read_text(path):
-    with io.open(path, "r", encoding="utf-8", newline="") as handle:
+    # 通用换行：Windows 检出（core.autocrlf=true）把模板落成 CRLF，
+    # 用例断言的是行内容而非字节，统一归一到 "\n"。
+    with io.open(path, "r", encoding="utf-8") as handle:
         return handle.read()
 
 
