@@ -3008,13 +3008,16 @@ async function 是同一文件(甲: string, 乙: string): Promise<boolean> {
 }
 
 /**
- * 原子地「移动且不覆盖」：`link(源, 目标)` 取得目标名，成功后再 `unlink(源)`。
+ * 不覆盖地移动：`link(源, 目标)` 取得目标名，成功后再 `unlink(源)`。
+ *
+ * 原子的是**判据**：`link` 对已存在的目标抛 `EEXIST`，这才是「不覆盖」的原子保证。
+ * 移动本身由 link → unlink 两步完成——崩在中间只会留下两份硬链接（内容不丢），
+ * 重试会被 `move_material` ⑨ 的同名预检拒掉。
  *
  * 为什么不用 `rename(2)`：POSIX 与 win32 上目标已存在时它都**静默替换**（Node 实测：
- * 不抛错，目标被源覆盖、源消失），所以「不覆盖」不能靠它；`link` 对已存在的目标抛
- * `EEXIST`，这才是原子判据。前提是源与目标**同卷**——`move_material` 的 `realInside`
- * 已保证两者在同一项目树内。不支持硬链接的卷（部分 SMB/网络盘）会失败并折
- * `tool_failed`：这是有意的严格取舍——宁可报错，也不接受静默覆盖。
+ * 不抛错，目标被源覆盖、源消失），所以「不覆盖」不能靠它。前提是源与目标**同卷**——
+ * `move_material` 的 `realInside` 已保证两者在同一项目树内。不支持硬链接的卷（部分
+ * SMB/网络盘）会失败并折 `tool_failed`：这是有意的严格取舍——宁可报错，也不接受静默覆盖。
  */
 export async function 移动文件不覆盖(源: string, 目标: string): Promise<void> {
   try {
@@ -3028,8 +3031,10 @@ export async function 移动文件不覆盖(源: string, 目标: string): Promis
   try {
     await unlink(源)
   } catch (错误) {
-    // 尽力回滚目标名（内容仍在源）。回滚本身失败时也不吞掉原错误：目标名会残留，
-    // 但文件内容未丢；调用方拿到的是原错误（折 `tool_failed`），不是静默成功。
+    const 码 = typeof 错误 === "object" && 错误 !== null ? Reflect.get(错误, "code") : undefined
+    // 源已在 link 后被外部删除：目标就是移动终态，**不能**回滚——否则两份都没了。
+    if (码 === "ENOENT") return
+    // 其它 unlink 失败：尽力删掉刚建的目标名（内容仍在源），回滚失败也不吞原错误。
     await unlink(目标).catch(() => {})
     throw 错误
   }

@@ -110,12 +110,15 @@ HTTP 侧的现行调用点：`.../httpapi/middleware/project-location.ts:458-459
 9. 目标 = `join(目标目录绝对, basename(源))`；已存在 ⇒ `bad_input("目标位置已经有同名文件")`
    （**不改名、不覆盖**，FR-029）。这条预检**保留**，但只为文案；预检与真写之间的竞态
    由第 10 步的原子原语兜住。
-10. 原子不覆盖移动：`link(源, 目标)` → `unlink(源)`。**不用 `rename(2)`**——POSIX 与 win32 上
-    目标已存在时它都静默替换（不抛错，目标被源覆盖、源消失）；`link` 对已存在的目标抛
-    `EEXIST`，这才是「不覆盖」的原子判据（前提：源与目标同卷，`realInside` 已保证同一项目树）。
-    `EEXIST`/`ENOENT` ⇒ `bad_input("目标位置已经有同名文件，或源已经不在原处")`
+10. 不覆盖移动：`link(源, 目标)` → `unlink(源)`。原子的是**判据**——`link` 对已存在的目标抛
+    `EEXIST`，这才是「不覆盖」的原子保证；移动由 link → unlink 两步完成，崩在中间只会留下
+    两份硬链接（内容不丢），重试会被第 9 步的同名预检拒掉。**不用 `rename(2)`**——POSIX 与
+    win32 上目标已存在时它都静默替换（不抛错，目标被源覆盖、源消失）。前提：源与目标同卷，
+    `realInside` 已保证同一项目树。
+    `link` 的 `EEXIST`/`ENOENT` ⇒ `bad_input("目标位置已经有同名文件，或源已经不在原处")`
     （与 HTTP `file.ts:724` 逐字一致；`ENOENT` 也覆盖「源已不在原处」）；其他错误 ⇒ `tool_failed`。
-    `unlink(源)` 失败时尽力回滚目标名（`unlink(目标).catch(() => {})`，内容仍在源），原错误照抛。
+    `unlink(源)` 失败：`ENOENT` ⇒ 源已在 link 后被外部删除，**目标保留**（移动终态），直接成功；
+    其它错误 ⇒ 尽力回滚目标名（`unlink(目标).catch(() => {})`，内容仍在源），原错误照抛。
 11. `迁移材料路径(ctx.db, { projectId: 身份.projectId, 旧相对, 新相对, 作业目录: `${属主}/${身份.projectId}` })`
     ——`作业目录` 是**沙箱根相对**前缀（`case-store.ts:197`），按属主拼（与 HTTP 侧
     `file.ts:629` 的 `项目标识` 同一形状）。`旧相对`/`新相对` 由 `relative(项目根, 绝对)`
@@ -220,5 +223,5 @@ HTTP 侧的现行调用点：`.../httpapi/middleware/project-location.ts:458-459
 - 拆掉「`材料/` 限制」→ 用例 4 必须红。
 
 **真栈**（TR-007，`packages/app/e2e/real-stack/case-staff-move-real.spec.ts`）：
-真实服务 + 真实 PG + 真实 MCP 子进程；从监督器写入的全局配置读出 `openhive-case` 的 URL，
+真实服务 + 真 PGlite（非远端 PG）+ 真实 MCP 子进程；从监督器写入的全局配置读出 `openhive-case` 的 URL，
 带 `_meta` 发一次 `tools/call`，断言盘上路径与 `auth.case_material.path` 同时变化（**不依赖模型**）。

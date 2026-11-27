@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url"
  *
  * ## 为什么这条必须落真栈
  *
- * 这条钉的是**一次调用同时改两个存储**：盘上的文件（`rename`）＋ 业务 PG 里的
+ * 这条钉的是**一次调用同时改两个存储**：盘上的文件（`link` + `unlink` 移动）＋ 业务 PG 里的
  * `auth.case_material.path`（`迁移材料路径`）。工具层 / 服务级用例喂的是手写的库与手写的盘；
  * 只有真内核 ＋ 真 PGlite（非远端 PG）＋ 真 MCP 子进程才验得了「监督器写进全局配置的那份 URL 真的连得上，
  * 一次 `tools/call` 真的把两处都改了」。
