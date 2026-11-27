@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from scripts import init_case, validate_case
 
@@ -87,9 +88,16 @@ def codes_of(errors):
     return {item["code"] for item in errors}
 
 
-def m_row(mid="M001", path="材料/99-其他/说明.txt", related="", status="已归档"):
-    return "| %s | 说明.txt | %s | 书证 | 2026-11-27 | %s | %s | |" % (
+def m_row(
+    mid="M001",
+    path="材料/99-其他/说明.txt",
+    related="",
+    status="已归档",
+    name="说明.txt",
+):
+    return "| %s | %s | %s | 书证 | 2026-11-27 | %s | %s | |" % (
         mid,
+        name,
         path,
         related,
         status,
@@ -265,6 +273,13 @@ class ReferenceTest(ValidateTestBase):
         self.assert_only_codes(payload, {"REF_MISSING"})
         self.assertEqual(M_LEDGER, payload["errors"][0]["file"])
 
+    def test_material_file_name_with_id_like_prefix_is_not_a_reference(self):
+        name = "T1001-通话记录.xlsx"
+        path = "材料/99-其他/" + name
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(name=name, path=path, related=""))
+        self.run_ok()
+
 
 class NumberingTest(ValidateTestBase):
     def test_duplicate_id_in_same_ledger(self):
@@ -336,6 +351,12 @@ class EvidenceChecksTest(ValidateTestBase):
     def test_conclusion_must_not_claim_a_charge(self):
         self.seed_basic()
         append_row(self.root, E_LEDGER, e_row(eid="E002", content="嫌疑人构成诈骗罪"))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"CHARGE_CLAIM"})
+
+    def test_proven_fact_must_not_claim_a_charge(self):
+        self.seed_basic()
+        append_row(self.root, E_LEDGER, e_row(eid="E002", fact="涉嫌诈骗罪"))
         payload = self.run_with_errors()
         self.assert_only_codes(payload, {"CHARGE_CLAIM"})
 
@@ -513,6 +534,20 @@ class OutputContractTest(ValidateTestBase):
         payload = json.loads(stdout)
         self.assertEqual(False, payload["ok"])
         self.assertEqual(["L_UNRESOLVED"], [item["code"] for item in payload["errors"]])
+
+
+class InternalErrorTest(ValidateTestBase):
+    def test_unexpected_exception_becomes_exit_2_and_single_json(self):
+        def boom(_args):
+            raise RuntimeError("boom")
+
+        with mock.patch.object(validate_case, "run", boom):
+            code, stdout, _ = call_main(["--root", self.root, "--json"])
+        self.assertEqual(2, code)
+        payload, end = json.JSONDecoder().raw_decode(stdout.strip())
+        self.assertEqual("", stdout.strip()[end:])
+        self.assertEqual(False, payload["ok"])
+        self.assert_only_codes(payload, {"INTERNAL_ERROR"})
 
 
 if __name__ == "__main__":

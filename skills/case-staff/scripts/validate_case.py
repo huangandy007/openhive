@@ -99,8 +99,7 @@ STAGES = (
 # data-model §4.2：法律文书节点目录；这三道必须有复核人 + 复核时间。
 LEGAL_DOCUMENT_PREFIXES = ("文书/报捕/", "文书/起诉/", "文书/内部审批/")
 
-# 引用扫描的前缀（data-model §7「引用」组）；E/A 从索引取，L/T 从台账取。
-REFERENCE_PREFIXES = "EALT"
+# 引用扫描的前缀（data-model §7「引用」组）：E/A/L/T；E/A 从索引取，L/T 从台账取。
 REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9])([EALT])(\d{3,})(?!\d)")
 # 台账单元格里可能出现的全部编号前缀（来源记录 / 转研判 / 对应L 等）。
 ANY_ID_RE = re.compile(r"(?<![A-Za-z0-9])([MEALVTCDP])(\d{3,})(?!\d)")
@@ -329,8 +328,9 @@ def check_references(ctx, data):
             ):
                 continue
             _scan_references(ctx, data, rel)
-    # 材料目录整体豁免（原件保留原文），但材料登记表本身是台账，仍要查「关联E」。
-    _scan_references(ctx, data, M_LEDGER)
+    # 材料目录整体豁免（原件保留原文）；登记表只按行扫「关联E」列，
+    # 不扫原文件名/当前路径——那里的「T1001-通话记录.xlsx」是文件名，不是引用。
+    _scan_material_registry(ctx, data)
 
 
 def _is_excluded_directory(dirpath, name, root):
@@ -340,6 +340,21 @@ def _is_excluded_directory(dirpath, name, root):
         or _compare_key(rel).startswith(_compare_key(excluded) + "/")
         for excluded in EXCLUDED_DIRECTORIES
     )
+
+
+def _scan_material_registry(ctx, data):
+    """材料登记表只扫「关联E」单元格（原文件名/当前路径不算引用）。"""
+    ledger = data.ledger("M")
+    if ledger is None:
+        return
+    for entry in ledger.entries:
+        for match in REFERENCE_RE.finditer(entry.row.get("关联E", "")):
+            prefix = match.group(1)
+            if prefix not in data.ids:
+                continue
+            ident = prefix + match.group(2)
+            if ident not in data.ids[prefix]:
+                ctx.add(ledger.rel, entry.line, "REF_MISSING", "%s 不在对应台账" % ident)
 
 
 def _scan_references(ctx, data, rel):
@@ -540,22 +555,23 @@ def check_evidence(ctx, data):
                             "%s 的来源 %s 不在材料登记表" % (eid, ident),
                         )
 
+        # data-model §3.2：证明内容与待证事实都不许写成法律结论（罪名认定）。
         for column in ("证明内容", "待证事实"):
-            if not row.get(column, "").strip():
+            value = row.get(column, "")
+            if not value.strip():
                 ctx.add(
                     ledger.rel,
                     entry.line,
                     "E_FIELD_MISSING",
                     "%s 的%s为空" % (eid, column),
                 )
-
-        if _claim_charge(row.get("证明内容", "")):
-            ctx.add(
-                ledger.rel,
-                entry.line,
-                "CHARGE_CLAIM",
-                "%s 的证明内容含罪名认定" % eid,
-            )
+            if _claim_charge(value):
+                ctx.add(
+                    ledger.rel,
+                    entry.line,
+                    "CHARGE_CLAIM",
+                    "%s 的%s含罪名认定" % (eid, column),
+                )
 
 
 def check_analysis(ctx, data):
