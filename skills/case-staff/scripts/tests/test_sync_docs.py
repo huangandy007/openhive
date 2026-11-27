@@ -19,6 +19,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from scripts import init_case, sync_docs
 from scripts.lib import blocks, fingerprint, tables
@@ -35,6 +36,7 @@ LEGAL = "文书/起诉/起诉意见书草稿.md"
 SIGNED = "侦查/收网抓捕/00-收网记录.md"
 ISSUED = "专案协同/07-抓捕筹备/2026-11-27-抓捕对象清单-发放版.md"
 REPORT = "研判/01-专题研判/A001-测试研判.md"
+QUESTION = "侦查/询问讯问/00-讯问计划.md"
 
 P_HEADER = sync_docs.P_HEADER
 A_HEADER = sync_docs.A_HEADER
@@ -443,7 +445,7 @@ class TraceBlockTest(SyncTestBase):
             "| 推理链 | 推理 |\n"
             "| 替代假设与排除理由 | 无 |\n"
             "| 结论 | 原结论 |\n"
-            "| 新线索 |  |\n"
+            "| 新线索 | |\n"
             "| 置信度 | 中 |\n"
             "| 反证 / 矛盾 | 无 |\n"
             "| 修订记录 | 2026-11-27 |\n"
@@ -475,6 +477,150 @@ class TraceBlockTest(SyncTestBase):
                 for row in tables.require_table(inside, sync_docs.TRACE_HEADER).rows}
         self.assertEqual("新结论", rows["结论"])
         self.assertEqual("推理", rows["推理链"])
+
+
+def register(root, did, path, sources, status="草稿", digest="0000000000000000"):
+    append_line(root, D_LEDGER, d_row(did, path, sources, status, digest))
+
+
+class AffectedAlwaysTest(SyncTestBase):
+    """源变了就必须进 affected——哪怕块内容不需要改（Fix round 1 #1）。"""
+
+    def test_source_change_without_managed_block_is_reported(self):
+        register(self.root, "D010", QUESTION, "P001", digest=self.people_digest)
+        before_question = read_text(project_path(self.root, QUESTION))
+        self.change_role()
+        before = snapshot(self.root)
+
+        code, payload, stderr = self.call("--dry-run", "--doc", "D010")
+        self.assertEqual(1, code, msg=stderr)
+        self.assertEqual(1, len(payload["affected"]))
+        item = payload["affected"][0]
+        self.assertEqual("D010", item["doc"])
+        self.assertEqual(QUESTION, item["path"])
+        self.assertEqual([], item["blocks"])
+        self.assertEqual("", item["diff"])
+        self.assertTrue(item["reason"])
+        self.assert_no_writes(before)
+
+        code, payload, stderr = self.call("--apply", "--doc", "D010")
+        self.assertEqual(0, code, msg=stderr)
+        self.assertEqual(1, len(payload["affected"]))
+        self.assertEqual(before_question, read_text(project_path(self.root, QUESTION)))
+        new_digest = digest_for(self.root, P_LEDGER, P_HEADER, "P编号", "P001")
+        rows = {row["D编号"]: row for row in tables.parse_rows(
+            read_text(project_path(self.root, D_LEDGER)), D_HEADER)}
+        self.assertEqual(new_digest, rows["D010"]["源版本（指纹）"])
+
+        code, payload, stderr = self.call("--dry-run", "--doc", "D010")
+        self.assertEqual(0, code, msg=stderr)
+        self.assertEqual([], payload["affected"])
+
+    def test_first_sync_of_template_block_has_no_text_diff(self):
+        # 清空抓捕单位 ⇒ 抓捕方案「编组」不需要改；模板 8 行应按原样重渲染。
+        arrest_path = project_path(self.root, ARREST)
+        write_text(arrest_path, read_text(arrest_path).replace("| 某所 |", "| |", 1))
+        register(self.root, "D010", PLAN, "D003")
+        before_plan = read_text(project_path(self.root, PLAN))
+
+        code, payload, stderr = self.call("--dry-run", "--doc", "D010")
+        self.assertEqual(1, code, msg=stderr)
+        item = payload["affected"][0]
+        self.assertEqual("D010", item["doc"])
+        self.assertEqual([], item["blocks"])
+        self.assertEqual("", item["diff"])
+        self.assertTrue(item["reason"])
+
+        code, _payload, stderr = self.call("--apply", "--doc", "D010")
+        self.assertEqual(0, code, msg=stderr)
+        self.assertEqual(before_plan, read_text(project_path(self.root, PLAN)))
+
+
+class ChangelogScopeTest(SyncTestBase):
+    def test_only_changelog_dry_run_exits_zero(self):
+        self.change_role()
+        code, payload, stderr = self.call("--dry-run", "--doc", "D006")
+        self.assertEqual(0, code, msg=stderr)
+        self.assertEqual([], payload["affected"])
+        self.assertEqual([], payload["suggestions"])
+        self.assertEqual(1, len(payload["changelog"]))
+
+    def test_changelog_dedupe_survives_fingerprint_rewind(self):
+        self.change_role()
+        code, _payload, stderr = self.call("--apply", "--doc", "D006")
+        self.assertEqual(0, code, msg=stderr)
+
+        # 人工把 D 表指纹改回旧值：源相对 D 表又「变了」，但日志已记过。
+        d_path = project_path(self.root, D_LEDGER)
+        d_text = read_text(d_path)
+        rows = {row["D编号"]: row for row in tables.parse_rows(d_text, D_HEADER)}
+        write_text(
+            d_path,
+            d_text.replace(rows["D006"]["源版本（指纹）"], self.people_digest, 1),
+        )
+
+        code, payload, stderr = self.call("--apply", "--doc", "D006")
+        self.assertEqual(0, code, msg=stderr)
+        self.assertEqual([], payload["changelog"])
+
+        log_rows = tables.parse_rows(
+            read_text(project_path(self.root, CHANGELOG)), CHANGELOG_HEADER
+        )
+        self.assertEqual(1, len([row for row in log_rows if row["影响文件"] == SIGNED]))
+
+
+class ErrorCodeTest(SyncTestBase):
+    def assert_code(self, expected, did=None):
+        argv = ["--dry-run"]
+        if did:
+            argv.extend(["--doc", did])
+        code, payload, stderr = self.call(*argv)
+        self.assertEqual(2, code, msg=stderr)
+        self.assertEqual([expected], [item["code"] for item in payload["errors"]],
+                         msg=payload["errors"])
+
+    def test_path_invalid(self):
+        register(self.root, "D010", "../outside.md", "P001")
+        self.assert_code("PATH_INVALID", "D010")
+
+    def test_path_missing(self):
+        register(self.root, "D010", "", "P001")
+        self.assert_code("PATH_MISSING", "D010")
+
+    def test_file_missing(self):
+        register(self.root, "D010", "文书/起诉/不存在.md", "P001")
+        self.assert_code("FILE_MISSING", "D010")
+
+    def test_source_unknown(self):
+        register(self.root, "D010", ARREST, "X001")
+        self.assert_code("SOURCE_UNKNOWN", "D010")
+
+    def test_source_row_missing(self):
+        register(self.root, "D010", ARREST, "P999")
+        self.assert_code("SOURCE_ROW_MISSING", "D010")
+
+    def test_table_invalid(self):
+        path = project_path(self.root, D_LEDGER)
+        text = read_text(path).replace(
+            "| D编号 | 文档 |", "| D编号 | 名称 |", 1
+        )
+        write_text(path, text)
+        self.assert_code("TABLE_INVALID")
+
+    def test_block_unsupported(self):
+        write_text(
+            project_path(self.root, REPORT),
+            "# 未知块\n\n<!-- AUTO:BEGIN 未知块 -->\n内容\n<!-- AUTO:END 未知块 -->\n",
+        )
+        register(self.root, "D010", REPORT, "P001")
+        self.assert_code("BLOCK_UNSUPPORTED", "D010")
+
+    def test_internal_error(self):
+        with mock.patch.object(sync_docs, "_plan_doc", side_effect=RuntimeError("boom")):
+            code, payload, _stderr = self.call("--dry-run")
+        self.assertEqual(2, code)
+        self.assertEqual(["INTERNAL_ERROR"], [
+            item["code"] for item in payload["errors"]])
 
 
 if __name__ == "__main__":

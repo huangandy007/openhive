@@ -132,7 +132,7 @@
   "ok": true,
   "dry_run": true,
   "affected": [
-    {"doc": "D003", "path": "专案协同/07-抓捕筹备/00-抓捕对象清单.md", "blocks": ["抓捕对象"], "diff": "@@ ..."}
+    {"doc": "D003", "path": "专案协同/07-抓捕筹备/00-抓捕对象清单.md", "blocks": ["抓捕对象"], "diff": "@@ ...", "reason": ""}
   ],
   "suggestions": [
     {"doc": "D005", "path": "文书/起诉/起诉意见书草稿.md", "note": "待法制审核：P001 角色由 成员 改为 操盘手"}
@@ -142,8 +142,20 @@
 }
 ```
 
+- `affected` 条目：源版本变了就必须出现（`blocks`/`diff` 可为空）；块内不需要改时
+  `diff` 为空串，`reason` 说明原因（如「文档没有托管块，源记录已更新」）。只有被报出的
+  文档才推进 D 表「源版本（指纹）」。
 - 退出码：`--dry-run` 且 `affected`/`suggestions` 非空 → `1`（有待确认）；`--apply` 成功 → `0`；
-  有 `errors` → `2`；无变化 → `0`。
+  有 `errors` → `2`；无变化 → `0`。`changelog` 只做留痕，不计入「有待确认」。
+- 错误 `code`（`errors[].code`，稳定枚举；新增必须同时进本文件与用例）：
+  `FILE_MISSING`（项目根 / D 表 / 变更日志 / 目标文书缺失）、
+  `PATH_MISSING`（D 行路径为空）、`PATH_INVALID`（绝对路径、盘符、`..`、或 `realpath`
+  越出项目根）、`TABLE_INVALID`（D 表 / 变更日志 / 源台账的表头或表格解析失败）、
+  `SOURCE_UNKNOWN`（来源记录 token 不认识）、`SOURCE_ROW_MISSING`（点名的来源行不在对应台账）、
+  `BLOCK_INVALID`（AUTO 块不配对 / 重名 / 嵌套，或块内表头不符）、
+  `BLOCK_UNSUPPORTED`（块名不在 data-model §5.3 的来源映射内）、
+  `DOC_NOT_FOUND`（`--doc` 指定的 D 编号不在登记表）、
+  `INTERNAL_ERROR`（内部异常，统一转退出码 2）。
 
 ---
 

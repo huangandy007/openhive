@@ -38,10 +38,10 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 try:
-    from scripts.lib import blocks, fingerprint, tables
+    from scripts.lib import blocks, constants, fingerprint, tables
     from scripts import validate_case
 except ImportError:  # 直接以脚本方式执行时 scripts 不是包
-    from lib import blocks, fingerprint, tables
+    from lib import blocks, constants, fingerprint, tables
     import validate_case
 
 # 台账路径 / 表头以校验器的常量为唯一出处，避免同一前提两处各写一份（#002-06）。
@@ -65,21 +65,27 @@ P_HEADER = validate_case.P_HEADER
 CHANGELOG = "变更日志.md"
 CHANGELOG_HEADER = ("日期", "变更内容", "影响文件", "操作人", "备注")
 
-# 抓捕筹备派生文档的固定路径（data-model §1.2 初始化产物）。
-ARREST_DOC = "专案协同/07-抓捕筹备/00-抓捕对象清单.md"
+# 抓捕筹备派生文档的固定路径 / 12 列表头以校验器为唯一出处（#002-06）。
+ARREST_DOC = validate_case.ARREST_LIST
 
 # 法律文书按**路径目录**判定，不按文件名（FR-073）。
 LEGAL_DIRS = ("文书/报捕/", "文书/起诉/", "文书/内部审批/")
 
 # 已签发 / 已发放原文只读（FR-074）；发放版按文件名识别（data-model §4.1）。
-ISSUED_STATUSES = ("已签发", "已发放")
+ISSUED_STATUSES = tuple(
+    status for status in constants.D_STATUSES if status in ("已签发", "已发放")
+)
+DRAFT_STATUS = constants.D_STATUSES[0]
+LEGAL_REVIEW_STATUS = constants.D_STATUSES[1]
 ISSUED_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+-发放版\.md$")
 
 # D 表列下标。
-D_PATH = 2
-D_SOURCES = 3
 D_STATUS = 5
 D_FINGERPRINT = 6
+
+# 「源已变但块内不需要改」的 affected 说明（Fix round 1 #1）。
+REASON_NO_BLOCK = "文档没有托管块，源记录已更新"
+REASON_BLOCK_UNCHANGED = "源已变，块内无需改动"
 
 # 源前缀 → (台账路径, 表头, 编号列)。
 SOURCE_SPECS = {
@@ -92,11 +98,8 @@ SOURCE_SPECS = {
     "V": (V_LEDGER, V_HEADER, "V编号"),
 }
 
-# 托管块表头（与 29 份模板逐列一致）。
-ARREST_HEADER = (
-    "序号", "P编号", "抓捕对象", "角色/层级", "涉嫌罪名", "主要证据",
-    "抓捕单位", "抓捕人", "情报支撑", "技术支撑", "法制支撑", "风险",
-)
+# 托管块表头（与 29 份模板逐列一致）；抓捕对象 12 列复用校验器常量。
+ARREST_HEADER = validate_case.ARREST_HEADER
 PLAN_HEADER = ("要素", "内容", "负责人", "备注")
 GROUP_HEADER = ("组别", "组长", "成员", "任务", "通信方式", "备注")
 DISTRIBUTE_HEADER = (
@@ -174,13 +177,18 @@ def _serialize_row(cells):
     return "|" + "|".join(cells) + "|"
 
 
+def _format_cells(cells):
+    """按模板实际字形渲染一行：非空单元格 `` X ``，空单元格只留一个空格。"""
+    return "|" + "|".join((" %s " % cell) if cell else " " for cell in cells) + "|"
+
+
 def _render_table(header, rows):
     """渲染与模板同形的表格：``| 列 | 列 |`` + ``|---|---|`` + 数据行。"""
     lines = [
-        "| " + " | ".join(header) + " |",
+        _format_cells(header),
         "|" + "|".join("---" for _ in header) + "|",
     ]
-    lines.extend("| " + " | ".join(cells) + " |" for cells in rows)
+    lines.extend(_format_cells(cells) for cells in rows)
     return "\n".join(lines)
 
 
@@ -216,10 +224,6 @@ class Case(object):
             raise SyncError("TABLE_INVALID", str(exc), file=rel)
 
 
-def _ledger_rows(ctx, rel, header):
-    return ctx.table_rows(rel, header)
-
-
 # --------------------------------------------------------------------------- #
 # 源版本指纹（data-model §5.2）
 # --------------------------------------------------------------------------- #
@@ -227,6 +231,13 @@ def _ledger_rows(ctx, rel, header):
 
 def _source_raw_rows(ctx, token):
     """返回一个源 token 的原始数据行（保持源顺序）。"""
+    if D_TOKEN_RE.match(token):
+        row = ctx.d_rows.get(token)
+        if row is None:
+            raise SyncError("SOURCE_UNKNOWN", "D 表没有 %s" % token, file=D_LEDGER)
+        rel = _normalize_rel(row.get("路径", ""))
+        return fingerprint.extract_data_rows(ctx.text(rel))
+
     match = ID_TOKEN_RE.match(token)
     if match is not None:
         prefix = match.group(1)
@@ -257,13 +268,6 @@ def _source_raw_rows(ctx, token):
             return tables.require_table(ctx.text(rel), header).raw_rows
         except tables.TableError as exc:
             raise SyncError("TABLE_INVALID", str(exc), file=rel)
-
-    if D_TOKEN_RE.match(token):
-        row = ctx.d_rows.get(token)
-        if row is None:
-            raise SyncError("SOURCE_UNKNOWN", "D 表没有 %s" % token, file=D_LEDGER)
-        rel = _normalize_rel(row.get("路径", ""))
-        return fingerprint.extract_data_rows(ctx.text(rel))
 
     raise SyncError("SOURCE_UNKNOWN", "未知来源：%s" % token)
 
@@ -316,7 +320,7 @@ def _render_arrest(ctx, drow, old_content):
             previous[pid] = row
 
     rows = []
-    for index, person in enumerate(_ledger_rows(ctx, P_LEDGER, P_HEADER), 1):
+    for index, person in enumerate(ctx.table_rows(P_LEDGER, P_HEADER), 1):
         pid = person["P编号"].strip()
         if not pid:
             continue
@@ -458,7 +462,7 @@ def _render_trace(ctx, drow, old_content):
     if aid is None:
         raise SyncError("SOURCE_UNKNOWN", "无法确定研判编号", file=rel)
     source = None
-    for row in _ledger_rows(ctx, A_LEDGER, A_HEADER):
+    for row in ctx.table_rows(A_LEDGER, A_HEADER):
         if row.get("A编号", "").strip() == aid:
             source = row
             break
@@ -486,7 +490,7 @@ def _render_aftercare(ctx, drow, old_content):
     rows = [_row_values(row, AFTERCARE_HEADER)
             for row in _block_rows(old_content, AFTERCARE_HEADER, rel)]
     existing = {cells[0].strip() for cells in rows}
-    for task in _ledger_rows(ctx, T_LEDGER, T_HEADER):
+    for task in ctx.table_rows(T_LEDGER, T_HEADER):
         title = task.get("任务", "").strip()
         if not title or title in existing:
             continue
@@ -578,7 +582,7 @@ def _plan_doc(ctx, drow, today):
             "doc": did,
             "path": rel,
             "fingerprint": new_digest,
-            "line": [today, "源版本变化，原文不变", rel, "sync_docs.py", "源指纹 " + new_digest],
+            "line": [today, "源版本变化，原文不变", rel, "ai", "源指纹 " + new_digest],
             "summary": "%s %s 发放版/已签发原文不变，变更记入变更日志" % (did, today),
         }
         if _is_legal(rel):
@@ -588,8 +592,8 @@ def _plan_doc(ctx, drow, today):
     if _is_legal(rel):
         # FR-073：只出建议 + D 表标待法制审核，绝不写文书原文。
         outcome["suggestion"] = {"doc": did, "path": rel, "note": note}
-        if status in ("", "草稿"):
-            outcome["new_status"] = "待法制审核"
+        if status in ("", DRAFT_STATUS):
+            outcome["new_status"] = LEGAL_REVIEW_STATUS
         return outcome
 
     old_text = ctx.text(rel)
@@ -615,15 +619,26 @@ def _plan_doc(ctx, drow, today):
             raise SyncError("BLOCK_INVALID", str(exc), file=rel)
         changed.append(block.name)
 
+    # 源已变 ⇒ 必进 affected（Fix round 1 #1）：块内不需要改时 diff 为空串，
+    # 用 reason 说明；否则 --dry-run 会静默退出 0，而 --apply 却改 D 表指纹。
     if changed:
         outcome["affected"] = {
             "doc": did,
             "path": rel,
             "blocks": changed,
             "diff": _diff(old_text, new_text, rel),
+            "reason": "",
         }
         outcome["write_rel"] = rel
         outcome["write_text"] = new_text
+    else:
+        outcome["affected"] = {
+            "doc": did,
+            "path": rel,
+            "blocks": [],
+            "diff": "",
+            "reason": REASON_BLOCK_UNCHANGED if parsed else REASON_NO_BLOCK,
+        }
     return outcome
 
 
@@ -818,8 +833,11 @@ def run(args, today=None):
             continue
 
         did = outcome["doc"]
+        reported = bool(
+            outcome["affected"] or outcome["suggestion"] or outcome["changelog"]
+        )
         update = {}
-        if outcome["new_fingerprint"] != outcome["old_digest"]:
+        if reported and outcome["new_fingerprint"] != outcome["old_digest"]:
             update["fingerprint"] = outcome["new_fingerprint"]
         if outcome["new_status"]:
             update["status"] = outcome["new_status"]
@@ -880,7 +898,8 @@ def run(args, today=None):
             if new_d_text != ctx.text(D_LEDGER):
                 _write_text(ctx.path(D_LEDGER), new_d_text)
 
-    if dry_run and (affected or suggestions or changelog):
+    # 契约 §3：只有 affected / suggestions 算「有待确认」；changelog 只做留痕。
+    if dry_run and (affected or suggestions):
         code = 1
     else:
         code = 0
