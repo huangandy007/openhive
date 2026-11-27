@@ -2,8 +2,8 @@
 
 契约见 ``docs/superpowers/specs/017-case-staff/contracts/case-staff-commands.md`` §2，
 检查清单见 ``docs/superpowers/specs/017-case-staff/data-model.md`` §7。
-本文件只做**核心检查**（引用 / 编号 / E / A / L/V/T / D / M / 阶段）；
-命名、积压、逾期、跨文档矛盾与 ``--strict`` 由 T006 在同一文件顺序追加。
+检查分两组：**核心检查**（引用 / 编号 / E / A / L/V/T / D / M / 阶段）
+与**规则检查**（命名 / 积压 / 逾期 / 跨文档矛盾，T006）；``--strict`` 时警告计为失败。
 
 设计约束：
 
@@ -12,12 +12,13 @@
   ``Context``，便于 T006 继续加检查而不动主干；
 - 核心台账缺失 / 表格解析失败都是**错误**，不然校验器会对空项目静默绿；
 - 输出 ``{ok, errors, warnings, counts}``，排序稳定 ``(file, line, code, message)``；
-- 有错误退出码 2，干净 0；``--strict`` 参数留给 T006（本任务警告恒为空）。
+- 有错误退出码 2；无错误但有警告且 ``--strict`` 退出码 1；否则 0。
 
 只依赖 Python 3 标准库，不联网，不写项目根以外。
 """
 
 import argparse
+import datetime
 import io
 import json
 import os
@@ -34,6 +35,13 @@ try:
     from scripts.lib import constants, tables
 except ImportError:  # 直接以脚本方式执行时 scripts 不是包
     from lib import constants, tables
+
+# 目录白名单与「初始化模板文件」以初始化脚本的清单为唯一出处（data-model §1.1/§1.2），
+# 避免校验器里再抄一份 39 个目录。
+try:
+    from scripts import init_case
+except ImportError:  # 直接以脚本方式执行
+    import init_case
 
 CASE_INFO = "案件信息.md"
 M_LEDGER = "材料/00-材料登记表.md"
@@ -120,8 +128,78 @@ P_FILE_RE = re.compile(r"^(P\d{3,})-.+\.md$")
 D_FILE_RE = re.compile(r"^(D\d{3,})-")
 
 # 引用扫描豁免：材料原件与外部来件保留原文，README/AGENTS 是规则说明（含示例编号）。
+# 同一组目录也是命名检查的外部来件豁免（FR-082）：原件与转写稿保留原文件名。
 EXCLUDED_DIRECTORIES = ("材料", "专案协同/00-原始记录")
 EXCLUDED_BASENAMES = ("README.md", "AGENTS.md")
+
+# 列名字面量从表头常量派生（#002-06：同一前提只留一处）。
+M_ID = M_HEADER[0]
+M_CURRENT_PATH = M_HEADER[2]
+M_RELATED_E = M_HEADER[5]
+M_STATUS = M_HEADER[6]
+T_ID = T_HEADER[0]
+T_DEADLINE = T_HEADER[3]
+T_STATUS = T_HEADER[4]
+P_ID = P_HEADER[0]
+P_NAME = P_HEADER[1]
+P_ROLE = P_HEADER[3]
+
+# data-model §7「跨文档」：人员台账 ↔ 抓捕对象清单（12 列主表）。
+ARREST_LIST = "专案协同/07-抓捕筹备/00-抓捕对象清单.md"
+ARREST_HEADER = (
+    "序号", "P编号", "抓捕对象", "角色/层级", "涉嫌罪名", "主要证据",
+    "抓捕单位", "抓捕人", "情报支撑", "技术支撑", "法制支撑", "风险",
+)
+ARREST_SEQ = ARREST_HEADER[0]
+ARREST_P_ID = ARREST_HEADER[1]
+ARREST_NAME = ARREST_HEADER[2]
+ARREST_ROLE = ARREST_HEADER[3]
+
+# data-model §7「积压」：待归档收件箱与原始记录整理标记。
+INBOX_DIR = "材料/00-待归档/"
+ORIGINAL_RECORDS_DIR = "专案协同/00-原始记录/"
+ORIGINAL_RECORD_MARKER = "已整理"
+ARREST_RECORD = "侦查/收网抓捕/00-收网记录.md"
+SUMMARY_TOTAL_KEY = "对象总数"
+
+# data-model §4.1：我方新建文件命名正则（外部来件豁免）。
+NAME_DAILY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-每日动态\.md$")
+NAME_MEETING_RE = re.compile(r"^C\d{3}-\d{4}-\d{2}-\d{2}-.+\.md$")
+NAME_TASK_RE = re.compile(r"^T\d{3}-.+\.md$")
+NAME_CLUE_RE = re.compile(r"^L\d{3}-.+\.md$")
+NAME_ANALYSIS_RE = re.compile(r"^A\d{3}-.+\.md$")
+NAME_VERIFY_RE = re.compile(r"^V\d{3}-.+\.md$")
+NAME_PERSON_RE = re.compile(r"^P\d{3}-.+\.md$")
+NAME_DOCUMENT_RE = re.compile(r"^D\d{3}-.+-P\d{3}-\d{4}-\d{2}-\d{2}\.md$")
+NAME_TRANSCRIPT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-P\d{3}-笔录-\d{2}\.md$")
+NAME_POST_CASE_RE = re.compile(r"^P\d{3}-案后处理清单\.md$")
+NAME_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+-发放版\.md$")
+NAME_PERSON_DIR_RE = re.compile(r"^[PO]\d{3}-.+$")
+CHART_DIRECTORY = "图表"
+
+# 目录 → 文件命名正则；表外的业务目录只做非法字符 / 禁用词检查。
+FILE_NAME_RULES = {
+    "专案协同/01-每日动态": NAME_DAILY_RE,
+    "专案协同/02-专案会议": NAME_MEETING_RE,
+    "专案协同/03-任务盯办": NAME_TASK_RE,
+    "专案协同/04-线索流转": NAME_CLUE_RE,
+    "专案协同/05-印证核实": NAME_VERIFY_RE,
+    "专案协同/06-人员与组织": NAME_PERSON_RE,
+    "专案协同/07-抓捕筹备": NAME_RELEASE_RE,
+    "专案协同/07-抓捕筹备/04-对象资料": NAME_PERSON_RE,
+    "研判/01-专题研判": NAME_ANALYSIS_RE,
+    "研判/02-综合研判": NAME_ANALYSIS_RE,
+    "侦查/询问讯问": NAME_TRANSCRIPT_RE,
+    "侦查/收网抓捕/04-案后处理": NAME_POST_CASE_RE,
+}
+
+# data-model §4.1 硬规则：禁空格、括号、`#`、`?`、`*`（另含 win32 非法字符）。
+ILLEGAL_NAME_CHARS = frozenset(' \\/:*?"<>|()（）#')
+
+DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# data-model §6.3 / §7：只有未完成状态参与逾期派生。
+OPEN_TASK_STATUSES = ("待办", "进行中")
 
 
 class Entry(object):
@@ -158,21 +236,31 @@ class Workspace(object):
 
 
 class Context(object):
-    """收集 findings；同一 ``(file, line, code, message)`` 只记一次。"""
+    """收集 findings；同一 ``(file, line, code, message)`` 只记一次。
 
-    def __init__(self, root):
+    ``today`` 可注入（测试固定日期），默认取真实时钟。
+    """
+
+    def __init__(self, root, today=None):
         self.ws = Workspace(root)
+        self.today = today if today is not None else datetime.date.today()
         self.errors = []
         self.warnings = []
         self._seen = set()
 
     def add(self, file, line, code, message):
+        self._record(self.errors, file, line, code, message)
+
+    def add_warning(self, file, line, code, message):
+        self._record(self.warnings, file, line, code, message)
+
+    def _record(self, bucket, file, line, code, message):
         finding = {"file": file, "line": int(line), "code": code, "message": message}
         key = (finding["file"], finding["line"], finding["code"], finding["message"])
         if key in self._seen:
             return
         self._seen.add(key)
-        self.errors.append(finding)
+        bucket.append(finding)
 
 
 class Data(object):
@@ -348,7 +436,7 @@ def _scan_material_registry(ctx, data):
     if ledger is None:
         return
     for entry in ledger.entries:
-        for match in REFERENCE_RE.finditer(entry.row.get("关联E", "")):
+        for match in REFERENCE_RE.finditer(entry.row.get(M_RELATED_E, "")):
             prefix = match.group(1)
             if prefix not in data.ids:
                 continue
@@ -786,8 +874,8 @@ def check_materials(ctx, data):
         return
     registered = set()
     for entry in ledger.entries:
-        mid = entry.row.get("M编号", "").strip()
-        raw = entry.row.get("当前路径", "").strip()
+        mid = entry.row.get(M_ID, "").strip()
+        raw = entry.row.get(M_CURRENT_PATH, "").strip()
         if not raw:
             ctx.add(ledger.rel, entry.line, "PATH_MISMATCH", "%s 的当前路径为空" % mid)
             continue
@@ -859,6 +947,283 @@ def check_stages(ctx, data):
             ctx.add(ledger.rel, 0, "STAGE_INVALID", "阶段看板缺少阶段：%s" % stage)
 
 
+# ---------------------------------------------------------------------------
+# 规则检查（T006）：命名 / 积压 / 逾期 / 跨文档
+# ---------------------------------------------------------------------------
+
+
+def _is_external_path(rel):
+    """命中的目录/文件属于外部来件（命名豁免；引用扫描另有同一份清单）。"""
+    if not rel or rel == ".":
+        return False
+    key = _compare_key(rel)
+    for excluded in EXCLUDED_DIRECTORIES:
+        base = _compare_key(excluded)
+        if key == base or key.startswith(base + "/"):
+            return True
+    return False
+
+
+def _name_issues(name):
+    issues = []
+    bad = sorted(set(char for char in name if char in ILLEGAL_NAME_CHARS))
+    if bad:
+        issues.append("含非法字符 %s" % "、".join(bad))
+    words = [word for word in constants.FORBIDDEN_FILENAME_WORDS if word in name]
+    if words:
+        issues.append("含禁用词 %s" % "、".join(words))
+    return issues
+
+
+def _directory_allowed(rel, name):
+    return (
+        rel in init_case.DIRECTORIES
+        or name == CHART_DIRECTORY
+        or NAME_PERSON_DIR_RE.match(name) is not None
+    )
+
+
+def _file_name_rule(rel_dir):
+    rule = FILE_NAME_RULES.get(rel_dir)
+    if rule is not None:
+        return rule
+    if rel_dir == "文书" or rel_dir.startswith("文书/"):
+        return NAME_DOCUMENT_RE
+    return None
+
+
+def _check_directory_name(ctx, rel, name):
+    issues = _name_issues(name)
+    if not issues and not _directory_allowed(rel, name):
+        issues.append("不在目录白名单")
+    if issues:
+        ctx.add(rel + "/", 0, "NAME_ILLEGAL", "目录名不合规：%s" % "；".join(issues))
+
+
+def _check_file_name(ctx, rel_dir, name):
+    rel = name if rel_dir == "." else rel_dir + "/" + name
+    issues = _name_issues(name)
+    if rel not in init_case.TEMPLATE_BY_TARGET:
+        rule = _file_name_rule(rel_dir)
+        if rule is not None and rule.match(name) is None:
+            issues.append("不符合该目录的文件命名规则")
+    if issues:
+        ctx.add(rel, 0, "NAME_ILLEGAL", "文件名不合规：%s" % "；".join(issues))
+
+
+def check_naming(ctx, data):
+    """data-model §4.1：非法字符 / 禁用词 / 目录白名单；外部来件整枝豁免。"""
+    root = ctx.ws.root
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = _project_relative(dirpath, root)
+        kept = []
+        for name in sorted(dirnames):
+            if name.startswith("."):
+                continue
+            rel = name if rel_dir == "." else rel_dir + "/" + name
+            if _is_external_path(rel):
+                continue
+            _check_directory_name(ctx, rel, name)
+            kept.append(name)
+        dirnames[:] = kept
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            _check_file_name(ctx, rel_dir, name)
+
+
+def _count_inbox_files(ctx):
+    count = 0
+    base = ctx.ws.rel_path(INBOX_DIR.rstrip("/"))
+    for _dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(name for name in dirnames if not name.startswith("."))
+        count += len([name for name in filenames if not name.startswith(".")])
+    return count
+
+
+def check_backlog(ctx, data):
+    """data-model §7「积压」：收件箱、待归类、原始记录缺整理标记，均为警告。"""
+    count = _count_inbox_files(ctx)
+    if count:
+        ctx.add_warning(
+            INBOX_DIR, 0, "M_PENDING", "收件箱还有 %d 份未归档" % count
+        )
+
+    ledger = data.ledger("M")
+    if ledger is not None:
+        for entry in ledger.entries:
+            if entry.row.get(M_STATUS, "").strip() == "待归类":
+                mid = entry.row.get(M_ID, "").strip()
+                ctx.add_warning(
+                    ledger.rel, entry.line, "M_PENDING", "%s 状态为待归类" % mid
+                )
+
+    base = ctx.ws.rel_path(ORIGINAL_RECORDS_DIR.rstrip("/"))
+    for full in _walk_files(base):
+        if os.path.basename(full).startswith("."):
+            continue
+        rel = _project_relative(full, ctx.ws.root)
+        text = ctx.ws.read(rel)
+        if text is None:
+            continue
+        if ORIGINAL_RECORD_MARKER not in text:
+            ctx.add_warning(
+                rel,
+                0,
+                "M_PENDING",
+                "原始记录缺「%s」标记" % ORIGINAL_RECORD_MARKER,
+            )
+
+
+def _parse_date(value):
+    """只认 ``YYYY-MM-DD``；``当日`` / ``持续`` / 空 / 非法日期都不参与逾期。"""
+    if DATE_ONLY_RE.match(value) is None:
+        return None
+    try:
+        return datetime.date(int(value[0:4]), int(value[5:7]), int(value[8:10]))
+    except ValueError:
+        return None
+
+
+def check_overdue(ctx, data):
+    """data-model §7「逾期」：待办/进行中且期限早于当天 ⇒ 警告。"""
+    ledger = data.ledger("T")
+    if ledger is None:
+        return
+    for entry in ledger.entries:
+        if entry.row.get(T_STATUS, "").strip() not in OPEN_TASK_STATUSES:
+            continue
+        deadline = entry.row.get(T_DEADLINE, "").strip()
+        parsed = _parse_date(deadline)
+        if parsed is None or parsed >= ctx.today:
+            continue
+        tid = entry.row.get(T_ID, "").strip()
+        ctx.add_warning(
+            ledger.rel,
+            entry.line,
+            "T_OVERDUE",
+            "%s 期限 %s 已过且未完成" % (tid, deadline),
+        )
+
+
+def _compare_identity(ctx, line, pid, field, ledger_value, arrest_value):
+    if ledger_value and arrest_value and ledger_value != arrest_value:
+        ctx.add(
+            ARREST_LIST,
+            line,
+            "X_CONFLICT",
+            "%s %s冲突：人员台账「%s」≠ 抓捕对象清单「%s」"
+            % (pid, field, ledger_value, arrest_value),
+        )
+
+
+def _load_arrest_table(ctx):
+    """读取并解析抓捕对象清单；缺失/表头不匹配返回 None，坏表报 TABLE_INVALID。"""
+    if not ctx.ws.isfile(ARREST_LIST):
+        return None
+    text = ctx.ws.read(ARREST_LIST)
+    if text is None:
+        return None
+    try:
+        table = tables.find_table(text, ARREST_HEADER)
+    except tables.TableError as exc:
+        ctx.add(ARREST_LIST, 0, "TABLE_INVALID", str(exc))
+        return None
+    if table is None:
+        return None
+    lines = _row_line_numbers(text, ARREST_HEADER)
+    if len(lines) != len(table.rows):
+        lines = lines + [0] * (len(table.rows) - len(lines))
+    return table, lines
+
+
+def _arrest_row_count(table):
+    count = 0
+    for row in table.rows:
+        if row.get(ARREST_P_ID, "").strip() or row.get(ARREST_SEQ, "").strip():
+            count += 1
+    return count
+
+
+def _summary_number(text, key):
+    for number, raw in enumerate(text.splitlines(), 1):
+        cells = tables.split_cells(raw)
+        if cells is None or len(cells) != 2:
+            continue
+        if cells[0].strip() != key:
+            continue
+        value = cells[1].strip()
+        if re.match(r"^\d+$", value) is None:
+            return None
+        return int(value), number
+    return None
+
+
+def _check_summary_total(ctx, arrest):
+    if arrest is None or not ctx.ws.isfile(ARREST_RECORD):
+        return
+    text = ctx.ws.read(ARREST_RECORD)
+    if text is None:
+        return
+    found = _summary_number(text, SUMMARY_TOTAL_KEY)
+    if found is None:
+        return
+    value, line = found
+    count = _arrest_row_count(arrest[0])
+    if count == value:
+        return
+    ctx.add_warning(
+        ARREST_RECORD,
+        line,
+        "X_CONFLICT",
+        "%s：收网记录 %d ≠ 抓捕对象清单 %d 行"
+        % (SUMMARY_TOTAL_KEY, value, count),
+    )
+
+
+def check_cross_document(ctx, data):
+    """data-model §7「跨文档」：P 姓名/角色为错误，汇总人数差异为警告。"""
+    arrest = _load_arrest_table(ctx)
+    people = data.ledger("P")
+    if people is not None and arrest is not None:
+        by_id = {}
+        for entry in people.entries:
+            pid = entry.row.get(P_ID, "").strip()
+            if pid and pid not in by_id:
+                by_id[pid] = entry.row
+        table, lines = arrest
+        for line, row in zip(lines, table.rows):
+            pid = row.get(ARREST_P_ID, "").strip()
+            if not pid:
+                continue
+            person = by_id.get(pid)
+            if person is None:
+                ctx.add(
+                    ARREST_LIST,
+                    line,
+                    "REF_MISSING",
+                    "抓捕对象清单的 %s 不在人员台账" % pid,
+                )
+                continue
+            _compare_identity(
+                ctx,
+                line,
+                pid,
+                "姓名",
+                person.get(P_NAME, "").strip(),
+                row.get(ARREST_NAME, "").strip(),
+            )
+            _compare_identity(
+                ctx,
+                line,
+                pid,
+                "角色",
+                person.get(P_ROLE, "").strip(),
+                row.get(ARREST_ROLE, "").strip(),
+            )
+    _check_summary_total(ctx, arrest)
+
+
 CHECKS = (
     check_required_files,
     check_references,
@@ -871,6 +1236,10 @@ CHECKS = (
     check_documents,
     check_materials,
     check_stages,
+    check_naming,
+    check_backlog,
+    check_overdue,
+    check_cross_document,
 )
 
 
@@ -916,9 +1285,9 @@ def _payload(errors, warnings):
     }
 
 
-def run(args):
+def run(args, today=None):
     root = os.path.abspath(args.root)
-    ctx = Context(root)
+    ctx = Context(root, today)
     data = Data()
 
     if not os.path.isdir(root):
@@ -984,7 +1353,9 @@ def build_parser():
     )
     parser.add_argument("--root", default=None, help="项目根，默认当前目录")
     parser.add_argument("--json", action="store_true", help="输出机器可解析 JSON")
-    parser.add_argument("--strict", action="store_true", help="警告也算失败（T006）")
+    parser.add_argument(
+        "--strict", action="store_true", help="警告也算失败（无错误时退出码 1）"
+    )
     return parser
 
 

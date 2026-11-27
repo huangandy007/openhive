@@ -91,6 +91,11 @@
   `E_LEGAL_KIND_INVALID`、`E_FIELD_MISSING`、`A_STATUS_INVALID`、`A_CYCLE`、
   `V_RESULT_INVALID`、`T_STATUS_INVALID`、`D_REVIEWER_MISSING`、`M_UNREGISTERED`、
   `STAGE_INVALID`、`INTERNAL_ERROR`；
+- 规则检查（T006）沿用上列 code：`NAME_ILLEGAL`（非法字符 / 禁用词 / 目录白名单，
+  外部来件豁免）、`M_PENDING`（待归档收件箱、`待归类` 行、原始记录缺「已整理」，
+  均为警告）、`T_OVERDUE`（`待办` / `进行中` 且期限早于当天，警告）、
+  `X_CONFLICT`（P 姓名 / 角色冲突与汇总人数差异；身份字段为错误、汇总数字为警告）；
+  抓捕对象清单中的 P 编号不在人员台账沿用 `REF_MISSING`；
 - 退出码：有错误 → `2`；无错误但有警告且 `--strict` → `1`；否则 `0`。
 
 **反向约束**（FR-082）：材料条目检查**排除** `00-材料登记表.md` 与 `.gitkeep`；
