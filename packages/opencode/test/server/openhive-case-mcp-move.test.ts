@@ -11,7 +11,7 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { createCaseMcpServer, 新预算计数, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
 import { createMaterial, getMaterial } from "../../src/server/openhive/case-store"
-import { move_material, type 工具上下文, type 工具结果 } from "../../src/server/openhive/case-mcp-tools"
+import { move_material, 工具错误, type 工具上下文, type 工具结果 } from "../../src/server/openhive/case-mcp-tools"
 
 /**
  * 017 · Task 12：MCP 工具 `move_material` 的红用例（测试先行）。
@@ -428,6 +428,20 @@ test("用例 14 · 源是符号链接（指向材料外）⇒ bad_input，链接
   expect(lstatSync(join(根, "材料", "外链.txt")).isSymbolicLink()).toBe(true)
   expect(readFileSync(外部文件, "utf8")).toBe("外部正文")
   expect(existsSync(join(根, "材料", "01-接报案", "外链.txt"))).toBe(false)
+})
+
+test("补 · 缺 workspaceRoot ⇒ 抛普通 Error（折 tool_failed），不拿空根拼路径", async () => {
+  const 错误 = await 取错误(() =>
+    move_material(
+      // 真实入口必给 root；这里刻意不给，钉住 fail-closed（契约 §3.1，同 `case-hgraph-tools.ts`）。
+      { db: 库(), 身份: { userId: 属主, projectId: "p-移动-成功" } },
+      { 路径: "材料/00-待归档/a.txt", 目标目录: "材料/01-接报案" },
+    ),
+  )
+  expect(错误).toBeInstanceOf(Error)
+  // 不是 `工具错误`：分发处据此折成 `tool_failed`，而不是被演成一条 `bad_input`。
+  expect(错误 instanceof 工具错误).toBe(false)
+  expect(错误文案(错误)).toContain("workspaceRoot")
 })
 
 // ─────────────────────── 工具层探针：项目根恒按**属主**拼，不是按调用者 ───────────────────────

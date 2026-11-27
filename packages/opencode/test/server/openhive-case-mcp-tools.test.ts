@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
 import { connect } from "@opencode-ai/auth/db"
@@ -12,6 +15,7 @@ import {
   get_citation,
   list_source_profiles,
   money_flow,
+  move_material,
   query_entities,
   query_events,
   query_relations,
@@ -110,6 +114,12 @@ let 重传新材料 = ""
  */
 const 身份产物 = { userId: "u-工具-甲", projectId: "p-工具-产物" }
 const 产物账户 = "6217000088880000"
+/**
+ * 017 T014：`move_material` 是唯一要真搬盘的工具——守卫用例给它一个真沙箱根（工具层直调，
+ * 不经 MCP 网关；项目属主无 owner 行时退回调用者，故目录按调用者 id 拼）。
+ */
+const 身份移动 = { userId: "u-工具-甲", projectId: "p-工具-守卫-移动" }
+const 移动沙箱根 = mkdtempSync(join(tmpdir(), "openhive-tools-move-"))
 
 /** 现造一份真 xlsx 字节（与 `explore/dataset.ts` 同法；仓内不存二进制夹具）。 */
 function 造工作簿(行们: (string | number)[][], 表名: string): Uint8Array {
@@ -834,6 +844,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await 客户端?.$client.close()
   await pg?.stop()
+  rmSync(移动沙箱根, { recursive: true, force: true })
 })
 
 test("不是项目成员 ⇒ not_a_member，查不到任何数据", async () => {
@@ -1813,8 +1824,22 @@ test("find_crossings 七字段：两边都无交集 ⇒ 数据 null，缺口说�
 // 人工核对挡不住漂移：`query_rows` 未注册时 `下一步` 就已经指向过它。这里遍历 `工具名`
 // 注册表里的全部 11 个工具的真实返回值（有数据 + 空数据各一条），把违规项收集起来
 // `toEqual([])`——失败时一眼看出是谁指向了什么。
+/** 017 T014 守卫用：在真沙箱里搬一份代表文件，返回成功信封（失败即抛）。 */
+async function 移动一次(): Promise<工具结果> {
+  const 项目根 = join(移动沙箱根, 身份移动.userId, 身份移动.projectId)
+  mkdirSync(join(项目根, "材料", "00-待归档"), { recursive: true })
+  mkdirSync(join(项目根, "材料", "01-接报案"), { recursive: true })
+  writeFileSync(join(项目根, "材料", "00-待归档", "守卫.txt"), "守卫")
+  return move_material(
+    { ...ctx(身份移动), workspaceRoot: 移动沙箱根 },
+    { 路径: "材料/00-待归档/守卫.txt", 目标目录: "材料/01-接报案" },
+  )
+}
+
 test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
   const 已注册 = new Set(工具名 as readonly string[])
+  // 017 契约 §4：没有可执行的下一步时写 `（无）`——它不是工具名，但不许编造别的名字来绕过。
+  const 非工具下一步 = new Set(["（无）"])
   // P4 三个数据源档案工具也要进入守卫（覆盖集合从 `工具名` 派生，不能手写名单绕过）。
   // 独立项目：写档案 / 撤销不会改掉别的用例的档案列表断言（`#005-34`）。
   const 身份档案 = { userId: "u-工具-甲", projectId: "p-工具-守卫-档案" }
@@ -1901,13 +1926,16 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
     { 工具: "list_source_profiles", 结果: 档案列表 },
     { 工具: "build_source_profile", 结果: 建档案 },
     { 工具: "revoke_source_profile", 结果: 撤销档案 },
+    // 017 T014：`move_material` 的真实成功返回（它只在成功时返回信封，失败一律抛 `工具错误`）；
+    // 真沙箱根 + 真文件，走生产出口。
+    { 工具: "move_material", 结果: await 移动一次() },
   ]
   const 违规: string[] = []
   let 检查条数 = 0
   for (const { 结果 } of 结果们) {
     for (const 条 of 结果.下一步) {
       检查条数 += 1
-      if (!已注册.has(条.工具)) 违规.push(`下一步 → ${条.工具}`)
+      if (!已注册.has(条.工具) && !非工具下一步.has(条.工具)) 违规.push(`下一步 → ${条.工具}`)
     }
     for (const 条 of 结果.出处) {
       if (条.可下钻 === null) continue
@@ -1934,10 +1962,9 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
   // 改动回执），本守卫查的 `下一步` / `出处.可下钻` 对它们没有语义。排除集合同样从
   // `图工具名` 派生（不手写名单），将来新增图工具也不会被误判成「漏了真实返回」；
   // 图工具自己的返回形状由 `case-hgraph-tools.test.ts` 守。
-  // 017 T013：`move_material` 本期只落地注册与归档冻结（骨架），没有真实返回可进守卫。
-  // ⚠️ T014 补齐移动语义后必须删掉这条排除、并把一条真实返回加进 `结果们`，否则本守卫对它空转。
+  // 017 T014：`move_material` 已补齐移动语义，它的真实返回在 `结果们` 里，不再排除。
   const 覆盖次数 = new Map<工具名, number>(
-    工具名.filter((名) => !图工具名.has(名) && 名 !== "move_material").map((名) => [名, 0]),
+    工具名.filter((名) => !图工具名.has(名)).map((名) => [名, 0]),
   )
   for (const { 工具 } of 结果们) 覆盖次数.set(工具, (覆盖次数.get(工具) ?? 0) + 1)
   const 未覆盖 = [...覆盖次数].filter(([, 次]) => 次 === 0).map(([名]) => 名)

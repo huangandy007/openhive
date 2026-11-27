@@ -1,4 +1,8 @@
 import { sql, type SQL } from "drizzle-orm"
+import { Effect } from "effect"
+import { lstat, rename, stat } from "node:fs/promises"
+import { basename, dirname, join, relative, sep } from "node:path"
+import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
 import { archiveStatesOf, rolesOf } from "@opencode-ai/auth/project-member"
 import { ProjectMembership } from "@opencode-ai/core/project/membership"
@@ -12,7 +16,10 @@ import {
   type 下一步项,
   type 空原因值,
 } from "./case-envelope"
-import { getMaterial, type Queryable } from "./case-store"
+import { getMaterial, 迁移材料路径, type Queryable } from "./case-store"
+import { 材料目录名 } from "./case-parseable"
+import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
+import { 项目属主 } from "./project-actor"
 import { 解析出处 } from "./citation"
 import type { 调用身份 } from "./case-mcp-identity"
 import { 事实详情, 批量引用, 引用们, type 引用视图 } from "./case-fact-read"
@@ -2968,12 +2975,31 @@ export async function revoke_source_profile(
 // ───────────────────────── 017 US2：材料移动（write） ─────────────────────────
 
 /**
+ * 沙箱根判据（同 `case-hgraph-tools.ts` 的 `沙箱根`；那个函数是私有的，不为它去改图工具模块）。
+ *
+ * 缺了就抛普通 `Error`（折成 `tool_failed`），**不拿空根拼路径**——空根会落到进程 cwd 上，
+ * 可能悄悄读到 / 搬到别的目录（契约 §3.1）。
+ */
+function 移动沙箱根(ctx: 工具上下文): string {
+  if (ctx.workspaceRoot === undefined) {
+    throw new Error("工具上下文缺 workspaceRoot：move_material 必须在 MCP 分发入口注入沙箱根")
+  }
+  return ctx.workspaceRoot
+}
+
+/** 项目根相对、`/` 分隔（与 `file.ts` 的 `relativePath` 同形，判据不另写一份）。 */
+const 归一相对 = (根: string, 绝对: string): string => relative(根, 绝对).split(sep).join("/")
+
+/**
  * 把 `材料/` 下的一份普通文件移到另一个已存在的材料子目录（017 FR-028 / FR-029）。
  *
- * T013 只落地**注册与归档冻结**；路径守卫、同名拒、rename 与材料路径迁移由 T014 补齐。
+ * 契约 `contracts/move-material-tool.md` §3 的 11 步**按序**执行：归档冻结 → 按属主拼项目根 →
+ * `inside` → 顶层 `材料/` → `inGitOf` → 台账 / 目录根 → `lstat` 普通文件 → 目标目录存在 →
+ * `realInside` → 同名拒 → `rename` → `迁移材料路径`。
  *
  * 本工具**有意不加入** `写工具名`（`case-mcp-server.ts` 的 ②b 属主门）：HTTP 的移动 / 改名是
- * 成员级，加入会变成「UI 能移、AI 不能移」的第二套口径（契约 §2 末段）。
+ * 成员级，加入会变成「UI 能移、AI 不能移」的第二套口径（契约 §2 末段）。这是**有意的例外**，
+ * 不要「顺手补上」——`写工具名` 注释里那句「新增写工具必须加一行」不适用于它。
  */
 export async function move_material(
   ctx: 工具上下文,
@@ -2987,7 +3013,107 @@ export async function move_material(
   if (ProjectMembership.frozen(归档.get(ctx.身份.projectId)?.archived ?? false)) {
     throw new 工具错误("forbidden", "项目已归档，不能改动")
   }
-  // 占位刻意**不是** `工具错误`：它会折成 `tool_failed`，未实现期间用例 1–6/9/10/13/14 与探针
-  // 必须继续红，不能被一句 `bad_input` 演成假绿（T013 的范围只到注册与冻结）。
-  throw new Error("move_material 的移动逻辑尚未实现（T014）")
+
+  // ① 项目根**恒按属主**拼：共享项目的文件在属主沙箱里（契约 §3.1）。不自己
+  //    `join(workspaceRoot, userId, projectId)`——那样成员永远找不到材料。
+  const 属主 = await 项目属主(ctx.db, ctx.身份.userId, ctx.身份.projectId)
+  const 项目根 = projectDirectory(移动沙箱根(ctx), 属主, ctx.身份.projectId)
+
+  // ② 词法越界：文案沿用 HTTP `handleTransfer`（不把绝对路径回显给模型）。
+  const 源 = inside(项目根, args.路径)
+  if (源 === undefined) throw new 工具错误("bad_input", "源路径越出项目目录")
+  const 目标目录 = inside(项目根, args.目标目录)
+  if (目标目录 === undefined) throw new 工具错误("bad_input", "目标目录越出项目目录")
+
+  // ③ 顶层目录必须是 `材料`（源与目标各判一次；分隔符不分平台，写法同 `file.ts` 的 `inGit`）。
+  const 顶层 = (绝对: string): string => 归一相对(项目根, 绝对).split(/[\\/]/)[0] ?? ""
+  if (顶层(源) !== 材料目录名) throw new 工具错误("bad_input", `只能移动「${材料目录名}/」下的文件`)
+  if (顶层(目标目录) !== 材料目录名)
+    throw new 工具错误("bad_input", `目标目录必须是「${材料目录名}/」下的子目录`)
+
+  // ④ 版本库元数据（判据只在 `inGitOf` 一份）。
+  if (inGitOf(项目根, 源) || inGitOf(项目根, 目标目录))
+    throw new 工具错误("bad_input", GIT_LOCKED)
+
+  // ⑤ 台账是材料目录内唯一可写文件，不得被移走；`材料/` 根是目录，不是一份文件。
+  const 相对源 = 归一相对(项目根, 源)
+  if (相对源 === 材料目录名) throw new 工具错误("bad_input", `不能移动「${材料目录名}/」目录本身`)
+  if (相对源 === `${材料目录名}/00-材料登记表.md`)
+    throw new 工具错误("bad_input", "材料登记表不能移动")
+
+  // ⑥ 源必须是**普通文件**：`lstat` 不跟链接 ⇒ 符号链接与目录都落在这条之外（本工具只搬文件，
+  //    不搬目录，故不需要 HTTP 的 ROOT_UNMOVABLE / INTO_ITSELF 两条守卫）。
+  const 源信息 = await lstat(源).catch(() => undefined)
+  if (源信息 === undefined) throw new 工具错误("bad_input", "源文件不存在")
+  if (!源信息.isFile()) throw new 工具错误("bad_input", "移动只能对普通文件做")
+
+  // ⑦ 目标目录必须**存在且是目录**（`stat` 跟链接；链接是否逃逸由下一步判）。
+  const 目录信息 = await stat(目标目录).catch(() => undefined)
+  if (目录信息 === undefined || !目录信息.isDirectory())
+    throw new 工具错误("bad_input", "目标目录不存在")
+
+  // ⑧ 词法上在项目里 ≠ 真身在项目里。`realInside` 要**已存在**的路径，故排在 `stat` 之后；
+  //    调用方式照 `hgraph-ops.ts`：`Effect.runPromise(realInside(...))`，不在工具层重写判据。
+  const [源目录在内, 目标目录在内] = await Promise.all([
+    Effect.runPromise(realInside(项目根, dirname(源))),
+    Effect.runPromise(realInside(项目根, 目标目录)),
+  ])
+  if (!源目录在内 || !目标目录在内) throw new 工具错误("bad_input", LINK_ESCAPE)
+
+  // ⑨ 目标 = 目标目录 + 源的末段；已存在 ⇒ 拒（不改名、不覆盖，FR-029）。
+  const 目标 = join(目标目录, basename(源))
+  if (await lstat(目标).then(() => true, () => false))
+    throw new 工具错误("bad_input", "目标位置已经有同名文件")
+
+  // ⑩ `rename`；`EEXIST` / `ENOENT` 是预检与真写之间的竞态，文案与 HTTP `file.ts` 逐字一致。
+  try {
+    await rename(源, 目标)
+  } catch (错误) {
+    const 码 = typeof 错误 === "object" && 错误 !== null ? Reflect.get(错误, "code") : undefined
+    if (码 === "EEXIST" || 码 === "ENOENT")
+      throw new 工具错误("bad_input", "目标位置已经有同名文件，或源已经不在原处")
+    throw 错误
+  }
+
+  // ⑪ 文件已移动后同步材料路径。失败**不回滚**：原因写进 `缺口`，返回仍是成功信封
+  //    （与 HTTP `同步材料路径` 的 WARN 语义一致）。`作业目录` 是沙箱根相对前缀、按属主拼。
+  const 新相对 = 归一相对(项目根, 目标)
+  const 缺口: string[] = []
+  let 已同步 = true
+  try {
+    await 迁移材料路径(ctx.db, {
+      projectId: ctx.身份.projectId,
+      旧相对: 相对源,
+      新相对,
+      作业目录: `${属主}/${ctx.身份.projectId}`,
+    })
+  } catch (错误) {
+    已同步 = false
+    const 类型 = 错误 instanceof Error && 错误.name !== "" ? 错误.name : typeof 错误
+    缺口.push(`材料路径未同步（${类型}）：下次解析会按新路径自愈`)
+  }
+
+  return {
+    摘要: `已移动 1 份：${相对源} → ${归一相对(项目根, 目标目录)}`,
+    数据: [{ 旧路径: 相对源, 新路径: 新相对, 材料路径已同步: 已同步 }],
+    口径: "只移动、不改名；材料路径由服务端迁移，未登记过的文件（非可解析扩展名）没有可迁移的行",
+    缺口,
+    空原因: null,
+    出处: [{ 事实: "已移动 1 份", 代表: 新相对, 可下钻: null }],
+    下一步: 已同步
+      ? [
+          {
+            工具: "（无）",
+            参数: {},
+            为什么: "把材料登记表的当前路径与状态更新为 已归档，属证据的同时写 E 行",
+          },
+        ]
+      : [
+          {
+            工具: "search_materials",
+            参数: { 关键词: basename(目标) },
+            为什么: "确认平台是否已按新路径登记",
+          },
+        ],
+  }
 }
