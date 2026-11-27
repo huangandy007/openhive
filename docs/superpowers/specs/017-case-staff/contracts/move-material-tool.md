@@ -53,7 +53,7 @@
 ④ 校验必填（inputSchema.required）      → bad_input           [服务级，既有：:919]
 ⑤ 收参数（键白名单 + 类型，未知键拒）      → bad_input           [分发表，既有：:606 起]
 ⑥ 归档冻结（工具内，新增）               → forbidden
-⑦ 参数与路径判定 → 原子不覆盖移动（link+unlink） → 迁移材料路径  → bad_input / tool_failed
+⑦ 参数与路径判定 → 不覆盖移动（link+unlink） → 迁移材料路径  → bad_input / tool_failed
 ```
 
 `分发表` 的条目固定写成 `收参数<Parameters<typeof move_material>[1]>(args, ["路径", "目标目录"], [], [])`
@@ -118,7 +118,8 @@ HTTP 侧的现行调用点：`.../httpapi/middleware/project-location.ts:458-459
     `link` 的 `EEXIST`/`ENOENT` ⇒ `bad_input("目标位置已经有同名文件，或源已经不在原处")`
     （与 HTTP `file.ts:724` 逐字一致；`ENOENT` 也覆盖「源已不在原处」）；其他错误 ⇒ `tool_failed`。
     `unlink(源)` 失败：`ENOENT` ⇒ 源已在 link 后被外部删除，**目标保留**（移动终态），直接成功；
-    其它错误 ⇒ 尽力回滚目标名（`unlink(目标).catch(() => {})`，内容仍在源），原错误照抛。
+    其它错误 ⇒ **仅当源仍与目标同一文件**（dev/ino）时回滚目标名（`unlink(目标).catch(() => {})`，
+    内容仍在源）；源名已被换成非同一 inode ⇒ 保留目标、原错误照抛（内容不丢）。
 11. `迁移材料路径(ctx.db, { projectId: 身份.projectId, 旧相对, 新相对, 作业目录: `${属主}/${身份.projectId}` })`
     ——`作业目录` 是**沙箱根相对**前缀（`case-store.ts:197`），按属主拼（与 HTTP 侧
     `file.ts:629` 的 `项目标识` 同一形状）。`旧相对`/`新相对` 由 `relative(项目根, 绝对)`

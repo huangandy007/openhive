@@ -3034,8 +3034,9 @@ export async function 移动文件不覆盖(源: string, 目标: string): Promis
     const 码 = typeof 错误 === "object" && 错误 !== null ? Reflect.get(错误, "code") : undefined
     // 源已在 link 后被外部删除：目标就是移动终态，**不能**回滚——否则两份都没了。
     if (码 === "ENOENT") return
-    // 其它 unlink 失败：尽力删掉刚建的目标名（内容仍在源），回滚失败也不吞原错误。
-    await unlink(目标).catch(() => {})
+    // 只有源仍指向同一 inode 才回滚：源名可能被外部进程换成目录/别的文件，此时
+    // 直接删目标会抹掉原始内容的唯一留存。同一性判据复用 `是同一文件`（dev/ino）。
+    if (await 是同一文件(源, 目标)) await unlink(目标).catch(() => {})
     throw 错误
   }
 }
@@ -3045,7 +3046,7 @@ export async function 移动文件不覆盖(源: string, 目标: string): Promis
  *
  * 契约 `contracts/move-material-tool.md` §3 的 11 步**按序**执行：归档冻结 → 按属主拼项目根 →
  * `inside` → 顶层 `材料/` → `inGitOf` → 台账 / 目录根 → `lstat` 普通文件 → 目标目录存在 →
- * `realInside` → 同名拒 → 原子不覆盖移动（`link` + `unlink`） → `迁移材料路径`。
+ * `realInside` → 同名拒 → 不覆盖移动（`link` + `unlink`） → `迁移材料路径`。
  *
  * 本工具**有意不加入** `写工具名`（`case-mcp-server.ts` 的 ②b 属主门）：HTTP 的移动 / 改名是
  * 成员级，加入会变成「UI 能移、AI 不能移」的第二套口径（契约 §2 末段）。这是**有意的例外**，
@@ -3128,7 +3129,7 @@ export async function move_material(
   if (await lstat(目标).then(() => true, () => false))
     throw new 工具错误("bad_input", "目标位置已经有同名文件")
 
-  // ⑩ 原子不覆盖移动（`link` + `unlink`）：`rename` 会静默替换已存在的目标，不能用；
+  // ⑩ 不覆盖移动（`link` + `unlink`）：`rename` 会静默替换已存在的目标，不能用；
   //    `EEXIST` / `ENOENT` 由 `link` 提供（预检与真写之间的竞态），文案与 HTTP `file.ts` 逐字一致。
   await 移动文件不覆盖(源, 目标)
 
