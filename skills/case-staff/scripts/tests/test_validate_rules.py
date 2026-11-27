@@ -103,13 +103,39 @@ class NamingTest(ValidateTestBase):
         self.run_clean()
 
     def test_release_file_with_keyword_is_validated(self):
+        # 带判别力的名：关键词「发放版」自证，但扩展名不对 ⇒ 必须报错。
         write_text(
             project_path(
-                self.root, "专案协同/07-抓捕筹备/2026-11-27-第一次行动-发放版.md"
+                self.root, "专案协同/07-抓捕筹备/2026-11-27-第一次行动-发放版.txt"
             ),
             "快照\n",
         )
-        self.run_clean()
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+
+    def test_task_prefix_without_number_is_illegal(self):
+        # 类型字母开头（T 后接 `-`）即自证类型，缺 3 位编号 ⇒ 报错（修复轮 2）。
+        write_text(project_path(self.root, "专案协同/03-任务盯办/T-任务.md"), "")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertIn("命名规则", payload["errors"][0]["message"])
+
+    def test_meeting_prefix_without_number_is_illegal(self):
+        write_text(project_path(self.root, "专案协同/02-专案会议/C-会议.md"), "")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+
+    def test_person_prefix_without_number_is_illegal(self):
+        write_text(project_path(self.root, "专案协同/06-人员与组织/P-张三.md"), "")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+
+    def test_communication_record_with_forbidden_word_is_illegal(self):
+        rel = ORIGINAL_RECORDS + "2026-11-27-沟通记录-最新碰头.md"
+        write_text(project_path(self.root, rel), "正文\n")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertIn("禁用词", payload["errors"][0]["message"])
 
     def test_new_material_category_directory_is_illegal(self):
         # 外部来件豁免只作用于文件名；目录白名单照查（评审 #3）。
@@ -143,13 +169,22 @@ class NamingTest(ValidateTestBase):
         self.assertEqual(set(), codes_of(payload["errors"]))
         self.assertEqual({"M_PENDING"}, codes_of(payload["warnings"]))
 
-    def test_chart_directory_only_allowed_at_third_level(self):
+    def test_chart_directory_at_root_is_illegal(self):
         write_text(project_path(self.root, "图表/说明.md"), "x")
         payload = self.run_with_errors()
         self.assert_only_codes(payload, {"NAME_ILLEGAL"})
         self.assertEqual("图表/", payload["errors"][0]["file"])
 
-    def test_person_directory_only_allowed_at_third_level(self):
+    def test_chart_directory_under_object_materials_is_allowed(self):
+        write_text(
+            project_path(
+                self.root, "专案协同/07-抓捕筹备/04-对象资料/图表/人员关系.png"
+            ),
+            "x",
+        )
+        self.run_clean()
+
+    def test_person_directory_at_root_is_illegal(self):
         write_text(project_path(self.root, "P009-某人/说明.txt"), "x")
         payload = self.run_with_errors()
         self.assert_only_codes(payload, {"NAME_ILLEGAL"})
@@ -349,6 +384,15 @@ class CrossDocumentTest(ValidateTestBase):
         old = "| 序号 | P编号 | 抓捕对象 |"
         self.assertIn(old, text)
         write_text(path, text.replace(old, "| 编号 | P编号 | 抓捕对象 |", 1))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"TABLE_INVALID"})
+        self.assertEqual(ARREST_FILE, payload["errors"][0]["file"])
+
+    def test_unreadable_arrest_list_is_table_invalid(self):
+        # 非 UTF-8 ⇒ TABLE_INVALID，不静默返回 None（修复轮 2 Minor 2）。
+        path = project_path(self.root, ARREST_FILE)
+        with open(path, "wb") as handle:
+            handle.write(b"\x00\xff\xfe\x80")
         payload = self.run_with_errors()
         self.assert_only_codes(payload, {"TABLE_INVALID"})
         self.assertEqual(ARREST_FILE, payload["errors"][0]["file"])

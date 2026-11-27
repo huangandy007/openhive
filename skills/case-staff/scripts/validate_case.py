@@ -181,11 +181,13 @@ NAME_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+-发放版\.md$")
 NAME_PERSON_DIR_RE = re.compile(r"^[PO]\d{3}-.+$")
 CHART_DIRECTORY = "图表"
 
-ID_PREFIX_RE = re.compile(r"^([TLAPVCD])\d{3,}-")
+# 自证类型：类型字母**后接**数字、`-` 或 `_` 即算（`T001-` 与 `T-任务` 都自证），
+# 否则 `T-任务.md` 这类缺编号的文件会漏报（修复轮 2）。
+ID_PREFIX_RE = re.compile(r"^([TLAPVCD])(?=\d|-|_)")
 
 
 def _claims_id(name, *prefixes):
-    """文件名以该类编号前缀开头（``T001-…``）才算自证类型。"""
+    """文件名以类型字母开头且后接数字/``-``/``_`` 才算自证类型。"""
     match = ID_PREFIX_RE.match(name)
     return match is not None and match.group(1) in prefixes
 
@@ -993,8 +995,9 @@ def _name_issues(name):
 def _directory_allowed(rel, name):
     if rel in init_case.DIRECTORIES:
         return True
-    # 三级目录只允许 `图表/` 与 `P###-姓名/`（data-model §4.2；评审 #8）。
-    if rel.count("/") == 2 and (
+    # `图表/` 与 `P###-姓名/` 只允许出现在业务目录之下，顶层不得新建（data-model §4.2）；
+    # 深层如 `专案协同/07-抓捕筹备/04-对象资料/图表/` 合法（修复轮 2）。
+    if rel.count("/") >= 1 and (
         name == CHART_DIRECTORY or NAME_PERSON_DIR_RE.match(name) is not None
     ):
         return True
@@ -1025,14 +1028,13 @@ def _check_file_name(ctx, rel_dir, name):
         return
     if rel_dir == ORIGINAL_RECORDS_DIR.rstrip("/"):
         # 内部碰头手记必须按 `YYYY-MM-DD-沟通记录-主题.md`；转写稿/外部文档保留原名
-        # （FR-061 / design:527；评审 #4）。
-        if name.endswith(".md") and NAME_COMMUNICATION_RE.match(name) is None:
-            ctx.add(
-                rel,
-                0,
-                "NAME_ILLEGAL",
-                "文件名不合规：原始记录手记须命名为 YYYY-MM-DD-沟通记录-主题.md",
-            )
+        # （FR-061 / design:527；评审 #4）。`.md` 手记仍受硬规则约束（禁用词/非法字符）。
+        if name.endswith(".md"):
+            issues = _name_issues(name)
+            if NAME_COMMUNICATION_RE.match(name) is None:
+                issues.append("原始记录手记须命名为 YYYY-MM-DD-沟通记录-主题.md")
+            if issues:
+                ctx.add(rel, 0, "NAME_ILLEGAL", "文件名不合规：%s" % "；".join(issues))
         return
     if _is_external_path(rel_dir):
         # `材料/` 下原件与外部来件保留原文件名（FR-082），只豁免文件名；
