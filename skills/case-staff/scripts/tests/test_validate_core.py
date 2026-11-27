@@ -103,6 +103,29 @@ class ReferenceTest(ValidateTestBase):
         append_row(self.root, M_LEDGER, m_row(name=name, path=path, related=""))
         self.run_ok()
 
+    def test_case_info_basic_values_are_not_references(self):
+        """「## 基本信息」是自由填写元数据：案名/案号里的编号样式不参与引用扫描（T018）。"""
+        path = project_path(self.root, CASE_INFO)
+        text = read_text(path)
+        text = text.replace("| 案件名称 | 测试案件 |", "| 案件名称 | T018验收案件 |")
+        text = text.replace("| 案件编号 |  |", "| 案件编号 | A2026-001 |")
+        write_text(path, text)
+        payload = self.run_clean()
+        self.assertEqual(False, "REF_MISSING" in codes_of(payload["errors"]))
+
+    def test_case_info_stage_board_reference_is_still_checked(self):
+        """防过度豁免：案件信息.md 基本信息节之外仍须扫描引用。"""
+        path = project_path(self.root, CASE_INFO)
+        text = read_text(path)
+        old = "| 分析研判 | 未开始 | | | | | | |"
+        new = "| 分析研判 | 未开始 | | | | 核对 E999 | | |"
+        self.assertIn(old, text)
+        write_text(path, text.replace(old, new, 1))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"REF_MISSING"})
+        self.assertEqual(CASE_INFO, payload["errors"][0]["file"])
+        self.assertIn("E999", payload["errors"][0]["message"])
+
 
 class NumberingTest(ValidateTestBase):
     def test_duplicate_id_in_same_ledger(self):

@@ -466,8 +466,21 @@ def _scan_references(ctx, data, rel):
     if text is None:
         return
     in_fence = False
+    # 「## 基本信息」是用户自由填写的元数据（案名/案号/承办人等），不是内部引用；
+    # 只跳过该节，阶段看板、F 清单等其余部分照常扫描（T018 修复轮 1）。
+    skip_basic_info = rel == CASE_INFO
+    in_basic_info = False
     for number, raw in enumerate(text.splitlines(), 1):
         stripped = raw.strip()
+        if skip_basic_info:
+            if in_basic_info:
+                if stripped.startswith("## "):
+                    in_basic_info = False
+                else:
+                    continue
+            elif stripped == "## 基本信息":
+                in_basic_info = True
+                continue
         if tables.FENCE_RE.match(stripped):
             in_fence = not in_fence
             continue
