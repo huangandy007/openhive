@@ -9,10 +9,10 @@
 覆盖的判据：
 - 原文只读：整理前后正文字节相等，只在末尾多出「已整理」追加段（不重写、不合并段落）；
 - 分流 E/L/T：事实→E 草稿、推断→L、待办→T，字段逐列等于期望 JSON；
-- 标记格式：`已整理：L001 / T001（2026-11-27）`，含 C/T/L/V 编号与整理时间；
+- 标记格式：`已整理：L001 / T001（2026-11-27）`，只列 C/T/L/V、E 编号不得进标记；
 - 幂等：已标记的不重复追加、不重复写台账行；
-- 外部来件不改写、保留原名；
-- 校验联动：整理后同一 `validate_case.run` 不再报该记录的 `M_PENDING`。
+- 外部来件（可读文本）：正文与文件名不变，末尾追加标记，整理后不再积压；
+- 校验联动：整理后同一 `validate_case.run` 对整个夹具不再报 `M_PENDING`。
 
 **缺口（如实声明）**：结构化内容来自夹具的人工拆解，本文件只证明
 「库能力 + 规则可落地 + 形状可验证」，不证明模型解析自然语言的准确率。
@@ -23,7 +23,6 @@ import hashlib
 import io
 import json
 import os
-import re
 import tempfile
 import unittest
 
@@ -59,7 +58,8 @@ LEDGERS = {
 }
 ID_COLUMNS = {"M": "M编号", "E": "E编号", "L": "L编号", "T": "T编号"}
 SEED_KEYS = {"M": "材料登记表"}
-# data-model §6.4：末尾标记只列 C/T/L/V 编号；E 草稿在证据索引另行确认。
+# 写入端：data-model §6.4 只把 C/T/L/V 编号写进原文标记；E 草稿在证据索引另行确认。
+# 期望端不从本常量推导（I1 假绿），见 marker_numbers_from_fixture() 与 E 排除断言。
 MARKER_PREFIXES = ("C", "T", "L", "V")
 
 
@@ -150,10 +150,12 @@ class RawNotesTestBase(unittest.TestCase):
 
     # ---- 原始记录整理流程 -----------------------------------------------
 
-    def marker_numbers(self):
-        return [
-            item["编号"] for item in self.items if item["类型"] in MARKER_PREFIXES
-        ]
+    def marker_numbers_from_fixture(self):
+        """期望端独立推导：all non-E 条目编号（不复用写入端 MARKER_PREFIXES）。"""
+        return [item["编号"] for item in self.items if item["类型"] != "E"]
+
+    def evidence_numbers_from_fixture(self):
+        return [item["编号"] for item in self.items if item["类型"] == "E"]
 
     def marker_text(self, numbers):
         meta = self.fixture["标记"]
@@ -165,32 +167,39 @@ class RawNotesTestBase(unittest.TestCase):
             + meta["右括号"]
         )
 
-    def append_marker(self, numbers):
-        path = project_path(self.root, self.note_rel)
+    def append_marker(self, rel, numbers):
+        path = project_path(self.root, rel)
         text = read_text(path)
         if not text.endswith("\n"):
             text += "\n"
         write_text(path, text + "\n" + self.marker_text(numbers) + "\n")
 
     def organize(self):
-        """整理手记：先把 E/L/T 按期望结构落账，再在原文末尾追加标记。
+        """整理原始记录：手记先落 E/L/T 再追加标记；外部可读文本只追加标记。
 
-        幂等入口：原文已含「已整理」标记 ⇒ 本次什么都不做（不追加、不重写台账行）。
+        幂等入口：原文已含「已整理」标记 ⇒ 该文件本次什么都不做
+        （不追加、不重写台账行）。
         """
-        text = read_text(project_path(self.root, self.note_rel))
-        if MARKER_TOKEN in text:
+        note_text = read_text(project_path(self.root, self.note_rel))
+        external_text = read_text(project_path(self.root, self.external_rel))
+        if MARKER_TOKEN in note_text and MARKER_TOKEN in external_text:
             return []
+
         written = []
         numbers = []
-        for item in self.items:
-            prefix = item["类型"]
-            fields = dict(item["字段"])
-            fields[ID_COLUMNS[prefix]] = self.allocate(prefix)
-            self.append_fields(prefix, fields)
-            written.append(fields)
-            if prefix in MARKER_PREFIXES:
-                numbers.append(fields[ID_COLUMNS[prefix]])
-        self.append_marker(numbers)
+        if MARKER_TOKEN not in note_text:
+            for item in self.items:
+                prefix = item["类型"]
+                fields = dict(item["字段"])
+                fields[ID_COLUMNS[prefix]] = self.allocate(prefix)
+                self.append_fields(prefix, fields)
+                written.append(fields)
+                if prefix in MARKER_PREFIXES:
+                    numbers.append(fields[ID_COLUMNS[prefix]])
+            self.append_marker(self.note_rel, numbers)
+        if MARKER_TOKEN not in external_text:
+            # 外部来件本夹具无 C/T/L/V 落账 ⇒ 只写「已整理：（日期）」。
+            self.append_marker(self.external_rel, [])
         return written
 
     def pending_files(self, payload):
@@ -240,40 +249,67 @@ class OriginalUnchangedTest(RawNotesTestBase):
         last_line = [line for line in after_text.splitlines() if line.strip()][-1]
         self.assertEqual(True, MARKER_TOKEN in last_line, msg="标记不在末尾")
 
-    def test_external_incoming_file_is_not_rewritten_and_keeps_its_name(self):
+
+class ExternalRecordTest(RawNotesTestBase):
+    """外部可读文本：正文与文件名不变，只在末尾追加标记，整理后不再积压。"""
+
+    def test_external_readable_text_gets_marker_only_at_the_end(self):
         path = project_path(self.root, self.external_rel)
         before = read_bytes(path)
-        self.organize()
-        self.assertEqual(before, read_bytes(path))
+        names_before = sorted(os.listdir(project_path(self.root, ORIGINAL_DIR)))
 
-        note = self.fixture["原始记录"]["手记"]["文件名"]
-        external = self.fixture["原始记录"]["外部来件"]["文件名"]
-        names = sorted(os.listdir(project_path(self.root, ORIGINAL_DIR)))
-        self.assertEqual(sorted([".gitkeep", note, external]), names)
+        self.organize()
+
+        after = read_bytes(path)
+        self.assertEqual(before, after[: len(before)], msg="外部来件正文被改写")
+        appended = after[len(before):].decode("utf-8")
+        # 本夹具的外部来件没有 C/T/L/V 落账 ⇒ 只写日期型标记。
+        self.assertEqual("\n" + self.marker_text([]) + "\n", appended)
+        self.assertEqual(True, MARKER_TOKEN in appended)
+
+        self.assertEqual(
+            names_before, sorted(os.listdir(project_path(self.root, ORIGINAL_DIR)))
+        )
+
+        code, payload = call_run_at(self.root, datetime.date.fromisoformat(self.today))
+        self.assertEqual(0, code, msg=payload.get("errors"))
+        self.assertEqual(False, self.external_rel in self.pending_files(payload))
 
 
 class MarkerFormatTest(RawNotesTestBase):
-    def test_marker_has_prefix_numbers_and_time(self):
+    def test_marker_is_exactly_the_expected_string(self):
         self.organize()
         text = read_text(project_path(self.root, self.note_rel))
         lines = [line for line in text.splitlines() if MARKER_TOKEN in line]
         self.assertEqual(1, len(lines), msg="应恰好一行「已整理」标记")
+        self.assertEqual("已整理：L001 / T001（2026-11-27）", lines[0])
 
-        marker = lines[0]
-        self.assertEqual(self.marker_text(self.marker_numbers()), marker)
-        self.assertEqual(True, marker.startswith(self.fixture["标记"]["前缀"]))
-        # data-model §6.4：标记列 C/T/L/V 编号 + 时间。
-        self.assertEqual(True, re.search(r"[CLTV]\d{3,}", marker) is not None)
-        self.assertEqual(True, self.today in marker)
-        for number in self.marker_numbers():
+    def test_marker_numbers_are_derived_from_fixture_and_exclude_e(self):
+        self.organize()
+        text = read_text(project_path(self.root, self.note_rel))
+        marker = [line for line in text.splitlines() if MARKER_TOKEN in line][0]
+
+        expected_numbers = self.marker_numbers_from_fixture()
+        self.assertEqual(["L001", "T001"], expected_numbers)
+        for number in expected_numbers:
             with self.subTest(编号=number):
                 self.assertEqual(True, number in marker)
+
+        evidence_numbers = self.evidence_numbers_from_fixture()
+        self.assertEqual(1, len(evidence_numbers))
+        for number in evidence_numbers:
+            with self.subTest(E编号=number):
+                # 布尔比较，不用 assertFalse/assertNotIn（#013-12）。
+                self.assertEqual(
+                    False, number in marker, msg="E 编号不得进原文标记"
+                )
 
 
 class IdempotencyTest(RawNotesTestBase):
     def test_second_organize_appends_nothing_and_writes_no_rows(self):
         self.organize()
         note_after_first = read_bytes(project_path(self.root, self.note_rel))
+        external_after_first = read_bytes(project_path(self.root, self.external_rel))
         ledgers_after_first = self.ledger_hashes()
 
         second = self.organize()
@@ -282,31 +318,60 @@ class IdempotencyTest(RawNotesTestBase):
         self.assertEqual(
             note_after_first, read_bytes(project_path(self.root, self.note_rel))
         )
+        self.assertEqual(
+            external_after_first, read_bytes(project_path(self.root, self.external_rel))
+        )
         self.assertEqual(ledgers_after_first, self.ledger_hashes())
         text = read_text(project_path(self.root, self.note_rel))
         self.assertEqual(1, text.count(MARKER_TOKEN), msg="「已整理」被重复追加")
+        external_text = read_text(project_path(self.root, self.external_rel))
+        self.assertEqual(
+            1, external_text.count(MARKER_TOKEN), msg="外部来件标记被重复追加"
+        )
 
 
 class ValidationLinkTest(RawNotesTestBase):
-    def test_organized_note_is_no_longer_pending_for_the_same_validator(self):
+    def test_organized_records_are_no_longer_pending_for_the_same_validator(self):
         code, before = call_run_at(self.root, datetime.date.fromisoformat(self.today))
         self.assertEqual(0, code, msg=before.get("errors"))
         self.assertEqual(True, self.note_rel in self.pending_files(before))
+        self.assertEqual(True, self.external_rel in self.pending_files(before))
 
         self.organize()
 
         code, after = call_run_at(self.root, datetime.date.fromisoformat(self.today))
         self.assertEqual(0, code, msg=after.get("errors"))
         self.assertEqual([], after["errors"])
-        self.assertEqual(False, self.note_rel in self.pending_files(after))
-        # 外部来件按 FR-082 原样保留、不追加标记 ⇒ 其积压警告留给下一轮人工处理。
-        self.assertEqual(True, self.external_rel in self.pending_files(after))
+        self.assertEqual([], self.pending_files(after))
+        # 同一 check_backlog 调用路径：整理前的期望清单见 before，整理后整体清空。
+
+
+class FixtureConsistencyTest(unittest.TestCase):
+    """夹具自洽：手记里每一条不被落账的内容都要在 expected.json 里声明原因。"""
+
+    def test_unmapped_note_line_is_declared_with_reason(self):
+        fixture = load_expected()
+        source = read_text(
+            os.path.join(FIXTURE_DIR, fixture["原始记录"]["手记"]["夹具"])
+        )
+        unmapped = fixture["未落账"]
+        self.assertEqual(1, len(unmapped))
+        for entry in unmapped:
+            with self.subTest(内容=entry["内容"]):
+                self.assertEqual(True, entry["内容"] in source)
+                self.assertEqual(True, bool(entry["原因"].strip()))
 
 
 class ReferenceRulesTest(unittest.TestCase):
     """规则本体在参考文档里；删掉约束句会让本用例红（变异用）。"""
 
-    REQUIRED_TOKENS = ("正文不改", "已整理：", "外部来件", "YYYY-MM-DD-沟通记录-主题.md", "幂等")
+    REQUIRED_TOKENS = (
+        "不重写、不合并段落、不调整顺序",
+        "E 草稿在证据索引另行确认，不进原文标记",
+        "只在末尾追加标记，正文与文件名不改",
+        "不重复追加标记，也不重复写台账行",
+        "E / L / T 的分流、状态初值与撰写规则同",
+    )
 
     def test_raw_notes_section_keeps_the_binding_rules(self):
         text = read_text(REFERENCE_MD)
