@@ -175,14 +175,21 @@ class NamingTest(ValidateTestBase):
         self.assert_only_codes(payload, {"NAME_ILLEGAL"})
         self.assertEqual("图表/", payload["errors"][0]["file"])
 
-    def test_chart_directory_under_object_materials_is_allowed(self):
+    def test_chart_directory_at_third_level_is_allowed(self):
+        # §4.2 只允许恰为三级：`侦查/落地侦查/图表/` 合法。
         write_text(
-            project_path(
-                self.root, "专案协同/07-抓捕筹备/04-对象资料/图表/人员关系.png"
-            ),
+            project_path(self.root, "侦查/落地侦查/图表/关系图.png"),
             "x",
         )
         self.run_clean()
+
+    def test_chart_directory_at_fourth_level_is_illegal(self):
+        # 四级（如 `04-对象资料/图表/`）超出 §4.2，报 NAME_ILLEGAL（轮 2b 更正）。
+        rel = "专案协同/07-抓捕筹备/04-对象资料/图表/"
+        write_text(project_path(self.root, rel + "关系图.png"), "x")
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual(rel, payload["errors"][0]["file"])
 
     def test_person_directory_at_root_is_illegal(self):
         write_text(project_path(self.root, "P009-某人/说明.txt"), "x")

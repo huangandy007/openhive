@@ -995,9 +995,9 @@ def _name_issues(name):
 def _directory_allowed(rel, name):
     if rel in init_case.DIRECTORIES:
         return True
-    # `图表/` 与 `P###-姓名/` 只允许出现在业务目录之下，顶层不得新建（data-model §4.2）；
-    # 深层如 `专案协同/07-抓捕筹备/04-对象资料/图表/` 合法（修复轮 2）。
-    if rel.count("/") >= 1 and (
+    # §4.2：**三级目录**只允许 `图表/` 与 `P###-姓名/`——恰为两段 `/` 才放行，
+    # 根级（不许新建）与其下的四级（如 `04-对象资料/图表/`）都报白名单外（轮 2b 更正）。
+    if rel.count("/") == 2 and (
         name == CHART_DIRECTORY or NAME_PERSON_DIR_RE.match(name) is not None
     ):
         return True
