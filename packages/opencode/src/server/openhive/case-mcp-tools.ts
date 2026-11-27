@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm"
 import { Effect } from "effect"
-import { lstat, rename, stat } from "node:fs/promises"
+import { link, lstat, stat, unlink } from "node:fs/promises"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
@@ -3008,11 +3008,39 @@ async function 是同一文件(甲: string, 乙: string): Promise<boolean> {
 }
 
 /**
+ * 原子地「移动且不覆盖」：`link(源, 目标)` 取得目标名，成功后再 `unlink(源)`。
+ *
+ * 为什么不用 `rename(2)`：POSIX 与 win32 上目标已存在时它都**静默替换**（Node 实测：
+ * 不抛错，目标被源覆盖、源消失），所以「不覆盖」不能靠它；`link` 对已存在的目标抛
+ * `EEXIST`，这才是原子判据。前提是源与目标**同卷**——`move_material` 的 `realInside`
+ * 已保证两者在同一项目树内。不支持硬链接的卷（部分 SMB/网络盘）会失败并折
+ * `tool_failed`：这是有意的严格取舍——宁可报错，也不接受静默覆盖。
+ */
+export async function 移动文件不覆盖(源: string, 目标: string): Promise<void> {
+  try {
+    await link(源, 目标)
+  } catch (错误) {
+    const 码 = typeof 错误 === "object" && 错误 !== null ? Reflect.get(错误, "code") : undefined
+    if (码 === "EEXIST" || 码 === "ENOENT")
+      throw new 工具错误("bad_input", "目标位置已经有同名文件，或源已经不在原处")
+    throw 错误
+  }
+  try {
+    await unlink(源)
+  } catch (错误) {
+    // 尽力回滚目标名（内容仍在源）。回滚本身失败时也不吞掉原错误：目标名会残留，
+    // 但文件内容未丢；调用方拿到的是原错误（折 `tool_failed`），不是静默成功。
+    await unlink(目标).catch(() => {})
+    throw 错误
+  }
+}
+
+/**
  * 把 `材料/` 下的一份普通文件移到另一个已存在的材料子目录（017 FR-028 / FR-029）。
  *
  * 契约 `contracts/move-material-tool.md` §3 的 11 步**按序**执行：归档冻结 → 按属主拼项目根 →
  * `inside` → 顶层 `材料/` → `inGitOf` → 台账 / 目录根 → `lstat` 普通文件 → 目标目录存在 →
- * `realInside` → 同名拒 → `rename` → `迁移材料路径`。
+ * `realInside` → 同名拒 → 原子不覆盖移动（`link` + `unlink`） → `迁移材料路径`。
  *
  * 本工具**有意不加入** `写工具名`（`case-mcp-server.ts` 的 ②b 属主门）：HTTP 的移动 / 改名是
  * 成员级，加入会变成「UI 能移、AI 不能移」的第二套口径（契约 §2 末段）。这是**有意的例外**，
@@ -3090,19 +3118,14 @@ export async function move_material(
   if (!源目录在内 || !目标目录在内) throw new 工具错误("bad_input", LINK_ESCAPE)
 
   // ⑨ 目标 = 目标目录 + 源的末段；已存在 ⇒ 拒（不改名、不覆盖，FR-029）。
+  //    预检只为**文案**（快速、可读）；真正的竞态由 ⑩ 的原子原语兜住。
   const 目标 = join(目标目录, basename(源))
   if (await lstat(目标).then(() => true, () => false))
     throw new 工具错误("bad_input", "目标位置已经有同名文件")
 
-  // ⑩ `rename`；`EEXIST` / `ENOENT` 是预检与真写之间的竞态，文案与 HTTP `file.ts` 逐字一致。
-  try {
-    await rename(源, 目标)
-  } catch (错误) {
-    const 码 = typeof 错误 === "object" && 错误 !== null ? Reflect.get(错误, "code") : undefined
-    if (码 === "EEXIST" || 码 === "ENOENT")
-      throw new 工具错误("bad_input", "目标位置已经有同名文件，或源已经不在原处")
-    throw 错误
-  }
+  // ⑩ 原子不覆盖移动（`link` + `unlink`）：`rename` 会静默替换已存在的目标，不能用；
+  //    `EEXIST` / `ENOENT` 由 `link` 提供（预检与真写之间的竞态），文案与 HTTP `file.ts` 逐字一致。
+  await 移动文件不覆盖(源, 目标)
 
   // ⑪ 文件已移动后同步材料路径。失败**不回滚**：原因写进 `缺口`，返回仍是成功信封
   //    （与 HTTP `同步材料路径` 的 WARN 语义一致）。`作业目录` 是沙箱根相对前缀、按属主拼。

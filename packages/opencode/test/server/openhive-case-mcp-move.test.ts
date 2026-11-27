@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -11,7 +11,13 @@ import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { createCaseMcpServer, 新预算计数, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
 import { createMaterial, getMaterial } from "../../src/server/openhive/case-store"
-import { move_material, 工具错误, type 工具上下文, type 工具结果 } from "../../src/server/openhive/case-mcp-tools"
+import {
+  move_material,
+  工具错误,
+  移动文件不覆盖,
+  type 工具上下文,
+  type 工具结果,
+} from "../../src/server/openhive/case-mcp-tools"
 
 /**
  * 017 · Task 12：MCP 工具 `move_material` 的红用例（测试先行）。
@@ -659,3 +665,51 @@ function 查询文本(值: unknown): string {
   }
   return ""
 }
+
+// ─────────────────────── 原子不覆盖移动（helper 级，终审 I-1） ───────────────────────
+
+/**
+ * 这两条钉的是 `move_material` 第 ⑩ 步用的原语，不经过数据库与项目树：
+ * `rename(2)` 在目标已存在时**静默替换**（POSIX 与 win32 皆然），所以「不覆盖」
+ * 不能由它保证；`link` 的 `EEXIST` 才是原子判据。临时目录建在系统 temp 下，
+ * 每条用例自建自清（`afterEach`）。
+ */
+const 原子临时目录们: string[] = []
+const 建原子临时目录 = (): string => {
+  const 目录 = mkdtempSync(join(tmpdir(), "openhive-move-atomic-"))
+  原子临时目录们.push(目录)
+  return 目录
+}
+
+afterEach(() => {
+  for (const 目录 of 原子临时目录们.splice(0)) rmSync(目录, { recursive: true, force: true })
+})
+
+test("helper · 移动文件不覆盖：目标已存在 ⇒ bad_input，且源/目标内容都不变", async () => {
+  const 目录 = 建原子临时目录()
+  const 源 = join(目录, "源.txt")
+  const 目标 = join(目录, "目标.txt")
+  writeFileSync(源, "源内容")
+  writeFileSync(目标, "目标内容")
+
+  const 错误 = await 取错误(() => 移动文件不覆盖(源, 目标))
+
+  expect(错误 instanceof 工具错误).toBe(true)
+  expect(错误 instanceof 工具错误 ? 错误.code : undefined).toBe("bad_input")
+  expect(错误文案(错误)).toBe("目标位置已经有同名文件，或源已经不在原处")
+  expect(existsSync(源)).toBe(true)
+  expect(readFileSync(源, "utf8")).toBe("源内容")
+  expect(readFileSync(目标, "utf8")).toBe("目标内容")
+})
+
+test("helper · 移动文件不覆盖：正常移动 ⇒ 源消失、目标内容等于原源", async () => {
+  const 目录 = 建原子临时目录()
+  const 源 = join(目录, "源.txt")
+  const 目标 = join(目录, "目标.txt")
+  writeFileSync(源, "源内容")
+
+  await 移动文件不覆盖(源, 目标)
+
+  expect(existsSync(源)).toBe(false)
+  expect(readFileSync(目标, "utf8")).toBe("源内容")
+})

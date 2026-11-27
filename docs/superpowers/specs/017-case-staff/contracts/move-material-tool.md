@@ -53,7 +53,7 @@
 ④ 校验必填（inputSchema.required）      → bad_input           [服务级，既有：:919]
 ⑤ 收参数（键白名单 + 类型，未知键拒）      → bad_input           [分发表，既有：:606 起]
 ⑥ 归档冻结（工具内，新增）               → forbidden
-⑦ 参数与路径判定 → rename → 迁移材料路径  → bad_input / tool_failed
+⑦ 参数与路径判定 → 原子不覆盖移动（link+unlink） → 迁移材料路径  → bad_input / tool_failed
 ```
 
 `分发表` 的条目固定写成 `收参数<Parameters<typeof move_material>[1]>(args, ["路径", "目标目录"], [], [])`
@@ -108,9 +108,14 @@ HTTP 侧的现行调用点：`.../httpapi/middleware/project-location.ts:458-459
    `await Effect.runPromise(realInside(...))`（先例 `hgraph-ops.ts:323`），
    不在工具层重写 realpath 判据。
 9. 目标 = `join(目标目录绝对, basename(源))`；已存在 ⇒ `bad_input("目标位置已经有同名文件")`
-   （**不改名、不覆盖**，FR-029）。
-10. `rename(源, 目标)`；`EEXIST`/`ENOENT` ⇒ `bad_input("目标位置已经有同名文件，或源已经不在原处")`
-    （与 HTTP `file.ts:724` 逐字一致，含那点预检与真写之间的竞态）；其他错误 ⇒ `tool_failed`。
+   （**不改名、不覆盖**，FR-029）。这条预检**保留**，但只为文案；预检与真写之间的竞态
+   由第 10 步的原子原语兜住。
+10. 原子不覆盖移动：`link(源, 目标)` → `unlink(源)`。**不用 `rename(2)`**——POSIX 与 win32 上
+    目标已存在时它都静默替换（不抛错，目标被源覆盖、源消失）；`link` 对已存在的目标抛
+    `EEXIST`，这才是「不覆盖」的原子判据（前提：源与目标同卷，`realInside` 已保证同一项目树）。
+    `EEXIST`/`ENOENT` ⇒ `bad_input("目标位置已经有同名文件，或源已经不在原处")`
+    （与 HTTP `file.ts:724` 逐字一致；`ENOENT` 也覆盖「源已不在原处」）；其他错误 ⇒ `tool_failed`。
+    `unlink(源)` 失败时尽力回滚目标名（`unlink(目标).catch(() => {})`，内容仍在源），原错误照抛。
 11. `迁移材料路径(ctx.db, { projectId: 身份.projectId, 旧相对, 新相对, 作业目录: `${属主}/${身份.projectId}` })`
     ——`作业目录` 是**沙箱根相对**前缀（`case-store.ts:197`），按属主拼（与 HTTP 侧
     `file.ts:629` 的 `项目标识` 同一形状）。`旧相对`/`新相对` 由 `relative(项目根, 绝对)`

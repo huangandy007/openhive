@@ -107,8 +107,12 @@ class ReferenceTest(ValidateTestBase):
         """「## 基本信息」是自由填写元数据：案名/案号里的编号样式不参与引用扫描（T018）。"""
         path = project_path(self.root, CASE_INFO)
         text = read_text(path)
-        text = text.replace("| 案件名称 | 测试案件 |", "| 案件名称 | T018验收案件 |")
-        text = text.replace("| 案件编号 |  |", "| 案件编号 | A2026-001 |")
+        old = "| 案件名称 | 测试案件 |"
+        self.assertIn(old, text)
+        text = text.replace(old, "| 案件名称 | T018验收案件 |")
+        old = "| 案件编号 |  |"
+        self.assertIn(old, text)
+        text = text.replace(old, "| 案件编号 | A2026-001 |")
         write_text(path, text)
         payload = self.run_clean()
         self.assertEqual(False, "REF_MISSING" in codes_of(payload["errors"]))
