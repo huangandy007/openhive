@@ -143,6 +143,7 @@ T_STATUS = T_HEADER[4]
 P_ID = P_HEADER[0]
 P_NAME = P_HEADER[1]
 P_ROLE = P_HEADER[3]
+P_STATUS = P_HEADER[5]
 
 # data-model §7「跨文档」：人员台账 ↔ 抓捕对象清单（12 列主表）。
 ARREST_LIST = "专案协同/07-抓捕筹备/00-抓捕对象清单.md"
@@ -161,6 +162,10 @@ ORIGINAL_RECORDS_DIR = "专案协同/00-原始记录/"
 ORIGINAL_RECORD_MARKER = "已整理"
 ARREST_RECORD = "侦查/收网抓捕/00-收网记录.md"
 SUMMARY_TOTAL_KEY = "对象总数"
+SUMMARY_ARRIVED_KEY = "到案人数"
+SUMMARY_AT_LARGE_KEY = "在逃人数"
+P_ARRIVED_STATUS = "已到案"
+P_AT_LARGE_STATUS = "在逃"
 
 # data-model §4.1：我方新建文件命名正则（外部来件豁免）。
 NAME_DAILY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-每日动态\.md$")
@@ -1159,26 +1164,60 @@ def _summary_number(text, key):
     return None
 
 
-def _check_summary_total(ctx, arrest):
-    if arrest is None or not ctx.ws.isfile(ARREST_RECORD):
-        return
-    text = ctx.ws.read(ARREST_RECORD)
-    if text is None:
-        return
-    found = _summary_number(text, SUMMARY_TOTAL_KEY)
-    if found is None:
+def _ledger_status_count(ledger, status):
+    count = 0
+    for entry in ledger.entries:
+        if entry.row.get(P_STATUS, "").strip() == status:
+            count += 1
+    return count
+
+
+def _summary_warning(ctx, text, key, actual, source_label):
+    """收网记录的人数与台账计数不一致 ⇒ X_CONFLICT 警告（不阻断）。"""
+    found = _summary_number(text, key)
+    if found is None or actual is None:
         return
     value, line = found
-    count = _arrest_row_count(arrest[0])
-    if count == value:
+    if value == actual:
         return
     ctx.add_warning(
         ARREST_RECORD,
         line,
         "X_CONFLICT",
-        "%s：收网记录 %d ≠ 抓捕对象清单 %d 行"
-        % (SUMMARY_TOTAL_KEY, value, count),
+        "%s：收网记录 %d ≠ %s %d" % (key, value, source_label, actual),
     )
+
+
+def _check_summary_numbers(ctx, arrest, data):
+    if not ctx.ws.isfile(ARREST_RECORD):
+        return
+    text = ctx.ws.read(ARREST_RECORD)
+    if text is None:
+        return
+    if arrest is not None:
+        _summary_warning(
+            ctx,
+            text,
+            SUMMARY_TOTAL_KEY,
+            _arrest_row_count(arrest[0]),
+            "抓捕对象清单",
+        )
+    people = data.ledger("P")
+    if people is not None:
+        _summary_warning(
+            ctx,
+            text,
+            SUMMARY_ARRIVED_KEY,
+            _ledger_status_count(people, P_ARRIVED_STATUS),
+            "人员台账已到案",
+        )
+        _summary_warning(
+            ctx,
+            text,
+            SUMMARY_AT_LARGE_KEY,
+            _ledger_status_count(people, P_AT_LARGE_STATUS),
+            "人员台账在逃",
+        )
 
 
 def check_cross_document(ctx, data):
@@ -1221,7 +1260,7 @@ def check_cross_document(ctx, data):
                 person.get(P_ROLE, "").strip(),
                 row.get(ARREST_ROLE, "").strip(),
             )
-    _check_summary_total(ctx, arrest)
+    _check_summary_numbers(ctx, arrest, data)
 
 
 CHECKS = (

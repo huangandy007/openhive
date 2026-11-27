@@ -272,12 +272,15 @@ class CrossDocumentTest(ValidateTestBase):
         self.assert_only_codes(payload, {"REF_MISSING"})
         self.assertIn("P002", payload["errors"][0]["message"])
 
-    def _write_summary_total(self, value):
+    def _write_summary(self, key, value):
         path = project_path(self.root, ARREST_RECORD)
         text = read_text(path)
-        old = "| 对象总数 | |"
+        old = "| %s | |" % key
         self.assertIn(old, text)
-        write_text(path, text.replace(old, "| 对象总数 | %d |" % value, 1))
+        write_text(path, text.replace(old, "| %s | %d |" % (key, value), 1))
+
+    def _write_summary_total(self, value):
+        self._write_summary("对象总数", value)
 
     def test_summary_count_mismatch_is_a_warning(self):
         self._seed_people(
@@ -300,6 +303,40 @@ class CrossDocumentTest(ValidateTestBase):
         self._seed_people(p_row(pid="P001", name="张三", role="主犯"))
         self._seed_arrests(arrest_row(seq="1", pid="P001", name="张三", role="主犯"))
         self._write_summary_total(1)
+        self.run_ok()
+
+    def _seed_two_targets(self):
+        self._seed_people(
+            p_row(pid="P001", name="张三", role="主犯", status="已到案"),
+            p_row(pid="P002", name="李四", role="从犯", status="在逃"),
+        )
+        self._seed_arrests(
+            arrest_row(seq="1", pid="P001", name="张三", role="主犯"),
+            arrest_row(seq="2", pid="P002", name="李四", role="从犯"),
+        )
+
+    def test_arrived_count_mismatch_is_a_warning(self):
+        self._seed_two_targets()
+        self._write_summary("到案人数", 2)
+        code, payload, _ = call_json(self.root)
+        self.assertEqual(0, code, msg=payload)
+        self.assertEqual(set(), codes_of(payload["errors"]))
+        self.assertEqual({"X_CONFLICT"}, codes_of(payload["warnings"]))
+        self.assertIn("到案人数", payload["warnings"][0]["message"])
+
+    def test_at_large_count_mismatch_is_a_warning(self):
+        self._seed_two_targets()
+        self._write_summary("在逃人数", 2)
+        code, payload, _ = call_json(self.root)
+        self.assertEqual(0, code, msg=payload)
+        self.assertEqual(set(), codes_of(payload["errors"]))
+        self.assertEqual({"X_CONFLICT"}, codes_of(payload["warnings"]))
+        self.assertIn("在逃人数", payload["warnings"][0]["message"])
+
+    def test_arrived_and_at_large_counts_match_is_clean(self):
+        self._seed_two_targets()
+        self._write_summary("到案人数", 1)
+        self._write_summary("在逃人数", 1)
         self.run_ok()
 
 
