@@ -85,6 +85,12 @@
 - `code` 为稳定枚举（`E_SOURCE_MISSING`、`A_REVIEWER_MISSING`、`PATH_MISMATCH`、
   `NAME_ILLEGAL`、`DUP_ID`、`T_OVERDUE`、`X_CONFLICT`、`M_PENDING`、`L_UNRESOLVED` 等），
   新增 code 必须同时进本文件与用例；
+  核心检查（T005）另用：`FILE_MISSING`（核心台账缺失）、`TABLE_INVALID`（表格/表头解析失败）、
+  `REF_MISSING`（通用引用缺失：正文 E/A/L/T、D 来源记录、T 来源、V 对应L/依据E）、
+  `ID_MISMATCH`（文件名编号与台账行不一致）、`CHARGE_CLAIM`（结论含罪名认定）、
+  `E_LEGAL_KIND_INVALID`、`E_FIELD_MISSING`、`A_STATUS_INVALID`、`A_CYCLE`、
+  `V_RESULT_INVALID`、`T_STATUS_INVALID`、`D_REVIEWER_MISSING`、`M_UNREGISTERED`、
+  `STAGE_INVALID`、`INTERNAL_ERROR`；
 - 退出码：有错误 → `2`；无错误但有警告且 `--strict` → `1`；否则 `0`。
 
 **反向约束**（FR-082）：材料条目检查**排除** `00-材料登记表.md` 与 `.gitkeep`；
