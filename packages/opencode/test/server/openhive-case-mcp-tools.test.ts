@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as XLSX from "xlsx"
 import { sql } from "drizzle-orm"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { connect } from "@opencode-ai/auth/db"
 import { migrate } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
@@ -23,6 +24,7 @@ import {
   query_timeline,
   revoke_source_profile,
   search_materials,
+  sync_material_path,
   归一化限制,
   校验成员,
   解析实体,
@@ -1836,6 +1838,26 @@ async function 移动一次(): Promise<工具结果> {
   )
 }
 
+/** 017 修复守卫：造一份「记录路径与盘上位置不一致」的材料，调 sync 返回真实信封。 */
+async function 同步一次(): Promise<工具结果> {
+  const 身份同步 = { userId: "u-工具-甲", projectId: "p-工具-守卫-同步" }
+  const 项目根 = join(移动沙箱根, 身份同步.userId, 身份同步.projectId)
+  mkdirSync(join(项目根, "材料", "00-待归档"), { recursive: true })
+  writeFileSync(join(项目根, "材料", "00-待归档", "同步守卫.txt"), "同步守卫")
+  await createMaterial(库(), {
+    id: "m-守卫-同步",
+    projectId: 身份同步.projectId,
+    fileName: "同步守卫.txt",
+    kind: "其他",
+    fingerprint: Hash.sha256(Buffer.from("同步守卫")),
+    path: "材料/99-其他/同步守卫.txt",
+  })
+  return sync_material_path(
+    { ...ctx(身份同步), workspaceRoot: 移动沙箱根 },
+    { 路径: "材料/00-待归档/同步守卫.txt" },
+  )
+}
+
 test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的工具名", async () => {
   const 已注册 = new Set(工具名 as readonly string[])
   // 017 契约 §4：没有可执行的下一步时写 `（无）`——它不是工具名，但不许编造别的名字来绕过。
@@ -1929,6 +1951,8 @@ test("所有工具返回的 下一步 / 出处.可下钻 都指向已注册的�
     // 017 T014：`move_material` 的真实成功返回（它只在成功时返回信封，失败一律抛 `工具错误`）；
     // 真沙箱根 + 真文件，走生产出口。
     { 工具: "move_material", 结果: await 移动一次() },
+    // 017 修复：平台外移动后的重关联（真沙箱 + 真文件 + 真材料行）。
+    { 工具: "sync_material_path", 结果: await 同步一次() },
   ]
   const 违规: string[] = []
   let 检查条数 = 0

@@ -26,6 +26,7 @@ import {
   list_source_profiles,
   money_flow,
   move_material,
+  sync_material_path,
   query_entities,
   query_events,
   query_relations,
@@ -93,6 +94,8 @@ export const 工具名 = [
   "graph_remove",
   // 017 T013：材料移动（写工具；**有意不入** `写工具名`，口径见 case-mcp-tools.ts 的同名注释）。
   "move_material",
+  // 017 修复：平台外移动后的材料行重关联（写库、不搬盘；同 move_material 的成员级口径）。
+  "sync_material_path",
 ] as const
 
 export type 工具名 = (typeof 工具名)[number]
@@ -611,10 +614,31 @@ const TOOLS: readonly Tool[] = [
         },
         目标目录: {
           type: "string",
-          description: "目标目录，项目相对路径，必须是已存在的「材料/」下子目录，例如 材料/06-话单与资金",
+          description:
+            "目标目录，项目相对路径，必须是已存在的「材料/」下子目录，例如 材料/06-话单与资金/资金/张三",
         },
       },
       required: ["路径", "目标目录"],
+    },
+  },
+  {
+    name: "sync_material_path",
+    description:
+      "把平台里一条材料记录重新关联到这份文件现在所在的位置（按内容指纹匹配，不搬文件）。" +
+      "什么时候用：材料已在盘上、但文件树显示「未入队」或归档后「已解析」标志消失时；" +
+      "或 `move_material` 返回「材料路径未同步」后复核。" +
+      "什么时候别用：移动文件、改名、把从没入过库的文件登记成已解析——这些都不归它管。" +
+      "返回后照抄：`数据[0].解析状态` 原样写进回执；`已变更` 为 true 说明路径已改好，false 时看 `缺口`。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        路径: {
+          type: "string",
+          description:
+            "文件现在的项目相对路径，必须是「材料/」下已存在的普通文件，例如 材料/06-话单与资金/资金/张三/流水.xlsx",
+        },
+      },
+      required: ["路径"],
     },
   },
 ]
@@ -724,6 +748,8 @@ export const 分发表: Record<
     ),
   move_material: (ctx, args) =>
     move_material(ctx, 收参数<Parameters<typeof move_material>[1]>(args, ["路径", "目标目录"], [], [])),
+  sync_material_path: (ctx, args) =>
+    sync_material_path(ctx, 收参数<Parameters<typeof sync_material_path>[1]>(args, ["路径"], [], [])),
 }
 
 /**

@@ -37,7 +37,7 @@ except ImportError:  # 直接以脚本方式执行时 scripts 不是包
     from lib import constants, tables
 
 # 目录白名单与「初始化模板文件」以初始化脚本的清单为唯一出处（data-model §1.1/§1.2），
-# 避免校验器里再抄一份 39 个目录。
+# 避免校验器里再抄一份 41 个目录。
 try:
     from scripts import init_case
 except ImportError:  # 直接以脚本方式执行
@@ -180,6 +180,11 @@ NAME_POST_CASE_RE = re.compile(r"^P\d{3}-案后处理清单\.md$")
 NAME_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+-发放版\.md$")
 NAME_PERSON_DIR_RE = re.compile(r"^[PO]\d{3}-.+$")
 CHART_DIRECTORY = "图表"
+
+# `材料/06-话单与资金` 下按类、按人分目录（2026-11-27 修订）：固定两个三级分类目录，
+# 四级是纯人名目录（一份多人落 `多人/`，人名不明落 `待确认/`）。
+BILL_PARENT_DIRECTORY = "材料/06-话单与资金"
+BILL_DIRECTORIES = ("资金", "话单")
 
 # 自证类型：类型字母**后接**数字、`-` 或 `_` 即算（`T001-` 与 `T-任务` 都自证），
 # 否则 `T-任务.md` 这类缺编号的文件会漏报（修复轮 2）。
@@ -939,6 +944,32 @@ def check_materials(ctx, data):
         ctx.add(rel, 0, "M_UNREGISTERED", "材料文件没有对应的 M 行：%s" % rel)
 
 
+def check_bill_layout(ctx, data):
+    """`材料/06-话单与资金` 根下只允许 `.gitkeep`：流水/话单必须落到 `{资金,话单}/<人名>/`。
+
+    2026-11-27 真栈：旧技能把 75 份流水全平铺在 06 根下，M 行也指向根下路径
+    ⇒ `M_UNREGISTERED` 对不上、`NAME_ILLEGAL` 也只查目录名，平铺状态无人报错。
+    归档按人分目录是硬要求，所以在收尾校验里兜底。
+    """
+    base = ctx.ws.rel_path(BILL_PARENT_DIRECTORY)
+    if not os.path.isdir(base):
+        return
+    for name in sorted(os.listdir(base)):
+        if name.startswith("."):
+            continue
+        full = os.path.join(base, name)
+        if not os.path.isfile(full):
+            continue
+        rel = BILL_PARENT_DIRECTORY + "/" + name
+        ctx.add(
+            rel,
+            0,
+            "BILL_DIR_INVALID",
+            "话单/资金材料必须落到 资金/<户名>/ 或 话单/<机主>/，不得平铺在 %s 根下"
+            % BILL_PARENT_DIRECTORY,
+        )
+
+
 def check_stages(ctx, data):
     ledger = data.stages
     if ledger is None:
@@ -1012,6 +1043,16 @@ def _directory_allowed(rel, name):
     # 根级（不许新建）与其下的四级（如 `04-对象资料/图表/`）都报白名单外（轮 2b 更正）。
     if rel.count("/") == 2 and (
         name == CHART_DIRECTORY or NAME_PERSON_DIR_RE.match(name) is not None
+    ):
+        return True
+    # 2026-11-27 修订：`材料/06-话单与资金/{资金,话单}/<人名>/` 是第四个固定例外。
+    # 人名由归档时从户名/机主姓名得到，纯姓名（不占 P 编号）；非法字符与禁用词仍由
+    # `_name_issues` 拦截，其余目录层级仍报白名单外。
+    parts = rel.split("/")
+    if (
+        len(parts) == 4
+        and "/".join(parts[:2]) == BILL_PARENT_DIRECTORY
+        and parts[2] in BILL_DIRECTORIES
     ):
         return True
     return False
@@ -1318,6 +1359,7 @@ CHECKS = (
     check_tasks,
     check_documents,
     check_materials,
+    check_bill_layout,
     check_stages,
     check_naming,
     check_backlog,

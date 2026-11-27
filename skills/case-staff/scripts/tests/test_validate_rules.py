@@ -137,6 +137,61 @@ class NamingTest(ValidateTestBase):
         self.assert_only_codes(payload, {"NAME_ILLEGAL"})
         self.assertIn("禁用词", payload["errors"][0]["message"])
 
+    def test_bill_person_directory_is_allowed(self):
+        # 2026-11-27 修订：`材料/06-话单与资金/{资金,话单}/<人名>/` 合法。
+        path = "材料/06-话单与资金/资金/张三/张三建行流水.xlsx"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        self.run_clean()
+
+    def test_call_record_person_directory_is_allowed(self):
+        path = "材料/06-话单与资金/话单/李四/李四通话记录.csv"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        self.run_clean()
+
+    def test_bill_multi_person_and_unknown_directories_are_allowed(self):
+        for mid, name in (("M001", "多人"), ("M002", "待确认")):
+            path = "材料/06-话单与资金/资金/%s/汇总流水.xlsx" % name
+            write_text(project_path(self.root, path), "x")
+            append_row(self.root, M_LEDGER, m_row(mid=mid, path=path, status="已归档"))
+        self.run_clean()
+
+    def test_bill_unknown_class_directory_is_illegal(self):
+        # 06 下只允许 `资金/`、`话单/` 两个分类目录，`流水/` 不在白名单。
+        path = "材料/06-话单与资金/流水/说明.txt"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual("材料/06-话单与资金/流水/", payload["errors"][0]["file"])
+
+    def test_bill_flat_file_at_parent_is_illegal(self):
+        # 归档必须落到 `{资金,话单}/<人名>/`；平铺在 06 根下由校验器兜底报错
+        # （2026-11-27 真栈：旧技能把 75 份流水全平铺在 06 根下）。
+        path = "材料/06-话单与资金/张三建行流水.xlsx"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"BILL_DIR_INVALID"})
+        self.assertEqual(path, payload["errors"][0]["file"])
+
+    def test_bill_person_directory_with_forbidden_word_is_illegal(self):
+        path = "材料/06-话单与资金/资金/最新汇总/说明.txt"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual("材料/06-话单与资金/资金/最新汇总/", payload["errors"][0]["file"])
+
+    def test_bill_person_directory_at_fifth_level_is_illegal(self):
+        path = "材料/06-话单与资金/资金/张三/2026/说明.txt"
+        write_text(project_path(self.root, path), "x")
+        append_row(self.root, M_LEDGER, m_row(path=path, status="已归档"))
+        payload = self.run_with_errors()
+        self.assert_only_codes(payload, {"NAME_ILLEGAL"})
+        self.assertEqual("材料/06-话单与资金/资金/张三/2026/", payload["errors"][0]["file"])
+
     def test_new_material_category_directory_is_illegal(self):
         # 外部来件豁免只作用于文件名；目录白名单照查（评审 #3）。
         path = "材料/09-新类别/说明.txt"

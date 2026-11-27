@@ -1,6 +1,6 @@
 import { sql, type SQL } from "drizzle-orm"
 import { Effect } from "effect"
-import { link, lstat, stat, unlink } from "node:fs/promises"
+import { link, lstat, readFile, stat, unlink } from "node:fs/promises"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { rowsOf } from "@opencode-ai/auth/migrate"
@@ -16,9 +16,10 @@ import {
   type 下一步项,
   type 空原因值,
 } from "./case-envelope"
-import { getMaterial, 迁移材料路径, type Queryable } from "./case-store"
+import { Hash } from "@opencode-ai/core/util/hash"
+import { getMaterial, getMaterialByFingerprint, 迁移材料路径, type Queryable } from "./case-store"
 import { 材料目录名 } from "./case-parseable"
-import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside } from "./file"
+import { GIT_LOCKED, inside, inGitOf, LINK_ESCAPE, realInside, 清理归档空目录 } from "./file"
 import { 项目属主 } from "./project-actor"
 import { 解析出处 } from "./citation"
 import type { 调用身份 } from "./case-mcp-identity"
@@ -3151,8 +3152,12 @@ export async function move_material(
     缺口.push(`材料路径未同步（${类型}）：下次解析会按新路径自愈`)
   }
 
+  // ⑫ 归档搬空收件箱的子目录后不留空夹。与 HTTP 移动**同一个函数**（`清理归档空目录`）：
+  //    只在源就在 `材料/00-待归档/` 之下时动手，只删空目录；失败不让移动报错。
+  const 清掉 = await 清理归档空目录(项目根, 源)
+
   return {
-    摘要: `已移动 1 份：${相对源} → ${归一相对(项目根, 目标目录)}`,
+    摘要: `已移动 1 份：${相对源} → ${归一相对(项目根, 目标目录)}${清掉.length > 0 ? `；收件箱清掉 ${清掉.length} 个空目录` : ""}`,
     数据: [{ 旧路径: 相对源, 新路径: 新相对, 材料路径已同步: 已同步 }],
     口径: "只移动、不改名；材料路径由服务端迁移，未登记过的文件（非可解析扩展名）没有可迁移的行",
     缺口,
@@ -3171,6 +3176,138 @@ export async function move_material(
             工具: "search_materials",
             参数: { 关键词: basename(目标) },
             为什么: "确认平台是否已按新路径登记",
+          },
+        ],
+  }
+}
+
+/**
+ * 把**已经存在于盘上**的一份材料，按内容指纹重新关联到它现在所在的路径。
+ *
+ * 为什么需要它：材料行的身份是 `(project_id, fingerprint)`，但文件树的「已解析」徽标按
+ * `材料视图.path` 精确匹配。文件若在平台外被移动（例如旧版客户端没有移动工具、脚本 `mv`），
+ * 路径会与文件分家——材料行还在、状态还是「已解析」，界面却在新位置显示「未入队」。
+ * `move_material` / HTTP 移动都会同步路径，本工具是**平台外移动后的修复入口**，也让归档后
+ * 能复核「这份文件现在是否仍被认作已入库」。
+ *
+ * 只改材料记录的路径（以及排队中作业的 `source_path`），**不搬文件、不改名、不改解析状态、
+ * 不新建材料行**。找不到同指纹的行时如实回空原因——那份文件从未入过库，不是错误。
+ */
+export async function sync_material_path(
+  ctx: 工具上下文,
+  args: { 路径: string },
+): Promise<工具结果> {
+  // 与 move_material 同一道归档冻结（写操作在 MCP 入口自己补，落在任何文件系统访问之前）。
+  const 归档 = await archiveStatesOf(ctx.db, [ctx.身份.projectId])
+  if (ProjectMembership.frozen(归档.get(ctx.身份.projectId)?.archived ?? false)) {
+    throw new 工具错误("forbidden", "项目已归档，不能改动")
+  }
+
+  // 项目根恒按属主拼（共享项目的材料在属主沙箱里），与 move_material 同一条判据。
+  const 属主 = await 项目属主(ctx.db, ctx.身份.userId, ctx.身份.projectId)
+  const 项目根 = projectDirectory(移动沙箱根(ctx), 属主, ctx.身份.projectId)
+
+  const 绝对 = inside(项目根, args.路径)
+  if (绝对 === undefined) throw new 工具错误("bad_input", "路径越出项目目录")
+  const 相对 = 归一相对(项目根, 绝对)
+  if ((相对.split(/[\\/]/)[0] ?? "") !== 材料目录名)
+    throw new 工具错误("bad_input", `只能同步「${材料目录名}/」下的文件`)
+  if (相对 === `${材料目录名}/00-材料登记表.md`)
+    throw new 工具错误("bad_input", "材料登记表不是材料")
+  if (inGitOf(项目根, 绝对)) throw new 工具错误("bad_input", GIT_LOCKED)
+
+  // 必须是**已存在**的普通文件：同步的是「这份文件现在在哪」，目标不存在就无从取指纹。
+  const 信息 = await lstat(绝对).catch(() => undefined)
+  if (信息 === undefined) throw new 工具错误("bad_input", "文件不存在")
+  if (!信息.isFile()) throw new 工具错误("bad_input", "只能同步普通文件")
+  const 在内 = await Effect.runPromise(realInside(项目根, dirname(绝对)))
+  if (!在内) throw new 工具错误("bad_input", LINK_ESCAPE)
+
+  const 字节 = await readFile(绝对).catch(() => undefined)
+  if (字节 === undefined) throw new 工具错误("bad_input", "文件读不出来")
+  const 材料 = await getMaterialByFingerprint(ctx.db, ctx.身份.projectId, Hash.sha256(字节))
+
+  if (材料 === undefined) {
+    return {
+      摘要: `未关联：平台没有「${basename(绝对)}」这份内容的入库记录`,
+      数据: [],
+      口径: "按文件内容指纹找材料行；没有记录时保持现状，不新建材料行，也不改动文件",
+      缺口: [],
+      空原因: "材料未入库",
+      出处: [],
+      下一步: [
+        {
+          工具: "（无）",
+          参数: {},
+          为什么: "这份材料还没入过库；需要入库时在文件树右键「解析」",
+        },
+      ],
+    }
+  }
+
+  const 行 = {
+    材料id: 材料.id,
+    文件名: 材料.fileName,
+    旧路径: 材料.path,
+    新路径: 相对,
+    解析状态: 材料.parseStatus,
+  }
+
+  if (材料.path === 相对) {
+    return {
+      摘要: `已关联，无需变更：${相对}（解析状态：${材料.parseStatus}）`,
+      数据: [{ ...行, 已变更: false }],
+      口径: "只同步材料记录路径，不搬文件、不改名、不改解析状态；路径已一致时不写库",
+      缺口: [],
+      空原因: null,
+      出处: [{ 事实: `材料「${材料.fileName}」的解析状态为 ${材料.parseStatus}`, 代表: 材料.id, 可下钻: "query_rows" }],
+      下一步: [
+        {
+          工具: "search_materials",
+          参数: { 关键词: 材料.fileName },
+          为什么: "需要时可以再核对平台记录与盘上文件",
+        },
+      ],
+    }
+  }
+
+  const 缺口: string[] = []
+  let 已变更 = true
+  try {
+    await 迁移材料路径(ctx.db, {
+      projectId: ctx.身份.projectId,
+      旧相对: 材料.path,
+      新相对: 相对,
+      作业目录: `${属主}/${ctx.身份.projectId}`,
+    })
+  } catch (错误) {
+    已变更 = false
+    const 类型 = 错误 instanceof Error && 错误.name !== "" ? 错误.name : typeof 错误
+    缺口.push(`材料路径未同步（${类型}）：可重试；文件本身没有改动`)
+  }
+
+  return {
+    摘要: 已变更
+      ? `已重新关联：${材料.fileName} 从 ${材料.path} 移到 ${相对}（解析状态：${材料.parseStatus}）`
+      : `重新关联失败：${材料.fileName} 的材料记录仍在 ${材料.path}`,
+    数据: [{ ...行, 已变更 }],
+    口径: "只同步材料记录路径，不搬文件、不改名、不改解析状态；命中同一内容指纹才改",
+    缺口,
+    空原因: null,
+    出处: [{ 事实: `材料「${材料.fileName}」的解析状态为 ${材料.parseStatus}`, 代表: 材料.id, 可下钻: "query_rows" }],
+    下一步: 已变更
+      ? [
+          {
+            工具: "（无）",
+            参数: {},
+            为什么: "把材料登记表的当前路径更新为新路径；解析状态已保留，无需重新解析",
+          },
+        ]
+      : [
+          {
+            工具: "search_materials",
+            参数: { 关键词: 材料.fileName },
+            为什么: "确认平台记录与盘上文件是否一致；必要时重试",
           },
         ],
   }

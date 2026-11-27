@@ -187,6 +187,30 @@ export async function getMaterialByPath(
   return row ? mapMaterialRow(row) : undefined
 }
 
+/**
+ * 按**内容指纹**取材料行（`(project_id, fingerprint)` 是幂等键，唯一）。
+ *
+ * 与 `getMaterialByPath` 的分工：路径是「文件现在在哪」，指纹是「这是哪份内容」。
+ * 文件被平台外移动后路径会陈旧，按指纹仍能找回同一行——`sync_material_path` 据此重关联。
+ */
+export async function getMaterialByFingerprint(
+  db: Queryable,
+  projectId: string,
+  fingerprint: string,
+): Promise<MaterialRow | undefined> {
+  const rows = rowsOf(
+    await db.execute(sql`
+      select id, project_id, file_name, kind, fingerprint, path, parse_status,
+             parse_detail, queued_by, clock_offset_sec
+      from auth.case_material
+      where project_id = ${projectId} and fingerprint = ${fingerprint}
+      limit 1
+    `),
+  )
+  const row = rows[0]
+  return row ? mapMaterialRow(row) : undefined
+}
+
 export interface 迁移材料路径Input {
   projectId: string
   /** 旧的项目内相对路径（`/` 分隔）。文件是整条路径，目录是它的前缀。 */

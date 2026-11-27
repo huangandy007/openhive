@@ -3,7 +3,7 @@
 契约见 ``docs/superpowers/specs/017-case-staff/contracts/case-staff-commands.md`` §1，
 精确清单见 ``docs/superpowers/specs/017-case-staff/data-model.md`` §1：
 
-- 39 个目录、22 份模板文件、27 份 ``.gitkeep``（合计 49 个文件）；
+- 41 个目录、22 份模板文件、28 份 ``.gitkeep``（合计 50 个文件）；
 - 只把新建 ``案件信息.md`` 中的 ``{{案名}}`` / ``{{案号}}`` 替换成入参，其余模板原样复制；
 - 幂等：已存在文件一律保留、不覆盖，第二次运行 ``created_*`` 为空；
 - 预检失败（退出码 1）与 ``--dry-run`` 都**磁盘零改动**；内部异常退出码 2；
@@ -23,7 +23,7 @@ import uuid
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_DIR, "assets")
 
-# data-model §1.1：39 个目录（父目录与子目录都列）。
+# data-model §1.1：41 个目录（父目录与子目录都列）。
 DIRECTORIES = (
     "材料",
     "材料/00-待归档",
@@ -33,6 +33,8 @@ DIRECTORIES = (
     "材料/04-技术侦查",
     "材料/05-视频侦查",
     "材料/06-话单与资金",
+    "材料/06-话单与资金/资金",
+    "材料/06-话单与资金/话单",
     "材料/07-讯问询问",
     "材料/08-鉴定检验",
     "材料/99-其他",
@@ -92,7 +94,7 @@ TEMPLATE_FILES = (
     ("法律适用/00-索引.md", "法律适用-索引.template.md"),
 )
 
-# data-model §1.3：27 个初始化后为空的叶子目录（各放一个空 ``.gitkeep``）。
+# data-model §1.3：28 个初始化后为空的叶子目录（各放一个空 ``.gitkeep``）。
 GITKEEP_DIRECTORIES = (
     "材料/00-待归档",
     "材料/01-接报案",
@@ -100,7 +102,8 @@ GITKEEP_DIRECTORIES = (
     "材料/03-勘验检查辨认",
     "材料/04-技术侦查",
     "材料/05-视频侦查",
-    "材料/06-话单与资金",
+    "材料/06-话单与资金/资金",
+    "材料/06-话单与资金/话单",
     "材料/07-讯问询问",
     "材料/08-鉴定检验",
     "材料/99-其他",
@@ -178,6 +181,25 @@ def _is_within(root_real, target_real):
     return os.path.normcase(common) == root_real
 
 
+# 平台把技能以链接挂进项目：`<root>/.opencode/skill/<assetId>` → 发布目录（junction）。
+# 它不是越界写入风险——init 只写 DIRECTORIES / TEMPLATE_BY_TARGET，二者都不在 `.opencode/` 下；
+# 但旧逻辑把它当 SYMLINK_OUTSIDE 拒跑，AI 只能「复制成真目录」绕路，而真目录会被平台对账
+# 判成手写目录、永不更新（2026-11-27 真栈实测：技能冻结在初始化那一刻）。
+# 放行只认「真的是技能挂载」：目标目录里必须有 SKILL.md（fail-closed）。
+PLATFORM_SKILL_DIRECTORIES = (".opencode/skill", ".opencode/skills")
+
+
+def _is_platform_skill_mount(root, full):
+    relative = os.path.relpath(full, root).replace(os.sep, "/")
+    parts = relative.split("/")
+    if len(parts) != 3 or "/".join(parts[:2]) not in PLATFORM_SKILL_DIRECTORIES:
+        return False
+    try:
+        return os.path.isdir(full) and os.path.isfile(os.path.join(full, "SKILL.md"))
+    except OSError:
+        return False
+
+
 def find_symlinks_outside(root):
     """递归（不跟随链接）找出解析目标落在项目根之外的链接，返回项目相对路径。"""
     root_real = os.path.normcase(os.path.realpath(root))
@@ -192,6 +214,8 @@ def find_symlinks_outside(root):
         for name in names:
             full = os.path.join(current, name)
             if _is_link_like(full):
+                if _is_platform_skill_mount(root, full):
+                    continue
                 target_real = os.path.normcase(os.path.realpath(full))
                 if not _is_within(root_real, target_real):
                     found.append(os.path.relpath(full, root).replace(os.sep, "/"))

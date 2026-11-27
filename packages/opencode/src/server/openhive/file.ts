@@ -148,7 +148,7 @@ import { User } from "@opencode-ai/core/user"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Cause, Config as EffectConfig, Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { access, copyFile, constants, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
+import { access, copyFile, constants, lstat, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import {
   Uint8ArrayReader,
@@ -484,6 +484,47 @@ export function inside(base: string, input: string): string | undefined {
  */
 const relativePath = (base: string, absolute: string) => relative(base, absolute).split(sep).join("/")
 
+/** 收件箱（上传落点）的单层名。归档 = 从它下面搬走，搬空的子目录没有留存意义。 */
+const 收件箱目录名 = "00-待归档"
+
+/**
+ * 归档移动之后清理收件箱里的空目录（2026-11-27 用户报：归档后收件箱里剩空文件夹）。
+ *
+ * **只在源就在 `材料/00-待归档/` 之下时触发**——那是「归档」这个方向；往收件箱里搬
+ * （退件、暂存）不清理，免得把刚落位的目录顺手删掉。`源` 是被移走那一项的**旧绝对路径**
+ * （文件或目录都行，判的是它原来所在的那一层）。
+ *
+ * 只删**空**目录：先递归子目录，再删自己；有文件、有 `.gitkeep` 的都留着。`rmdir` 本身
+ * 对非空目录会拒，所以与并发上传的竞态也是安全的（不会删掉刚写进文件的目录）。
+ *
+ * 尽力而为：归档已经完成，清理成败不该让移动报错——失败只是少删几条，返回删掉的相对路径。
+ */
+export async function 清理归档空目录(项目根: string, 源: string): Promise<string[]> {
+  const 收件箱 = join(项目根, 材料目录名, 收件箱目录名)
+  const 源目录 = dirname(源)
+  if (源目录 !== 收件箱 && inside(收件箱, 源目录) === undefined) return []
+
+  const 删掉: string[] = []
+  const 扫 = async (目录: string): Promise<void> => {
+    const 条目 = await readdir(目录, { withFileTypes: true }).catch(() => [])
+    for (const 项 of 条目) {
+      // `isDirectory()` 对符号链接为 false ⇒ 链接不会被当成目录删。
+      if (!项.isDirectory()) continue
+      const 子 = join(目录, 项.name)
+      await 扫(子)
+      const 空了 = await rmdir(子).then(
+        () => true,
+        () => false,
+      )
+      if (空了) 删掉.push(relativePath(项目根, 子))
+    }
+  }
+  // 收件箱本身不在（整个被移走 / 还没初始化）⇒ 没有可清理的。
+  if (!(await lstat(收件箱).then((信息) => 信息.isDirectory(), () => false))) return []
+  await 扫(收件箱)
+  return 删掉
+}
+
 /** 链接把落点带出了项目——各出口共用一句话，免得同一件事长出多种措辞。 */
 export const LINK_ESCAPE = "这个位置经过链接指向了项目外面（链接不算项目内的路径）"
 
@@ -726,7 +767,11 @@ function handleTransfer(
     }
 
     // 只有 move 会搬走源：copy 之后原件还在原路径，材料行不该跟着复制件跑（复制件没有材料行）。
-    if (mode === "move") yield* 同步材料路径(pg, root, project, source, target)
+    if (mode === "move") {
+      yield* 同步材料路径(pg, root, project, source, target)
+      // 归档搬空收件箱的子目录后不留空夹；判据只此一份（MCP 的 `move_material` 同一函数）。
+      yield* Effect.promise(() => 清理归档空目录(project, source))
+    }
     return Made(relativePath(project, target))
   })
 }

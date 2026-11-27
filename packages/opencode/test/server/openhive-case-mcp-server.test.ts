@@ -151,7 +151,7 @@ afterAll(async () => {
   restorePoolMax()
 })
 
-test("tools/list 返回 20 个工具，名字与设计 §7.1 + T012 的 5 个图工具 + 017 的 move_material 逐字一致", async () => {
+test("tools/list 返回 21 个工具，名字与设计 §7.1 + T012 的 5 个图工具 + 017 的 move / sync 逐字一致", async () => {
   const tools = (await client.listTools()).tools.map((t) => t.name).sort()
   expect(tools).toEqual([
     "aggregate_money",
@@ -174,6 +174,7 @@ test("tools/list 返回 20 个工具，名字与设计 §7.1 + T012 的 5 个图
     "query_timeline",
     "revoke_source_profile",
     "search_materials",
+    "sync_material_path",
   ])
 })
 
@@ -191,8 +192,8 @@ test("每个非图工具的描述都写清 什么时候用 / 什么时候别用 
   // 不按 015 的三段式写；它的七字段口径在契约 §4，不靠描述补第三段。T013 曾整条把它排除，
   // T014 收窄成**两段可断言**：仍检查它写了什么、顺序对不对，但只检查它合同上的那两段（M1）。
   const tools = (await client.listTools()).tools.filter((条) => !条.name.startsWith("graph_"))
-  // 20 个工具里 5 个图工具不在本文件 ⇒ 15 个信封工具，一个都不能漏。
-  expect(tools).toHaveLength(15)
+  // 21 个工具里 5 个图工具不在本文件 ⇒ 16 个信封工具，一个都不能漏。
+  expect(tools).toHaveLength(16)
   for (const 工具 of tools) {
     const 描述 = 工具.description ?? ""
     const 应有 = 工具.name === "move_material" ? 三段标记.slice(0, 2) : 三段标记

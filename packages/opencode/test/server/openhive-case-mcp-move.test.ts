@@ -1,18 +1,30 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { sql, type SQL } from "drizzle-orm"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { connect } from "@opencode-ai/auth/db"
-import { migrate } from "@opencode-ai/auth/migrate"
+import { migrate, rowsOf } from "@opencode-ai/auth/migrate"
 import { restorePoint, startProductionDb } from "@opencode-ai/auth/test-support"
 import { projectDirectory } from "@opencode-ai/auth/workspace"
 import { createCaseMcpServer, 新预算计数, type 调用留痕 } from "../../src/server/openhive/case-mcp-server"
 import { createMaterial, getMaterial } from "../../src/server/openhive/case-store"
+import { Hash } from "@opencode-ai/core/util/hash"
 import {
   move_material,
+  sync_material_path,
   工具错误,
   移动文件不覆盖,
   type 工具上下文,
@@ -491,6 +503,178 @@ test("补 · 缺 workspaceRoot ⇒ 抛普通 Error（折 tool_failed），不拿
   // 不是 `工具错误`：分发处据此折成 `tool_failed`，而不是被演成一条 `bad_input`。
   expect(错误 instanceof 工具错误).toBe(false)
   expect(错误文案(错误)).toContain("workspaceRoot")
+})
+
+// ─────────────────────── sync_material_path：平台外移动后的按指纹重关联 ───────────────────────
+
+interface 同步行 {
+  材料id: string
+  文件名: string
+  旧路径: string
+  新路径: string
+  解析状态: string
+  已变更: boolean
+}
+const 同步行们 = (结果: 工具结果) => 结果.数据 as 同步行[]
+
+test("用例 15 · 文件被平台外移动：sync_material_path 按内容指纹把旧材料行改指新路径，解析状态不变", async () => {
+  const projectId = "p-同步-陈旧路径"
+  const 根 = 建项目(projectId, ["材料/06-话单与资金"])
+  const 内容 = "户名,交易日期,金额\n张三,2026-11-01,500000\n"
+  const 旧相对 = "材料/00-待归档/流水.xlsx"
+  const 新相对 = "材料/06-话单与资金/流水.xlsx"
+  // 模拟「平台外移动」：同内容换个路径，磁盘上旧位置不再有文件。
+  写文件(根, 旧相对, 内容)
+  mkdirSync(join(根, "材料", "06-话单与资金"), { recursive: true })
+  renameSync(join(根, ...旧相对.split("/")), join(根, ...新相对.split("/")))
+
+  await createMaterial(库(), {
+    id: "m-同步-陈旧",
+    projectId,
+    fileName: "流水.xlsx",
+    kind: "资金",
+    fingerprint: Hash.sha256(Buffer.from(内容)),
+    path: 旧相对,
+  })
+  // 已入库的材料行：解析状态是这次修复最不能丢的东西。
+  await 库().execute(sql`update auth.case_material set parse_status = '已解析' where id = ${"m-同步-陈旧"}`)
+
+  const 结果 = await sync_material_path(工具ctx({ userId: 属主, projectId }), { 路径: 新相对 })
+
+  const 行 = 同步行们(结果)[0]
+  expect(行).toMatchObject({
+    材料id: "m-同步-陈旧",
+    文件名: "流水.xlsx",
+    旧路径: 旧相对,
+    新路径: 新相对,
+    解析状态: "已解析",
+    已变更: true,
+  })
+  expect(结果.缺口).toEqual([])
+  expect(结果.空原因).toBeNull()
+
+  const 材料 = await getMaterial(库(), projectId, "m-同步-陈旧")
+  expect(材料?.path).toBe(新相对)
+  expect(材料?.parseStatus).toBe("已解析")
+  // 工具只改记录，不搬文件：新位置仍在、旧位置仍空。
+  expect(existsSync(join(根, ...新相对.split("/")))).toBe(true)
+  expect(existsSync(join(根, ...旧相对.split("/")))).toBe(false)
+})
+
+test("用例 16 · 平台没有对应指纹的材料行 ⇒ 空原因，且不新建行", async () => {
+  const projectId = "p-同步-无行"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/00-待归档/没入过库.txt", "从没入队的文件")
+
+  const 结果 = await sync_material_path(工具ctx({ userId: 属主, projectId }), {
+    路径: "材料/00-待归档/没入过库.txt",
+  })
+
+  expect(结果.数据).toEqual([])
+  expect(结果.空原因).not.toBeNull()
+  expect(结果.摘要).toContain("没有")
+  const 行们 = rowsOf(await 库().execute(sql`select id from auth.case_material where project_id = ${projectId}`))
+  expect(行们.length).toBe(0)
+})
+
+test("用例 17 · 记录路径已经正确 ⇒ 已变更=false，解析状态照旧返回", async () => {
+  const projectId = "p-同步-已一致"
+  const 根 = 建项目(projectId)
+  const 内容 = "已经关联好的正文"
+  const 相对 = "材料/00-待归档/一致.txt"
+  写文件(根, 相对, 内容)
+  await createMaterial(库(), {
+    id: "m-同步-一致",
+    projectId,
+    fileName: "一致.txt",
+    kind: "其他",
+    fingerprint: Hash.sha256(Buffer.from(内容)),
+    path: 相对,
+  })
+
+  const 结果 = await sync_material_path(工具ctx({ userId: 属主, projectId }), { 路径: 相对 })
+
+  const 行 = 同步行们(结果)[0]
+  expect(行).toMatchObject({ 旧路径: 相对, 新路径: 相对, 已变更: false })
+  expect(行.解析状态).toBe("未入队")
+})
+
+test("用例 18 · 只能同步「材料/」下的普通文件：越界/目录/不存在一律 bad_input", async () => {
+  const projectId = "p-同步-坏路径"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/00-待归档/正常.txt", "正文")
+
+  for (const 路径 of ["项目说明.md", "材料", "材料/00-待归档/不存在.txt", "材料/00-待归档"]) {
+    const 错误 = await 取错误(() => sync_material_path(工具ctx({ userId: 属主, projectId }), { 路径 }))
+    expect({ 路径, code: 错误 instanceof 工具错误 ? 错误.code : undefined }).toEqual({
+      路径,
+      code: "bad_input",
+    })
+  }
+})
+
+// ───────────────────────── 收件箱空目录：归档搬空后不该留下空文件夹 ─────────────────────────
+
+test("用例 19 · 归档搬空收件箱的子目录 ⇒ 子目录删除，收件箱本身与 .gitkeep 保留", async () => {
+  const projectId = "p-空夹-搬空"
+  const 根 = 建项目(projectId, ["材料/06-话单与资金"])
+  写文件(根, "材料/00-待归档/.gitkeep", "")
+  写文件(根, "材料/00-待归档/111/流水.txt", "户名,金额\n张三,1\n")
+
+  await move_material(工具ctx({ userId: 属主, projectId }), {
+    路径: "材料/00-待归档/111/流水.txt",
+    目标目录: "材料/06-话单与资金",
+  })
+
+  expect(existsSync(join(根, "材料", "06-话单与资金", "流水.txt"))).toBe(true)
+  expect(existsSync(join(根, "材料", "00-待归档", "111"))).toBe(false)
+  // 收件箱是上传落点，必须留着；它的 .gitkeep 也不动。
+  expect(existsSync(join(根, "材料", "00-待归档"))).toBe(true)
+  expect(existsSync(join(根, "材料", "00-待归档", ".gitkeep"))).toBe(true)
+})
+
+test("用例 20 · 子目录里还有别的文件（或只有 .gitkeep）⇒ 一律保留", async () => {
+  const projectId = "p-空夹-非空"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/00-待归档/有人/流水.txt", "户名,金额\n张三,1\n")
+  写文件(根, "材料/00-待归档/有人/另一份.txt", "还要留着")
+  写文件(根, "材料/00-待归档/留档/.gitkeep", "")
+
+  await move_material(工具ctx({ userId: 属主, projectId }), {
+    路径: "材料/00-待归档/有人/流水.txt",
+    目标目录: "材料/01-接报案",
+  })
+
+  expect(existsSync(join(根, "材料", "00-待归档", "有人", "另一份.txt"))).toBe(true)
+  expect(existsSync(join(根, "材料", "00-待归档", "留档", ".gitkeep"))).toBe(true)
+})
+
+test("用例 21 · 收件箱里手建的空目录（含嵌套）⇒ 归档移动后一并清掉", async () => {
+  const projectId = "p-空夹-手建"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/00-待归档/流水.txt", "正文")
+  mkdirSync(join(根, "材料", "00-待归档", "111", "子空壳"), { recursive: true })
+
+  await move_material(工具ctx({ userId: 属主, projectId }), {
+    路径: "材料/00-待归档/流水.txt",
+    目标目录: "材料/01-接报案",
+  })
+
+  expect(existsSync(join(根, "材料", "00-待归档", "111"))).toBe(false)
+})
+
+test("用例 22 · 往收件箱里搬（不是归档）⇒ 不触发清理", async () => {
+  const projectId = "p-空夹-搬入"
+  const 根 = 建项目(projectId)
+  写文件(根, "材料/01-接报案/退件.txt", "正文")
+  mkdirSync(join(根, "材料", "00-待归档", "手建"), { recursive: true })
+
+  await move_material(工具ctx({ userId: 属主, projectId }), {
+    路径: "材料/01-接报案/退件.txt",
+    目标目录: "材料/00-待归档",
+  })
+
+  expect(existsSync(join(根, "材料", "00-待归档", "手建"))).toBe(true)
 })
 
 // ─────────────────────── 工具层探针：项目根恒按**属主**拼，不是按调用者 ───────────────────────

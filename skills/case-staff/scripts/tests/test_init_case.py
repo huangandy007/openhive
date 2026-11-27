@@ -1,7 +1,7 @@
 """``init_case.py`` 的行为测试（T004 / TR-002、TR-003）。
 
 断言对象是「行为与集合」而不是文案措辞（TR-011）：
-- 精确集合：39 目录 / 22 模板文件 / 27 ``.gitkeep``（data-model §1）；
+- 精确集合：41 目录 / 22 模板文件 / 28 ``.gitkeep``（data-model §1）；
 - 幂等：第二次 ``created_*`` 为空、既有文件内容哈希不变；
 - 非覆盖：已存在文件记入 ``kept_files``、内容一字不改；
 - ``--dry-run`` 磁盘零改动；
@@ -34,7 +34,7 @@ SCRIPTS_DIR = os.path.dirname(HERE)
 SCRIPT_PATH = os.path.join(SCRIPTS_DIR, "init_case.py")
 ASSETS_DIR = os.path.join(os.path.dirname(SCRIPTS_DIR), "assets")
 
-# data-model §1.1：39 个目录（父目录与子目录都列）。
+# data-model §1.1：41 个目录（父目录与子目录都列）。
 EXPECTED_DIRECTORIES = {
     "材料",
     "材料/00-待归档",
@@ -44,6 +44,8 @@ EXPECTED_DIRECTORIES = {
     "材料/04-技术侦查",
     "材料/05-视频侦查",
     "材料/06-话单与资金",
+    "材料/06-话单与资金/资金",
+    "材料/06-话单与资金/话单",
     "材料/07-讯问询问",
     "材料/08-鉴定检验",
     "材料/99-其他",
@@ -103,7 +105,7 @@ EXPECTED_TEMPLATE_FILES = {
     "法律适用/00-索引.md",
 }
 
-# data-model §1.3：27 个空叶子目录。
+# data-model §1.3：28 个空叶子目录。
 EXPECTED_GITKEEP_DIRECTORIES = {
     "材料/00-待归档",
     "材料/01-接报案",
@@ -111,7 +113,8 @@ EXPECTED_GITKEEP_DIRECTORIES = {
     "材料/03-勘验检查辨认",
     "材料/04-技术侦查",
     "材料/05-视频侦查",
-    "材料/06-话单与资金",
+    "材料/06-话单与资金/资金",
+    "材料/06-话单与资金/话单",
     "材料/07-讯问询问",
     "材料/08-鉴定检验",
     "材料/99-其他",
@@ -175,6 +178,27 @@ def read_text(path):
 def read_bytes(path):
     with open(path, "rb") as handle:
         return handle.read()
+
+
+def make_dir_link(target, link):
+    """建一条目录链接（优先 ``os.symlink``，Windows 无权限时退回 junction）。
+
+    平台的技能挂载在 Windows 上就是 junction；用例必须覆盖这种真实形态，
+    不能因为测试机没开开发者模式就整条跳掉。
+    """
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if os.name != "nt":
+        return False
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", link, target],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 class InitCaseTestBase(unittest.TestCase):
@@ -451,12 +475,50 @@ class PrecheckTest(InitCaseTestBase):
         )
         self.assertEqual(before, snapshot(self.root))
 
+    def _create_skill_mount(self, target_name, with_skill_md):
+        target = self.new_root(target_name)
+        if with_skill_md:
+            with open(os.path.join(target, "SKILL.md"), "w", encoding="utf-8") as handle:
+                handle.write("---\nname: 测试技能\n---\n")
+        mount = os.path.join(self.root, ".opencode", "skill")
+        os.makedirs(mount)
+        link = os.path.join(mount, "asset_test")
+        if not make_dir_link(target, link):
+            self.skipTest("本机无法创建目录链接（symlink 与 junction 均失败）")
+        return link
+
+    def test_platform_skill_mount_is_not_treated_as_symlink_outside(self):
+        # 平台把技能挂成 `<project>/.opencode/skill/<assetId>` → 发布目录（junction）。
+        # 它不是「越界写入风险」，初始化不该因此拒跑；拒跑会逼出「复制副本」，
+        # 副本被对账判为手写目录后永不更新（2026-11-27 真栈实测）。
+        link = self._create_skill_mount("assets-global", with_skill_md=True)
+        payload = self.init_ok()
+        self.assertFalse(
+            any(e.startswith("SYMLINK_OUTSIDE:") for e in payload["errors"]),
+            msg=payload["errors"],
+        )
+        self.assertEqual(True, os.path.isdir(os.path.join(self.root, "材料/06-话单与资金/资金")))
+        self.assertEqual(True, os.path.isfile(os.path.join(link, "SKILL.md")))
+
+    def test_skill_mount_without_skill_md_is_still_rejected(self):
+        # 放行只给「真的是技能挂载」的目录；目标没有 SKILL.md 仍按越界拒绝。
+        self._create_skill_mount("assets-empty", with_skill_md=False)
+        code, payload, _ = call_json(
+            ["--root", self.root, "--case-name", "测试案件", "--json"]
+        )
+        self.assertEqual(1, code)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(
+            any(e.startswith("SYMLINK_OUTSIDE:") for e in payload["errors"]),
+            msg=payload["errors"],
+        )
+
 
 class CreationSetTest(InitCaseTestBase):
     def test_exact_directory_set_is_created(self):
         payload = self.init_ok()
         self.assertEqual(EXPECTED_DIRECTORIES, set(payload["created_directories"]))
-        self.assertEqual(39, len(payload["created_directories"]))
+        self.assertEqual(41, len(payload["created_directories"]))
         for rel in payload["created_directories"]:
             full = os.path.join(self.root, *rel.split("/"))
             self.assertTrue(os.path.isdir(full), msg=rel)
@@ -471,25 +533,25 @@ class CreationSetTest(InitCaseTestBase):
         payload = self.init_ok()
         created = set(payload["created_files"])
         self.assertEqual(EXPECTED_GITKEEP_FILES, created & EXPECTED_GITKEEP_FILES)
-        self.assertEqual(27, len(created & EXPECTED_GITKEEP_FILES))
+        self.assertEqual(28, len(created & EXPECTED_GITKEEP_FILES))
 
-    def test_created_files_total_is_49_and_sorted(self):
+    def test_created_files_total_is_50_and_sorted(self):
         payload = self.init_ok()
         self.assertEqual(EXPECTED_FILES, set(payload["created_files"]))
-        self.assertEqual(49, len(payload["created_files"]))
+        self.assertEqual(50, len(payload["created_files"]))
         self.assertEqual(sorted(payload["created_files"]), payload["created_files"])
         self.assertEqual(
             sorted(payload["created_directories"]), payload["created_directories"]
         )
         self.assertEqual([], payload["kept_files"])
 
-    def test_root_snapshot_keys_are_exactly_39_dirs_and_49_files(self):
+    def test_root_snapshot_keys_are_exactly_41_dirs_and_50_files(self):
         self.init_ok()
         keys = set(snapshot(self.root))
         expected = {directory + "/" for directory in EXPECTED_DIRECTORIES}
         expected |= EXPECTED_FILES
         self.assertEqual(expected, keys)
-        self.assertEqual(88, len(keys))
+        self.assertEqual(91, len(keys))
 
     def test_upload_dependency_structures_exist(self):
         self.init_ok()
@@ -646,7 +708,7 @@ class DryRunTest(InitCaseTestBase):
         payload = self.init_ok(dry_run=True)
         self.assertEqual([], payload["created_directories"])
         self.assertEqual(["证据/证据索引.md"], payload["created_files"])
-        self.assertEqual(48, len(payload["kept_files"]))
+        self.assertEqual(49, len(payload["kept_files"]))
         self.assertEqual(before, snapshot(self.root))
 
     def test_dry_run_with_unrelated_file_still_rejects(self):

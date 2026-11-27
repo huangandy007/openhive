@@ -50,7 +50,7 @@ python -I -m unittest discover -s skills/case-staff/scripts/tests -t skills/case
 
 ```bash
 cd D:/project/study/openhive/openhive/packages/opencode
-bun test test/server/openhive-case-mcp-move.test.ts
+bun test test/server/openhive-case-mcp-move.test.ts   # 含 sync_material_path 用例 15–18
 bun test test/server/openhive-file-ops.test.ts
 bun test test/server/openhive-case-staff-skill.test.ts
 ```
@@ -84,11 +84,11 @@ bun run typecheck
 
 | 步 | 人做什么 | 期望 |
 |---|---|---|
-| 1 | 说「建一个案件工作区」 | 按 [data-model §1](./data-model.md#1-初始化产出精确集合) 精确产出 39 目录 / 22 文件 / 27 `.gitkeep`；项目基础项未被触碰 |
+| 1 | 说「建一个案件工作区」 | 按 [data-model §1](./data-model.md#1-初始化产出精确集合) 精确产出 41 目录 / 22 文件 / 28 `.gitkeep`；项目基础项未被触碰 |
 | 2 | 再说一次 | 全部「保留」，新增 0，文件哈希不变 |
 | 3 | 上传 3 份文件到 `材料/00-待归档/` | 上传成功（目录存在是前提） |
 | 4 | 说「把上传的材料归档」 | AI 先给逐份建议（目标目录 / 是否证据 / E 草稿），**未确认不动文件** |
-| 5 | 回「同意」 | 文件移到建议目录、文件名不变；登记表 3 行路径与盘上一致；属证据的有 E 行（来源写 M） |
+| 5 | 回「同意」 | 文件移到建议目录、文件名不变；登记表 3 行路径与盘上一致；属证据的有 E 行（来源写 M）；`材料/00-待归档/` 里被搬空的子目录不残留（收件箱本身与 `.gitkeep` 保留） |
 | 6 | 说「今天下午调了张三建行流水，11 月 5 日 50 万转给李四，疑似抽成；已让银行继续调对手信息」 | 回执列出 L/T/E 编号与摘要；未确认前台账零改动 |
 | 7 | 回「确认」 | 台账各加对应行；编号连续；推断只进线索，不写成事实 |
 | 8 | 说「校验」 | 无错误；若有积压/逾期列为警告 |
@@ -96,7 +96,10 @@ bun run typecheck
 | 10 | 改人员台账里 P001 的角色，说「同步」 | 先出影响清单 + diff，磁盘零改动 |
 | 11 | 回「应用」 | 非法律文档托管块更新、块外不变；法律文书只出建议；发放版原文不变 + 变更日志一条 |
 
-**平台侧核对**（真栈）：第 5 步之后，`auth.case_material.path` 对可解析扩展名的材料应等于新相对路径。
+**平台侧核对**（真栈）：第 5 步之后，`auth.case_material.path` 对可解析扩展名的材料应等于新相对路径；
+再调 `sync_material_path`（入参为新路径），返回 `数据[0].解析状态` 必须与归档前一致
+（已入库的材料不能因为归档变成「未入队」）。同时 `材料/00-待归档/` 下不应残留空子目录
+（收件箱本身与 `.gitkeep` 保留；非空目录保留）。
 
 ---
 

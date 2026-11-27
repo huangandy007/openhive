@@ -666,6 +666,39 @@ describe("T020 · 带项目头时四项真能执行（FR-005）", () => {
   )
 
   /**
+   * **归档移动后收件箱不留空文件夹**（2026-11-27 用户报）。
+   *
+   * 材料从 `材料/00-待归档/<夹>/` 搬走后，那个夹就没有存在意义了；留着会让收件箱
+   * 看起来还有东西。判据分两条：搬空的子目录**删**，收件箱本身与 `.gitkeep` **留**。
+   */
+  it.live(
+    "移动归档：收件箱里搬空的子目录随之删除，收件箱本身与 .gitkeep 保留",
+    () =>
+      Effect.gen(function* () {
+        yield* 就绪()
+        const 收件箱 = path.join(项目根, "材料", "00-待归档")
+        mkdirSync(path.join(收件箱, "111"), { recursive: true })
+        mkdirSync(path.join(项目根, "材料", "01-接报案"), { recursive: true })
+        writeFileSync(path.join(收件箱, ".gitkeep"), "")
+        writeFileSync(path.join(收件箱, "111", "流水.xlsx"), "假装的表格")
+
+        const response = yield* send(
+          ALICE,
+          出口.move,
+          { path: "材料/00-待归档/111/流水.xlsx", dir: "材料/01-接报案" },
+          ALPHA,
+        )
+
+        expect(existsSync(path.join(项目根, "材料", "01-接报案", "流水.xlsx"))).toBe(true)
+        expect(existsSync(path.join(收件箱, "111"))).toBe(false)
+        expect(existsSync(收件箱)).toBe(true)
+        expect(existsSync(path.join(收件箱, ".gitkeep"))).toBe(true)
+        expect(response.status).toBe(200)
+      }),
+    30_000,
+  )
+
+  /**
    * **移动到已有同名文件 ⇒ 拒，且两边内容都不许变**。
    *
    * 这条比复制那条更要紧：win32 的 `rename` 走 `MOVEFILE_REPLACE_EXISTING`，**默认覆盖**。

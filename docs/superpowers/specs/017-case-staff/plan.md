@@ -39,7 +39,7 @@ PowerShell 均不改脚本行为）
 
 **Project Type**: Bun monorepo；本特性跨「仓库根技能资产目录」+「`packages/opencode` 单个 openhive 模块」
 
-**Performance Goals**: 初始化（39 目录 / 22 文件 / 27 个 `.gitkeep`，见 data-model §1）单次 < 5 s；`validate_case.py` 在 500 文件项目上
+**Performance Goals**: 初始化（41 目录 / 22 文件 / 28 个 `.gitkeep`，见 data-model §1）单次 < 5 s；`validate_case.py` 在 500 文件项目上
 < 3 s；技能脚本对 200 文件以下的台账解析无长耗时操作
 
 **Constraints**: 脚本不联网、只用标准库、不写死法定期限与法条；移动必须经平台通道；无解释器时必须
