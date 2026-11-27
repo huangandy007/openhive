@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import sys
+import uuid
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_DIR, "assets")
@@ -127,7 +128,6 @@ GITKEEP_FILES = tuple(directory + "/.gitkeep" for directory in GITKEEP_DIRECTORI
 
 CASE_INFO_FILE = "案件信息.md"
 AGENTS_FILE = "AGENTS.md"
-WORKSPACE_MARKERS = (CASE_INFO_FILE, AGENTS_FILE)
 
 # 项目基础项：这些顶层条目不视为「无关文件」；其余以 ``.`` 开头的顶层条目也算本机配置。
 PROJECT_BASE_ENTRIES = (".git", ".gitignore", ".opencode", "opencode.json")
@@ -217,7 +217,42 @@ def _validate_value(value, code):
     return ["%s: 值 %r 非法（%s）" % (code, value, "；".join(problems))]
 
 
-def precheck(root, case_name, case_no):
+def probe_root_writable(root):
+    """实写探针：在项目根创建并删除一个 1 字节临时文件。
+
+    Windows 上 ``os.access(root, os.W_OK)`` 只查只读属性、不查 ACL，
+    因此以「能否真的落盘」为判据。任何 OSError（含删除失败）都返回 False；
+    探针文件必须删除，``FileNotFoundError`` 视为已删除。
+    """
+    name = ".openhive-write-probe-%d-%s" % (os.getpid(), uuid.uuid4().hex)
+    path = os.path.join(root, name)
+    handle = None
+    try:
+        handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(handle, b"x")
+        os.close(handle)
+        handle = None
+        try:
+            os.unlink(path)
+        except OSError:
+            return False
+    except OSError:
+        return False
+    finally:
+        if handle is not None:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+        if os.path.lexists(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return True
+
+
+def precheck(root, case_name, case_no, dry_run):
     """返回 (errors, mode)；mode 为 ``fresh`` / ``workspace``。"""
     if not os.path.exists(root):
         return ["ROOT_MISSING: 项目根不存在：%s" % root], "fresh"
@@ -232,6 +267,13 @@ def precheck(root, case_name, case_no):
     except OSError as exc:
         errors.append("ROOT_UNREADABLE: 无法读取项目根：%s（%s）" % (root, exc))
         return errors, "fresh"
+
+    # 先取目录快照再做写探针，避免探针文件混入白名单判断。
+    # dry-run 不许写盘，故跳过探针：ACL 级不可写在 dry-run 下无法发现（契约内可接受的盲区）。
+    if not errors and not dry_run and not probe_root_writable(root):
+        errors.append(
+            "ROOT_NOT_WRITABLE: 写探针失败（无法在项目根创建或删除临时文件）：%s" % root
+        )
 
     for relative in find_symlinks_outside(root):
         errors.append("SYMLINK_OUTSIDE: 链接指向项目根之外：%s" % relative)
@@ -360,7 +402,7 @@ def run(args):
     case_name = args.case_name
     case_no = args.case_no
 
-    errors, mode = precheck(root, case_name, case_no)
+    errors, mode = precheck(root, case_name, case_no, dry_run)
     if errors:
         return 1, _payload(False, root, dry_run, [], [], [], [], errors)
 

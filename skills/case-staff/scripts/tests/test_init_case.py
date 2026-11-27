@@ -25,6 +25,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from scripts import init_case
 
@@ -374,6 +375,39 @@ class PrecheckTest(InitCaseTestBase):
         )
         self.assertEqual(before, snapshot(self.root))
 
+    def test_write_probe_failure_rejects_root_with_zero_writes(self):
+        before = snapshot(self.root)
+        with mock.patch(
+            "scripts.init_case.os.open", side_effect=PermissionError("denied")
+        ):
+            code, payload, _ = call_json(
+                ["--root", self.root, "--case-name", "测试案件", "--json"]
+            )
+        self.assertEqual(1, code)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(
+            payload["errors"][0].startswith("ROOT_NOT_WRITABLE:"),
+            msg=payload["errors"],
+        )
+        self.assertEqual(before, snapshot(self.root))
+
+    def test_dry_run_skips_the_write_probe(self):
+        with mock.patch(
+            "scripts.init_case.os.open", side_effect=PermissionError("denied")
+        ) as patched:
+            code, payload, _ = call_json(
+                [
+                    "--root",
+                    self.root,
+                    "--case-name",
+                    "测试案件",
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+        self.assertEqual(0, code, msg=payload["errors"])
+        patched.assert_not_called()
+
     def test_symlink_pointing_outside_root_is_rejected(self):
         outside = self.new_root("outside")
         with open(os.path.join(outside, "secret.txt"), "w", encoding="utf-8") as handle:
@@ -449,6 +483,14 @@ class CreationSetTest(InitCaseTestBase):
         )
         self.assertEqual([], payload["kept_files"])
 
+    def test_root_snapshot_keys_are_exactly_39_dirs_and_49_files(self):
+        self.init_ok()
+        keys = set(snapshot(self.root))
+        expected = {directory + "/" for directory in EXPECTED_DIRECTORIES}
+        expected |= EXPECTED_FILES
+        self.assertEqual(expected, keys)
+        self.assertEqual(88, len(keys))
+
     def test_upload_dependency_structures_exist(self):
         self.init_ok()
         self.assertTrue(os.path.isdir(os.path.join(self.root, "材料", "00-待归档")))
@@ -481,19 +523,21 @@ class PlaceholderTest(InitCaseTestBase):
         self.assertIn("| 案件编号 |  |", text)
         self.assertEqual(False, "{{案号}}" in text)
 
-    def test_other_templates_are_copied_byte_for_byte(self):
-        self.init_ok(case_name="张三案", case_no="A2026-001")
-        pairs = [
-            ("AGENTS.md", "AGENTS.template.md"),
-            ("变更日志.md", "变更日志.template.md"),
-            ("材料/00-材料登记表.md", "材料登记表.template.md"),
-            ("证据/证据索引.md", "证据索引.template.md"),
-            ("法律适用/00-索引.md", "法律适用-索引.template.md"),
-        ]
-        for rel, template in pairs:
-            with self.subTest(rel=rel):
-                created = read_bytes(os.path.join(self.root, *rel.split("/")))
+    def test_all_templates_are_copied_or_substituted_byte_for_byte(self):
+        name, case_no = "张三案", "A2026-001"
+        self.init_ok(case_name=name, case_no=case_no)
+        self.assertEqual(22, len(init_case.TEMPLATE_FILES))
+        for target, template in init_case.TEMPLATE_FILES:
+            with self.subTest(target=target):
                 expected = read_bytes(os.path.join(ASSETS_DIR, template))
+                if target == init_case.CASE_INFO_FILE:
+                    expected = (
+                        expected.decode("utf-8")
+                        .replace("{{案名}}", name)
+                        .replace("{{案号}}", case_no)
+                        .encode("utf-8")
+                    )
+                created = read_bytes(os.path.join(self.root, *target.split("/")))
                 self.assertEqual(expected, created)
 
 
